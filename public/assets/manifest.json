@@ -1,0 +1,26 @@
+{
+  "enemies": {
+    "small": { "file": "assets/enemies/enemy_small.png", "w": 48, "h": 48 },
+    "medium": { "file": "assets/enemies/enemy_medium.png", "w": 64, "h": 64 },
+    "large": { "file": "assets/enemies/enemy_large.png", "w": 96, "h": 96 }
+  },
+  "player": {
+    "player_base_anim": { "file": "assets/player/player_base_anim.png", "frameW": 64, "frameH": 64, "frames": 4 },
+    "player_ghost_anim": { "file": "assets/player/player_ghost_anim.png", "frameW": 64, "frameH": 64, "frames": 4 },
+    "player_titan_anim": { "file": "assets/player/player_titan_anim.png", "frameW": 64, "frameH": 64, "frames": 4 }
+  },
+  "boss": {
+    "phase1": { "file": "assets/boss/boss_phase1.png", "w": 256, "h": 256 },
+    "phase2": { "file": "assets/boss/boss_phase2.png", "w": 256, "h": 256 },
+    "phase3": { "file": "assets/boss/boss_phase3.png", "w": 256, "h": 256 }
+  },
+  "projectiles": {
+    "bullet_cyan": { "file": "assets/projectiles/bullet_cyan.png", "w": 16, "h": 16 },
+    "boss_shot": { "file": "assets/projectiles/boss_shot_set.png", "frameW": 24, "frameH": 24, "frames": 6 }
+  },
+  "particles": { "file": "assets/particles/particles_sheet.png", "tileW": 8, "tileH": 8, "cols": 8, "rows": 8 },
+  "ui": {
+    "hp_bg": { "file": "assets/ui/hp_bar_bg.png", "w": 128, "h": 16 },
+    "hp_fill": { "file": "assets/ui/hp_bar_fill.png", "w": 128, "h": 16 }
+  }
+}

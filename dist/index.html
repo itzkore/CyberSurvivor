@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cyber Survivor</title>
+  <link href="https://fonts.googleapis.com/css?family=Orbitron:700&display=swap" rel="stylesheet" />
+  <script type="module" crossorigin src="/assets/index-CjmFvVh0.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Dxh43GwD.css">
+</head>
+<body>
+  <div id="main-menu" class="main-menu">
+    <h1 class="menu-title">CYBER SURVIVOR</h1>
+    <button id="start-game-btn" class="menu-button">Start Game</button>
+    <button id="character-select-btn" class="menu-button">Character Select</button>
+  </div>
+
+  <div id="character-select-panel" class="main-menu" style="display: none;">
+    <h1 class="menu-title">CHARACTER SELECTION</h1>
+    <div id="character-grid" class="character-grid">
+      <!-- Character boxes will be dynamically added here by JavaScript -->
+    </div>
+    <div id="character-details" class="character-details">
+      <h2 id="detail-name" class="neon-text-cyan"></h2>
+      <p id="detail-description"></p>
+      <p>HP: <span id="detail-hp"></span></p>
+      <p>Speed: <span id="detail-speed"></span></p>
+      <p>Damage: <span id="detail-damage"></span></p>
+    </div>
+    <button id="select-character-btn" class="menu-button">Select Character</button>
+    <button id="back-to-main-btn" class="menu-button">Back to Main Menu</button>
+  </div>
+
+  <canvas id="gameCanvas"></canvas>
+</body>
+</html>
