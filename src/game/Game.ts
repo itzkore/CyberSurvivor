@@ -18,6 +18,19 @@ import { WeaponType } from './WeaponType';
 
 export class Game {
   /**
+   * Neon colors for scanlines and city lights
+   */
+  private static neonColors = [
+    '#00FFFF', // Cyan
+    '#FF00FF', // Magenta
+    '#FFD700', // Gold
+    '#00FF99', // Green
+    '#FF0055', // Pink
+    '#00BFFF'  // Blue
+  ];
+  // Static background image
+  private backgroundImage: HTMLImageElement | null = null;
+  /**
    * Sets the game state. Used for UI panels like upgrade menu.
    * @param state New state string
    */
@@ -67,6 +80,9 @@ export class Game {
   private explosionManager?: ExplosionManager;
 
   constructor(canvas: HTMLCanvasElement) {
+  // Load static background image
+  this.backgroundImage = new window.Image();
+  this.backgroundImage.src = 'assets/background.png';
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.state = 'MAIN_MENU';
@@ -602,72 +618,89 @@ async init() {
       }
     }
 
+    // Always ensure canvas is visible and on top for gameplay states
+    const canvasElem = document.getElementById('gameCanvas') as HTMLCanvasElement;
+    if (canvasElem) {
+      if (["GAME", "CINEMATIC", "CHARACTER_SELECT", "UPGRADE_MENU", "PAUSE", "GAME_OVER"].includes(this.state)) {
+        canvasElem.style.display = 'block';
+        canvasElem.style.zIndex = '10';
+      } else {
+        canvasElem.style.zIndex = '-1';
+      }
+    }
+
     switch (this.state) {
       case 'GAME':
       case 'PAUSE':
       case 'UPGRADE_MENU':
       case 'GAME_OVER':
+        Logger.debug(`[Game.render] Rendering state: ${this.state}`);
         // Draw cyberpunk grid background before camera transform
         this.ctx.save();
-        this.ctx.globalAlpha = 1;
-        const grad = this.ctx.createLinearGradient(0, 0, this.canvas.width, this.canvas.height);
-        grad.addColorStop(0, '#181825');
+        // Night city gradient sky
+        const grad = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+        grad.addColorStop(0, '#0a0a1a');
+        grad.addColorStop(0.5, '#181825');
         grad.addColorStop(1, '#232347');
         this.ctx.fillStyle = grad;
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        this.ctx.strokeStyle = 'rgba(0,255,255,0.08)';
-        this.ctx.lineWidth = 1;
-        for (let x = 0; x < this.canvas.width; x += 64) {
-          this.ctx.beginPath();
-          this.ctx.moveTo(x, 0);
-          this.ctx.lineTo(x, this.canvas.height);
-          this.ctx.stroke();
+
+        // Draw PNG background as a seamless tile so it never disappears
+        if (
+          this.backgroundImage &&
+          this.backgroundImage.complete &&
+          this.backgroundImage.naturalWidth > 0 &&
+          this.backgroundImage.naturalHeight > 0
+        ) {
+          this.ctx.save();
+          this.ctx.globalAlpha = 0.85;
+          const imgW = this.backgroundImage.naturalWidth;
+          const imgH = this.backgroundImage.naturalHeight;
+          // Find top-left tile to start drawing
+          const startX = Math.floor(this.camX / imgW) * imgW;
+          const startY = Math.floor(this.camY / imgH) * imgH;
+          for (let x = startX; x < this.camX + this.canvas.width; x += imgW) {
+            for (let y = startY; y < this.camY + this.canvas.height; y += imgH) {
+              this.ctx.drawImage(
+                this.backgroundImage,
+                x - this.camX, y - this.camY, imgW, imgH
+              );
+            }
+          }
+          this.ctx.globalAlpha = 1;
+          this.ctx.restore();
         }
-        for (let y = 0; y < this.canvas.height; y += 64) {
-          this.ctx.beginPath();
-          this.ctx.moveTo(0, y);
-          this.ctx.lineTo(this.canvas.width, y);
-          this.ctx.stroke();
-        }
+  // Removed animated neon scanlines and moving lines for a clean PNG background.
         this.ctx.restore();
         // Now apply camera transform and draw entities
         this.ctx.save();
         this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);
-        // console.log('Drawing enemies...'); // Removed debug log
         this.enemyManager.draw(this.ctx, this.camX, this.camY);
-        // console.log('Drawing bullets...'); // Removed debug log
         this.bulletManager.draw(this.ctx);
-        // console.log('Drawing player...'); // Removed debug log
         this.player.draw(this.ctx);
-        // console.log('Drawing particles...'); // Removed debug log
         this.particleManager.draw(this.ctx);
-        this.explosionManager?.draw(this.ctx); // Draw AoE zones
-        // console.log('Drawing boss...'); // Removed debug log
+        this.explosionManager?.draw(this.ctx);
         this.bossManager.draw(this.ctx);
         this.ctx.restore();
-        // console.log('Drawing damage text...'); // Removed debug log
         this.damageTextManager.draw(this.ctx, this.camX, this.camY);
-        // console.log('Drawing HUD...'); // Removed debug log
         this.hud.draw(this.ctx, this.gameTime, this.enemyManager.getEnemies(), this.worldW, this.worldH, this.player.upgrades);
 
         if (this.state === 'PAUSE') {
-          this.drawPause(); // Changed from drawPauseMenu
-        } else if (this.state === 'UPGRADE_MENU') {
-          // this.upgradePanel.draw(this.ctx); // Removed: UpgradePanel manages its own HTML visibility
+          this.drawPause();
         } else if (this.state === 'GAME_OVER') {
-          this.drawGameOver(); // Changed from drawGameOverScreen
+          this.drawGameOver();
         }
         break;
       case 'MAIN_MENU':
-        // Main menu is handled by HTML, nothing to render on canvas
-        // Ensure canvas is behind HTML menu for interactivity
-        const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
-        if (canvas) canvas.style.zIndex = '-1';
+        Logger.debug('[Game.render] MAIN_MENU state, hiding canvas.');
+        if (canvasElem) canvasElem.style.zIndex = '-1';
         break;
       case 'CHARACTER_SELECT':
+        Logger.debug('[Game.render] CHARACTER_SELECT state.');
         this.characterSelectPanel.draw(this.ctx, this.canvas);
         break;
       case 'CINEMATIC':
+        Logger.debug('[Game.render] CINEMATIC state.');
         this.cinematic.draw(this.ctx, this.canvas);
         break;
     }

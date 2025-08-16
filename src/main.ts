@@ -17,6 +17,7 @@ window.onload = async () => {
   canvas.style.top = '0';
   canvas.style.left = '0';
   canvas.style.zIndex = '-1'; // Ensure canvas is behind HTML menu
+  canvas.style.display = 'block';
 
   const game = new Game(canvas); // Instantiate Game first
   const mainMenu = new MainMenu(game); // Pass game instance to MainMenu
@@ -28,54 +29,75 @@ window.onload = async () => {
 
   // Initial state setup
   game.setState('MAIN_MENU');
+  Logger.info('[main.ts] Initial state set to MAIN_MENU');
 
   await game.init();
+  Logger.info('[main.ts] Game assets loaded');
 
   game.start();
+  Logger.info('[main.ts] Game loop started');
 
   mainMenu.show(); // Show the main menu initially
+  Logger.info('[main.ts] Main menu shown');
 
   // --- Sound Settings Panel & Music ---
   import('./ui/SoundSettingsPanel').then(({ SoundSettingsPanel }) => {
     const soundPanel = new SoundSettingsPanel();
     soundPanel.show();
+    Logger.info('[main.ts] SoundSettingsPanel shown');
   });
   import('./game/SoundManager').then(({ SoundManager }) => {
     SoundManager.playMusic('assets/music/bg-music.mp3');
+    Logger.info('[main.ts] Background music started');
   });
 
   window.addEventListener('startGame', (event: Event) => {
     const customEvent = event as CustomEvent;
     const selectedCharData = customEvent.detail;
-    Logger.info('startGame event received, selectedCharData:', selectedCharData);
+    Logger.info('[main.ts] startGame event received, selectedCharData:', selectedCharData);
     game.resetGame(selectedCharData); // Reset game with selected character
     mainMenu.hide();
-    Logger.info('Calling game.startCinematicAndGame()');
+    Logger.info('[main.ts] Main menu hidden, starting cinematic and game');
+    // Ensure canvas is visible and on top
+    canvas.style.display = 'block';
+    canvas.style.zIndex = '10';
     game.startCinematicAndGame(); // Start cinematic and then game
   });
 
   window.addEventListener('showCharacterSelect', () => {
+    Logger.info('[main.ts] showCharacterSelect event received');
     mainMenu.hide();
     characterSelectPanel.show();
+    canvas.style.display = 'block';
+    canvas.style.zIndex = '10';
   });
 
   window.addEventListener('showMainMenu', () => {
+    Logger.info('[main.ts] showMainMenu event received');
     characterSelectPanel.hide(); // Hide character select if coming from there
     mainMenu.show();
+    canvas.style.zIndex = '-1';
   });
 
   window.addEventListener('pauseGame', () => {
+    Logger.info('[main.ts] pauseGame event received');
     game.pause();
   });
 
   window.addEventListener('resumeGame', () => {
+    Logger.info('[main.ts] resumeGame event received');
     game.resume();
+    canvas.style.display = 'block';
+    canvas.style.zIndex = '10';
   });
 
-    // Show upgrade panel on player level up
-    window.addEventListener('levelup', () => {
-      window.dispatchEvent(new CustomEvent('showUpgradePanel'));
-    });
+  // Show upgrade panel on player level up
+  window.addEventListener('levelup', () => {
+    Logger.info('[main.ts] levelup event received, dispatching showUpgradePanel');
+    window.dispatchEvent(new CustomEvent('showUpgradePanel'));
+    canvas.style.display = 'block';
+    canvas.style.zIndex = '10';
+  });
   // --- Matrix Background Animation ---
   let matrixActive = true;
   function renderMatrixBackground() {
