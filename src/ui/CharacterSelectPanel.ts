@@ -1,6 +1,7 @@
 import { AssetLoader } from '../game/AssetLoader';
 import { WeaponType } from '../game/WeaponType';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
+import { Logger } from '../core/Logger';
 
 type Shape = 'circle'|'square'|'triangle';
 interface Stats {
@@ -48,10 +49,101 @@ export class CharacterSelectPanel {
   private frameTimer: number = 0;
   private animationSpeed: number = 8;
   private fadeAlpha: number = 0;
+  private panelElement: HTMLElement | null; // Reference to the main HTML panel
+  private characterGrid: HTMLElement | null;
+  private detailName: HTMLElement | null;
+  private detailDescription: HTMLElement | null;
+  private detailHp: HTMLElement | null;
+  private detailSpeed: HTMLElement | null;
+  private detailDamage: HTMLElement | null;
+  private selectButton: HTMLButtonElement | null;
+  private backButtonEl: HTMLButtonElement | null;
 
   constructor(assetLoader: AssetLoader) {
     this.assetLoader = assetLoader;
+    this.panelElement = document.getElementById('character-select-panel');
+    this.characterGrid = document.getElementById('character-grid');
+    this.detailName = document.getElementById('detail-name');
+    this.detailDescription = document.getElementById('detail-description');
+    this.detailHp = document.getElementById('detail-hp');
+    this.detailSpeed = document.getElementById('detail-speed');
+    this.detailDamage = document.getElementById('detail-damage');
+    this.selectButton = document.getElementById('select-character-btn') as HTMLButtonElement;
+    this.backButtonEl = document.getElementById('back-to-main-btn') as HTMLButtonElement;
+
     this.initializeCharacters();
+    this.render();
+
+    this.selectButton?.addEventListener('click', () => this.handleSelect());
+    this.backButtonEl?.addEventListener('click', () => this.handleBack());
+  }
+
+  /**
+   * Displays the character selection panel UI.
+   */
+  public show(): void {
+    if (this.panelElement) {
+      this.panelElement.style.display = 'flex'; // Or 'block', depending on desired layout
+      this.render(); // Re-render when shown
+    }
+  }
+
+  /**
+   * Hides the character selection panel UI.
+   */
+  public hide(): void {
+    if (this.panelElement) {
+      this.panelElement.style.display = 'none';
+    }
+  }
+
+  private render() {
+    if (!this.characterGrid) return; // Ensure characterGrid is not null
+
+    this.characterGrid.innerHTML = ''; // Clear existing grid
+
+    this.characters.forEach((char, index) => {
+      const charBox = document.createElement('div');
+      charBox.className = 'character-box';
+      if (index === this.selectedCharacterIndex) {
+        charBox.classList.add('selected');
+      }
+      charBox.textContent = char.name;
+      charBox.addEventListener('click', () => {
+        this.selectedCharacterIndex = index;
+        this.render(); // Re-render to update selection highlight
+      });
+      if (this.characterGrid) {
+        this.characterGrid.appendChild(charBox);
+      }
+    });
+
+    this.updateDetailsPanel();
+  }
+
+  private updateDetailsPanel() {
+    const selectedChar = this.characters[this.selectedCharacterIndex];
+    if (!selectedChar || !this.detailName || !this.detailDescription || !this.detailHp || !this.detailSpeed || !this.detailDamage) return;
+
+    this.detailName.textContent = selectedChar.name;
+    this.detailDescription.textContent = selectedChar.description;
+    this.detailHp.textContent = selectedChar.stats.hp?.toString() || 'N/A';
+    this.detailSpeed.textContent = selectedChar.stats.speed?.toString() || 'N/A';
+    this.detailDamage.textContent = selectedChar.stats.damage?.toString() || 'N/A';
+  }
+
+  private handleSelect() {
+    const selectedChar = this.characters[this.selectedCharacterIndex];
+    if (selectedChar) {
+      // Dispatch 'startGame' event with selected character data
+      window.dispatchEvent(new CustomEvent('startGame', { detail: selectedChar }));
+      this.hide();
+    }
+  }
+
+  private handleBack() {
+    this.hide();
+    window.dispatchEvent(new CustomEvent('showMainMenu'));
   }
 
   private initializeCharacters() {
@@ -163,8 +255,8 @@ export class CharacterSelectPanel {
   statModifiers: { hp: 70, strength: 6, defense: 6, speed: -0.8, agility: -3, attackSpeed: 0.45 },
         uniqueTraits: ['Siege Mode', 'Self-Repair'],
         shape: 'square',
-        color: '#000000', // Black
-        defaultWeapon: WeaponType.MECH_MORTAR
+        color: '#444444', // Dark gray
+        defaultWeapon: WeaponType.MECH_MORTAR // Ensure this is still Mech Mortar
       }
     ];
 
@@ -194,7 +286,7 @@ export class CharacterSelectPanel {
 
   draw(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
     ctx.save();
-    console.log('Drawing CharacterSelectPanel. Selected Index:', this.selectedCharacterIndex);
+    Logger.debug('Drawing CharacterSelectPanel. Selected Index:', this.selectedCharacterIndex);
 
     // Background
     ctx.fillStyle = '#1a1a2e'; // Dark background, inspired by cyberpunk theme
@@ -624,7 +716,7 @@ export class CharacterSelectPanel {
       if (mouseX >= x && mouseX <= x + this.charBoxSize &&
           mouseY >= y && mouseY <= y + this.charBoxSize) {
         this.selectedCharacterIndex = i;
-        console.log(`Character box clicked: ${this.characters[i].name}`);
+        Logger.debug(`Character box clicked: ${this.characters[i].name}`);
         return this.characters[i]; // Return the selected character data
       }
     }
@@ -633,11 +725,11 @@ export class CharacterSelectPanel {
     // Use the stored backButton properties for click detection
     if (mouseX >= this.backButton.x && mouseX <= this.backButton.x + this.backButton.width &&
         mouseY >= this.backButton.y && mouseY <= this.backButton.y + this.backButton.height) {
-      console.log('Back to Main Menu button clicked');
+      Logger.debug('Back to Main Menu button clicked');
       return 'backToMainMenu';
     }
 
-    console.log('No interactive element clicked.');
+    Logger.debug('No interactive element clicked.');
     return null;
   }
 

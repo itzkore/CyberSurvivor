@@ -1,32 +1,33 @@
 import { Player } from './Player';
 import { ParticleManager } from './ParticleManager';
 
-export type Boss = { x: number; y: number; hp: number; radius: number; active: boolean; telegraph: number; state: 'TELEGRAPH' | 'ACTIVE' | 'DEAD'; attackTimer: number; _damageFlash?: number; specialCharge?: number; specialReady?: boolean } | null;
+export type Boss = { x: number; y: number; hp: number; maxHp: number; radius: number; active: boolean; telegraph: number; state: 'TELEGRAPH' | 'ACTIVE' | 'DEAD'; attackTimer: number; _damageFlash?: number; specialCharge?: number; specialReady?: boolean } | null;
 
 export class BossManager {
   private player: Player;
   private boss: Boss = null;
-  private spawnTimer: number = 3600; // spawn boss every 60s
+  private spawnTimer: number = 0; // Use gameTime directly
   private particleManager: ParticleManager | null = null;
   private difficulty: number = 1;
+  private lastBossSpawnTime: number = 0; // Track last spawn time
 
   constructor(player: Player, particleManager?: ParticleManager, difficulty = 1) {
     this.player = player;
     this.particleManager = particleManager || null;
     this.difficulty = difficulty;
-    this.spawnTimer = 3600; // Always spawn boss after 60s
+    this.lastBossSpawnTime = 0; // Initialize to 0
   }
 
-  public update() {
+  public update(deltaTime: number, gameTime: number) { // Added gameTime parameter
     if (!this.boss) {
-      this.spawnTimer--;
-      if (this.spawnTimer <= 0) {
+      // Spawn boss every 60 seconds of game time
+      if (gameTime - this.lastBossSpawnTime >= 60) {
         this.spawnBoss();
-        this.spawnTimer = 3600;
+        this.lastBossSpawnTime = gameTime;
       }
     } else if (this.boss.state === 'TELEGRAPH') {
       this.boss.telegraph--;
-      if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 4, '#f55');
+      if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#f55');
       if (this.boss.telegraph <= 0) {
         this.boss.state = 'ACTIVE';
         this.boss.attackTimer = 60;
@@ -53,13 +54,14 @@ export class BossManager {
         // Telegraph special attack: stop and charge for 3 seconds
         this.boss.specialCharge++;
         if (this.boss.specialCharge < 180) {
-          // Show telegraph effect
-          if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 32, '#FF00FF');
+          // Show telegraph effect (spawn particles less frequently)
+          if (this.particleManager && this.boss.specialCharge % 5 === 0) this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#FF00FF'); // Spawn fewer particles every 5 frames
         } else {
           // Unleash special attack (e.g., massive area damage)
           if (dist < this.boss.radius + 120) {
             this.player.hp -= 80; // Massive damage if close
-            if (this.particleManager) this.particleManager.spawn(this.player.x, this.player.y, 32, '#FF0000');
+            if (this.particleManager) this.particleManager.spawn(this.player.x, this.player.y, 2, '#FF0000'); // Reduced particles
+            window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 300, intensity: 10 } })); // Screen shake on special attack
           }
           this.boss.specialReady = false;
           this.boss.specialCharge = 0;
@@ -82,14 +84,18 @@ export class BossManager {
         this.boss.y += (dy / dist) * 16;
         // Visual feedback
         if (this.particleManager) {
-          this.particleManager.spawn(this.player.x, this.player.y, 12, '#f00');
-          this.particleManager.spawn(this.boss.x, this.boss.y, 18, '#FFD700');
+          this.particleManager.spawn(this.player.x, this.player.y, 1, '#f00'); // Reduced particles
+          this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#FFD700'); // Reduced particles
         }
       }
       if (this.boss._damageFlash && this.boss._damageFlash > 0) {
         this.boss._damageFlash--;
       }
-      if (this.boss.hp <= 0) this.boss.state = 'DEAD';
+      if (this.boss.hp <= 0) {
+        this.boss.state = 'DEAD';
+        this.spawnChest(this.boss.x, this.boss.y); // Spawn chest on boss defeat
+        window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 500, intensity: 15 } })); // Stronger shake on boss defeat
+      }
     }
   }
 
@@ -104,11 +110,14 @@ export class BossManager {
     // Oppenheimer-style cinematic entrance: screen shake, slow-motion, flash, sound event
     if (window && window.dispatchEvent) {
       window.dispatchEvent(new CustomEvent('bossSpawn', { detail: { x: bx, y: by, cinematic: true } }));
+      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 200, intensity: 8 } })); // Initial shake on boss spawn
     }
+    const bossHp = 3000 + (this.difficulty - 1) * 1000;
     this.boss = {
       x: bx,
       y: by,
-      hp: 3000 + (this.difficulty - 1) * 1000,
+      hp: bossHp,
+  maxHp: bossHp, // Set maxHp for HP bar drawing
       radius: 160,
       active: true,
       telegraph: 180,
@@ -122,10 +131,15 @@ export class BossManager {
     }
   }
 
+  private spawnChest(x: number, y: number): void {
+    // Dispatch an event that EnemyManager (or a new ChestManager) can listen to
+    window.dispatchEvent(new CustomEvent('spawnChest', { detail: { x, y } }));
+  }
+
   private launchAttackWave() {
     if (!this.boss) return;
     // spawn telegraph pulses before actual projectiles
-    if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 24, '#f90');
+    if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#f90'); // Reduced particles
     // Boss spawns minions every 3rd attack
     if (Math.random() < 0.33) {
       if (window && window.dispatchEvent) {
@@ -136,10 +150,10 @@ export class BossManager {
     const event = new CustomEvent('bossAttack', { detail: { x: this.boss.x, y: this.boss.y, intensity: this.difficulty } });
     window.dispatchEvent(event);
     // Visual effect: flash
-    if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 16, '#fff');
+    if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#fff'); // Reduced particles
   }
-
-  public draw(ctx: CanvasRenderingContext2D) {
+ 
+   public draw(ctx: CanvasRenderingContext2D) {
     if (!this.boss) return;
     if (this.boss.state === 'TELEGRAPH') {
       // Oppenheimer-style telegraph: slow-motion, intense glow, cinematic overlay
@@ -207,18 +221,6 @@ export class BossManager {
       ctx.globalAlpha = 0.9 + 0.1*Math.sin(Date.now()/200);
       ctx.fill();
       ctx.restore();
-      // Nuclear explosion effect
-      if (Math.random() < 0.02) {
-        ctx.save();
-        ctx.font = 'bold 64px Orbitron, Arial';
-        ctx.fillStyle = '#FFD700';
-        ctx.globalAlpha = 0.7;
-        ctx.textAlign = 'center';
-        ctx.shadowColor = '#FF00FF';
-        ctx.shadowBlur = 64;
-        ctx.fillText('BOOM!', this.boss.x, this.boss.y-this.boss.radius-64);
-        ctx.restore();
-      }
     }
   }
 

@@ -29,7 +29,7 @@ export class ParticleManager {
     const ang = Math.random() * Math.PI * 2;
     p.vx = Math.cos(ang) * speed;
     p.vy = Math.sin(ang) * speed;
-    p.life = 20 + Math.floor(Math.random() * 20);
+    p.life = 60; // Set a fixed life for explosion particles (approx 1 second at 60 FPS)
     p.size = 1 + Math.random() * 3;
     p.color = color;
     p.active = true;
@@ -41,7 +41,7 @@ export class ParticleManager {
       p.x += p.vx;
       p.y += p.vy;
       p.vx *= 0.98;
-      p.vy *= 0.98;
+      p.vy *= 0.98; // Ensure vertical velocity also decays
       p.life--;
       if (p.life <= 0) {
         p.active = false;
@@ -51,11 +51,15 @@ export class ParticleManager {
     }
   }
 
+  /**
+   * Draws all particles to the canvas.
+   * @param ctx Canvas 2D context
+   */
   public draw(ctx: CanvasRenderingContext2D) {
     for (const p of this.pool) {
       if (!p.active) continue;
       ctx.save();
-      ctx.globalAlpha = Math.max(0.2, p.life / 40);
+      ctx.globalAlpha = Math.max(0.05, p.life / 60); // Fade out over the full life duration
       ctx.fillStyle = p.color;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);

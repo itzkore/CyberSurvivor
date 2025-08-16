@@ -32,6 +32,7 @@ export class AssetLoader {
       case 'upgrade_hp': return { w: 64, h: 64 };
       case 'cyber_runner': return { w: 64, h: 64 }; // Example entry for new character
       case 'tech_warrior_anim': return { w: 64, h: 64 }; // Example entry for new animated character
+      case 'character_select_bg': return { w: 1920, h: 1080 }; // Added for character select background
       default: return { w: 64, h: 64 };
     }
   }

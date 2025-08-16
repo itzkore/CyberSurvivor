@@ -2,11 +2,13 @@ import type { Bullet } from './Bullet';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
+import type { Enemy } from './EnemyManager'; // Import Enemy type
+import { Logger } from '../core/Logger';
 
 declare global {
   interface Window {
     enemyManager?: {
-      getEnemies: () => Array<{ x: number; y: number }>;
+      getEnemies: () => Array<Enemy>; // Use Enemy type
     };
     player?: { x: number; y: number };
   }
@@ -14,169 +16,243 @@ declare global {
 
 export class BulletManager {
   public bullets: Bullet[] = [];
+  private bulletPool: Bullet[] = []; // Dedicated pool for inactive bullets
   private assetLoader: AssetLoader;
+  private readonly initialPoolSize: number = 200; // Pre-allocate a reasonable number of bullets
 
   constructor(assetLoader: AssetLoader) {
     this.assetLoader = assetLoader;
+    this.preallocateBullets();
+  }
+
+  /**
+   * Helper function to check for line-circle intersection (swept-sphere collision).
+   * @param x1 Line start X
+   * @param y1 Line start Y
+   * @param x2 Line end X
+   * @param y2 Line end Y
+   * @param cx Circle center X
+   * @param cy Circle center Y
+   * @param r Circle radius
+   * @returns The intersection point {x, y} if collision occurs, otherwise null.
+   */
+  private lineCircleIntersect(x1: number, y1: number, x2: number, y2: number, cx: number, cy: number, r: number): { x: number, y: number } | null {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const fx = x1 - cx;
+    const fy = y1 - cy;
+
+    const a = dx * dx + dy * dy;
+    const b = 2 * (fx * dx + fy * dy);
+    const c = (fx * fx + fy * fy) - r * r;
+
+    const discriminant = b * b - 4 * a * c;
+
+    if (discriminant < 0) {
+      return null; // No intersection
+    }
+
+    // Solve for t (intersection points along the line segment)
+    const t0 = (-b - Math.sqrt(discriminant)) / (2 * a);
+    const t1 = (-b + Math.sqrt(discriminant)) / (2 * a);
+
+    // Find the smallest t value that is between 0 and 1
+    let t = Infinity;
+    if (t0 >= 0 && t0 <= 1) t = Math.min(t, t0);
+    if (t1 >= 0 && t1 <= 1) t = Math.min(t, t1);
+
+    if (t === Infinity) {
+      return null; // No intersection within segment
+    }
+
+    return { x: x1 + t * dx, y: y1 + t * dy };
+  }
+
+  private preallocateBullets(): void {
+    for (let i = 0; i < this.initialPoolSize; i++) {
+      this.bulletPool.push({
+        x: 0, y: 0, vx: 0, vy: 0, radius: 0, life: 0, active: false, damage: 0, weaponType: WeaponType.PISTOL
+      });
+    }
+  }
+
+  public reset(): void {
+    this.bullets = [];
+    this.bulletPool = [];
+    this.preallocateBullets();
   }
 
   public update() {
-  for (const b of this.bullets) {
-    if (!b.active) continue;
+    const activeBullets: Bullet[] = [];
+    for (let i = 0; i < this.bullets.length; i++) {
+      const b = this.bullets[i];
+      if (!b.active) {
+        // Ensure explosion properties are reset when returning to pool (removed Mech Mortar specific resets)
+        // b._exploded = false;
+        // b._explosionStartTime = undefined;
+        // b._maxExplosionDuration = undefined;
+        this.bulletPool.push(b); // Return to pool if inactive
+        continue;
+      }
 
-    // --- Mech Mortar (Titan Mech) logic ---
-    if (b.weaponType === WeaponType.MECH_MORTAR) {
-      if (!b["_exploded"]) {
-        // Direct hit check (simple collision with enemy)
-        let hitEnemy = null;
+      // --- Mech Mortar (Titan Mech) logic ---
+      if (b.weaponType === WeaponType.MECH_MORTAR) {
+        const prevX = b.x; // Store previous position for swept-sphere collision
+        const prevY = b.y;
+
+        // Move the projectile
+        b.x += b.vx;
+        b.y += b.vy;
+        b.life--;
+
+        let hitEnemy: Enemy | null = null;
+        let intersectionPoint: { x: number, y: number } | null = null;
+
         if (window.enemyManager && typeof window.enemyManager.getEnemies === 'function') {
           for (const enemy of window.enemyManager.getEnemies()) {
-            const dx = enemy.x - b.x;
-            const dy = enemy.y - b.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist < (b.radius + 8)) { // collision radius
+            // Use swept-sphere collision to find intersection along the path
+            intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius); // Revert to original collision radius
+            if (intersectionPoint) {
               hitEnemy = enemy;
-              // Simulate direct hit damage: call enemy.takeDamage if available
-              // enemy.takeDamage(40); // direct hit damage
-              break;
+              break; // Stop at first hit
             }
           }
         }
-        if (hitEnemy) {
-          b["_exploded"] = true;
-          b.life = 10; // show explosion for 10 frames
-          b.vx = 0;
-          b.vy = 0;
-          b.x = hitEnemy.x;
-          b.y = hitEnemy.y;
-          // AOE damage
-          if (window.enemyManager && typeof window.enemyManager.getEnemies === 'function') {
-            for (const enemy of window.enemyManager.getEnemies()) {
-              const dx = enemy.x - b.x;
-              const dy = enemy.y - b.y;
-              const dist = Math.hypot(dx, dy);
-              if (dist < 40) { // AOE radius
-                // Simulate AOE damage: call enemy.takeDamage if available
-                // enemy.takeDamage(80); // explosion damage
-              }
-            }
-          }
-        } else {
-          b.x += b.vx;
-          b.y += b.vy;
-          b.life--;
-          // If projectile reaches end of life without hitting, explode at last position
-          if (b.life <= 0) {
-            b["_exploded"] = true;
-            b.life = 10;
-            b.vx = 0;
-            b.vy = 0;
-            // AOE damage at last position
-            if (window.enemyManager && typeof window.enemyManager.getEnemies === 'function') {
-              for (const enemy of window.enemyManager.getEnemies()) {
-                const dx = enemy.x - b.x;
-                const dy = enemy.y - b.y;
-                const dist = Math.hypot(dx, dy);
-                if (dist < 40) {
-                  // Simulate AOE damage: call enemy.takeDamage if available
-                  // enemy.takeDamage(80);
-                }
-              }
-            }
+
+        // If collision detected OR life expires, trigger explosion event and deactivate projectile
+        if (hitEnemy || b.life <= 0) {
+           b.active = false; // Immediately deactivate projectile
+           b.vx = 0; // Stop movement
+           b.vy = 0; // Stop movement
+
+           // Explosion state: keep explosion timing independent from bullet lifecycle
+           (b as any)._exploded = true;
+           (b as any)._explosionStartTime = performance.now();
+           (b as any)._maxExplosionDuration = 1000;
+           b.life = 0;
+
+           // Determine explosion point
+           const explosionX = intersectionPoint ? intersectionPoint.x : b.x;
+           const explosionY = intersectionPoint ? intersectionPoint.y : b.y;
+
+           // Dispatch explosion event (damage and particles handled by Game.ts) with radius
+           window.dispatchEvent(new CustomEvent('mortarExplosion', {
+             detail: {
+               x: explosionX,
+               y: explosionY,
+               damage: b.damage,
+               hitEnemy: hitEnemy, // Pass hit enemy for direct damage
+               radius: b.explosionRadius ?? 100
+             }
+           }));
+           continue; // Skip adding to activeBullets for this frame, as it's now inactive and exploded
+         }
+         activeBullets.push(b); // Only push if it's still active (didn't explode/expire)
+         continue;
+       }
+      // --- End Mech Mortar logic ---
+
+      // Basic movement for other weapons
+      b.x += b.vx;
+      b.y += b.vy;
+      b.life--;
+      if (b.life <= 0) {
+        // For BIO_TOXIN, spawn a poison puddle on expiry
+        if (b.weaponType === WeaponType.BIO_TOXIN) {
+          if (window.enemyManager && typeof (window.enemyManager as any).spawnPoisonPuddle === 'function') {
+            (window.enemyManager as any).spawnPoisonPuddle(b.x, b.y);
           }
         }
-      } else {
-        b.life--;
-        if (b.life <= 0) b.active = false;
+        b.active = false; // Mark as inactive to be returned to pool
+        this.bulletPool.push(b);
+        continue;
       }
-      continue;
+      activeBullets.push(b); // Keep active bullets
     }
-    // --- End Mech Mortar logic ---
-
-    // Basic movement for other weapons
-    b.x += b.vx;
-    b.y += b.vy;
-    b.life--;
-    if (b.life <= 0) { b.active = false; continue; }
-
-    // Arcane Orb chain logic
-    if (b.weaponType === WeaponType.SORCERER_ORB && b.projectileVisual?.type === 'bullet') {
-      if (!b.snakeTargets) b.snakeTargets = [];
-      if (b.snakeBounceCount === undefined) b.snakeBounceCount = 0;
-      // ...existing code...
-      continue;
-    }
-    // Non-sorcerer fallback: simple lifetime + movement already applied
+    this.bullets = activeBullets; // Update the active bullets list
   }
-}
-
 
   public draw(ctx: CanvasRenderingContext2D) {
-  for (const b of this.bullets) {
-    if (!b.active) continue;
-    ctx.save();
-    const visual = b.projectileVisual;
-    // --- Mech Mortar explosion flash ---
-    if (b.weaponType === WeaponType.MECH_MORTAR && b["_exploded"]) {
+    for (const b of this.bullets) {
+      if (!b.active) continue;
       ctx.save();
-      ctx.globalAlpha = 0.8;
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, 40, 0, Math.PI * 2);
-      ctx.fillStyle = '#FFA07A';
-      ctx.shadowColor = '#FFA07A';
-      ctx.shadowBlur = 24;
-      ctx.fill();
-      ctx.restore();
-    } else if (visual?.type === 'bullet') {
-      ctx.shadowColor = visual.glowColor ?? visual.color ?? '#FFD700';
-      ctx.shadowBlur = visual.glowRadius ?? 10;
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
-      ctx.fillStyle = visual.color ?? '#FFD700';
-      ctx.fill();
-    } else if (visual?.type === 'plasma' || visual?.type === 'slime') {
-      ctx.shadowColor = visual.glowColor ?? visual.color ?? '#0ff';
-      ctx.shadowBlur = visual.glowRadius ?? 8;
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
-      ctx.fillStyle = visual.color ?? '#0ff';
-      ctx.fill();
-    } else {
-      const bulletImage = this.assetLoader.getImage(b.projectileImageKey ?? 'bullet_cyan');
-      if (bulletImage) {
-        const drawX = b.x - (visual.size ?? b.radius);
-        const drawY = b.y - (visual.size ?? b.radius);
-        ctx.drawImage(bulletImage, drawX, drawY, (visual.size ?? b.radius) * 2, (visual.size ?? b.radius) * 2);
-      } else {
+      let visual: any = b.projectileVisual ?? { type: 'bullet', color: '#0ff', size: b.radius, glowColor: '#0ff', glowRadius: 8 };
+
+      // --- Mech Mortar drawing (REMOVED - now handled by general bullet drawing) ---
+      // if (b.weaponType === WeaponType.MECH_MORTAR) { ... removed ... }
+
+      // General bullet drawing logic (including what was Mech Mortar)
+      if (visual?.type === 'bullet') {
+        ctx.save(); // Ensure save/restore for bullet drawing
+        ctx.shadowColor = visual.glowColor ?? visual.color ?? '#FFD700';
+        ctx.shadowBlur = visual.glowRadius ?? 10;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
+        ctx.fillStyle = visual.color ?? '#FFD700';
+        ctx.fill();
+        ctx.restore(); // Restore after bullet drawing
+      } else if (visual?.type === 'plasma' || visual?.type === 'slime') {
+        ctx.save(); // Ensure save/restore for plasma/slime drawing
         ctx.shadowColor = visual.glowColor ?? visual.color ?? '#0ff';
         ctx.shadowBlur = visual.glowRadius ?? 8;
         ctx.beginPath();
         ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
         ctx.fillStyle = visual.color ?? '#0ff';
         ctx.fill();
+        ctx.restore(); // Restore after plasma/slime drawing
+      } else {
+        ctx.save(); // Ensure save/restore for default drawing
+        const bulletImage = this.assetLoader.getImage(b.projectileImageKey ?? 'bullet_cyan');
+        if (bulletImage) {
+          const drawX = b.x - (visual.size ?? b.radius);
+          const drawY = b.y - (visual.size ?? b.radius);
+          ctx.drawImage(bulletImage, drawX, drawY, (visual.size ?? b.radius) * 2, (visual.size ?? b.radius) * 2);
+        } else {
+          ctx.shadowColor = visual.glowColor ?? visual.color ?? '#0ff';
+          ctx.shadowBlur = visual.glowRadius ?? 8;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
+          ctx.fillStyle = visual.color ?? '#0ff';
+          ctx.fill();
+        }
+        ctx.restore(); // Restore after default drawing
       }
+      ctx.restore(); // This restore is for the initial ctx.save() at the start of the loop
     }
-    ctx.restore();
   }
-}
 
   public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number) {
     const spec = (WEAPON_SPECS as any)[weapon] ?? (WEAPON_SPECS as any)[WeaponType.PISTOL];
     const dx = targetX - x;
     const dy = targetY - y;
     const angle = Math.atan2(dy, dx);
-    const speed = (spec?.speed ?? 2);
+    const speed = spec?.speed ?? 2;
     const projectileImageKey = spec?.projectile ?? 'bullet_cyan';
+    // Removed Mech Mortar specific projectile visual override
     const projectileVisual = spec?.projectileVisual ?? { type: 'bullet', color: '#0ff', size: 6 };
 
-    let b = this.bullets.find((bb) => !bb.active);
+    let b: Bullet | undefined = this.bulletPool.pop(); // Try to get from pool
+
     if (!b) {
-      const newBullet: Bullet = { x, y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, radius: 4, life: 90, active: true, damage, speed: speed, weaponType: weapon, projectileImageKey: projectileImageKey, projectileVisual } as Bullet;
-      if (weapon === WeaponType.SORCERER_ORB) newBullet.snakeBounceCount = 0;
-      this.bullets.push(newBullet);
-    } else {
-      b.x = x; b.y = y; b.vx = Math.cos(angle) * speed; b.vy = Math.sin(angle) * speed; b.life = 90; b.active = true; b.radius = 4; b.damage = damage; b.speed = speed; b.weaponType = weapon; b.projectileImageKey = projectileImageKey; b.projectileVisual = projectileVisual;
-      if (weapon === WeaponType.SORCERER_ORB) b.snakeBounceCount = 0;
+      // If pool is empty, create a new one (should be rare if initialPoolSize is sufficient)
+      b = { x: 0, y: 0, vx: 0, vy: 0, radius: 0, life: 0, active: false, damage: 0, weaponType: WeaponType.PISTOL } as Bullet;
     }
+
+    // Reset and initialize bullet properties
+    b.x = x;
+    b.y = y;
+    b.vx = Math.cos(angle) * speed;
+    b.vy = Math.sin(angle) * speed;
+    b.radius = projectileVisual.size ?? 6; // Ensure radius matches the new visual size
+    b.life = spec?.lifetime ?? 60; // Use weapon spec lifetime
+    b.active = true;
+    b.damage = spec?.damage ?? damage; // Use weapon spec damage, fallback to passed damage
+    b.weaponType = weapon;
+    b.projectileImageKey = projectileImageKey;
+    b.projectileVisual = projectileVisual;
+    b.snakeTargets = undefined; // Clear previous snake targets    b.snakeBounceCount = undefined; // Clear previous bounce count
+
+    Logger.debug(`[BulletManager.spawnBullet] Bullet spawned: x=${b.x}, y=${b.y}, vx=${b.vx}, vy=${b.vy}, weaponType=${weapon}, damage=${b.damage}, active=${b.active}`);
+    this.bullets.push(b);
   }
 }

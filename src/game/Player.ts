@@ -4,12 +4,20 @@ import { Enemy } from './EnemyManager';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { PASSIVE_SPECS, applyPassive } from './PassiveConfig';
+import { Logger } from '../core/Logger';
 
+/**
+ * Player entity class. Handles movement, shooting, upgrades, and rendering.
+ * @group Player
+ */
 export class Player {
   public x: number;
   public y: number;
   public radius: number = 8;
-  public speed: number = 3.0;
+  /**
+   * Movement speed of the player (units per tick)
+   */
+  public speed: number = 4.0; // Increased for better game feel
   public hp: number = 100;
   public maxHp: number = 100;
   public strength: number = 5;
@@ -51,17 +59,30 @@ export class Player {
   private animationFrames: number = 4; // total frames in animation
 
   public characterData?: any;
+  public classWeaponType?: WeaponType; // Cache class weapon type
   constructor(x: number, y: number, characterData?: any) {
     this.x = x;
     this.y = y;
     this.baseSpeed = this.speed;
     if (characterData) {
       this.characterData = characterData;
+      // Always apply full character data (stats, visuals, weapon)
+      this.applyCharacterData(characterData);
+      // Clear all weapons and add only the default weapon
       this.activeWeapons.clear();
       if (characterData.defaultWeapon !== undefined) {
         this.addWeapon(characterData.defaultWeapon);
       }
     }
+    // Fallback: if no weapons present, add a default weapon (first in WeaponType enum)
+    if (this.activeWeapons.size === 0) {
+      const weaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
+      if (weaponTypes.length > 0) {
+        this.addWeapon(weaponTypes[0]);
+        Logger.warn('[Player] No default weapon found in characterData, fallback to first WeaponType.');
+      }
+    }
+    window.addEventListener('chestPickedUp', this.handleChestPickup.bind(this));
   }
 
   get exp(): number {
@@ -94,32 +115,110 @@ export class Player {
   }
 
   public addWeapon(type: WeaponType) {
-    if (this.activeWeapons.has(type)) {
-      const currentLevel = this.activeWeapons.get(type)!;
-      this.activeWeapons.set(type, currentLevel + 1);
-      this.upgrades.push(`Weapon Upgrade: ${WeaponType[type]} Lv.${currentLevel + 1}`);
-    } else {
-      this.activeWeapons.set(type, 1);
-      this.shootCooldowns.set(type, 0);
-      // Do not track Pistol Lv.1 as an upgrade
-      if (type !== WeaponType.PISTOL) {
-        this.upgrades.push(`Weapon Unlock: ${WeaponType[type]} Lv.1`);
-      }
+    const spec = WEAPON_SPECS[type];
+    if (!spec) {
+      Logger.warn(`Attempted to add unknown weapon type: ${type}`);
+      return;
     }
+
+    let currentLevel = this.activeWeapons.get(type) || 0;
+    Logger.debug(`[addWeapon] Before: type=${type}, currentLevel=${currentLevel}, activeWeapons=${Array.from(this.activeWeapons.entries())}`);
+    if (currentLevel < spec.maxLevel) {
+      this.activeWeapons.set(type, currentLevel + 1);
+      this.upgrades.push(`Weapon Upgrade: ${spec.name} Lv.${currentLevel + 1}`);
+      Logger.info(`Weapon ${spec.name} leveled up to Lv.${currentLevel + 1}`);
+
+      // Check for evolution if max level is reached
+      if (currentLevel + 1 === spec.maxLevel && spec.evolution) {
+        this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
+      }
+    } else if (currentLevel === spec.maxLevel) {
+      Logger.debug(`Weapon ${spec.name} is already at max level.`);
+      // Still check for evolution if it's at max level and hasn't evolved yet
+      if (spec.evolution) {
+        this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
+      }
+    } else {
+      // This case should ideally not happen if logic is correct, but for safety
+      Logger.warn(`Weapon ${spec.name} level (${currentLevel}) exceeds maxLevel (${spec.maxLevel}).`);
+    }
+
+    // Initialize cooldown if weapon is new
+    if (!this.shootCooldowns.has(type)) {
+      this.shootCooldowns.set(type, 0);
+    }
+    Logger.debug(`[addWeapon] After: type=${type}, newLevel=${this.activeWeapons.get(type)}, activeWeapons=${Array.from(this.activeWeapons.entries())}`);
+  }
+
+  private tryEvolveWeapon(baseWeaponType: WeaponType, evolvedWeaponType: WeaponType, requiredPassiveName: string): void {
+    const baseWeaponSpec = WEAPON_SPECS[baseWeaponType];
+    const evolvedWeaponSpec = WEAPON_SPECS[evolvedWeaponType];
+
+    if (!baseWeaponSpec || !evolvedWeaponSpec) {
+      Logger.error(`Evolution failed: Missing weapon spec for ${baseWeaponType} or ${evolvedWeaponType}`);
+      return;
+    }
+
+    const passive = this.activePassives.find(p => p.type === requiredPassiveName);
+    const requiredPassiveSpec = PASSIVE_SPECS.find(p => p.name === requiredPassiveName);
+
+    if (passive && requiredPassiveSpec && passive.level >= requiredPassiveSpec.maxLevel) {
+      // Conditions met for evolution
+      Logger.info(`Evolving ${baseWeaponSpec.name} to ${evolvedWeaponSpec.name}!`);
+
+      // Remove base weapon and add evolved weapon
+      this.activeWeapons.delete(baseWeaponType);
+      this.shootCooldowns.delete(baseWeaponType);
+
+      // Add evolved weapon at level 1 (or specific starting level if needed)
+      this.activeWeapons.set(evolvedWeaponType, 1);
+      this.shootCooldowns.set(evolvedWeaponType, 0); // Reset cooldown for new weapon
+
+      this.upgrades.push(`Weapon Evolution: ${baseWeaponSpec.name} -> ${evolvedWeaponSpec.name}`);
+
+      // Optionally, remove the passive or reset its level if it's consumed by evolution
+      // For now, we'll keep the passive, as is common in VS-likes.
+
+      // Dispatch an event for UI to react to evolution
+      window.dispatchEvent(new CustomEvent('weaponEvolved', { detail: { baseWeaponType, evolvedWeaponType } }));
+    } else {
+      Logger.debug(`Evolution conditions not met for ${baseWeaponSpec.name}. Requires ${requiredPassiveName} at max level.`);
+    }
+  }
+
+  private hasPassiveMaxLevel(passiveName: string): boolean {
+    const passive = this.activePassives.find(p => p.type === passiveName);
+    const passiveSpec = PASSIVE_SPECS.find(p => p.name === passiveName);
+    return !!(passive && passiveSpec && passive.level >= passiveSpec.maxLevel);
   }
 
   public addPassive(type: string) {
     const existing = this.activePassives.find(p => p.type === type);
+    const passiveSpec = PASSIVE_SPECS.find(p => p.name === type);
+
+    Logger.debug(`[addPassive] Before: type=${type}, existingLevel=${existing?.level}, activePassives=${JSON.stringify(this.activePassives)}`);
+    if (!passiveSpec) {
+      Logger.warn(`Attempted to add unknown passive type: ${type}`);
+      return;
+    }
+
     if (existing) {
-      existing.level++;
-      applyPassive(this, PASSIVE_SPECS.find(p => p.name === type)?.id ?? -1, existing.level);
-      this.upgrades.push(`Passive Upgrade: ${type} Lv.${existing.level}`);
+      if (existing.level < passiveSpec.maxLevel) {
+        existing.level++;
+        applyPassive(this, passiveSpec.id, existing.level);
+        this.upgrades.push(`Passive Upgrade: ${type} Lv.${existing.level}`);
+        Logger.info(`Passive ${type} leveled up to Lv.${existing.level}`);
+      } else {
+        Logger.debug(`Passive ${type} is already at max level.`);
+      }
     } else {
       const newPassive = { type, level: 1 };
       this.activePassives.push(newPassive);
-      applyPassive(this, PASSIVE_SPECS.find(p => p.name === type)?.id ?? -1, newPassive.level);
+      applyPassive(this, passiveSpec.id, newPassive.level);
       this.upgrades.push(`Passive Unlock: ${type} Lv.1`);
+      Logger.info(`Passive ${type} unlocked at Lv.1`);
     }
+    Logger.debug(`[addPassive] After: type=${type}, activePassives=${JSON.stringify(this.activePassives)}`);
   }
 
   public setGameContext(ctx: any) {
@@ -134,26 +233,36 @@ export class Player {
     if (this.gameContext && typeof this.gameContext.bossManager?.getActiveBoss === 'function') {
       boss = this.gameContext.bossManager.getActiveBoss();
       if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-        return boss as any; // Boss type compatible with Enemy for targeting
+        Logger.debug(`[findNearestEnemy] Boss found: x=${boss.x}, y=${boss.y}, hp=${boss.hp}, active=${boss.active}, state=${boss.state}`);
+        return boss as any;
       }
     }
     const enemies = this.enemyProvider ? this.enemyProvider() : [];
+    Logger.debug(`[findNearestEnemy] Candidates: ${enemies.length}`);
     let nearest: Enemy | null = null;
     let bestD2 = Number.POSITIVE_INFINITY;
     for (const e of enemies) {
-      if (!e || (e as any).active === false || (e.hp != null && e.hp <= 0)) continue; // Only target active, alive enemies
+      Logger.debug(`[findNearestEnemy] Checking enemy: x=${e.x}, y=${e.y}, hp=${e.hp}, active=${e.active}, state=${(e as any).state}`);
+      if (!e || (e as any).active === false || (e.hp != null && e.hp <= 0)) {
+        Logger.debug(`[findNearestEnemy] Skipped: inactive or dead`);
+        continue; // Only target active, alive enemies
+      }
       const dx = (e.x ?? 0) - (this.x ?? 0);
       const dy = (e.y ?? 0) - (this.y ?? 0);
       const d2 = dx * dx + dy * dy;
       if (d2 < bestD2) { bestD2 = d2; nearest = e; }
     }
+    if (nearest) {
+      Logger.debug(`[findNearestEnemy] Nearest: x=${nearest.x}, y=${nearest.y}, hp=${nearest.hp}, active=${nearest.active}`);
+    } else {
+      Logger.debug(`[findNearestEnemy] No valid enemy found`);
+    }
     return nearest;
   }
 
   private shootAt(target: Enemy, weaponType: WeaponType) {
-    if (!target) return;
-    const bm: any = this.gameContext?.bulletManager ?? null;
-    if (bm && typeof bm.spawnBullet === 'function') {
+    if (this.gameContext?.bulletManager) {
+      const bm = this.gameContext.bulletManager;
       const spec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
       if (spec) {
         const dx = target.x - this.x;
@@ -170,41 +279,55 @@ export class Player {
           bulletDamage = 10; // Use base damage for non-class weapons (or set per weapon if needed)
         }
 
+        Logger.debug(`[Player.shootAt] Spawning ${toShoot} bullets with weapon ${weaponType}, damage: ${bulletDamage}`);
         for (let i = 0; i < toShoot; i++) {
           const angle = baseAngle + (i - (toShoot - 1) / 2) * spread;
           bm.spawnBullet(this.x, this.y, this.x + Math.cos(angle) * 100, this.y + Math.sin(angle) * 100, weaponType, bulletDamage);
         }
+      } else {
+        Logger.warn(`[Player.shootAt] No weapon spec found for weaponType: ${weaponType}`);
       }
+    } else {
+      Logger.warn('[Player.shootAt] No bulletManager in gameContext');
     }
   }
 
   public update(delta: number) {
     if (window.navigator.userAgent.includes('Mobile')) return; // Touch handled elsewhere
-    let dx = 0;
-    let dy = 0;
-
-    if (keyState['w']) dy -= 1;
-    if (keyState['s']) dy += 1;
-    if (keyState['a']) dx -= 1;
-    if (keyState['d']) dx += 1;
-
-    // Normalize diagonal movement
+    // Movement (micro-optimized)
+    let dx = 0, dy = 0;
+    if (keyState['arrowup'] || keyState['w']) dy -= 1;
+    if (keyState['arrowdown'] || keyState['s']) dy += 1;
+    if (keyState['arrowleft'] || keyState['a']) dx -= 1;
+    if (keyState['arrowright'] || keyState['d']) dx += 1;
     if (dx !== 0 || dy !== 0) {
-      const magnitude = Math.sqrt(dx * dx + dy * dy);
-      this.x += (dx / magnitude) * this.speed;
-      this.y += (dy / magnitude) * this.speed;
+      // Precompute magnitude and reuse vector
+      const mag = Math.sqrt(dx * dx + dy * dy);
+      const normX = dx / mag;
+      const normY = dy / mag;
+      this.x += normX * this.speed;
+      this.y += normY * this.speed;
+
+      // Clamp player position to world boundaries
+      if (this.gameContext) {
+        this.x = Math.max(this.radius, Math.min(this.x, this.gameContext.worldW - this.radius));
+        this.y = Math.max(this.radius, Math.min(this.y, this.gameContext.worldH - this.radius));
+      }
 
       // Animation frame only when moving (still relevant for other animations if any)
       this.frameTimer++;
       if (this.frameTimer >= (60 / this.animationSpeed)) { // Assuming 60 FPS
         this.currentFrame = (this.currentFrame + 1) % this.animationFrames;
-      this.frameTimer = 0;
-    }
+        this.frameTimer = 0;
+      }
 
-    // Spawn a small number of particles at the player's feet
-    if (this.gameContext?.particleManager) {
-      this.gameContext.particleManager.spawn(this.x, this.y + this.radius / 2, 2, '#00FFFF'); // Cyan particles
-    }
+      // Spawn a small number of particles at the player's feet
+      if (this.gameContext?.particleManager) {
+        // Only spawn a particle every 8 frames for minimal effect
+        if (this.frameTimer % 8 === 0) {
+          this.gameContext.particleManager.spawn(this.x, this.y + this.radius / 2, 1, '#00FFFF');
+        }
+      }
     } else {
       // If not moving, reset animation to first frame (idle)
       this.currentFrame = 0;
@@ -212,19 +335,27 @@ export class Player {
     }
 
     // Update cooldowns and shoot for all active weapons
+    // Debug: Log active weapons and cooldowns
+    Logger.debug(`[Player.update] ActiveWeapons: ${Array.from(this.activeWeapons.entries()).map(([wt, lvl]) => wt + ':' + lvl).join(', ')}`);
     this.activeWeapons.forEach((level, weaponType) => {
       let cooldown = this.shootCooldowns.get(weaponType) ?? 0;
+      Logger.debug(`[Player.update] Weapon ${weaponType} Cooldown: ${cooldown}`);
       cooldown--;
+      // Clamp cooldown to zero if negative
+      if (cooldown < 0) cooldown = 0;
       this.shootCooldowns.set(weaponType, cooldown);
 
       if (cooldown <= 0) {
         const t = this.findNearestEnemy();
+        Logger.debug(`[Player.update] Nearest Enemy: ${t ? (t.x + ',' + t.y) : 'None'}`);
         if (t) {
+          Logger.debug(`[Player.update] Shooting at enemy with weapon ${weaponType}`);
           this.shootAt(t, weaponType);
           const spec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
           const baseCooldown = spec?.cooldown ?? 10;
           const newCooldown = Math.max(1, Math.floor(baseCooldown / (this.fireRateModifier * this.attackSpeed))); // cooldown reduced by attackSpeed
           this.shootCooldowns.set(weaponType, newCooldown);
+          Logger.debug(`[Player.update] Weapon ${weaponType} shot, new cooldown: ${newCooldown}`);
         }
       }
     });
@@ -259,6 +390,7 @@ export class Player {
 
   public takeDamage(amount: number) {
     this.hp -= amount;
+    // Ensure HP doesn't go below 0
     if (this.hp < 0) this.hp = 0;
   }
 
@@ -268,6 +400,9 @@ export class Player {
    */
   public applyCharacterData(data: any) {
     if (!data) return;
+    if (data.defaultWeapon !== undefined) {
+      this.classWeaponType = data.defaultWeapon;
+    }
     if (data.stats) {
       if (data.stats.hp !== undefined) this.hp = data.stats.hp;
       if (data.stats.maxHp !== undefined) this.maxHp = data.stats.maxHp;
@@ -317,6 +452,30 @@ export class Player {
     this.abilityTicks = 0;
     // set cooldown end after duration
     this.abilityCooldown = this.abilityDuration + 60; // add a small cooldown after
+  }
+
+  private handleChestPickup(): void {
+    Logger.info('Chest picked up! Attempting to evolve a weapon...');
+    let evolved = false;
+    for (const [weaponType, level] of this.activeWeapons.entries()) {
+      const spec = WEAPON_SPECS[weaponType];
+      if (spec && level === spec.maxLevel && spec.evolution) {
+        const passive = this.activePassives.find(p => p.type === spec.evolution!.requiredPassive);
+        const requiredPassiveSpec = PASSIVE_SPECS.find(p => p.name === spec.evolution!.requiredPassive);
+
+        if (passive && requiredPassiveSpec && passive.level >= requiredPassiveSpec.maxLevel) {
+          this.tryEvolveWeapon(weaponType, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
+          evolved = true;
+          break; // Only evolve one weapon per chest
+        }
+      }
+    }
+
+    if (!evolved) {
+      Logger.info('No weapon could be evolved from chest. Offering a reroll or high-value passive instead.');
+      // Optionally, dispatch an event to UpgradePanel to force a reroll or offer a special passive
+      window.dispatchEvent(new CustomEvent('forceUpgradeOption', { detail: { type: 'reroll' } }));
+    }
   }
 }
 

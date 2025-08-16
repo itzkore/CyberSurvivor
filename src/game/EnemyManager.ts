@@ -1,4 +1,8 @@
-export type Enemy = { x: number; y: number; hp: number; maxHp: number; radius: number; speed: number; active: boolean; type: 'small' | 'medium' | 'large'; damage: number; _damageFlash?: number };
+export type Enemy = { x: number; y: number; hp: number; maxHp: number; radius: number; speed: number; active: boolean; type: 'small' | 'medium' | 'large'; damage: number; _damageFlash?: number; _lastDamageTime?: number; id: string;
+  _lastHitByWeapon?: WeaponType; // Track the last weapon type that hit this enemy
+};
+
+export type Chest = { x: number; y: number; radius: number; active: boolean; }; // New Chest type
 
 import { Player } from './Player';
 import type { Bullet } from './Bullet';
@@ -6,6 +10,7 @@ import { ParticleManager } from './ParticleManager';
 import type { Gem } from './Gem';
 import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
+import { Logger } from '../core/Logger';
 
 interface Wave {
   startTime: number; // in seconds
@@ -14,41 +19,73 @@ interface Wave {
   spawnInterval: number; // in frames
   spawned: number;
   lastSpawnTime: number;
+  spawnPattern?: 'normal' | 'ring' | 'cone' | 'surge'; // New property for spawn pattern
 }
 
 export class EnemyManager {
   private player: Player;
-  private enemies: Enemy[] = [];
+  public enemies: Enemy[] = []; // Made public for Game.ts to pass to bullet collision
+  private enemyPool: Enemy[] = []; // Explicit enemy pool
   private particleManager: ParticleManager | null = null;
   private gems: Gem[] = [];
+  private gemPool: Gem[] = []; // Explicit gem pool
+  private chests: Chest[] = []; // Active chests
+  private chestPool: Chest[] = []; // Chest pool
   private assetLoader: AssetLoader | null = null;
   private waves: Wave[];
 
   // Poison puddle system
   private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean }[] = [];
 
-  constructor(player: Player, particleManager?: ParticleManager, difficulty = 1, assetLoader?: AssetLoader) {
+  /**
+   * EnemyManager constructor
+   * @param player Player instance
+   * @param particleManager ParticleManager instance
+   * @param assetLoader AssetLoader instance
+   * @param difficulty Difficulty multiplier
+   */
+  constructor(player: Player, particleManager?: ParticleManager, assetLoader?: AssetLoader, difficulty: number = 1) {
     this.player = player;
     this.particleManager = particleManager || null;
     this.assetLoader = assetLoader || null;
-    const initial = Math.floor(20 * difficulty);
-    for (let i = 0; i < initial; i++) {
-      this.enemies.push({ x: -1000, y: -1000, hp: 0, maxHp: 0, radius: 18, speed: 0, active: false, type: 'small', damage: 0 });
-    }
-    // gem pool
-    for (let i = 0; i < 50; i++) this.gems.push({ x: -9999, y: -9999, vx: 0, vy: 0, life: 0, size: 6, value: 1, active: false });
-
+    this.preallocateEnemies(difficulty);
+    this.preallocateGems();
+    this.preallocateChests();
     this.waves = [
-      { startTime: 0,    enemyType: 'small',  count: 20, spawnInterval: 60, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 30,   enemyType: 'small',  count: 30, spawnInterval: 45, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 60,   enemyType: 'medium', count: 15, spawnInterval: 90, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 90,   enemyType: 'small',  count: 50, spawnInterval: 30, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 120,  enemyType: 'medium', count: 25, spawnInterval: 75, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 150,  enemyType: 'large',  count: 10, spawnInterval: 120, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 180,  enemyType: 'small',  count: 100, spawnInterval: 20, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 210,  enemyType: 'medium', count: 40, spawnInterval: 60, spawned: 0, lastSpawnTime: 0 },
-      { startTime: 240,  enemyType: 'large',  count: 20, spawnInterval: 90, spawned: 0, lastSpawnTime: 0 },
+      { startTime: 0,    enemyType: 'small',  count: 20, spawnInterval: 60, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 30,   enemyType: 'small',  count: 30, spawnInterval: 45, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 60,   enemyType: 'medium', count: 15, spawnInterval: 90, spawned: 0, lastSpawnTime: 0, spawnPattern: 'ring' },
+      { startTime: 90,   enemyType: 'small',  count: 50, spawnInterval: 30, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 120,  enemyType: 'medium', count: 25, spawnInterval: 75, spawned: 0, lastSpawnTime: 0, spawnPattern: 'cone' },
+      { startTime: 150,  enemyType: 'large',  count: 10, spawnInterval: 120, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 180,  enemyType: 'small',  count: 100, spawnInterval: 20, spawned: 0, lastSpawnTime: 0, spawnPattern: 'surge' },
+      { startTime: 210,  enemyType: 'medium', count: 40, spawnInterval: 60, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 240,  enemyType: 'large',  count: 20, spawnInterval: 90, spawned: 0, lastSpawnTime: 0, spawnPattern: 'ring' },
     ];
+    // Listen for spawnChest event from BossManager
+    window.addEventListener('spawnChest', (e: Event) => {
+      const customEvent = e as CustomEvent;
+      this.spawnChest(customEvent.detail.x, customEvent.detail.y);
+    });
+  }
+
+  private preallocateEnemies(difficulty: number): void {
+    const initial = Math.floor(20 * difficulty * 2); // Increased initial pool size
+    for (let i = 0; i < initial; i++) {
+      this.enemyPool.push({ x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '', _lastHitByWeapon: undefined }); // Initialize with empty ID and last hit
+    }
+  }
+
+  private preallocateGems(): void {
+    for (let i = 0; i < 100; i++) { // Increased gem pool size
+      this.gemPool.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, size: 0, value: 0, active: false });
+    }
+  }
+
+  private preallocateChests(): void {
+    for (let i = 0; i < 10; i++) { // Pre-allocate a small number of chests
+      this.chestPool.push({ x: 0, y: 0, radius: 16, active: false });
+    }
   }
 
   public getEnemies() {
@@ -57,6 +94,29 @@ export class EnemyManager {
 
   public getGems() {
     return this.gems.filter(g => g.active);
+  }
+
+  public getChests() {
+    return this.chests.filter(c => c.active);
+  }
+
+  /**
+   * Applies damage to an enemy and handles related effects.
+   * @param enemy The enemy to apply damage to.
+   * @param amount The amount of damage to apply.
+   * @param isCritical Whether the damage is critical (defaults to false).
+   * @param ignoreActiveCheck If true, damage is applied even if enemy is inactive or has 0 HP (for AoE effects).
+   * @param sourceWeaponType The weapon type that caused the damage.
+   */
+  public takeDamage(enemy: Enemy, amount: number, isCritical: boolean = false, ignoreActiveCheck: boolean = false, sourceWeaponType?: WeaponType): void {
+    if (!ignoreActiveCheck && (!enemy.active || enemy.hp <= 0)) return; // Only damage active, alive enemies unless ignored
+
+    enemy.hp -= amount;
+    enemy._damageFlash = 8; // Visual feedback for damage
+    if (sourceWeaponType !== undefined) {
+      enemy._lastHitByWeapon = sourceWeaponType;
+    }
+    window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: amount, isCritical: isCritical } }));
   }
 
   private spawnPoisonPuddle(x: number, y: number) {
@@ -89,224 +149,343 @@ export class EnemyManager {
         const dy = enemy.y - puddle.y;
         const dist = Math.hypot(dx, dy);
         if (dist < puddle.radius + enemy.radius) {
-          enemy.hp -= 2.5; // Stronger poison damage per frame
-          enemy._damageFlash = 8;
-          didDamage = true;
+          this.takeDamage(enemy, 2.5, false, false, WeaponType.BIO_TOXIN); // Apply poison damage via centralized method, respect active check
+          didDamage = true; // Still track if damage was dealt for visual feedback
         }
       }
       // Visual feedback if puddle is damaging
       if (didDamage && this.particleManager) {
-        this.particleManager.spawn(puddle.x, puddle.y, 2, '#00FF00');
+        this.particleManager.spawn(puddle.x, puddle.y, 1, '#00FF00');
       }
     }
   }
 
-  public update(bullets: Bullet[] = [], gameTime: number = 0) {
-    // Wave-based spawning
-    this.waves.forEach(wave => {
-      if (gameTime >= wave.startTime && wave.spawned < wave.count) {
-        if (gameTime - wave.lastSpawnTime > wave.spawnInterval / 60) {
-          this.spawnEnemy(wave.enemyType, gameTime);
-          wave.spawned++;
-          wave.lastSpawnTime = gameTime;
-        }
-      }
-    });
-
-    for (const enemy of this.enemies) {
+  /**
+   * Draws a cyberpunk grid background, then all enemies, gems, and chests to the canvas.
+   * @param ctx Canvas 2D context
+   * @param camX Camera X offset (unused)
+   * @param camY Camera Y offset (unused)
+   */
+  public draw(ctx: CanvasRenderingContext2D, camX: number = 0, camY: number = 0) {
+    ctx.save();
+    // Draw entities relative to the already translated camera context
+    for (let i = 0, len = this.enemies.length; i < len; i++) {
+      const enemy = this.enemies[i];
       if (!enemy.active) continue;
-      const dx = this.player.x - enemy.x;
-      const dy = this.player.y - enemy.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist > 0) {
-        enemy.x += (dx / dist) * enemy.speed;
-        enemy.y += (dy / dist) * enemy.speed;
-      }
+      ctx.beginPath();
+      ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+      ctx.fillStyle = enemy.hp > 0 ? '#f00' : '#222';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+      ctx.closePath();
+      // Draw HP bar
+      const hpBarWidth = enemy.radius * 2;
+      const hpBarHeight = 4;
+      const hpBarX = enemy.x - enemy.radius;
+      const hpBarY = enemy.y - enemy.radius - 10; // 10 pixels above enemy
 
-      // Player-enemy collision (enemy hits player)
-      const playerDist = Math.hypot(this.player.x - enemy.x, this.player.y - enemy.y);
-      if (playerDist < enemy.radius + this.player.radius) {
-        this.player.takeDamage(enemy.damage); // Player takes damage from enemy contact
-      }
+      // Background for HP bar
+      ctx.fillStyle = '#333';
+      ctx.fillRect(hpBarX, hpBarY, hpBarWidth, hpBarHeight);
 
-      // Bullet collisions
-      for (const b of bullets) {
-        if (!b.active) continue;
-        const ddx = b.x - enemy.x;
-        const ddy = b.y - enemy.y;
-        const d = Math.hypot(ddx, ddy);
-        if (d < enemy.radius + b.radius) {
-          enemy.hp -= b.damage; // Use bullet damage
-          enemy._damageFlash = 8; // Enemy flash effect
-          // Poison puddle logic for Bio Toxin
-          if (b.weaponType === 14) { // WeaponType.BIO_TOXIN
-            this.spawnPoisonPuddle(b.x, b.y);
-          }
-          // Arcane Orb piercing: track hit enemies for snake logic
-          if (b.weaponType === 12 && b.projectileVisual?.type === 'bullet') {
-            if (!b.snakeTargets) b.snakeTargets = [];
-            b.snakeTargets.push(enemy);
-            b.snakeRetarget = { x: enemy.x, y: enemy.y };
-            // Ricochet chain logic handled in BulletManager
-          } else {
-            if (!(b as any).piercing) {
-              b.active = false;
-            }
-          }
+      // Current HP
+      const currentHpWidth = (enemy.hp / enemy.maxHp) * hpBarWidth;
+      ctx.fillStyle = '#0F0'; // Green color for HP
+      ctx.fillRect(hpBarX, hpBarY, currentHpWidth, hpBarHeight);
+
+      // Border for HP bar
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(hpBarX, hpBarY, hpBarWidth, hpBarHeight);
+    }
+    for (let i = 0, len = this.gems.length; i < len; i++) {
+      const gem = this.gems[i];
+      if (!gem.active) continue;
+      ctx.beginPath();
+      ctx.arc(gem.x, gem.y, gem.size, 0, Math.PI * 2); // Use gem.x, gem.y directly
+      ctx.fillStyle = '#ff0';
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = '#888';
+      ctx.stroke();
+      ctx.closePath();
+    }
+    for (let i = 0, len = this.chests.length; i < len; i++) {
+      const chest = this.chests[i];
+      if (!chest.active) continue;
+      ctx.beginPath();
+      ctx.arc(chest.x, chest.y, chest.radius, 0, Math.PI * 2); // Use chest.x, chest.y directly
+      ctx.fillStyle = '#00f';
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#fff';
+      ctx.stroke();
+      ctx.closePath();
+    }
+    // Draw poison puddles
+    for (let i = 0; i < this.poisonPuddles.length; i++) {
+      const puddle = this.poisonPuddles[i];
+      if (!puddle.active) continue;
+      ctx.save();
+      const alpha = puddle.life / puddle.maxLife; // Fade out over time
+      ctx.globalAlpha = alpha * 0.6; // Max 60% opacity
+      ctx.beginPath();
+      ctx.arc(puddle.x, puddle.y, puddle.radius, 0, Math.PI * 2);
+      ctx.fillStyle = '#00FF00'; // Green color for poison
+      ctx.shadowColor = '#00FF00';
+      ctx.shadowBlur = 15;
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Updates all enemies, gems, chests, and poison puddles.
+   * Moves enemies toward the player and handles collisions/death.
+   * @param deltaTime Time since last frame in ms
+   * @param gameTime Current game time in seconds
+   * @param bullets Array of active bullets
+   */
+  public update(deltaTime: number, gameTime: number = 0, bullets: Bullet[] = []) {
+    // Wave-based spawning
+    for (let w = 0; w < this.waves.length; w++) {
+      const wave = this.waves[w];
+      if (gameTime >= wave.startTime && wave.spawned < wave.count) {
+        if ((gameTime * 1000) - wave.lastSpawnTime > wave.spawnInterval) {
+          this.spawnEnemy(wave.enemyType, gameTime, wave.spawnPattern);
+          wave.spawned++;
+          wave.lastSpawnTime = gameTime * 1000;
         }
-      }
-      if (enemy.hp <= 0) {
-        // drop gem
-        this.spawnGem(enemy.x, enemy.y, 1);
-        if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 10, '#ff0');
-        enemy.active = false;
-        enemy.x = -1000; enemy.y = -1000;
       }
     }
 
+    // Update enemies
+    const playerX = this.player.x;
+    const playerY = this.player.y;
+    for (let i = 0, len = this.enemies.length; i < len; i++) {
+      const enemy = this.enemies[i];
+      if (!enemy.active) continue;
+      // Move toward player
+      const dx = playerX - enemy.x;
+      const dy = playerY - enemy.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist > enemy.radius) { // Use radius to prevent jittering when close
+        enemy.x += (dx / dist) * enemy.speed;
+        enemy.y += (dy / dist) * enemy.speed;
+      }
+      // Player-enemy collision
+      if (dist < enemy.radius + this.player.radius) {
+        this.player.takeDamage(enemy.damage);
+      }
+      // Bullet collisions
+      for (let b = 0; b < bullets.length; b++) {
+        const bullet = bullets[b];
+        if (!bullet.active) continue;
+        const ddx = bullet.x - enemy.x;
+        const ddy = bullet.y - enemy.y;
+        const d = Math.hypot(ddx, ddy);
+        if (d < enemy.radius + bullet.radius) {
+          const isCritical = Math.random() < 0.15;
+          const criticalMultiplier = isCritical ? 2.0 : 1.0;
+          const damageAmount = bullet.damage * criticalMultiplier;
+          this.takeDamage(enemy, damageAmount, isCritical, false, bullet.weaponType as WeaponType); // Apply bullet damage via centralized method, respect active check
+          
+          // Deactivate bullet immediately on hit (removed Mech Mortar exception)
+          bullet.active = false;
+
+          if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
+        }
+      }
+      // Death handling
+      if (enemy.hp <= 0 && enemy.active) {
+        enemy.active = false;
+        this.spawnGem(enemy.x, enemy.y, 1);
+        // Dispatch enemy death explosion event only if killed by a mortar
+        if (enemy._lastHitByWeapon === WeaponType.MECH_MORTAR) {
+          window.dispatchEvent(new CustomEvent('enemyDeathExplosion', {
+            detail: {
+              x: enemy.x,
+              y: enemy.y,
+              damage: enemy.damage * 2, // Increased damage for enemy death explosion
+              radius: 150, // Larger radius for enemy death explosion
+              color: '#FF4500' // Orange-red color for death explosion
+            }
+          }));
+        }
+         this.enemyPool.push(enemy);
+       }
+     }
+    // Filter out inactive enemies
+    this.enemies = this.enemies.filter(e => e.active);
+
     // update gems
-    for (const g of this.gems) {
+    for (let i = 0, len = this.gems.length; i < len; i++) {
+      const g = this.gems[i];
       if (!g.active) continue;
-  // Magnet effect: gently float toward player everywhere
-  const ddx = this.player.x - g.x;
-  const ddy = this.player.y - g.y;
-  const dist = Math.hypot(ddx, ddy);
-  const pullStrength = 0.7; // Lower = slower
-  g.vx = (ddx / (dist || 1)) * pullStrength;
-  g.vy = (ddy / (dist || 1)) * pullStrength;
-  // Update position
-  g.x += g.vx;
-  g.y += g.vy;
+
+      // Magnet effect: gently float toward player everywhere
+      const ddx = this.player.x - g.x;
+      const ddy = this.player.y - g.y;
+      const dist = Math.hypot(ddx, ddy);
+      const pullStrength = 0.7; // Lower = slower
+      g.vx = (ddx / (dist || 1)) * pullStrength;
+      g.vy = (ddy / (dist || 1)) * pullStrength;
+      // Update position
+      g.x += g.vx * (deltaTime / 1000); // Use deltaTime
+      g.y += g.vy * (deltaTime / 1000); // Use deltaTime
       // Extend gem life so they last longer
       g.life--;
       if (g.life <= -300) { // Give extra time before expiring
         g.active = false;
-        g.x = -9999; g.y = -9999;
+        this.gemPool.push(g); // Return to pool
       }
       // Pickup if near player
       if (dist < 18) {
         this.player.gainExp(g.value);
         g.active = false;
-        if (this.particleManager) this.particleManager.spawn(g.x, g.y, 8, '#0ff');
+        if (this.particleManager) this.particleManager.spawn(g.x, g.y, 1, '#0ff');
+        this.gemPool.push(g); // Return to pool
       }
     }
+    this.gems = this.gems.filter(g => g.active);
+
+    // Update chests
+    this.updateChests(deltaTime);
 
     // Poison puddle update (ensure this runs every frame)
     this.updatePoisonPuddles();
   }
 
+  private spawnEnemy(type: 'small' | 'medium' | 'large', gameTime: number, pattern: 'normal' | 'ring' | 'cone' | 'surge' = 'normal') {
+    let enemy = this.enemyPool.pop();
+    if (!enemy) {
+      enemy = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '', _lastHitByWeapon: undefined };
+    }
+    enemy.active = true;
+    enemy.type = type;
+    enemy.id = `enemy-${Date.now()}-${Math.random().toFixed(4)}`; // Assign unique ID
+    enemy._damageFlash = 0;
+    switch (type) {
+      case 'small':
+        enemy.hp = 50; // Increased HP for small enemies
+        enemy.maxHp = 50;
+        enemy.radius = 12;
+        enemy.speed = 1.5 * 0.4; // Further reduced speed (40% of original)
+        enemy.damage = 5;
+        break;
+      case 'medium':
+        enemy.hp = 150; // Increased HP for medium enemies
+        enemy.maxHp = 150;
+        enemy.radius = 18;
+        enemy.speed = 1 * 0.4; // Further reduced speed (40% of original)
+        enemy.damage = 10;
+        break;
+      case 'large':
+        enemy.hp = 400; // Increased HP for large enemies
+        enemy.maxHp = 400;
+        enemy.radius = 24;
+        enemy.speed = 0.7 * 0.4; // Further reduced speed (40% of original)
+        enemy.damage = 20;
+        break;
+    }
+    // Restore original spawn distance and pattern logic
+    const spawnDistance = 800; // Base distance from player
+    let spawnX = this.player.x;
+    let spawnY = this.player.y;
+    switch (pattern) {
+      case 'normal': {
+        const angle = Math.random() * Math.PI * 2;
+        spawnX += Math.cos(angle) * spawnDistance;
+        spawnY += Math.sin(angle) * spawnDistance;
+        break;
+      }
+      case 'ring': {
+        const ringAngle = Math.random() * Math.PI * 2;
+        const ringRadius = spawnDistance + Math.random() * 100;
+        spawnX += Math.cos(ringAngle) * ringRadius;
+        spawnY += Math.sin(ringAngle) * ringRadius;
+        break;
+      }
+      case 'cone': {
+        const coneAngle = Math.random() * Math.PI * 0.6 - Math.PI * 0.3;
+        const finalAngle = -Math.PI / 2 + coneAngle;
+        const coneDistance = spawnDistance + Math.random() * 200;
+        spawnX += Math.cos(finalAngle) * coneDistance;
+        spawnY += Math.sin(finalAngle) * coneDistance;
+        break;
+      }
+      case 'surge': {
+        const randomAngle = Math.random() * Math.PI * 2;
+        spawnX += Math.cos(randomAngle) * spawnDistance;
+        spawnY += Math.sin(randomAngle) * spawnDistance;
+        break;
+      }
+    }
+    enemy.x = spawnX;
+    enemy.y = spawnY;
+    this.enemies.push(enemy);
+  }
+
   private spawnGem(x: number, y: number, value = 1) {
-    const slot = this.gems.find(g => !g.active);
-    const initialLife = 1200; // Make gems last much longer
-    if (!slot) {
-      this.gems.push({ x, y, vx: 0, vy: 0, life: initialLife, size:6, value, active: true });
-      return;
+    let gem = this.gemPool.pop(); // Try to get from pool
+    if (!gem) {
+      // If pool is empty, create a new one
+      gem = { x: 0, y: 0, vx: 0, vy: 0, life: 0, size: 0, value: 0, active: false };
     }
-    slot.x = x; slot.y = y; slot.vx = 0; slot.vy = 0; slot.life = initialLife; slot.size = 6; slot.value = value; slot.active = true;
+
+    // Reset and initialize gem properties
+    gem.x = x;
+    gem.y = y;
+    gem.vx = (Math.random() - 0.5) * 2; // Initial random velocity
+    gem.vy = (Math.random() - 0.5) * 2;
+    gem.life = 1200; // Make gems last much longer
+    gem.size = 6;
+    gem.value = value;
+    gem.active = true;
+    this.gems.push(gem);
   }
 
-  private spawnEnemy(enemyType: 'small' | 'medium' | 'large', gameTime: number) {
-    let slot = this.enemies.find(e => !e.active);
-    if (!slot) {
-      const newEnemy: Enemy = { x: -1000, y: -1000, hp: 0, maxHp: 0, radius: 18, speed: 0, active: false, type: 'small', damage: 0 };
-      this.enemies.push(newEnemy);
-      slot = newEnemy;
+  private spawnChest(x: number, y: number): void {
+    let chest = this.chestPool.pop();
+    if (!chest) {
+      chest = { x: 0, y: 0, radius: 16, active: false };
     }
-    // Spawn near the player but farther away for a more epic feel
-    const angle = Math.random() * Math.PI * 2;
-    const difficulty = 1 + Math.floor(gameTime / 30);
-    // Increase spawn radii to reduce early encounters
-    const minDist = 600 + (difficulty - 1) * 40;
-    const maxDist = 1200 + (difficulty - 1) * 60;
-    const dist = minDist + Math.random() * (maxDist - minDist);
-    const x = this.player.x + Math.cos(angle) * dist;
-    const y = this.player.y + Math.sin(angle) * dist;
-
-    slot!.x = x;
-    slot!.y = y;
-    slot!.type = enemyType;
-    slot!.radius = (enemyType === 'small' ? 12 : enemyType === 'medium' ? 18 : 24);
-    slot!.hp = (enemyType === 'small' ? 20 : enemyType === 'medium' ? 40 : 80) + Math.floor((difficulty - 1) * 5);
-    slot!.maxHp = slot!.hp;
-    slot!.speed = (enemyType === 'small' ? 1.5 : enemyType === 'medium' ? 1.0 : 0.8) + (difficulty - 1) * 0.1;
-    slot!.active = true;
-    slot!.damage = (enemyType === 'small' ? 5 : enemyType === 'medium' ? 10 : 15); // Damage enemy deals to player
+    chest.x = x;
+    chest.y = y;
+    chest.active = true;
+    this.chests.push(chest);
+    Logger.info(`Chest spawned at ${x}, ${y}`);
   }
 
-  public draw(ctx: CanvasRenderingContext2D) {
-    for (const enemy of this.enemies) {
-      if (!enemy.active) continue;
-      ctx.save();
+  private updateChests(deltaTime: number): void {
+    for (let i = 0; i < this.chests.length; i++) {
+      const chest = this.chests[i];
+      if (!chest.active) continue;
 
-      // Use AssetLoader for enemy visuals if available
-      const enemyImage = this.assetLoader?.getImage(`enemy_${enemy.type}`);
-      if (enemyImage) {
-        const drawX = enemy.x - enemy.radius; // Center the image
-        const drawY = enemy.y - enemy.radius; // Center the image
-        ctx.drawImage(enemyImage, drawX, drawY, enemy.radius * 2, enemy.radius * 2);
-      } else {
-        // Fallback to simple circle with neon glow
-        ctx.shadowColor = '#f0f';
-        ctx.shadowBlur = 12;
-        ctx.beginPath();
-        ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
-        ctx.fillStyle = '#f0f';
-        ctx.fill();
+      const dx = this.player.x - chest.x;
+      const dy = this.player.y - chest.y;
+      const dist = Math.hypot(dx, dy);
+
+      // Magnet effect towards player
+      if (dist > 0 && dist < this.player.magnetRadius * 2) { // Increased magnet radius for chests
+        const pullStrength = 1.5; // Stronger pull for chests
+        chest.x += (dx / dist) * pullStrength * (deltaTime / 1000);
+        chest.y += (dy / dist) * pullStrength * (deltaTime / 1000);
       }
-      ctx.restore();
 
-      // HP bar above enemy
-      const pct = Math.max(0, enemy.hp) / enemy.maxHp;
-      ctx.save();
-      // Damage flash and shake effect
-      if (enemy._damageFlash && enemy._damageFlash > 0) {
-        ctx.globalAlpha = 0.7 + 0.3 * Math.sin(enemy._damageFlash * 2);
-        ctx.translate((Math.random()-0.5)*4, (Math.random()-0.5)*4);
+      // Pickup if near player
+      if (dist < chest.radius + this.player.radius) {
+        chest.active = false;
+        this.chestPool.push(chest); // Return to pool
+        Logger.info('Chest picked up!');
+        // Dispatch event for Player to handle evolution
+        window.dispatchEvent(new CustomEvent('chestPickedUp'));
       }
-      ctx.fillStyle = '#222';
-      ctx.fillRect(enemy.x - enemy.radius, enemy.y - enemy.radius - 12, enemy.radius * 2, 6);
-      ctx.fillStyle = '#f00';
-      ctx.fillRect(enemy.x - enemy.radius, enemy.y - enemy.radius - 12, enemy.radius * 2 * pct, 6);
-      ctx.restore();
     }
-
-    for (const g of this.gems) {
-      if (!g.active) continue;
-      ctx.save();
-      // Use AssetLoader for gem visuals if available
-      const gemImage = this.assetLoader?.getImage('gem'); // Assuming a 'gem' asset
-      if (gemImage) {
-        const drawX = g.x - g.size; // Center the image
-        const drawY = g.y - g.size; // Center the image
-        ctx.drawImage(gemImage, drawX, drawY, g.size * 2, g.size * 2);
-      } else {
-        // Fallback to simple circle
-        ctx.shadowColor = '#0ff';
-        ctx.shadowBlur = 8;
-        ctx.beginPath();
-        ctx.arc(g.x, g.y, g.size, 0, Math.PI * 2);
-        ctx.fillStyle = '#0ff';
-        ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    // Draw poison puddles
-    for (const puddle of this.poisonPuddles) {
-      if (!puddle.active) continue;
-      ctx.save();
-      ctx.globalAlpha = Math.max(0.18, puddle.life / puddle.maxLife);
-      ctx.beginPath();
-      ctx.arc(puddle.x, puddle.y, puddle.radius, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0,255,0,0.4)';
-      ctx.fill();
-      ctx.restore();
-    }
-  }
-
-  public getAliveCount(): number {
-    if (!this.enemies || !Array.isArray(this.enemies)) return 0;
-    return this.enemies.filter((e: any) => e && (e as any).active !== false && ((e as any).hp == null || (e as any).hp > 0)).length;
+    this.chests = this.chests.filter(c => c.active);
   }
 }
 

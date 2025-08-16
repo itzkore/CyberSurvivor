@@ -5,6 +5,7 @@ export type DamageText = {
   life: number;
   color: string;
   active: boolean;
+  isCritical?: boolean; // New property for critical hits
 };
 
 export class DamageTextManager {
@@ -15,17 +16,18 @@ export class DamageTextManager {
   }
 
   private createDead(): DamageText {
-    return { x: -9999, y: -9999, value: 0, life: 0, color: '#fff', active: false };
+    return { x: -9999, y: -9999, value: 0, life: 0, color: '#fff', active: false, isCritical: false };
   }
 
-  public spawn(x: number, y: number, value: number, color = '#FFD700') {
+  public spawn(x: number, y: number, value: number, color = '#FFD700', isCritical: boolean = false) { // Added isCritical parameter
     const t = this.pool.find((t) => !t.active) || this.createDead();
     t.x = x + (Math.random() - 0.5) * 12;
     t.y = y + (Math.random() - 0.5) * 12;
     t.value = value;
-    t.life = 24 + Math.floor(Math.random() * 8);
-    t.color = color;
+    t.life = isCritical ? 40 : 24 + Math.floor(Math.random() * 8); // Longer life for critical
+    t.color = isCritical ? '#FF00FF' : color; // Purple for critical
     t.active = true;
+    t.isCritical = isCritical;
     if (!this.pool.includes(t)) this.pool.push(t);
   }
 
@@ -42,15 +44,25 @@ export class DamageTextManager {
     }
   }
 
-  public draw(ctx: CanvasRenderingContext2D) {
+  /**
+   * Draws all damage text overlays to the canvas.
+   * @param ctx Canvas 2D context
+   * @param camX Camera X offset
+   * @param camY Camera Y offset
+   */
+  public draw(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
     for (const t of this.pool) {
       if (!t.active) continue;
       ctx.save();
-      ctx.globalAlpha = Math.max(0.2, t.life / 32);
-      ctx.font = 'bold 18px Orbitron, Arial';
+      ctx.globalAlpha = Math.max(0.2, t.life / (t.isCritical ? 40 : 32)); // Fade out based on life
+      ctx.font = t.isCritical ? 'bold 24px Orbitron, Arial' : 'bold 18px Orbitron, Arial'; // Larger font for critical
       ctx.fillStyle = t.color;
       ctx.textAlign = 'center';
-      ctx.fillText(`${t.value}`, t.x, t.y);
+      if (t.isCritical) {
+        ctx.shadowColor = t.color;
+        ctx.shadowBlur = 10;
+      }
+      ctx.fillText(`${t.value}`, t.x - camX + ctx.canvas.width / 2, t.y - camY + ctx.canvas.height / 2); // Adjust for camera
       ctx.restore();
     }
   }

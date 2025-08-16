@@ -1,4 +1,21 @@
 export class Cinematic {
+  /**
+   * Returns true if the cinematic is finished.
+   */
+  public isFinished(): boolean {
+    return !this.active;
+  }
+  /**
+   * Advances the cinematic progress and calls onComplete if finished.
+   */
+  public update() {
+    if (!this.active) return;
+    this.progress++;
+    if (this.progress > 100) {
+      this.active = false;
+      if (this.onComplete) this.onComplete();
+    }
+  }
   private progress: number = 0;
   private active: boolean = false;
   private onComplete: (() => void) | null = null;

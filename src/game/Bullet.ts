@@ -13,9 +13,13 @@ export type Bullet = {
   speed?: number;
   weaponType: WeaponType | number;
   projectileImageKey?: string;
-  projectileVisual?: any;
+  projectileVisual?: ProjectileVisual;
   snakeTargets?: Array<{ x: number; y: number }>;
   snakeBounceCount?: number;
   snakeRetarget?: { x: number; y: number } | null;
   _exploded?: boolean;
+  _explosionStartTime?: number;
+  _maxExplosionDuration?: number;
+  _hit?: boolean;
+  explosionRadius?: number;
 };

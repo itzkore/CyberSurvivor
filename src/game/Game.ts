@@ -1,5 +1,6 @@
 import { Player } from './Player';
 import { EnemyManager } from './EnemyManager';
+import { ExplosionManager } from './ExplosionManager';
 import { HUD } from '../ui/HUD';
 import { UpgradePanel } from '../ui/UpgradePanel';
 import { Cinematic } from '../ui/Cinematic';
@@ -10,21 +11,29 @@ import { AssetLoader } from './AssetLoader';
 import { MainMenu } from '../ui/MainMenu';
 import { CharacterSelectPanel } from '../ui/CharacterSelectPanel';
 import { DamageTextManager } from './DamageTextManager';
+import { GameLoop } from '../core/GameLoop';
 
 export class Game {
+  /**
+   * Sets the game state. Used for UI panels like upgrade menu.
+   * @param state New state string
+   */
+  public setState(state: 'MENU' | 'MAIN_MENU' | 'CHARACTER_SELECT' | 'CINEMATIC' | 'GAME' | 'PAUSE' | 'GAME_OVER' | 'UPGRADE_MENU') {
+    this.state = state;
+  }
+  public assetLoader: AssetLoader; // Explicitly declared as public
+  public player: Player; // Made public
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
-  private player: Player;
   private enemyManager: EnemyManager;
   private bossManager: BossManager;
   private bulletManager: BulletManager;
   private particleManager: ParticleManager;
   private hud: HUD;
-  private upgradePanel: UpgradePanel;
+  private upgradePanel!: UpgradePanel; // Changed to be set later
   private cinematic: Cinematic;
-  private assetLoader: AssetLoader;
   private mainMenu!: MainMenu; // Changed to be set later
-  private characterSelectPanel: CharacterSelectPanel;
+  private characterSelectPanel!: CharacterSelectPanel; // Changed to be set later
   private selectedCharacterData: any | null = null; // To store selected character
   private state: 'MENU' | 'MAIN_MENU' | 'CHARACTER_SELECT' | 'CINEMATIC' | 'GAME' | 'PAUSE' | 'GAME_OVER' | 'UPGRADE_MENU';
   private gameTime: number = 0;
@@ -40,28 +49,51 @@ export class Game {
   private damageTextManager: DamageTextManager = new DamageTextManager();
   private dpsLog: number[] = [];
   private dpsFrameDamage: number = 0;
+  private gameLoop: GameLoop;
+
+  // DPS Tracking
+  private totalDamageDealt: number = 0;
+  private dpsHistory: { time: number, damage: number }[] = []; // Stores { timestamp, damageAmount }
+  private dpsWindow: number = 5000; // 5 seconds for rolling DPS calculation
+
+  // Screen Shake
+  private shakeDuration: number = 0; // How long to shake (in milliseconds)
+  private shakeIntensity: number = 0; // How strong the shake is
+  private currentShakeTime: number = 0; // Current time for shake effect
+
+  private explosionManager?: ExplosionManager;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.state = 'MAIN_MENU';
     this.gameTime = 0;
-    this.assetLoader = new AssetLoader();
+    this.assetLoader = new AssetLoader(); // Initialization remains here
     this.particleManager = new ParticleManager(160);
     this.bulletManager = new BulletManager(this.assetLoader);
+    // ExplosionManager will be initialized after EnemyManager is created
     this.cinematic = new Cinematic();
-    // mainMenu and characterSelectPanel are initialized later or passed
-    this.characterSelectPanel = new CharacterSelectPanel(this.assetLoader);
     // Initialize player and managers here
     this.player = new Player(this.worldW / 2, this.worldH / 2);
     this.player.radius = 18;
-    this.enemyManager = new EnemyManager(this.player, this.particleManager, 1, this.assetLoader);
+    this.enemyManager = new EnemyManager(this.player, this.particleManager, this.assetLoader, 1);
     this.bossManager = new BossManager(this.player, this.particleManager);
+    if (!this.explosionManager) {
+      this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
+    }
     this.hud = new HUD(this.player, this.assetLoader);
-    this.upgradePanel = new UpgradePanel(this.player);
+    // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // Will be set via setter
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
     this.player.setGameContext(this as any); // Cast to any to allow setting game context
     this.initInput();
+    this.gameLoop = new GameLoop(this.update.bind(this), this.render.bind(this));
+
+    // Initialize camera position to center on player
+    this.camX = this.player.x - this.canvas.width / 2;
+    this.camY = this.player.y - this.canvas.height / 2;
+
+    // Ensure game starts in MAIN_MENU state, not GAME_OVER
+    this.state = 'MAIN_MENU'; // Explicitly set initial state
 
     window.addEventListener('upgradeOpen', () => {
       if (this.state === 'GAME') this.state = 'UPGRADE_MENU';
@@ -69,6 +101,25 @@ export class Game {
     window.addEventListener('upgradeClose', () => {
       if (this.state === 'UPGRADE_MENU') this.state = 'GAME';
     });
+    window.addEventListener('damageDealt', (event: Event) => this.handleDamageDealt(event as CustomEvent));
+    window.addEventListener('screenShake', (e: Event) => { // Listen for screen shake events
+      this.startScreenShake((e as CustomEvent).detail.durationMs, (e as CustomEvent).detail.intensity);
+    });
+    // Listen for mortarExplosion event
+    window.addEventListener('mortarExplosion', (e: Event) => this.handleMortarExplosion(e as CustomEvent));
+    // Listen for enemyDeathExplosion event
+    window.addEventListener('enemyDeathExplosion', (e: Event) => this.handleEnemyDeathExplosion(e as CustomEvent));
+  }
+
+  /**
+   * Starts a screen shake effect.
+   * @param durationMs The duration of the shake in milliseconds.
+   * @param intensity The intensity of the shake (e.g., 1-10).
+   */
+  public startScreenShake(durationMs: number, intensity: number): void {
+    this.shakeDuration = durationMs;
+    this.shakeIntensity = intensity;
+    this.currentShakeTime = performance.now(); // Record start time of shake
   }
 
   /**
@@ -135,6 +186,8 @@ export class Game {
         e.preventDefault();
       } else if (e.key.toLowerCase() === 'b') {
         this.brightenMode = !this.brightenMode;
+      } else if (e.key.toLowerCase() === 'm') { // Toggle minimap
+        this.hud.showMinimap = !this.hud.showMinimap;
       }
     });
 
@@ -152,17 +205,8 @@ export class Game {
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
-      if (this.state === 'CHARACTER_SELECT') {
-        const clickResult = this.characterSelectPanel.handleClick(mouseX, mouseY, this.canvas);
-
-        if (clickResult && typeof clickResult === 'object') { // Character was clicked
-          this.selectedCharacterData = clickResult; // Store the selected character data
-          // No game start from here, just update selection
-        } else if (clickResult === 'backToMainMenu') {
-          this.state = 'MAIN_MENU';
-          if (this.mainMenu) this.mainMenu.show();
-        }
-      } else if (this.state === 'GAME_OVER') { // Add this condition
+      // Do nothing for character select on 'click', only handle in 'mousedown'
+      if (this.state === 'GAME_OVER') { // Add this condition
         this.handlePauseMenuClick(mouseX, mouseY);
       }
     });
@@ -175,7 +219,10 @@ export class Game {
         const mouseY = e.clientY - rect.top;
         const clickResult = this.characterSelectPanel.handleClick(mouseX, mouseY, this.canvas);
         // clickResult is CharacterData when a character is clicked, or 'backToMainMenu'
-        if (clickResult && typeof clickResult === 'object') {
+        /**
+         * Defensive: Only accept complete character data (must have stats, visuals, and weapon)
+         */
+        if (clickResult && typeof clickResult === 'object' && clickResult.stats && clickResult.defaultWeapon !== undefined) {
           this.selectedCharacterData = clickResult;
           this.state = 'MAIN_MENU';
           this.mainMenu.show();
@@ -197,27 +244,84 @@ export class Game {
    * @param selectedCharacterData Data for the selected character (optional)
    */
   public resetGame(selectedCharacterData?: any) {
-    // Reset player position and stats
-    this.player = new Player(this.worldW / 2, this.worldH / 2);
-    this.player.radius = 18;
-    if (selectedCharacterData) {
-      this.player.applyCharacterData?.(selectedCharacterData);
-    }
+  /**
+   * Resets the game state and player for a new run.
+   * Ensures player weapon state is initialized with character data.
+   * @param selectedCharacterData Data for the selected character (optional)
+   */
+  // Reset player position and stats, passing characterData to constructor
+  this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData);
+  this.player.radius = 18;
     // Reset managers with new player reference
-    this.enemyManager = new EnemyManager(this.player, this.particleManager, 1, this.assetLoader);
+    this.enemyManager = new EnemyManager(this.player, this.particleManager, this.assetLoader, 1);
     this.bossManager = new BossManager(this.player, this.particleManager);
-    this.hud = new HUD(this.player, this.assetLoader);
-    this.upgradePanel = new UpgradePanel(this.player);
+    // Ensure player uses the new enemyManager for enemyProvider
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
-    this.player.setGameContext(this as any);
+    // Ensure player uses the correct game context for bulletManager
+    this.player.setGameContext(this);
+    // Re-initialize explosionManager with the new enemyManager instance
+    this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
+    this.hud = new HUD(this.player, this.assetLoader);
+    // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // UpgradePanel is now set via setter in main.ts
     this.gameTime = 0;
-    this.camX = this.worldW / 2;
-    this.camY = this.worldH / 2;
-    this.state = 'GAME';
+    this.dpsLog = [];
+    this.totalDamageDealt = 0;
+    this.dpsHistory = [];
+    this.shakeDuration = 0;
+    this.shakeIntensity = 0;
+    this.currentShakeTime = 0;
+    this.state = 'GAME'; // Set state to GAME after reset
   }
 
-  setMainMenu(mainMenu: MainMenu) {
+  public setMainMenu(mainMenu: MainMenu) {
     this.mainMenu = mainMenu;
+  }
+
+  /**
+   * Sets the CharacterSelectPanel instance for the game.
+   * @param panel The CharacterSelectPanel instance.
+   */
+  public setCharacterSelectPanel(panel: CharacterSelectPanel) {
+    this.characterSelectPanel = panel;
+  }
+
+  /**
+   * Sets the UpgradePanel instance for the game.
+   * @param panel The UpgradePanel instance.
+   */
+  public setUpgradePanel(panel: UpgradePanel) {
+    this.upgradePanel = panel;
+  }
+
+  /**
+   * Pauses the game.
+   */
+  public pause() {
+    if (this.gameLoop) {
+      this.gameLoop.stop();
+    }
+    this.state = 'PAUSE';
+    // Logger.info('Game Paused'); // Removed debug log
+  }
+
+  /**
+   * Resumes the game.
+   */
+  public resume() {
+    if (this.gameLoop) {
+      this.gameLoop.start();
+    }
+    this.state = 'GAME'; // Assuming it resumes to GAME state
+    // Logger.info('Game Resumed'); // Removed debug log
+  }
+
+  /**
+   * Starts the main game loop.
+   */
+  public start() {
+    if (this.gameLoop) {
+      this.gameLoop.start();
+    }
   }
 
   public startCinematicAndGame() {
@@ -226,10 +330,21 @@ export class Game {
   }
 
   public showCharacterSelect() {
+  console.log('Game.showCharacterSelect called, setting state to CHARACTER_SELECT');
     this.state = 'CHARACTER_SELECT';
-    // Ensure HTML main menu (if present) does not cover the canvas
+    // Debug log for state transition
+    window.dispatchEvent(new CustomEvent('debugLog', { detail: 'Entering CHARACTER_SELECT state' }));
     try {
       (this.mainMenu as any)?.hideMenuElement();
+      const htmlCharPanel = document.getElementById('character-select-panel');
+      if (htmlCharPanel) htmlCharPanel.style.display = 'none';
+      const mainMenuPanel = document.getElementById('main-menu');
+      if (mainMenuPanel) mainMenuPanel.style.display = 'none';
+      const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
+      if (canvas) {
+        canvas.style.display = 'block';
+        canvas.style.zIndex = '100';
+      }
     } catch {
       // ignore if not available
     }
@@ -251,80 +366,8 @@ async init() {
   }
 }
 
-start() {
-  requestAnimationFrame(() => this.loop());
-}
-
-private updateCamera() {
-  // target camera at player
-  const targetX = Math.max(0, Math.min(this.worldW, this.player.x));
-  const targetY = Math.max(0, Math.min(this.worldH, this.player.y));
-  this.camX += (targetX - this.camX) * this.camLerp;
-  this.camY += (targetY - this.camY) * this.camLerp;
-}
-
-  private loop() {
-    if (!this.ctx) {
-      console.error('Canvas context (this.ctx) is null or undefined in loop().');
-      requestAnimationFrame(() => this.loop());
-      return;
-    }
-    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    // Universal base background to ensure visibility even if rendering fails in other layers
-    this.ctx.save();
-    this.ctx.fillStyle = '#181818';
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.restore();
-
-    try {
-      switch (this.state) {
-        case 'MENU':
-          // this.drawMenu(); // Removed
-          break;
-        case 'MAIN_MENU':
-          if (this.mainMenu) this.mainMenu.show();
-          break;
-        case 'CHARACTER_SELECT':
-        if (this.mainMenu) this.mainMenu.hideMenuElement();
-        this.characterSelectPanel.update();
-        this.characterSelectPanel.draw(this.ctx, this.canvas);
-        break;
-      case 'CINEMATIC':
-  if (this.mainMenu) this.mainMenu.hide();
-        this.cinematic.draw(this.ctx, this.canvas);
-        break;
-      case 'GAME':
-  if (this.mainMenu) this.mainMenu.hide();
-        this.updateGame();
-        this.drawGame();
-        break;
-      case 'PAUSE':
-        if (this.mainMenu) this.mainMenu.hideMenuElement();
-        this.drawPause();
-        break;
-      case 'GAME_OVER':
-        if (this.mainMenu) this.mainMenu.hideMenuElement();
-        this.drawGameOver();
-        break;
-      case 'UPGRADE_MENU':
-        this.drawGame(); // Draw game world underneath
-        this.upgradePanel.draw(this.ctx); // Draw upgrade panel on top
-        break;
-      }
-    } catch (err) {
-       console.error('Rendering loop error:', err);
-       // Fallback: ensure canvas is visible even if something goes wrong
-       this.ctx.save();
-       this.ctx.fillStyle = '#181818';
-       this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-       this.ctx.restore();
-    }
-    requestAnimationFrame(() => this.loop());
-  }
-
   drawPause() {
-  // Draw upgrades list overlay
-  UpgradePanel.showUpgradeList(this.ctx, this.player);
+  // Removed: Draw upgrades list overlay (now handled by HTML UpgradePanel)
 
   // Draw PAUSED text
   this.ctx.save();
@@ -409,146 +452,219 @@ private updateCamera() {
     this.ctx.restore();
   }
 
-  updateGame() {
-    this.gameTime += 1 / 60; // Assuming 60 FPS
-    this.player.update(1); // Pass delta (e.g., 1 for frame-based update)
-
-    if (this.player.hp <= 0) {
-      this.state = 'GAME_OVER';
-      return; // Stop updating game elements if game is over
-    }
-
-    // clamp player to world bounds
-    this.player.x = Math.max(0, Math.min(this.worldW, this.player.x));
-    this.player.y = Math.max(0, Math.min(this.worldH, this.player.y));
-    this.bulletManager.update();
-    this.enemyManager.update(this.bulletManager.bullets, this.gameTime);
-    this.bossManager.update();
-    // Boss bullet collision
-    const boss = this.bossManager.getActiveBoss && this.bossManager.getActiveBoss();
-    if (boss && boss.state === 'ACTIVE' && boss.active && boss.hp > 0) {
-      for (const b of this.bulletManager.bullets) {
-        if (!b.active) continue;
-        const ddx = b.x - boss.x;
-        const ddy = b.y - boss.y;
-        const d = Math.hypot(ddx, ddy);
-        if (d < boss.radius + b.radius) {
-          boss.hp -= b.damage;
-          boss._damageFlash = 12;
-          this.damageTextManager.spawn(boss.x, boss.y - boss.radius, b.damage, '#FFD700');
-          this.dpsFrameDamage += b.damage;
-          if (!(b as any).piercing) {
-            b.active = false;
-          }
-        }
-      }
-      if (boss.hp <= 0) boss.state = 'DEAD';
-    }
-    this.particleManager.update();
-    this.upgradePanel.update();
-    this.damageTextManager.update();
-    // DPS logging (every second)
-    if (Math.floor(this.gameTime * 60) % 60 === 0) {
-      this.dpsLog.push(this.dpsFrameDamage);
-      this.dpsFrameDamage = 0;
-      // Optionally: console.log('DPS:', this.dpsLog[this.dpsLog.length-1]);
-    }
-    this.updateCamera();
+  /**
+   * The main update method for the game logic.
+   * @param deltaTime The time elapsed since the last update, in milliseconds.
+   */
+  private update(deltaTime: number) {
+  // console.log('Game.render called, current state:', this.state); // Removed misleading log
+  // Only advance gameTime in GAME state
+  if (this.state === 'GAME') {
+    this.gameTime += deltaTime / 1000;
   }
 
-  drawGame() {
-    // Simple grass background
-    this.ctx.save();
-    const grassGradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
-    grassGradient.addColorStop(0, '#3cb371'); // MediumSeaGreen
-    grassGradient.addColorStop(1, '#228b22'); // ForestGreen
-    this.ctx.fillStyle = grassGradient;
-    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    this.ctx.restore();
+  switch (this.state) {
+      case 'GAME':
+        this.player.update(deltaTime);
+        this.explosionManager?.update(); // Update AoE zones
+        this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets); // Pass bullets to enemyManager
+        this.bossManager.update(deltaTime, this.gameTime); // Pass deltaTime and gameTime to bossManager
+        this.bulletManager.update();
+        this.particleManager.update(); // Removed deltaTime argument
+        this.damageTextManager.update(); // Removed deltaTime argument
+        // --- Boss bullet collision ---
+        const boss = this.bossManager.getActiveBoss();
+        if (boss) {
+          for (let i = 0; i < this.bulletManager.bullets.length; i++) {
+            const b = this.bulletManager.bullets[i];
+            if (!b.active) continue;
+            const dx = b.x - boss.x;
+            const dy = b.y - boss.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < boss.radius + b.radius) {
+              boss.hp -= b.damage;
+              boss._damageFlash = 12;
+              b.active = false;
+              this.particleManager.spawn(boss.x, boss.y, 1, '#FFD700');
+              window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: b.damage, isCritical: false } }));
+            }
+          }
+        }
 
-    // Make grid tiles semi-transparent so background is visible
-    const tile = 128;
-    const startX = Math.floor((this.camX - this.canvas.width/2)/tile) * tile;
-    const startY = Math.floor((this.camY - this.canvas.height/2)/tile) * tile;
-    for (let x = startX; x < startX + this.canvas.width + tile; x += tile) {
-      for (let y = startY; y < startY + this.canvas.height + tile; y += tile) {
-        const sx = this.worldToScreenX(x);
-        const sy = this.worldToScreenY(y);
-        this.ctx.save();
-        this.ctx.fillStyle = 'rgba(11,11,11,0.45)'; // Semi-transparent black
-        this.ctx.fillRect(sx, sy, tile - 2, tile - 2);
-        this.ctx.restore();
+        // Update DPS calculation
+        const currentTime = performance.now();
+        // Remove old entries from history
+        while (this.dpsHistory.length > 0 && currentTime - this.dpsHistory[0].time > this.dpsWindow) {
+          this.dpsHistory.shift();
+        }
+        // Calculate total damage in the window
+        const totalDamageInWindow = this.dpsHistory.reduce((sum, entry) => sum + entry.damage, 0);
+        // Calculate DPS (damage per second)
+        const currentDPS = (totalDamageInWindow / this.dpsWindow) * 1000; // Convert to per second
+
+        // Pass DPS to HUD
+        this.hud.currentDPS = currentDPS;
+
+        // Update camera position with lerp
+        this.camX += (this.player.x - this.canvas.width / 2 - this.camX) * this.camLerp;
+        this.camY += (this.player.y - this.canvas.height / 2 - this.camY) * this.camLerp;
+
+        // Clamp camera to world boundaries
+        this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.canvas.width));
+        this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.canvas.height));
+
+        // Check for game over
+        if (this.player.hp <= 0) { // Changed from this.player.health to this.player.hp
+          this.state = 'GAME_OVER';
+        }
+        break;
+      case 'MAIN_MENU':
+        // Main menu specific updates if any (e.g., animations)
+        break;
+      case 'CHARACTER_SELECT':
+        // Character select specific updates if any (e.g., animations)
+        break;
+      case 'CINEMATIC':
+        this.cinematic.update(); // Ensure cinematic updates to finish
+        if (this.cinematic.isFinished()) {
+          this.state = 'GAME';
+        }
+        break;
+      case 'PAUSE':
+        // Pause menu, no updates to game state
+        break;
+      case 'GAME_OVER':
+        // Game over screen, no updates to game state
+        break;
+      case 'UPGRADE_MENU':
+        // Upgrade menu, no updates to game state
+        break;
+    }
+  }
+
+  /**
+   * The main render method for drawing game elements.
+   * @param alpha The interpolation factor for smooth rendering between fixed updates.
+   */
+  private render(alpha: number) {
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+    // Apply brighten mode if active
+    if (this.brightenMode) {
+      this.ctx.filter = 'brightness(1.2)';
+    } else {
+      this.ctx.filter = 'none';
+    }
+
+    // Apply screen shake
+    let shakeOffsetX = 0;
+    let shakeOffsetY = 0;
+    if (this.shakeDuration > 0) {
+      const elapsed = performance.now() - this.currentShakeTime;
+      if (elapsed < this.shakeDuration) {
+        shakeOffsetX = (Math.random() - 0.5) * 2 * this.shakeIntensity;
+        shakeOffsetY = (Math.random() - 0.5) * 2 * this.shakeIntensity;
+      } else {
+        this.shakeDuration = 0; // End shake
       }
     }
 
-    // draw entities in world coordinates by translating context to camera
-    this.ctx.save();
-    const tx = this.canvas.width / 2 - this.camX;
-    const ty = this.canvas.height / 2 - this.camY;
-    this.ctx.translate(tx, ty);
+    switch (this.state) {
+      case 'GAME':
+      case 'PAUSE':
+      case 'UPGRADE_MENU':
+      case 'GAME_OVER':
+        // Draw cyberpunk grid background before camera transform
+        this.ctx.save();
+        this.ctx.globalAlpha = 1;
+        const grad = this.ctx.createLinearGradient(0, 0, this.canvas.width, this.canvas.height);
+        grad.addColorStop(0, '#181825');
+        grad.addColorStop(1, '#232347');
+        this.ctx.fillStyle = grad;
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.strokeStyle = 'rgba(0,255,255,0.08)';
+        this.ctx.lineWidth = 1;
+        for (let x = 0; x < this.canvas.width; x += 64) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(x, 0);
+          this.ctx.lineTo(x, this.canvas.height);
+          this.ctx.stroke();
+        }
+        for (let y = 0; y < this.canvas.height; y += 64) {
+          this.ctx.beginPath();
+          this.ctx.moveTo(0, y);
+          this.ctx.lineTo(this.canvas.width, y);
+          this.ctx.stroke();
+        }
+        this.ctx.restore();
+        // Now apply camera transform and draw entities
+        this.ctx.save();
+        this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);
+        // console.log('Drawing enemies...'); // Removed debug log
+        this.enemyManager.draw(this.ctx, this.camX, this.camY);
+        // console.log('Drawing bullets...'); // Removed debug log
+        this.bulletManager.draw(this.ctx);
+        // console.log('Drawing player...'); // Removed debug log
+        this.player.draw(this.ctx);
+        // console.log('Drawing particles...'); // Removed debug log
+        this.particleManager.draw(this.ctx);
+        this.explosionManager?.draw(this.ctx); // Draw AoE zones
+        // console.log('Drawing boss...'); // Removed debug log
+        this.bossManager.draw(this.ctx);
+        this.ctx.restore();
+        // console.log('Drawing damage text...'); // Removed debug log
+        this.damageTextManager.draw(this.ctx, this.camX, this.camY);
+        // console.log('Drawing HUD...'); // Removed debug log
+        this.hud.draw(this.ctx, this.gameTime, this.enemyManager.getEnemies(), this.worldW, this.worldH, this.player.upgrades);
 
-    // now draw entities at their world positions
-    console.log('drawGame: Drawing player');
-    this.player.draw(this.ctx);
-    console.log('drawGame: Drawing bullets');
-    this.bulletManager.draw(this.ctx);
-    console.log('drawGame: Drawing enemies');
-    this.enemyManager.draw(this.ctx);
-    console.log('drawGame: Drawing boss');
-    this.bossManager.draw(this.ctx);
-    this.damageTextManager.draw(this.ctx);
-    console.log('drawGame: Drawing particles');
-    this.particleManager.draw(this.ctx);
-    console.log('drawGame: Entities drawn');
-
-    // restore to screen space for HUD and UI
-    this.ctx.restore();
-
-    this.hud.draw(this.ctx, this.gameTime);
-    this.upgradePanel.draw(this.ctx);
-
-    // HUD alive enemies
-    const aliveCount = this.enemyManager?.getAliveCount?.() ?? 0;
-    this.hud?.drawAliveEnemiesCount(this.ctx, aliveCount);
-    console.log('drawGame: Finished');
-
-    if (this.brightenMode) {
-      // Apply a vertical gradient to brighten the game
-      const gradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
-      gradient.addColorStop(0, 'rgba(255, 255, 255, 0.1)');
-      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-      this.ctx.fillStyle = gradient;
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        if (this.state === 'PAUSE') {
+          this.drawPause(); // Changed from drawPauseMenu
+        } else if (this.state === 'UPGRADE_MENU') {
+          // this.upgradePanel.draw(this.ctx); // Removed: UpgradePanel manages its own HTML visibility
+        } else if (this.state === 'GAME_OVER') {
+          this.drawGameOver(); // Changed from drawGameOverScreen
+        }
+        break;
+      case 'MAIN_MENU':
+        // Main menu is handled by HTML, nothing to render on canvas
+        // Ensure canvas is behind HTML menu for interactivity
+        const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
+        if (canvas) canvas.style.zIndex = '-1';
+        break;
+      case 'CHARACTER_SELECT':
+        this.characterSelectPanel.draw(this.ctx, this.canvas);
+        break;
+      case 'CINEMATIC':
+        this.cinematic.draw(this.ctx, this.canvas);
+        break;
     }
+  }
 
-    // Draw minimap in top-right corner
-    this.ctx.save();
-    const mapW = 180, mapH = 180;
-    const mapX = this.canvas.width - mapW - 24;
-    const mapY = 24;
-    this.ctx.globalAlpha = 0.92;
-    this.ctx.fillStyle = '#222';
-    this.ctx.fillRect(mapX, mapY, mapW, mapH);
-    this.ctx.strokeStyle = '#FFD700';
-    this.ctx.lineWidth = 3;
-    this.ctx.strokeRect(mapX, mapY, mapW, mapH);
-    // Draw player dot
-    const px = Math.floor(this.player.x / 10) % mapW;
-    const py = Math.floor(this.player.y / 10) % mapH;
-    this.ctx.beginPath();
-    this.ctx.arc(mapX + px, mapY + py, 8, 0, Math.PI * 2);
-    this.ctx.fillStyle = '#00FFFF';
-    this.ctx.fill();
-    // Draw enemy dots
-    for (const e of this.enemyManager.getEnemies()) {
-      if (!e || e.hp <= 0) continue;
-      const ex = Math.floor(e.x / 10) % mapW;
-      const ey = Math.floor(e.y / 10) % mapH;
-      this.ctx.beginPath();
-      this.ctx.arc(mapX + ex, mapY + ey, 6, 0, Math.PI * 2);
-      this.ctx.fillStyle = '#FF2D2D';
-      this.ctx.fill();
-    }
-    this.ctx.restore();
+  private handleDamageDealt(event: CustomEvent): void {
+    const damageAmount = event.detail.amount;
+    const isCritical = event.detail.isCritical || false; // Get isCritical from event detail
+    this.dpsHistory.push({ time: performance.now(), damage: damageAmount });
+    // Spawn damage text at player's position (or enemy's position if available in event detail)
+    // For now, using player's position as a placeholder, ideally it should be enemy's position
+    this.damageTextManager.spawn(this.player.x, this.player.y, damageAmount, undefined, isCritical);
+  }
+
+  /**
+   * Handles a mortar explosion event.
+   * @param event CustomEvent with explosion details (x, y, damage, hitEnemy)
+   */
+  private handleMortarExplosion(event: CustomEvent): void {
+    const { x, y, damage, hitEnemy, radius } = event.detail;
+    // Route through centralized ExplosionManager for visuals and AoE damage
+    this.explosionManager?.triggerExplosion(x, y, damage, hitEnemy, radius ?? 100);
+  }
+  /**
+   * Handles an enemy death explosion event.
+   * @param event CustomEvent with explosion details (x, y, damage, radius, color)
+   */
+  private handleEnemyDeathExplosion(event: CustomEvent): void {
+    const { x, y, damage, radius, color } = event.detail;
+    // Route through centralized ExplosionManager for visuals and AoE damage
+    this.explosionManager?.triggerExplosion(x, y, damage, undefined, radius ?? 50, color ?? '#FF4500');
   }
 }

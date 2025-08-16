@@ -21,6 +21,7 @@
   "particles": { "file": "assets/particles/particles_sheet.png", "tileW": 8, "tileH": 8, "cols": 8, "rows": 8 },
   "ui": {
     "hp_bg": { "file": "assets/ui/hp_bar_bg.png", "w": 128, "h": 16 },
-    "hp_fill": { "file": "assets/ui/hp_bar_fill.png", "w": 128, "h": 16 }
+    "hp_fill": { "file": "assets/ui/hp_bar_fill.png", "w": 128, "h": 16 },
+    "character_select_bg": { "file": "assets/main-menu-bg.png", "w": 1920, "h": 1080 }
   }
 }

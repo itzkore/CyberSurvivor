@@ -241,10 +241,11 @@
   --color-info: var(--color-gray-300);
   --color-focus-ring: rgba(var(--color-teal-300-rgb), 0.4);
   --color-btn-primary-text: var(--color-slate-900);
-  --color-card-border: rgba(var(--color-gray-400-rgb), 0.15);
+  --color-card-border: rgba(var(--color-gray-400-rgb), 0.2);
   --color-card-border-inner: rgba(var(--color-gray-400-rgb), 0.15);
   --shadow-inset-sm: inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+      inset 0 -1px 0 rgba(0, 0, 0, 0.15);
+  --button-border-secondary: rgba(var(--color-gray-400-rgb), 0.2);
   --color-border-secondary: rgba(var(--color-gray-400-rgb), 0.2);
   --color-select-caret: rgba(var(--color-gray-200-rgb), 0.8);
 
@@ -311,6 +312,7 @@ html {
 body {
   margin: 0;
   padding: 0;
+  background: #000 !important;
 }
 
 *,
@@ -904,32 +906,110 @@ select.form-control {
 }
 
 .upgrade-option {
-  background: var(--color-background);
-  border: 2px solid var(--color-error);
-  border-radius: var(--radius-base);
-  margin: var(--space-8);
-  padding: var(--space-16);
+  position: relative; /* Changed from absolute to relative */
+  background-color: #333; /* Revert to original */
+  border: 1px solid #0ff;
+  color: #fff;
+  padding: 10px;
+  margin-bottom: 10px;
   cursor: pointer;
-  transition: all var(--duration-normal) var(--ease-standard);
-  font-family: var(--font-family-mono);
-  
-  box-shadow: 
-    inset 0 0 var(--space-8) rgba(var(--color-error-rgb), 0.1),
-    var(--shadow-sm);
+  display: flex;
+  align-items: center;
+  transition: background-color 0.2s;
+  font-family: 'Orbitron', sans-serif;
 }
 
 .upgrade-option:hover {
-  border-color: var(--color-warning);
-  background: rgba(var(--color-warning-rgb), 0.05);
-  box-shadow: 
-    inset 0 0 var(--space-16) rgba(var(--color-warning-rgb), 0.1),
-    0 0 var(--space-12) rgba(var(--color-warning-rgb), 0.4),
-    var(--shadow-md);
+  background-color: #555;
 }
 
-.upgrade-option:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
+.upgrade-icon {
+  width: 64px;
+  height: 64px;
+  margin-right: 15px;
+  border: 1px solid #0ff;
+  flex-shrink: 0; /* Prevent icon from shrinking */
+}
+
+.upgrade-info {
+  flex-grow: 1; /* Allow info to take remaining space */
+}
+
+.upgrade-info h3 {
+  margin: 0;
+  color: #0ff;
+  font-size: 1.2em;
+  white-space: nowrap; /* Prevent text wrapping */
+  overflow: hidden; /* Hide overflow text */
+  text-overflow: ellipsis; /* Add ellipsis for overflow */
+}
+
+.upgrade-info p {
+  margin: 5px 0 0 0;
+  font-size: 0.9em;
+}
+
+.upgrade-action-button {
+  position: relative; /* Changed to relative */
+  padding: 8px 15px;
+  background-color: #007bff; /* Revert to original */
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 0.9em;
+  transition: background-color 0.2s;
+  z-index: 1001;
+  display: none; /* Hidden by default */
+}
+
+.upgrade-action-button:hover {
+  background-color: #0056b3;
+}
+
+.upgrade-action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Upgrade Panel Styles */
+.upgrade-panel-container {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1000;
+  background-color: rgba(0, 0, 0, 0.8); /* Revert to original */
+  border: 2px solid #0ff;
+  padding: 20px;
+  box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+  display: none; /* Hidden by default */
+  width: 640px; /* Match panelW + padding */
+  height: 440px; /* Match panelH + padding */
+  flex-direction: column; /* Stack children vertically */
+  justify-content: space-between; /* Space out content and buttons */
+}
+
+.upgrade-options-container {
+  display: flex; /* Use flexbox for upgrade cards */
+  flex-direction: column; /* Stack cards vertically */
+  gap: 10px; /* Space between cards */
+  margin-bottom: 20px; /* Space between options and buttons */
+  flex-grow: 1; /* Allow container to grow */
+  overflow-y: auto; /* Enable scrolling if many options */
+}
+
+/* Specific positioning for skip/reroll buttons relative to the panel */
+.upgrade-action-button {
+  position: relative; /* Changed to relative */
+  margin-top: 10px; /* Space from options */
+  align-self: flex-end; /* Align to the right within flex container */
+  display: none; /* Hidden by default */
+}
+
+.skip-button {
+  /* Removed absolute positioning */
+  margin-right: 10px; /* Space between skip and reroll */
 }
 
 /* Scanline effect for retro feel */
@@ -1015,15 +1095,39 @@ select.form-control {
 
 /* Menu styling matching the asset pack */
 .main-menu {
-  background: var(--color-background);
-  color: var(--color-primary);
+  background: url('./assets/main-menu-bg.png') center center/cover no-repeat;
   min-height: 100vh;
+  min-width: 100vw;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 10;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-family-mono);
-  padding: var(--space-32);
+}
+
+#main-menu {
+  background: rgba(10, 20, 30, 0.25); /* Transparent dark overlay */
+  backdrop-filter: blur(2px); /* Subtle blur for cyberpunk effect */
+  box-shadow: 0 0 32px 4px #00ffcc44;
+  border-radius: 12px;
+  padding: 32px 48px;
+  color: #0ff;
+  font-family: 'Orbitron', 'monospace', sans-serif;
+}
+
+.character-select-background {
+  background: url('./assets/character-select-bg.png') center center/cover no-repeat; /* Placeholder for character select background */
+  min-height: 100vh;
+  min-width: 100vw;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
 .menu-title {
@@ -1178,4 +1282,87 @@ select.form-control {
   .menu-button {
     border-width: 3px;
   }
+}
+
+/* Character selection panel styles */
+.character-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); /* Responsive grid */
+  gap: 20px;
+  padding: 20px;
+  justify-items: center;
+  align-items: center;
+  width: 100%;
+  max-width: 900px; /* Limit grid width */
+  margin: 20px auto; /* Center the grid */
+}
+
+.character-box {
+  background-color: rgba(25, 25, 40, 0.8);
+  border: 2px solid #00FFFF;
+  border-radius: 10px;
+  padding: 15px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  color: #FFD700;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 1.2em;
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+  width: 150px; /* Fixed width for character boxes */
+  height: 150px; /* Fixed height for character boxes */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.character-box:hover {
+  background-color: rgba(50, 50, 70, 0.9);
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.8);
+  transform: translateY(-5px);
+}
+
+.character-box.selected {
+  border-color: #FFD700;
+  box-shadow: 0 0 20px rgba(255, 215, 0, 0.8), inset 0 0 10px rgba(255, 215, 0, 0.5);
+  background-color: rgba(40, 40, 60, 0.9);
+}
+
+.character-details {
+  background-color: rgba(25, 25, 40, 0.8);
+  border: 2px solid #FF00FF;
+  border-radius: 10px;
+  padding: 20px;
+  margin-top: 20px;
+  color: #00FFFF;
+  font-family: 'Orbitron', sans-serif;
+  text-align: center;
+  box-shadow: 0 0 15px rgba(255, 0, 255, 0.5);
+  width: 80%;
+  max-width: 600px;
+}
+
+.character-details h2 {
+  color: #FFD700;
+  margin-bottom: 10px;
+}
+
+.character-details p {
+  margin-bottom: 5px;
+}
+
+.neon-text-cyan {
+  color: #00FFFF;
+  text-shadow: 0 0 8px #00FFFF, 0 0 16px #00FFFF;
+}
+
+.neon-text-magenta {
+  color: #FF00FF;
+  text-shadow: 0 0 8px #FF00FF, 0 0 16px #FF00FF;
+}
+
+.neon-text-yellow {
+  color: #FFFF00;
+  text-shadow: 0 0 8px #FFFF00, 0 0 16px #FFFF00;
 }
