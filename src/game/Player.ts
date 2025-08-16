@@ -12,6 +12,14 @@ import { AssetLoader } from './AssetLoader';
  * @group Player
  */
 export class Player {
+  /**
+   * Whether the player sprite is currently flipped horizontally (for walk animation)
+   */
+  private isFlipped: boolean = false;
+  /**
+   * Timer for flipping animation (in frames)
+   */
+  private flipTimer: number = 0;
   public x: number;
   public y: number;
   public radius: number = 8;
@@ -79,7 +87,6 @@ export class Player {
   public rotation: number = 0;
 
   constructor(x: number, y: number, characterData?: any) {
-    Logger.debug(`[Player.constructor] characterData received:`, characterData);
     this.x = x;
     this.y = y;
     this.baseSpeed = this.speed;
@@ -89,9 +96,11 @@ export class Player {
       this.applyCharacterData(characterData);
       // Clear all weapons and add only the default weapon
       this.activeWeapons.clear();
-      if (characterData.defaultWeapon !== undefined) {
+      // Special case: Psionic Weaver always starts with PSIONIC_WAVE
+      if (characterData.id === 'psionic_weaver') {
+        this.activeWeapons.set(WeaponType.PSIONIC_WAVE, 1);
+      } else if (characterData.defaultWeapon !== undefined) {
         this.activeWeapons.set(characterData.defaultWeapon, 1);
-        Logger.debug(`[Player] Default weapon added: ${WeaponType[characterData.defaultWeapon]}. Current level: ${this.activeWeapons.get(characterData.defaultWeapon)}`);
       }
     }
     /**
@@ -153,7 +162,6 @@ export class Player {
     for (const wt of allWeaponTypes) {
       this.activeWeapons.set(wt, 1);
     }
-    Logger.debug(`[Player.resetState] All weapons unlocked at level 1. Weapons: ${Array.from(this.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
   }
 
   get exp(): number {
@@ -187,38 +195,30 @@ export class Player {
 
   public addWeapon(type: WeaponType) {
     const spec = WEAPON_SPECS[type];
-    if (!spec) {
-      Logger.warn(`Attempted to add unknown weapon type: ${type}`);
+    if (!spec) return;
+    // Enforce max weapon limit
+    if (!this.activeWeapons.has(type) && this.activeWeapons.size >= 5) {
+      // Already at max weapons, do not add new weapon
       return;
     }
-
     let currentLevel = this.activeWeapons.get(type) || 0;
-    Logger.debug(`[addWeapon] Before: type=${type}, currentLevel=${currentLevel}, activeWeapons=${Array.from(this.activeWeapons.entries())}`);
     if (currentLevel < spec.maxLevel) {
       this.activeWeapons.set(type, currentLevel + 1);
       this.upgrades.push(`Weapon Upgrade: ${spec.name} Lv.${currentLevel + 1}`);
-      Logger.info(`Weapon ${spec.name} leveled up to Lv.${currentLevel + 1}`);
-
       // Check for evolution if max level is reached
       if (currentLevel + 1 === spec.maxLevel && spec.evolution) {
         this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
       }
     } else if (currentLevel === spec.maxLevel) {
-      Logger.debug(`Weapon ${spec.name} is already at max level.`);
       // Still check for evolution if it's at max level and hasn't evolved yet
       if (spec.evolution) {
         this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
       }
-    } else {
-      // This case should ideally not happen if logic is correct, but for safety
-      Logger.warn(`Weapon ${spec.name} level (${currentLevel}) exceeds maxLevel (${spec.maxLevel}).`);
     }
-
     // Initialize cooldown if weapon is new
     if (!this.shootCooldowns.has(type)) {
       this.shootCooldowns.set(type, 0);
     }
-    Logger.debug(`[addWeapon] After: type=${type}, newLevel=${this.activeWeapons.get(type)}, activeWeapons=${Array.from(this.activeWeapons.entries())}`);
   }
 
   private tryEvolveWeapon(baseWeaponType: WeaponType, evolvedWeaponType: WeaponType, requiredPassiveName: string): void {
@@ -253,7 +253,6 @@ export class Player {
       // Dispatch an event for UI to react to evolution
       window.dispatchEvent(new CustomEvent('weaponEvolved', { detail: { baseWeaponType, evolvedWeaponType } }));
     } else {
-      Logger.debug(`Evolution conditions not met for ${baseWeaponSpec.name}. Requires ${requiredPassiveName} at max level.`);
     }
   }
 
@@ -267,7 +266,6 @@ export class Player {
     const existing = this.activePassives.find(p => p.type === type);
     const passiveSpec = PASSIVE_SPECS.find(p => p.name === type);
 
-    Logger.debug(`[addPassive] Before: type=${type}, existingLevel=${existing?.level}, activePassives=${JSON.stringify(this.activePassives)}`);
     if (!passiveSpec) {
       Logger.warn(`Attempted to add unknown passive type: ${type}`);
       return;
@@ -280,7 +278,6 @@ export class Player {
         this.upgrades.push(`Passive Upgrade: ${type} Lv.${existing.level}`);
         Logger.info(`Passive ${type} leveled up to Lv.${existing.level}`);
       } else {
-        Logger.debug(`Passive ${type} is already at max level.`);
       }
     } else {
       const newPassive = { type, level: 1 };
@@ -289,7 +286,6 @@ export class Player {
       this.upgrades.push(`Passive Unlock: ${type} Lv.1`);
       Logger.info(`Passive ${type} unlocked at Lv.1`);
     }
-    Logger.debug(`[addPassive] After: type=${type}, activePassives=${JSON.stringify(this.activePassives)}`);
   }
 
   public setGameContext(ctx: any) {
@@ -304,18 +300,14 @@ export class Player {
     if (this.gameContext && typeof this.gameContext.bossManager?.getActiveBoss === 'function') {
       boss = this.gameContext.bossManager.getActiveBoss();
       if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-        Logger.debug(`[findNearestEnemy] Boss found: x=${boss.x}, y=${boss.y}, hp=${boss.hp}, active=${boss.active}, state=${boss.state}`);
         return boss as any;
       }
     }
     const enemies = this.enemyProvider ? this.enemyProvider() : [];
-    Logger.debug(`[findNearestEnemy] Candidates: ${enemies.length}`);
     let nearest: Enemy | null = null;
     let bestD2 = Number.POSITIVE_INFINITY;
     for (const e of enemies) {
-      Logger.debug(`[findNearestEnemy] Checking enemy: x=${e.x}, y=${e.y}, hp=${e.hp}, active=${e.active}, state=${(e as any).state}`);
       if (!e || (e as any).active === false || (e.hp != null && e.hp <= 0)) {
-        Logger.debug(`[findNearestEnemy] Skipped: inactive or dead`);
         continue; // Only target active, alive enemies
       }
       const dx = (e.x ?? 0) - (this.x ?? 0);
@@ -324,9 +316,7 @@ export class Player {
       if (d2 < bestD2) { bestD2 = d2; nearest = e; }
     }
     if (nearest) {
-      Logger.debug(`[findNearestEnemy] Nearest: x=${nearest.x}, y=${nearest.y}, hp=${nearest.hp}, active=${nearest.active}`);
     } else {
-      Logger.debug(`[findNearestEnemy] No valid enemy found`);
     }
     return nearest;
   }
@@ -350,7 +340,6 @@ export class Player {
           bulletDamage = 10; // Use base damage for non-class weapons (or set per weapon if needed)
         }
 
-        Logger.debug(`[Player.shootAt] Spawning ${toShoot} bullets with weapon ${weaponType}, damage: ${bulletDamage}`);
         for (let i = 0; i < toShoot; i++) {
           const angle = baseAngle + (i - (toShoot - 1) / 2) * spread;
           bm.spawnBullet(this.x, this.y, this.x + Math.cos(angle) * 100, this.y + Math.sin(angle) * 100, weaponType, bulletDamage);
@@ -380,6 +369,12 @@ export class Player {
       this.y += normY * this.speed;
       // Animation frame only when moving (still relevant for other animations if any)
       this.frameTimer++;
+      // Flip animation: toggle isFlipped every 0.2s (12 frames at 60fps)
+      this.flipTimer++;
+      if (this.flipTimer >= 12) {
+        this.isFlipped = !this.isFlipped;
+        this.flipTimer = 0;
+      }
       if (this.frameTimer >= (60 / this.animationSpeed)) { // Assuming 60 FPS
         this.currentFrame = (this.currentFrame + 1) % this.animationFrames;
         this.frameTimer = 0;
@@ -395,6 +390,8 @@ export class Player {
       // If not moving, reset animation to first frame (idle)
       this.currentFrame = 0;
       this.frameTimer = 0;
+      this.flipTimer = 0;
+      this.isFlipped = false;
       // Reset velocity
       this.vx = 0;
       this.vy = 0;
@@ -405,15 +402,12 @@ export class Player {
     }
 
     // Update cooldowns and shoot for all active weapons
-    // Debug: Log active weapons and cooldowns
-    Logger.debug(`[Player.update] ActiveWeapons: ${Array.from(this.activeWeapons.entries()).map(([wt, lvl]) => wt + ':' + lvl).join(', ')}`);
     let autoAimTarget = this.findNearestEnemy();
     if (autoAimTarget) {
   this.rotation = Math.atan2(autoAimTarget.y - this.y, autoAimTarget.x - this.x) - Math.PI / 2;
     }
     this.activeWeapons.forEach((level, weaponType) => {
       let cooldown = this.shootCooldowns.get(weaponType) ?? 0;
-      Logger.debug(`[Player.update] Weapon ${weaponType} Cooldown: ${cooldown}`);
       cooldown--;
       // Clamp cooldown to zero if negative
       if (cooldown < 0) cooldown = 0;
@@ -421,15 +415,12 @@ export class Player {
 
       if (cooldown <= 0) {
         const t = autoAimTarget;
-        Logger.debug(`[Player.update] Nearest Enemy: ${t ? (t.x + ',' + t.y) : 'None'}`);
         if (t) {
-          Logger.debug(`[Player.update] Shooting at enemy with weapon ${weaponType}`);
           this.shootAt(t, weaponType);
           const spec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
           const baseCooldown = spec?.cooldown ?? 10;
           const newCooldown = Math.max(1, Math.floor(baseCooldown / (this.fireRateModifier * this.attackSpeed))); // cooldown reduced by attackSpeed
           this.shootCooldowns.set(weaponType, newCooldown);
-          Logger.debug(`[Player.update] Weapon ${weaponType} shot, new cooldown: ${newCooldown}`);
         }
       }
     });
@@ -508,16 +499,32 @@ export class Player {
    */
   public draw(ctx: CanvasRenderingContext2D): void {
     // Draws the player sprite if available, otherwise draws a fallback circle.
-    // Micro-optimized for canvas performance. Adds debug logging for asset presence.
     // Use asset loader from game context
-    const assetKey = this.characterData?.sprite || 'cyber_runner';
+    let assetKey = this.characterData?.sprite || 'cyber_runner';
+    if (this.characterData?.id === 'psionic_weaver') {
+      assetKey = 'psionic_weaver';
+    }
+    // Debug: log assetKey and image path used for rendering
+    if (this.gameContext?.assetLoader) {
+      const imgPath = `/assets/player/${assetKey}.png`;
+      const img = this.gameContext.assetLoader.getImage(imgPath);
+      if (!img) {
+        Logger.debug(`[Player.render] Image not loaded for assetKey: ${assetKey}, path: ${imgPath}`);
+      } else {
+        Logger.debug(`[Player.render] Image loaded for assetKey: ${assetKey}, path: ${imgPath}, src: ${img.src}`);
+      }
+    }
     const img = this.gameContext?.assetLoader?.getImage(`/assets/player/${assetKey}.png`) as HTMLImageElement | undefined;
     if (img && img.complete && img.naturalWidth > 0) {
-      Logger.debug(`[Player.draw] Drawing sprite: ${assetKey}, img.complete=${img.complete}`);
       ctx.save();
       ctx.translate(this.x, this.y);
       ctx.rotate(this.rotation);
-      ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+      if (this.isFlipped) {
+        ctx.scale(-1, 1);
+        ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+      } else {
+        ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+      }
       ctx.restore();
     }
   /**

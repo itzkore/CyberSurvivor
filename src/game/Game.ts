@@ -131,14 +131,12 @@ export class Game {
 
     // Listen for level up and chest upgrade events to show UpgradePanel
     window.addEventListener('levelup', () => {
-      Logger.debug('[Game] levelup event received, attempting to show UpgradePanel.');
       if (!this.upgradePanel) {
         Logger.error('[Game] UpgradePanel instance missing on levelup!');
         return;
       }
       // Defensive: check DOM element exists before showing
       if (typeof this.upgradePanel.show === 'function' && this.upgradePanel['panelElement']) {
-        Logger.debug('[Game] UpgradePanel panelElement exists, calling show().');
         this.upgradePanel.show();
         this.setState('UPGRADE_MENU');
       } else {
@@ -146,13 +144,11 @@ export class Game {
       }
     });
     window.addEventListener('forceUpgradeOption', (e: Event) => {
-      Logger.debug('[Game] forceUpgradeOption event received, attempting to show UpgradePanel.');
       if (!this.upgradePanel) {
         Logger.error('[Game] UpgradePanel instance missing on forceUpgradeOption!');
         return;
       }
       if (typeof this.upgradePanel.show === 'function' && this.upgradePanel['panelElement']) {
-        Logger.debug('[Game] UpgradePanel panelElement exists, calling show().');
         this.upgradePanel.show();
         this.setState('UPGRADE_MENU');
       } else {
@@ -301,7 +297,6 @@ export class Game {
         // Instantiate UpgradePanel here, after player is initialized with character data
         if (!this.upgradePanel) { // Only instantiate once
           this.upgradePanel = new UpgradePanel(this.player, this); // Pass initialized player and game
-          Logger.debug('[Game] UpgradePanel instantiated and set.');
         }
       }
     });
@@ -312,7 +307,6 @@ export class Game {
    * @param selectedCharacterData Data for the selected character (optional)
    */
   public resetGame(selectedCharacterData?: any) {
-    Logger.debug(`[Game.resetGame] selectedCharacterData received:`, selectedCharacterData);
   /**
    * Resets the game state and player for a new run.
    * Ensures player weapon state is initialized with character data.
@@ -321,17 +315,14 @@ export class Game {
   // Only create a new player if one doesn't exist or if new character data is provided
   if (!this.player || selectedCharacterData) {
     this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData);
-    Logger.debug(`[Game.resetGame] New Player instance created. Active weapons: ${Array.from(this.player.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
     this.player.radius = 18;
   } else {
     // If player already exists and no new character data, just reset existing player state
     this.player.resetState(); // Implement this method in Player.ts
-    Logger.debug(`[Game.resetGame] Existing Player state reset. Active weapons: ${Array.from(this.player.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
   }
   // Always rewire UpgradePanel to current player instance
   if (this.upgradePanel) {
     this.upgradePanel['player'] = this.player;
-    Logger.debug('[Game.resetGame] UpgradePanel rewired to new player instance.');
   }
 
     // Reset managers with new player reference
@@ -444,12 +435,21 @@ async init() {
     await this.assetLoader.loadAllFromManifest('/assets');
     // Explicitně načíst asset hráče podle id (default cyber_runner)
     await this.assetLoader.loadImage('/assets/player/cyber_runner.png');
+    // Explicitně načíst asset hráče psionic_weaver
+    await this.assetLoader.loadImage('/assets/player/psionic_weaver.png');
     // Debug: log src if loaded
     const img = this.assetLoader.getImage('/assets/player/cyber_runner.png');
     if (img) {
       Logger.info(`[Game.init] cyber_runner.png loaded, src: ${img.src}`);
     } else {
       Logger.warn('[Game.init] cyber_runner.png NOT loaded!');
+    }
+    // Debug: log src if loaded for psionic_weaver
+    const imgWeaver = this.assetLoader.getImage('/assets/player/psionic_weaver.png');
+    if (imgWeaver) {
+      Logger.info(`[Game.init] psionic_weaver.png loaded, src: ${imgWeaver.src}`);
+    } else {
+      Logger.warn('[Game.init] psionic_weaver.png NOT loaded!');
     }
   } catch (error) {
     console.error("Error loading assets:", error);

@@ -210,13 +210,15 @@ export class UpgradePanel {
      * Patch: Allow all weapons except other class weapons (isClassWeapon=true and not Runner Gun).
      * Cyber Runner should get only non-class weapons and their own class weapon (Runner Gun).
      */
+    // Only allow non-class weapons and the player's own class weapon
+    const playerClassWeapon = this.player.characterData?.defaultWeapon;
     const allowedWeaponTypes: WeaponType[] = Object.keys(WEAPON_SPECS)
       .map(wt => Number(wt))
       .filter(wt => {
         const spec = WEAPON_SPECS[wt as WeaponType];
         if (!spec) return false;
-        // Allow if not a class weapon, or is Runner Gun
-        return !spec.isClassWeapon || wt === WeaponType.RUNNER_GUN;
+        // Allow if not a class weapon, or is the player's own class weapon
+        return !spec.isClassWeapon || wt === playerClassWeapon;
       });
     // Build weapon upgrade/unlock pool
     const weaponOptions: UpgradeOption[] = [];
@@ -224,7 +226,8 @@ export class UpgradePanel {
       const spec = WEAPON_SPECS[wt];
       if (!spec) continue;
       const owned = this.player.activeWeapons.get(wt) || 0;
-      if (!owned && spec.maxLevel > 0) {
+      // Only offer unlock if player has less than 5 weapons
+      if (!owned && spec.maxLevel > 0 && this.player.activeWeapons.size < maxWeapons) {
         weaponOptions.push({
           type: 'weapon',
           id: wt,

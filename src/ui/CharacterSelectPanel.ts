@@ -16,6 +16,7 @@ interface Stats {
   [key: string]: number | undefined;
 }
 export interface CharacterData {
+  id: string;
   name: string;
   description: string;
   stats: Stats;
@@ -223,7 +224,8 @@ export class CharacterSelectPanel {
         weaponTypes: [WeaponType.GUNNER_MINIGUN, WeaponType.SHOTGUN, WeaponType.RAILGUN]
       },
       {
-        name: 'Psionic Weaver',
+  id: 'psionic_weaver',
+  name: 'Psionic Weaver',
         description: 'Manipulates psychic energy for devastating effects.',
   statModifiers: { intelligence: 6, damage: 12, hp: -15, strength: -3, attackSpeed: 0.52 },
         uniqueTraits: ['Mind Control', 'Psychic Nova'],
@@ -287,14 +289,15 @@ export class CharacterSelectPanel {
       }
 
       const characterData: CharacterData = {
-        name: template.name,
-        description: template.description,
-        stats: stats as Stats,
-        traits: template.uniqueTraits,
-        shape: template.shape as Shape,
-        color: template.color,
-        defaultWeapon: template.defaultWeapon, // Ensure defaultWeapon is copied
-        weaponTypes: template.weaponTypes // Ensure weaponTypes is copied
+  id: template.id ?? "",
+  name: template.name,
+  description: template.description,
+  stats: stats as Stats,
+  traits: template.uniqueTraits,
+  shape: template.shape as Shape,
+  color: template.color,
+  defaultWeapon: template.defaultWeapon, // Ensure defaultWeapon is copied
+  weaponTypes: template.weaponTypes // Ensure weaponTypes is copied
       };
       Logger.debug(`[CharacterSelectPanel] Initialized character: ${characterData.name}, Default Weapon: ${WeaponType[characterData.defaultWeapon!]}, Weapon Types: ${characterData.weaponTypes?.map(wt => WeaponType[wt]).join(', ')}`);
       return characterData;

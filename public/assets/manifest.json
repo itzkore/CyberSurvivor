@@ -41,7 +41,14 @@
       "h": 64,
       "frames": 1,
       "glow": "cyan"
-    }
+  },
+    "psionic_weaver": {
+      "file": "assets/player/psionic_weaver.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+  }
   },
   "boss": {
     "phase1": {
