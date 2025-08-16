@@ -31,6 +31,9 @@ export class AssetLoader {
       case 'upgrade_speed':
       case 'upgrade_hp': return { w: 64, h: 64 };
       case 'cyber_runner': return { w: 64, h: 64 }; // Example entry for new character
+      case 'psionic_weaver': return { w: 64, h: 64 }; // Ensure psionic_weaver is handled
+  case 'bio_engineer': return { w: 64, h: 64 }; // Ensure bio_engineer is handled
+  case 'titan_mech': return { w: 64, h: 64 }; // Ensure titan_mech is handled
       case 'tech_warrior_anim': return { w: 64, h: 64 }; // Example entry for new animated character
       case 'character_select_bg': return { w: 1920, h: 1080 }; // Added for character select background
       default: return { w: 64, h: 64 };

@@ -437,6 +437,10 @@ async init() {
     await this.assetLoader.loadImage('/assets/player/cyber_runner.png');
     // Explicitně načíst asset hráče psionic_weaver
     await this.assetLoader.loadImage('/assets/player/psionic_weaver.png');
+  // Explicitně načíst asset hráče bio_engineer
+  await this.assetLoader.loadImage('/assets/player/bio_engineer.png');
+  // Explicitně načíst asset hráče titan_mech
+  await this.assetLoader.loadImage('/assets/player/titan_mech.png');
     // Debug: log src if loaded
     const img = this.assetLoader.getImage('/assets/player/cyber_runner.png');
     if (img) {
@@ -450,6 +454,13 @@ async init() {
       Logger.info(`[Game.init] psionic_weaver.png loaded, src: ${imgWeaver.src}`);
     } else {
       Logger.warn('[Game.init] psionic_weaver.png NOT loaded!');
+    }
+    // Debug: log src if loaded for bio_engineer
+    const imgBio = this.assetLoader.getImage('/assets/player/bio_engineer.png');
+    if (imgBio) {
+      Logger.info(`[Game.init] bio_engineer.png loaded, src: ${imgBio.src}`);
+    } else {
+      Logger.warn('[Game.init] bio_engineer.png NOT loaded!');
     }
   } catch (error) {
     console.error("Error loading assets:", error);

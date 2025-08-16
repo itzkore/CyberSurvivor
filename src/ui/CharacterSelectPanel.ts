@@ -17,6 +17,7 @@ interface Stats {
 }
 export interface CharacterData {
   id: string;
+  sprite?: string;
   name: string;
   description: string;
   stats: Stats;
@@ -289,7 +290,8 @@ export class CharacterSelectPanel {
       }
 
       const characterData: CharacterData = {
-  id: template.id ?? "",
+  id: (template.id ?? template.name?.toLowerCase().replace(/\s+/g, '_') ?? "").replace(/-/g, "_"),
+  sprite: (template.id ?? template.name?.toLowerCase().replace(/\s+/g, '_') ?? "").replace(/-/g, "_"),
   name: template.name,
   description: template.description,
   stats: stats as Stats,

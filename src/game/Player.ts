@@ -99,6 +99,8 @@ export class Player {
       // Special case: Psionic Weaver always starts with PSIONIC_WAVE
       if (characterData.id === 'psionic_weaver') {
         this.activeWeapons.set(WeaponType.PSIONIC_WAVE, 1);
+      } else if (characterData.id === 'bio_engineer') {
+        this.activeWeapons.set(WeaponType.BIO_TOXIN, 1);
       } else if (characterData.defaultWeapon !== undefined) {
         this.activeWeapons.set(characterData.defaultWeapon, 1);
       }
@@ -498,12 +500,8 @@ export class Player {
    * @param ctx CanvasRenderingContext2D
    */
   public draw(ctx: CanvasRenderingContext2D): void {
-    // Draws the player sprite if available, otherwise draws a fallback circle.
-    // Use asset loader from game context
-    let assetKey = this.characterData?.sprite || 'cyber_runner';
-    if (this.characterData?.id === 'psionic_weaver') {
-      assetKey = 'psionic_weaver';
-    }
+  // Use characterData.sprite if present, else id, else fallback to 'cyber_runner'
+  let assetKey = this.characterData?.sprite || this.characterData?.id || 'cyber_runner';
     // Debug: log assetKey and image path used for rendering
     if (this.gameContext?.assetLoader) {
       const imgPath = `/assets/player/${assetKey}.png`;

@@ -49,6 +49,22 @@
       "frames": 1,
       "glow": "cyan"
   }
+    ,
+    "bio_engineer": {
+      "file": "assets/player/bio_engineer.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "titan_mech": {
+      "file": "assets/player/titan_mech.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
   },
   "boss": {
     "phase1": {

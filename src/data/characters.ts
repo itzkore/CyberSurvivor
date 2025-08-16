@@ -24,6 +24,27 @@ export interface CharacterData {
 
 export const CHARACTERS: CharacterData[] = [
   {
+    id: 'titan_mech',
+    name: 'Titan Mech',
+    description: 'A heavily armored war machine, slow but incredibly resilient.',
+    icon: '/assets/characters/titan_mech.png',
+    defaultWeapon: WeaponType.MECH_MORTAR,
+    stats: {
+      hp: 150,
+      maxHp: 150,
+      speed: 2.5,
+      damage: 20,
+      strength: 10,
+      intelligence: 4,
+      agility: 2,
+      luck: 3,
+      defense: 12,
+    },
+    shape: 'square',
+    color: '#444444',
+    weaponTypes: [WeaponType.MECH_MORTAR, WeaponType.RAILGUN, WeaponType.SHOTGUN],
+  },
+  {
     id: 'cyber_runner',
     name: 'The Runner',
     description: 'A nimble survivor with enhanced speed and a rapid-fire weapon.',
@@ -66,6 +87,27 @@ export const CHARACTERS: CharacterData[] = [
     weaponTypes: [WeaponType.PLASMA, WeaponType.LASER, WeaponType.HOMING],
   },
   {
+    id: 'bio_engineer',
+    name: 'Bio Engineer',
+    description: 'A master of toxins and biological warfare, excels at area denial and debuffs.',
+    icon: '/assets/characters/bio_engineer.png',
+    defaultWeapon: WeaponType.BIO_TOXIN,
+    stats: {
+      hp: 100,
+      maxHp: 100,
+      speed: 4.0,
+      damage: 10,
+      strength: 6,
+      intelligence: 8,
+      agility: 5,
+      luck: 7,
+      defense: 6,
+    },
+    shape: 'square',
+    color: '#00FF88',
+    weaponTypes: [WeaponType.BIO_TOXIN, WeaponType.PLASMA, WeaponType.HACKER_VIRUS],
+  },
+  {
     id: 'warrior',
     name: 'The Warrior',
     description: 'A resilient fighter with high HP and a powerful, slow-firing cannon.',
@@ -84,6 +126,6 @@ export const CHARACTERS: CharacterData[] = [
     },
     shape: 'square',
     color: '#FF4500',
-        weaponTypes: [WeaponType.SHOTGUN, WeaponType.BEAM, WeaponType.PLASMA, WeaponType.RAILGUN, WeaponType.WARRIOR_CANNON],
-      }
+    weaponTypes: [WeaponType.SHOTGUN, WeaponType.BEAM, WeaponType.PLASMA, WeaponType.RAILGUN, WeaponType.WARRIOR_CANNON],
+  }
 ];
