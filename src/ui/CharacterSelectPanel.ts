@@ -27,6 +27,7 @@ export interface CharacterData {
   initialSpeed?: number;
   statModifiers?: { [key: string]: number };
   defaultWeapon?: WeaponType; // Add defaultWeapon property
+  weaponTypes?: WeaponType[]; // Allowed weapon types for upgrades
 }
 export type Character = CharacterData;
 
@@ -135,6 +136,7 @@ export class CharacterSelectPanel {
   private handleSelect() {
     const selectedChar = this.characters[this.selectedCharacterIndex];
     if (selectedChar) {
+      Logger.debug(`[CharacterSelectPanel] Selected character: ${selectedChar.name}, Default Weapon: ${WeaponType[selectedChar.defaultWeapon!]}, Weapon Types: ${selectedChar.weaponTypes?.map(wt => WeaponType[wt]).join(', ')}`);
       // Dispatch 'startGame' event with selected character data
       window.dispatchEvent(new CustomEvent('startGame', { detail: selectedChar }));
       this.hide();
@@ -157,7 +159,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Quick Reflexes', 'Evasive Maneuvers'],
         shape: 'circle',
         color: '#00FFFF', // Cyan
-        defaultWeapon: WeaponType.RUNNER_GUN
+        defaultWeapon: WeaponType.RUNNER_GUN,
+        weaponTypes: [WeaponType.RUNNER_GUN, WeaponType.PISTOL, WeaponType.SHOTGUN]
       },
       {
         name: 'Tech Warrior',
@@ -166,7 +169,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Reinforced Plating', 'Taunt'],
         shape: 'square',
         color: '#FF0000', // Red
-        defaultWeapon: WeaponType.WARRIOR_CANNON
+        defaultWeapon: WeaponType.WARRIOR_CANNON,
+        weaponTypes: [WeaponType.WARRIOR_CANNON, WeaponType.PISTOL, WeaponType.LASER]
       },
       {
         name: 'Data Sorcerer',
@@ -175,7 +179,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Arcane Blast', 'Mana Shield'],
         shape: 'triangle',
         color: '#FFFF00', // Yellow
-        defaultWeapon: WeaponType.SORCERER_ORB
+        defaultWeapon: WeaponType.SORCERER_ORB,
+        weaponTypes: [WeaponType.SORCERER_ORB, WeaponType.RICOCHET, WeaponType.HOMING]
       },
       {
         name: 'Shadow Operative',
@@ -184,7 +189,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Stealth Field', 'Critical Strike'],
         shape: 'circle',
         color: '#800080', // Purple
-        defaultWeapon: WeaponType.SHADOW_DAGGER
+        defaultWeapon: WeaponType.SHADOW_DAGGER,
+        weaponTypes: [WeaponType.SHADOW_DAGGER, WeaponType.PISTOL, WeaponType.RAPID]
       },
       {
         name: 'Bio-Engineer',
@@ -193,7 +199,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Healing Drone', 'Poison Cloud'],
         shape: 'square',
         color: '#00FF00', // Green
-        defaultWeapon: WeaponType.BIO_TOXIN
+        defaultWeapon: WeaponType.BIO_TOXIN,
+        weaponTypes: [WeaponType.BIO_TOXIN, WeaponType.PLASMA, WeaponType.TRI_SHOT]
       },
       {
         name: 'Rogue Hacker',
@@ -202,7 +209,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['System Overload', 'EMP Burst'],
         shape: 'triangle',
         color: '#FFA500', // Orange
-        defaultWeapon: WeaponType.HACKER_VIRUS
+        defaultWeapon: WeaponType.HACKER_VIRUS,
+        weaponTypes: [WeaponType.HACKER_VIRUS, WeaponType.BEAM, WeaponType.HOMING]
       },
       {
         name: 'Heavy Gunner',
@@ -211,7 +219,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Suppressive Fire', 'Heavy Armor'],
         shape: 'square',
         color: '#A52A2A', // Brown
-        defaultWeapon: WeaponType.GUNNER_MINIGUN
+        defaultWeapon: WeaponType.GUNNER_MINIGUN,
+        weaponTypes: [WeaponType.GUNNER_MINIGUN, WeaponType.SHOTGUN, WeaponType.RAILGUN]
       },
       {
         name: 'Psionic Weaver',
@@ -220,7 +229,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Mind Control', 'Psychic Nova'],
         shape: 'circle',
         color: '#FFC0CB', // Pink
-        defaultWeapon: WeaponType.PSIONIC_WAVE
+        defaultWeapon: WeaponType.PSIONIC_WAVE,
+        weaponTypes: [WeaponType.PSIONIC_WAVE, WeaponType.BEAM, WeaponType.PLASMA]
       },
       {
         name: 'Wasteland Scavenger',
@@ -229,7 +239,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Jury-Rig', 'Scavenge'],
         shape: 'square',
         color: '#808080', // Gray
-        defaultWeapon: WeaponType.SCAVENGER_SLING
+        defaultWeapon: WeaponType.SCAVENGER_SLING,
+        weaponTypes: [WeaponType.SCAVENGER_SLING, WeaponType.RICOCHET, WeaponType.SHOTGUN]
       },
       {
         name: 'Neural Nomad',
@@ -238,7 +249,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Data Stream', 'Cognitive Boost'],
         shape: 'triangle',
         color: '#008080', // Teal
-        defaultWeapon: WeaponType.NOMAD_NEURAL
+        defaultWeapon: WeaponType.NOMAD_NEURAL,
+        weaponTypes: [WeaponType.NOMAD_NEURAL, WeaponType.LASER, WeaponType.BEAM]
       },
       {
         name: 'Ghost Operative',
@@ -247,7 +259,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Invisibility Cloak', 'One-Shot Kill'],
         shape: 'circle',
         color: '#FFFFFF', // White
-        defaultWeapon: WeaponType.GHOST_SNIPER
+        defaultWeapon: WeaponType.GHOST_SNIPER,
+        weaponTypes: [WeaponType.GHOST_SNIPER, WeaponType.RAILGUN, WeaponType.PISTOL]
       },
       {
         name: 'Titan Mech',
@@ -256,7 +269,8 @@ export class CharacterSelectPanel {
         uniqueTraits: ['Siege Mode', 'Self-Repair'],
         shape: 'square',
         color: '#444444', // Dark gray
-        defaultWeapon: WeaponType.MECH_MORTAR // Ensure this is still Mech Mortar
+        defaultWeapon: WeaponType.MECH_MORTAR, // Ensure this is still Mech Mortar
+        weaponTypes: [WeaponType.MECH_MORTAR, WeaponType.RAILGUN, WeaponType.SHOTGUN]
       }
     ];
 
@@ -272,15 +286,18 @@ export class CharacterSelectPanel {
         }
       }
 
-      return {
+      const characterData: CharacterData = {
         name: template.name,
         description: template.description,
         stats: stats as Stats,
         traits: template.uniqueTraits,
         shape: template.shape as Shape,
         color: template.color,
-        defaultWeapon: template.defaultWeapon // Ensure defaultWeapon is copied
-      } as CharacterData;
+        defaultWeapon: template.defaultWeapon, // Ensure defaultWeapon is copied
+        weaponTypes: template.weaponTypes // Ensure weaponTypes is copied
+      };
+      Logger.debug(`[CharacterSelectPanel] Initialized character: ${characterData.name}, Default Weapon: ${WeaponType[characterData.defaultWeapon!]}, Weapon Types: ${characterData.weaponTypes?.map(wt => WeaponType[wt]).join(', ')}`);
+      return characterData;
     });
   }
 

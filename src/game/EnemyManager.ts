@@ -1,5 +1,8 @@
 export type Enemy = { x: number; y: number; hp: number; maxHp: number; radius: number; speed: number; active: boolean; type: 'small' | 'medium' | 'large'; damage: number; _damageFlash?: number; _lastDamageTime?: number; id: string;
   _lastHitByWeapon?: WeaponType; // Track the last weapon type that hit this enemy
+  knockbackVx?: number; // Knockback velocity X
+  knockbackVy?: number; // Knockback velocity Y
+  knockbackTimer?: number; // Frames remaining for knockback
 };
 
 export type Chest = { x: number; y: number; radius: number; active: boolean; }; // New Chest type
@@ -11,6 +14,7 @@ import type { Gem } from './Gem';
 import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
 import { Logger } from '../core/Logger';
+import { WEAPON_SPECS } from './WeaponConfig';
 
 interface Wave {
   startTime: number; // in seconds
@@ -102,19 +106,43 @@ export class EnemyManager {
 
   /**
    * Applies damage to an enemy and handles related effects.
+   * Also applies knockback based on weapon spec and level.
    * @param enemy The enemy to apply damage to.
    * @param amount The amount of damage to apply.
    * @param isCritical Whether the damage is critical (defaults to false).
    * @param ignoreActiveCheck If true, damage is applied even if enemy is inactive or has 0 HP (for AoE effects).
    * @param sourceWeaponType The weapon type that caused the damage.
+   * @param hitDirection Optional: normalized {x, y} direction vector from projectile/player to enemy
+   * @param weaponLevel Optional: weapon level for scaling knockback
    */
-  public takeDamage(enemy: Enemy, amount: number, isCritical: boolean = false, ignoreActiveCheck: boolean = false, sourceWeaponType?: WeaponType): void {
+  public takeDamage(enemy: Enemy, amount: number, isCritical: boolean = false, ignoreActiveCheck: boolean = false, sourceWeaponType?: WeaponType, playerX?: number, playerY?: number, weaponLevel?: number): void {
     if (!ignoreActiveCheck && (!enemy.active || enemy.hp <= 0)) return; // Only damage active, alive enemies unless ignored
 
     enemy.hp -= amount;
     enemy._damageFlash = 8; // Visual feedback for damage
     if (sourceWeaponType !== undefined) {
       enemy._lastHitByWeapon = sourceWeaponType;
+      // --- Knockback logic ---
+      /**
+       * hitDirection must be a normalized vector FROM source (bullet/player) TO enemy.
+       * Knockback should push enemy AWAY from source, so use (enemy.x - source.x).
+       */
+      const spec = WEAPON_SPECS[sourceWeaponType];
+      if (spec && spec.knockback && playerX !== undefined && playerY !== undefined) {
+        let knockback = spec.knockback;
+        if (weaponLevel && weaponLevel > 1) {
+          knockback *= 1 + (weaponLevel - 1) * 0.25; // 25% more per level
+        }
+        // Calculate direction from player to enemy
+        const dx = enemy.x - playerX;
+        const dy = enemy.y - playerY;
+        const dist = Math.hypot(dx, dy) || 1;
+        const hitDirection = { x: dx / dist, y: dy / dist };
+
+        enemy.knockbackVx = hitDirection.x * knockback;
+        enemy.knockbackVy = hitDirection.y * knockback;
+        enemy.knockbackTimer = 8; // Knockback lasts for 8 frames (~133ms)
+      }
     }
     window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: amount, isCritical: isCritical } }));
   }
@@ -268,13 +296,27 @@ export class EnemyManager {
     for (let i = 0, len = this.enemies.length; i < len; i++) {
       const enemy = this.enemies[i];
       if (!enemy.active) continue;
-      // Move toward player
+      // Calculate distance to player for movement and collision
       const dx = playerX - enemy.x;
       const dy = playerY - enemy.y;
       const dist = Math.hypot(dx, dy);
-      if (dist > enemy.radius) { // Use radius to prevent jittering when close
-        enemy.x += (dx / dist) * enemy.speed;
-        enemy.y += (dy / dist) * enemy.speed;
+      // Apply knockback velocity if active
+      if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
+        enemy.x += enemy.knockbackVx ?? 0;
+        enemy.y += enemy.knockbackVy ?? 0;
+        // Decay knockback velocity
+        enemy.knockbackVx = (enemy.knockbackVx ?? 0) * 0.7;
+        enemy.knockbackVy = (enemy.knockbackVy ?? 0) * 0.7;
+        enemy.knockbackTimer--;
+      } else {
+        enemy.knockbackVx = 0;
+        enemy.knockbackVy = 0;
+        enemy.knockbackTimer = 0;
+        // Move toward player
+        if (dist > enemy.radius) { // Use radius to prevent jittering when close
+          enemy.x += (dx / dist) * enemy.speed;
+          enemy.y += (dy / dist) * enemy.speed;
+        }
       }
       // Player-enemy collision
       if (dist < enemy.radius + this.player.radius) {
@@ -288,14 +330,14 @@ export class EnemyManager {
         const ddy = bullet.y - enemy.y;
         const d = Math.hypot(ddx, ddy);
         if (d < enemy.radius + bullet.radius) {
+          const hitDirection = d > 0 ? { x: ddx / d, y: ddy / d } : { x: 0, y: 0 };
+          const weaponLevel = (bullet as any).level ?? 1;
           const isCritical = Math.random() < 0.15;
           const criticalMultiplier = isCritical ? 2.0 : 1.0;
           const damageAmount = bullet.damage * criticalMultiplier;
-          this.takeDamage(enemy, damageAmount, isCritical, false, bullet.weaponType as WeaponType); // Apply bullet damage via centralized method, respect active check
-          
+          this.takeDamage(enemy, damageAmount, isCritical, false, bullet.weaponType as WeaponType, this.player.x, this.player.y, weaponLevel); // Apply bullet damage and knockback
           // Deactivate bullet immediately on hit (removed Mech Mortar exception)
           bullet.active = false;
-
           if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
         }
       }
@@ -315,12 +357,9 @@ export class EnemyManager {
             }
           }));
         }
-         this.enemyPool.push(enemy);
-       }
-     }
-    // Filter out inactive enemies
-    this.enemies = this.enemies.filter(e => e.active);
-
+        this.enemyPool.push(enemy);
+      }
+    }
     // update gems
     for (let i = 0, len = this.gems.length; i < len; i++) {
       const g = this.gems[i];

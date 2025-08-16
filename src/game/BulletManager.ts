@@ -110,10 +110,20 @@ export class BulletManager {
 
         if (window.enemyManager && typeof window.enemyManager.getEnemies === 'function') {
           for (const enemy of window.enemyManager.getEnemies()) {
-            // Use swept-sphere collision to find intersection along the path
-            intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius); // Revert to original collision radius
+            intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius);
             if (intersectionPoint) {
               hitEnemy = enemy;
+              // --- Knockback direction (corrected to push away from bullet) ---
+              const dx = enemy.x - b.x; // Vector from bullet to enemy
+              const dy = enemy.y - b.y; // Vector from bullet to enemy
+              const dist = Math.hypot(dx, dy) || 1;
+              const hitDirection = { x: dx / dist, y: dy / dist };
+              // Pass weapon level if available (default 1)
+              const weaponLevel = (b as any).level ?? 1;
+              // Apply damage and knockback
+              if (typeof (window.enemyManager as any).takeDamage === 'function') {
+                (window.enemyManager as any).takeDamage(enemy, b.damage, false, false, b.weaponType, window.player?.x, window.player?.y, weaponLevel);
+              }
               break; // Stop at first hit
             }
           }
@@ -151,6 +161,32 @@ export class BulletManager {
          continue;
        }
       // --- End Mech Mortar logic ---
+
+      // General collision detection for all other weapons
+      if (window.enemyManager && typeof window.enemyManager.getEnemies === 'function') {
+        for (const enemy of window.enemyManager.getEnemies()) {
+          if (!enemy.active || enemy.hp <= 0) continue; // Only check active, alive enemies
+
+          const dx = b.x - enemy.x;
+          const dy = b.y - enemy.y;
+          const dist = Math.hypot(dx, dy);
+
+          if (dist < b.radius + enemy.radius) {
+            // Collision detected
+            b.active = false; // Deactivate bullet on hit
+            this.bulletPool.push(b); // Return to pool
+
+            // Calculate hit direction from bullet to enemy for knockback (pushes enemy away from bullet)
+            const hitDirection = { x: (enemy.x - b.x) / dist, y: (enemy.y - b.y) / dist };
+            const weaponLevel = (b as any).level ?? 1; // Pass weapon level if available (default 1)
+
+            if (typeof (window.enemyManager as any).takeDamage === 'function') {
+              (window.enemyManager as any).takeDamage(enemy, b.damage, false, false, b.weaponType, window.player?.x, window.player?.y, weaponLevel);
+            }
+            break; // Stop at first hit for this bullet
+          }
+        }
+      }
 
       // Basic movement for other weapons
       b.x += b.vx;

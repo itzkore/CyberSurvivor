@@ -61,6 +61,7 @@ export class Player {
   public characterData?: any;
   public classWeaponType?: WeaponType; // Cache class weapon type
   constructor(x: number, y: number, characterData?: any) {
+    Logger.debug(`[Player.constructor] characterData received:`, characterData);
     this.x = x;
     this.y = y;
     this.baseSpeed = this.speed;
@@ -70,19 +71,60 @@ export class Player {
       this.applyCharacterData(characterData);
       // Clear all weapons and add only the default weapon
       this.activeWeapons.clear();
+      Logger.debug(`[Player] activeWeapons cleared. Size: ${this.activeWeapons.size}`);
       if (characterData.defaultWeapon !== undefined) {
-        this.addWeapon(characterData.defaultWeapon);
+        // Explicitly set level to 1 for the default weapon on new game
+        this.activeWeapons.set(characterData.defaultWeapon, 1);
+        Logger.debug(`[Player] Default weapon added: ${WeaponType[characterData.defaultWeapon]}. Current level: ${this.activeWeapons.get(characterData.defaultWeapon)}`);
       }
     }
-    // Fallback: if no weapons present, add a default weapon (first in WeaponType enum)
+    /**
+     * Fallback: if no weapons present, add the first weapon in characterData.weaponTypes (class weapon),
+     * else fallback to first WeaponType enum value (PISTOL).
+     */
     if (this.activeWeapons.size === 0) {
-      const weaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
-      if (weaponTypes.length > 0) {
-        this.addWeapon(weaponTypes[0]);
-        Logger.warn('[Player] No default weapon found in characterData, fallback to first WeaponType.');
+      if (this.characterData && Array.isArray(this.characterData.weaponTypes) && this.characterData.weaponTypes.length > 0) {
+        this.activeWeapons.set(this.characterData.weaponTypes[0], 1); // Set to level 1
+        Logger.warn('[Player] No defaultWeapon found, fallback to first class weapon.');
+      } else {
+        const weaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
+        if (weaponTypes.length > 0) {
+          this.activeWeapons.set(weaponTypes[0], 1); // Set to level 1
+          Logger.warn('[Player] No defaultWeapon or class weapon found, fallback to first WeaponType.');
+        }
       }
     }
     window.addEventListener('chestPickedUp', this.handleChestPickup.bind(this));
+  }
+
+  /**
+   * Resets the player's game-specific state for a new run.
+   * This is called when the player already exists but a new game starts.
+   */
+  public resetState() {
+    this.hp = this.maxHp; // Reset HP
+    this._exp = 0; // Reset experience
+    this.level = 1; // Reset level
+    this.activeWeapons.clear(); // Clear all weapons
+    this.activePassives = []; // Clear all passives
+    this.upgrades = []; // Clear upgrade history
+    this.shootCooldowns.clear(); // Clear weapon cooldowns
+
+    // Re-add the default weapon based on characterData, if available
+    if (this.characterData && this.characterData.defaultWeapon !== undefined) {
+      this.activeWeapons.set(this.characterData.defaultWeapon, 1); // Set to level 1
+      Logger.debug(`[Player.resetState] Default weapon re-added: ${WeaponType[this.characterData.defaultWeapon]}. Current level: ${this.activeWeapons.get(this.characterData.defaultWeapon)}`);
+    } else if (this.characterData && Array.isArray(this.characterData.weaponTypes) && this.characterData.weaponTypes.length > 0) {
+      this.activeWeapons.set(this.characterData.weaponTypes[0], 1); // Set to level 1
+      Logger.warn('[Player.resetState] No defaultWeapon found, fallback to first class weapon.');
+    } else {
+      const weaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
+      if (weaponTypes.length > 0) {
+        this.activeWeapons.set(weaponTypes[0], 1); // Set to level 1
+        Logger.warn('[Player.resetState] No defaultWeapon or class weapon found, fallback to first WeaponType.');
+      }
+    }
+    Logger.debug(`[Player.resetState] Player state reset. Active weapons: ${Array.from(this.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
   }
 
   get exp(): number {

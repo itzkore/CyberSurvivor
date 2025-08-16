@@ -66,3 +66,4 @@ export const CHARACTERS: CharacterData[] = [
         weaponTypes: [WeaponType.SHOTGUN, WeaponType.BEAM, WeaponType.PLASMA, WeaponType.RAILGUN, WeaponType.WARRIOR_CANNON],
       }
     ];
+aaa

@@ -36,6 +36,15 @@ export interface WeaponSpec {
   evolution?: WeaponEvolution; // New property for weapon evolution
   explosionRadius?: number; // Optional explosion radius for on-hit effects
   isClassWeapon?: boolean; // New property to identify class weapons
+  /**
+   * Knockback force applied to enemies hit by this weapon (pixels/frame or arbitrary units)
+   */
+  knockback?: number;
+  /**
+   * Returns scaled stats for the weapon at a given level.
+   * @param level Weapon level (1-based)
+   */
+  getLevelStats?: (level: number) => Record<string, number>;
 }
 
 export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
@@ -51,6 +60,21 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     range: 440,
     maxLevel: 8,
     damage: 14,
+    /**
+     * Returns scaled stats for Desert Eagle at a given level.
+     * @param level Weapon level (1-based)
+     */
+    getLevelStats(level: number) {
+      // Aggressive scaling: each level is a big jump
+      return {
+        damage: 14 + level * 8, // +8 per level
+        speed: 8 + level * 1.2, // +1.2 per level
+        recoil: 1 + level * 0.25, // +0.25 per level
+        cooldown: Math.max(40, 80 - level * 5), // faster fire rate
+        projectileSize: 12 + level * 2, // bigger bullets
+        explosionRadius: 100 + level * 10 // bigger splash
+      };
+    },
     projectileVisual: {
       type: 'bullet',
       color: '#FFD700',
@@ -63,7 +87,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     explosionRadius: 100,
     traits: ['Heavy', 'High Damage', 'Strong Recoil', 'Large Caliber'],
     evolution: { evolvedWeaponType: WeaponType.SHOTGUN, requiredPassive: 'Bullet Velocity' },
-    isClassWeapon: false
+    isClassWeapon: false,
+    knockback: 32 // Desert Eagle: strong knockback
   },
   [WeaponType.SHOTGUN]:  {
     id: WeaponType.SHOTGUN,
@@ -87,7 +112,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       trailLength: 10
     },
     traits: ['High Damage', 'Short Range', 'Tight Spread'],
-    isClassWeapon: false
+    isClassWeapon: false,
+    knockback: 48 // Shotgun: very strong knockback
   },
   [WeaponType.TRI_SHOT]: {
     id: WeaponType.TRI_SHOT,
@@ -184,9 +210,26 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       trailLength: 30
     },
     traits: ['Boss Beam', 'Epic Glow', 'Animated Core'],
-    isClassWeapon: false
+    isClassWeapon: false,
+    knockback: 8 // Beam: low knockback
   },
-  [WeaponType.RICOCHET]: { id: WeaponType.RICOCHET, name: 'Ricochet',icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 70,  salvo: 1, spread: 0.05,  projectile: 'bullet_cyan', speed: 7, range: 420, maxLevel: 5, damage: 12, projectileVisual: { type: 'bullet', color: '#0080FF', size: 10, glowColor: '#0080FF', glowRadius: 7 }, traits: ['Bounces Between Enemies', 'Locks On Next Target', 'Max 3 Bounces', 'Low Damage'], isClassWeapon: false },
+  [WeaponType.RICOCHET]: {
+    id: WeaponType.RICOCHET,
+    name: 'Ricochet',
+    icon: '/assets/ui/icons/upgrade_speed.png',
+    cooldown: 70,
+    salvo: 1,
+    spread: 0.05,
+    projectile: 'bullet_cyan',
+    speed: 7,
+    range: 420,
+    maxLevel: 5,
+    damage: 12,
+    projectileVisual: { type: 'bullet', color: '#0080FF', size: 10, glowColor: '#0080FF', glowRadius: 7 },
+    traits: ['Bounces Between Enemies', 'Locks On Next Target', 'Max 3 Bounces', 'Low Damage'],
+    isClassWeapon: false,
+    knockback: 18 // Ricochet: moderate knockback
+  },
   [WeaponType.HOMING]: {
     id: WeaponType.HOMING,
     name: 'Kamikaze Drone',
@@ -195,8 +238,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     salvo: 1,
     spread: 0,
     projectile: 'drone_blue',
-  speed: 4.9,
-  range: 150,
+    speed: 4.9,
+    range: 150,
     maxLevel: 5,
     damage: 25, // Base damage for Homing Drone
     projectileVisual: {
@@ -209,7 +252,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       trailLength: 18
     },
     traits: ['Homing', 'Circles Player', 'Explodes on Contact', 'Kamikaze'],
-    isClassWeapon: false
+    isClassWeapon: false,
+    knockback: 12 // Homing: light knockback
   },
   [WeaponType.RAILGUN]: {
     id: WeaponType.RAILGUN,
@@ -246,7 +290,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
      isClassWeapon: false
   },
   [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma',  icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60,  salvo: 4, spread: 0.25, projectile: 'bullet_cyan', speed: 11.2, range: 350, maxLevel: 5, damage: 10, projectileVisual: { type: 'plasma', color: '#00FFFF', size: 12, glowColor: '#00FFFF', glowRadius: 10, trailColor: 'rgba(0,255,255,0.3)', trailLength: 5 }, isClassWeapon: false },
-  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 7, projectileVisual: { type: 'spray', color: '#00FFFF', size: 5, glowColor: '#00FFFF', glowRadius: 6, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12 }, traits: ['Spray', 'Fast', 'Low Damage'], isClassWeapon: true },
+  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 7, projectileVisual: { type: 'spray', color: '#00FFFF', size: 5, glowColor: '#00FFFF', glowRadius: 6, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12 }, traits: ['Spray', 'Fast', 'Low Damage'], isClassWeapon: true, knockback: 5 // Half of current state (10 -> 5)
+  },
   [WeaponType.WARRIOR_CANNON]: { id: WeaponType.WARRIOR_CANNON, name: 'Warrior Cannon', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60, salvo: 1, spread: 0, projectile: 'bullet_red', speed: 5.6, range: 250, maxLevel: 5, damage: 40, projectileVisual: { type: 'explosive', color: '#FF0000', size: 14, glowColor: '#FF0000', glowRadius: 12 }, traits: ['Explosive', 'High Damage', 'Slow'], isClassWeapon: true },
   [WeaponType.SORCERER_ORB]: {
     id: WeaponType.SORCERER_ORB,
@@ -270,7 +315,23 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     traits: ['Piercing', 'Homing', 'Needle', 'Returns', 'Runs Through Enemies', 'Snake', 'Ricochet'],
     isClassWeapon: true
   },
-  [WeaponType.SHADOW_DAGGER]: { id: WeaponType.SHADOW_DAGGER, name: 'Shadow Dagger', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 18, salvo: 1, spread: 0, projectile: 'dagger_purple', speed: 12.6, range: 420, maxLevel: 5, damage: 18, projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 }, traits: ['Ricochet', 'Critical', 'Fast'], isClassWeapon: true },
+  [WeaponType.SHADOW_DAGGER]: {
+    id: WeaponType.SHADOW_DAGGER,
+    name: 'Shadow Dagger',
+    icon: '/assets/ui/icons/upgrade_speed.png',
+    cooldown: 18,
+    salvo: 1,
+    spread: 0,
+    projectile: 'dagger_purple',
+    speed: 12.6,
+    range: 420,
+    maxLevel: 5,
+    damage: 18,
+    projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 },
+    traits: ['Ricochet', 'Critical', 'Fast'],
+    isClassWeapon: true,
+    knockback: 20 // Dagger: moderate knockback
+  },
   [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 5, damage: 10, projectileVisual: { type: 'slime', color: '#00FF00', size: 13, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison', 'Area', 'Debuff'], isClassWeapon: true },
   [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 5, damage: 12, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP', 'Disrupt', 'Pierces'], isClassWeapon: true },
   [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 10, salvo: 1, spread: 0.28, projectile: 'bullet_brown', speed: 7.7, range: 320, maxLevel: 5, damage: 6, projectileVisual: { type: 'spray', color: '#A52A2A', size: 6, glowColor: '#A52A2A', glowRadius: 5, trailColor: 'rgba(165,42,42,0.5)', trailLength: 8 }, traits: ['Spray', 'Rapid', 'Lower Damage', 'Wider Spread', 'Balanced'], isClassWeapon: true },
@@ -299,7 +360,23 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     traits: ['Boss Wave', 'Epic Glow', 'Animated Core', 'Pierces', 'Area'],
     isClassWeapon: true
   },
-  [WeaponType.SCAVENGER_SLING]: { id: WeaponType.SCAVENGER_SLING, name: 'Scavenger Sling', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 38, salvo: 1, spread: 0, projectile: 'rock_gray', speed: 7, range: 300, maxLevel: 5, damage: 15, projectileVisual: { type: 'bullet', color: '#808080', size: 10, glowColor: '#808080', glowRadius: 7 }, traits: ['Random', 'Bounces', 'Medium Damage'], isClassWeapon: true },
+  [WeaponType.SCAVENGER_SLING]: {
+    id: WeaponType.SCAVENGER_SLING,
+    name: 'Scavenger Sling',
+    icon: '/assets/ui/icons/upgrade_speed.png',
+    cooldown: 38,
+    salvo: 1,
+    spread: 0,
+    projectile: 'rock_gray',
+    speed: 7,
+    range: 300,
+    maxLevel: 5,
+    damage: 15,
+    projectileVisual: { type: 'bullet', color: '#808080', size: 10, glowColor: '#808080', glowRadius: 7 },
+    traits: ['Random', 'Bounces', 'Medium Damage'],
+    isClassWeapon: true,
+    knockback: 24 // Sling: medium knockback
+  },
   [WeaponType.NOMAD_NEURAL]: { id: WeaponType.NOMAD_NEURAL, name: 'Neural Pulse', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 24, salvo: 1, spread: 0, projectile: 'pulse_teal', speed: 9.8, range: 400, maxLevel: 5, damage: 14, projectileVisual: { type: 'plasma', color: '#008080', size: 11, glowColor: '#008080', glowRadius: 9 }, traits: ['Pulse', 'Stun', 'Pierces'], isClassWeapon: true },
   [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 110, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 5, damage: 60, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser', 'Critical', 'Long Range'], isClassWeapon: true },
   [WeaponType.MECH_MORTAR]: {

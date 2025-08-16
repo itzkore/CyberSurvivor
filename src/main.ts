@@ -2,7 +2,6 @@
 import { Game } from './game/Game';
 import { MainMenu } from './ui/MainMenu';
 import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import CharacterSelectPanel
-import { UpgradePanel } from './ui/UpgradePanel'; // Import UpgradePanel
 import { Logger } from './core/Logger'; // Import Logger
 
 window.onload = async () => {
@@ -22,12 +21,13 @@ window.onload = async () => {
   const game = new Game(canvas); // Instantiate Game first
   const mainMenu = new MainMenu(game); // Pass game instance to MainMenu
   const characterSelectPanel = new CharacterSelectPanel(game.assetLoader); // Instantiate CharacterSelectPanel
-  const upgradePanel = new UpgradePanel(game.player, game); // Instantiate UpgradePanel
 
   // Now pass UI panels to game after they are instantiated
   game.setMainMenu(mainMenu);
   game.setCharacterSelectPanel(characterSelectPanel);
-  game.setUpgradePanel(upgradePanel);
+
+  // Initial state setup
+  game.setState('MAIN_MENU');
 
   await game.init();
 
@@ -40,7 +40,6 @@ window.onload = async () => {
     const selectedCharData = customEvent.detail;
     Logger.info('startGame event received, selectedCharData:', selectedCharData);
     game.resetGame(selectedCharData); // Reset game with selected character
-    upgradePanel.setPlayer(game.player); // Update UpgradePanel with new player instance
     mainMenu.hide();
     Logger.info('Calling game.startCinematicAndGame()');
     game.startCinematicAndGame(); // Start cinematic and then game
@@ -53,13 +52,7 @@ window.onload = async () => {
 
   window.addEventListener('showMainMenu', () => {
     characterSelectPanel.hide(); // Hide character select if coming from there
-    upgradePanel.hide(); // Hide upgrade panel if coming from there
     mainMenu.show();
-  });
-
-  window.addEventListener('showUpgradePanel', () => {
-  game.setState('UPGRADE_MENU'); // Pause game with upgrade menu state
-  upgradePanel.show();
   });
 
   window.addEventListener('pauseGame', () => {

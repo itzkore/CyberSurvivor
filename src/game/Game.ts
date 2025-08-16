@@ -2,7 +2,7 @@ import { Player } from './Player';
 import { EnemyManager } from './EnemyManager';
 import { ExplosionManager } from './ExplosionManager';
 import { HUD } from '../ui/HUD';
-import { UpgradePanel } from '../ui/UpgradePanel';
+import { UpgradePanel } from '../ui/UpgradePanel'; // Import UpgradePanel
 import { Cinematic } from '../ui/Cinematic';
 import { BossManager } from './BossManager';
 import { BulletManager } from './BulletManager';
@@ -12,6 +12,9 @@ import { MainMenu } from '../ui/MainMenu';
 import { CharacterSelectPanel } from '../ui/CharacterSelectPanel';
 import { DamageTextManager } from './DamageTextManager';
 import { GameLoop } from '../core/GameLoop';
+import { Logger } from '../core/Logger';
+import { WEAPON_SPECS } from './WeaponConfig';
+import { WeaponType } from './WeaponType';
 
 export class Game {
   /**
@@ -109,6 +112,38 @@ export class Game {
     window.addEventListener('mortarExplosion', (e: Event) => this.handleMortarExplosion(e as CustomEvent));
     // Listen for enemyDeathExplosion event
     window.addEventListener('enemyDeathExplosion', (e: Event) => this.handleEnemyDeathExplosion(e as CustomEvent));
+
+    // Listen for level up and chest upgrade events to show UpgradePanel
+    window.addEventListener('levelup', () => {
+      Logger.debug('[Game] levelup event received, attempting to show UpgradePanel.');
+      if (!this.upgradePanel) {
+        Logger.error('[Game] UpgradePanel instance missing on levelup!');
+        return;
+      }
+      // Defensive: check DOM element exists before showing
+      if (typeof this.upgradePanel.show === 'function' && this.upgradePanel['panelElement']) {
+        Logger.debug('[Game] UpgradePanel panelElement exists, calling show().');
+        this.upgradePanel.show();
+        this.setState('UPGRADE_MENU');
+      } else {
+        Logger.error('[Game] UpgradePanel panelElement missing or show() not a function.');
+      }
+    });
+    window.addEventListener('forceUpgradeOption', (e: Event) => {
+      Logger.debug('[Game] forceUpgradeOption event received, attempting to show UpgradePanel.');
+      if (!this.upgradePanel) {
+        Logger.error('[Game] UpgradePanel instance missing on forceUpgradeOption!');
+        return;
+      }
+      if (typeof this.upgradePanel.show === 'function' && this.upgradePanel['panelElement']) {
+        Logger.debug('[Game] UpgradePanel panelElement exists, calling show().');
+        this.upgradePanel.show();
+        this.setState('UPGRADE_MENU');
+      } else {
+        Logger.error('[Game] UpgradePanel panelElement missing or show() not a function.');
+      }
+    });
+    // ...existing code...
   }
 
   /**
@@ -237,6 +272,23 @@ export class Game {
         this.handlePauseMenuClick(mouseX, mouseY);
       }
     });
+
+    // Listen for the custom 'startGame' event from CharacterSelectPanel
+    window.addEventListener('startGame', (event: Event) => {
+      const customEvent = event as CustomEvent;
+      if (customEvent.detail) {
+        this.selectedCharacterData = customEvent.detail; // Store the selected character data
+        this.state = 'GAME'; // Transition to GAME state
+        this.mainMenu.hide(); // Hide main menu
+        this.resetGame(this.selectedCharacterData); // Reset game with selected character data
+
+        // Instantiate UpgradePanel here, after player is initialized with character data
+        if (!this.upgradePanel) { // Only instantiate once
+          this.upgradePanel = new UpgradePanel(this.player, this); // Pass initialized player and game
+          Logger.debug('[Game] UpgradePanel instantiated and set.');
+        }
+      }
+    });
   }
 
   /**
@@ -244,14 +296,28 @@ export class Game {
    * @param selectedCharacterData Data for the selected character (optional)
    */
   public resetGame(selectedCharacterData?: any) {
+    Logger.debug(`[Game.resetGame] selectedCharacterData received:`, selectedCharacterData);
   /**
    * Resets the game state and player for a new run.
    * Ensures player weapon state is initialized with character data.
    * @param selectedCharacterData Data for the selected character (optional)
    */
-  // Reset player position and stats, passing characterData to constructor
-  this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData);
-  this.player.radius = 18;
+  // Only create a new player if one doesn't exist or if new character data is provided
+  if (!this.player || selectedCharacterData) {
+    this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData);
+    Logger.debug(`[Game.resetGame] New Player instance created. Active weapons: ${Array.from(this.player.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
+    this.player.radius = 18;
+  } else {
+    // If player already exists and no new character data, just reset existing player state
+    this.player.resetState(); // Implement this method in Player.ts
+    Logger.debug(`[Game.resetGame] Existing Player state reset. Active weapons: ${Array.from(this.player.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
+  }
+  // Always rewire UpgradePanel to current player instance
+  if (this.upgradePanel) {
+    this.upgradePanel['player'] = this.player;
+    Logger.debug('[Game.resetGame] UpgradePanel rewired to new player instance.');
+  }
+
     // Reset managers with new player reference
     this.enemyManager = new EnemyManager(this.player, this.particleManager, this.assetLoader, 1);
     this.bossManager = new BossManager(this.player, this.particleManager);
@@ -325,8 +391,8 @@ export class Game {
   }
 
   public startCinematicAndGame() {
-    this.state = 'CINEMATIC';
-    this.cinematic.start(() => { this.state = 'GAME'; });
+  this.state = 'CINEMATIC';
+  this.cinematic.start(() => { this.state = 'GAME'; });
   }
 
   public showCharacterSelect() {
@@ -458,88 +524,55 @@ async init() {
    */
   private update(deltaTime: number) {
   // console.log('Game.render called, current state:', this.state); // Removed misleading log
-  // Only advance gameTime in GAME state
+  // Always run gameLoop, and advance gameTime if in GAME state
   if (this.state === 'GAME') {
     this.gameTime += deltaTime / 1000;
-  }
-
-  switch (this.state) {
-      case 'GAME':
-        this.player.update(deltaTime);
-        this.explosionManager?.update(); // Update AoE zones
-        this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets); // Pass bullets to enemyManager
-        this.bossManager.update(deltaTime, this.gameTime); // Pass deltaTime and gameTime to bossManager
-        this.bulletManager.update();
-        this.particleManager.update(); // Removed deltaTime argument
-        this.damageTextManager.update(); // Removed deltaTime argument
-        // --- Boss bullet collision ---
-        const boss = this.bossManager.getActiveBoss();
-        if (boss) {
-          for (let i = 0; i < this.bulletManager.bullets.length; i++) {
-            const b = this.bulletManager.bullets[i];
-            if (!b.active) continue;
-            const dx = b.x - boss.x;
-            const dy = b.y - boss.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist < boss.radius + b.radius) {
-              boss.hp -= b.damage;
-              boss._damageFlash = 12;
-              b.active = false;
-              this.particleManager.spawn(boss.x, boss.y, 1, '#FFD700');
-              window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: b.damage, isCritical: false } }));
-            }
-          }
+    this.player.update(deltaTime);
+    this.explosionManager?.update();
+    this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets);
+    this.bossManager.update(deltaTime, this.gameTime);
+    this.bulletManager.update();
+    this.particleManager.update();
+    this.damageTextManager.update();
+    // --- Boss bullet collision ---
+    const boss = this.bossManager.getActiveBoss();
+    if (boss) {
+      for (let i = 0; i < this.bulletManager.bullets.length; i++) {
+        const b = this.bulletManager.bullets[i];
+        if (!b.active) continue;
+        const dx = b.x - boss.x;
+        const dy = b.y - boss.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < boss.radius + b.radius) {
+          boss.hp -= b.damage;
+          boss._damageFlash = 12;
+          b.active = false;
+          this.particleManager.spawn(boss.x, boss.y, 1, '#FFD700');
+          window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: b.damage, isCritical: false } }));
         }
-
-        // Update DPS calculation
-        const currentTime = performance.now();
-        // Remove old entries from history
-        while (this.dpsHistory.length > 0 && currentTime - this.dpsHistory[0].time > this.dpsWindow) {
-          this.dpsHistory.shift();
-        }
-        // Calculate total damage in the window
-        const totalDamageInWindow = this.dpsHistory.reduce((sum, entry) => sum + entry.damage, 0);
-        // Calculate DPS (damage per second)
-        const currentDPS = (totalDamageInWindow / this.dpsWindow) * 1000; // Convert to per second
-
-        // Pass DPS to HUD
-        this.hud.currentDPS = currentDPS;
-
-        // Update camera position with lerp
-        this.camX += (this.player.x - this.canvas.width / 2 - this.camX) * this.camLerp;
-        this.camY += (this.player.y - this.canvas.height / 2 - this.camY) * this.camLerp;
-
-        // Clamp camera to world boundaries
-        this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.canvas.width));
-        this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.canvas.height));
-
-        // Check for game over
-        if (this.player.hp <= 0) { // Changed from this.player.health to this.player.hp
-          this.state = 'GAME_OVER';
-        }
-        break;
-      case 'MAIN_MENU':
-        // Main menu specific updates if any (e.g., animations)
-        break;
-      case 'CHARACTER_SELECT':
-        // Character select specific updates if any (e.g., animations)
-        break;
-      case 'CINEMATIC':
-        this.cinematic.update(); // Ensure cinematic updates to finish
-        if (this.cinematic.isFinished()) {
-          this.state = 'GAME';
-        }
-        break;
-      case 'PAUSE':
-        // Pause menu, no updates to game state
-        break;
-      case 'GAME_OVER':
-        // Game over screen, no updates to game state
-        break;
-      case 'UPGRADE_MENU':
-        // Upgrade menu, no updates to game state
-        break;
+      }
     }
+    // Update DPS calculation
+    const currentTime = performance.now();
+    while (this.dpsHistory.length > 0 && currentTime - this.dpsHistory[0].time > this.dpsWindow) {
+      this.dpsHistory.shift();
+    }
+    const totalDamageInWindow = this.dpsHistory.reduce((sum, entry) => sum + entry.damage, 0);
+    const currentDPS = (totalDamageInWindow / this.dpsWindow) * 1000;
+    this.hud.currentDPS = currentDPS;
+    this.camX += (this.player.x - this.canvas.width / 2 - this.camX) * this.camLerp;
+    this.camY += (this.player.y - this.canvas.height / 2 - this.camY) * this.camLerp;
+    this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.canvas.width));
+    this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.canvas.height));
+    if (this.player.hp <= 0) {
+      this.state = 'GAME_OVER';
+    }
+  } else if (this.state === 'CINEMATIC') {
+    this.cinematic.update();
+    if (this.cinematic.isFinished()) {
+      this.state = 'GAME';
+    }
+  }
   }
 
   /**
