@@ -34,11 +34,9 @@ window.onload = async () => {
 
   const game = new Game(canvas); // Instantiate Game first
   const mainMenu = new MainMenu(game); // Pass game instance to MainMenu
-  const characterSelectPanel = new CharacterSelectPanel(game.assetLoader); // Instantiate CharacterSelectPanel
 
   // Now pass UI panels to game after they are instantiated
   game.setMainMenu(mainMenu);
-  game.setCharacterSelectPanel(characterSelectPanel);
 
   // Initial state setup
   game.setState('MAIN_MENU');
@@ -46,6 +44,25 @@ window.onload = async () => {
 
   await game.init();
   Logger.info('[main.ts] Game assets loaded');
+
+  // Ensure manifest is loaded before CharacterSelectPanel is instantiated
+  await game.assetLoader.loadManifest();
+
+  // Instantiate CharacterSelectPanel after assets are loaded
+  const characterSelectPanel = new CharacterSelectPanel(game.assetLoader);
+  game.setCharacterSelectPanel(characterSelectPanel);
+
+  // Instantiate UpgradePanel after player is initialized
+  import('./ui/UpgradePanel').then(({ UpgradePanel }) => {
+    const upgradePanel = new UpgradePanel(game.player, game);
+    game.setUpgradePanel(upgradePanel);
+    Logger.info('[main.ts] UpgradePanel instantiated and set.');
+  });
+
+  // Start background music immediately after game initialization
+  import('./game/SoundManager').then(({ SoundManager }) => {
+    SoundManager.playMusic('assets/music/bg-music.mp3');
+  });
 
   game.start();
   Logger.info('[main.ts] Game loop started');

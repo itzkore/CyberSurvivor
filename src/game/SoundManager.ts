@@ -18,8 +18,10 @@ export class SoundManager {
   public static playMusic(src: string) {
     if (SoundManager.bgMusic && SoundManager.isPlaying) return;
     if (!SoundManager.bgMusic) {
+      // Use relative path for compatibility
+      const relSrc = src.startsWith('/') ? src.slice(1) : src;
       SoundManager.bgMusic = new Howl({
-        src: [src],
+        src: [relSrc],
         loop: true,
         volume: 0.5,
         html5: true,
@@ -32,9 +34,6 @@ export class SoundManager {
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('debugLog', { detail: 'Music load error: ' + err }));
           }
-          if (typeof Logger !== 'undefined') {
-            Logger.error('Music load error:', err);
-          }
         }
       });
     }
@@ -42,9 +41,6 @@ export class SoundManager {
       SoundManager.bgMusic.play();
       SoundManager.isPlaying = true;
     } catch (e) {
-      if (typeof Logger !== 'undefined') {
-        Logger.error('Music play error:', e);
-      }
     }
   }
 

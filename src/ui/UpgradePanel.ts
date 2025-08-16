@@ -91,14 +91,7 @@ export class UpgradePanel {
       this.panelElement.style.display = 'block';
       this.panelElement.style.zIndex = '9999';
       this.panelElement.style.pointerEvents = 'auto';
-      Logger.debug('[UpgradePanel] Panel DOM after show:', {
-        display: this.panelElement.style.display,
-        zIndex: this.panelElement.style.zIndex,
-        pointerEvents: this.panelElement.style.pointerEvents,
-        classList: Array.from(this.panelElement.classList)
-      });
     }
-    Logger.debug('[UpgradePanel] Panel shown.');
   }
 
   /**
@@ -111,7 +104,6 @@ export class UpgradePanel {
       this.panelElement.style.display = 'none';
       this.panelElement.style.pointerEvents = 'none';
     }
-    Logger.debug('[UpgradePanel] Panel hidden.');
   }
 
   /**
@@ -142,7 +134,6 @@ export class UpgradePanel {
       card.onclick = () => this.applyUpgrade(i);
       container.appendChild(card);
     });
-    Logger.debug('[UpgradePanel] Options rendered.');
   }
 
   /**
@@ -152,19 +143,16 @@ export class UpgradePanel {
     const chosen = this.options[index];
     if (!chosen) return;
 
-    Logger.debug(`[UpgradePanel] Applying upgrade: ${chosen.name}`);
 
     if (chosen.type === 'weapon') {
       const weaponType = chosen.id as WeaponType;
       const beforeLevel = this.player.activeWeapons.get(weaponType) || 0;
       this.player.addWeapon(weaponType);
       const afterLevel = this.player.activeWeapons.get(weaponType) || 0;
-      Logger.debug(`[UpgradePanel] Weapon ${weaponType} upgraded: before=${beforeLevel}, after=${afterLevel}`);
     } else if (chosen.type === 'passive') {
       const passiveSpec = PASSIVE_SPECS.find(ps => ps.id === chosen.id);
       if (passiveSpec) {
         this.player.addPassive(passiveSpec.name);
-        Logger.debug('[UpgradePanel] Player passives after upgrade:', this.player.activePassives);
       }
     }
     // Force HUD/UI update if needed (optional: emit event)
@@ -175,7 +163,6 @@ export class UpgradePanel {
     if (this.game && typeof this.game.setState === 'function') {
       this.game.setState('GAME'); // Unpause after upgrade selection
     }
-    Logger.debug('[UpgradePanel] Upgrade applied, panel hidden, game state resumed.');
   }
 
   /**
@@ -321,7 +308,6 @@ export class UpgradePanel {
       options.push({ type: 'skip', id: -3, name: 'Skip', description: 'No upgrades available.', icon: '' });
     }
 
-    Logger.debug(`[UpgradePanel] Final generated options: ${options.map(o => o.name).join(', ')}`);
     return options.slice(0, 3);
   }
 }

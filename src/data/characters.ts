@@ -4,7 +4,7 @@ export interface CharacterData {
   id: string;
   name: string;
   description: string;
-  icon: string;
+  icon: string; // Add icon property
   defaultWeapon: WeaponType;
   stats: {
     hp: number;

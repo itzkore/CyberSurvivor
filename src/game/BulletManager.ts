@@ -311,7 +311,6 @@ export class BulletManager {
     b.projectileVisual = projectileVisual;
     b.snakeTargets = undefined; // Clear previous snake targets    b.snakeBounceCount = undefined; // Clear previous bounce count
 
-    Logger.debug(`[BulletManager.spawnBullet] Bullet spawned: x=${b.x}, y=${b.y}, vx=${b.vx}, vy=${b.vy}, weaponType=${weapon}, damage=${b.damage}, active=${b.active}`);
     this.bullets.push(b);
   }
 }

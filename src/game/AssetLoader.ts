@@ -177,4 +177,13 @@ export class AssetLoader {
   public renderSpriteFrame(ctx: CanvasRenderingContext2D, path: string, frameX: number, frameY: number, w: number, h: number, dx: number, dy: number) {
     this.drawFrame(ctx, path, frameX, frameY, w, h, dx, dy);
   }
+
+  public getAsset(key: string): string {
+    if (!this.manifest) {
+      console.warn('Manifest not loaded.');
+      return '';
+    }
+    const asset = this.manifest.assets.find((a: any) => a.key === key);
+    return asset ? asset.path : '';
+  }
 }

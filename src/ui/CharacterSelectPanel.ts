@@ -20,6 +20,7 @@ export interface CharacterData {
   sprite?: string;
   name: string;
   description: string;
+  icon?: string; // Add icon property
   stats: Stats;
   look?: string;
   shape: Shape;
@@ -60,7 +61,14 @@ export class CharacterSelectPanel {
   private detailSpeed: HTMLElement | null;
   private detailDamage: HTMLElement | null;
   private selectButton: HTMLButtonElement | null;
+  private characterPortraitPreview: HTMLImageElement | null;
+  private detailWeapon: HTMLElement | null;
   private backButtonEl: HTMLButtonElement | null;
+
+  private _matrixChars?: string[]; // Preallocated array for matrix characters
+  private characterSelectCanvas: HTMLCanvasElement | null;
+
+  private matrixDrops?: number[]; // For matrix background effect
 
   constructor(assetLoader: AssetLoader) {
     this.assetLoader = assetLoader;
@@ -72,6 +80,9 @@ export class CharacterSelectPanel {
     this.detailSpeed = document.getElementById('detail-speed');
     this.detailDamage = document.getElementById('detail-damage');
     this.selectButton = document.getElementById('select-character-btn') as HTMLButtonElement;
+    this.characterPortraitPreview = document.getElementById('character-portrait-preview') as HTMLImageElement;
+    this.characterSelectCanvas = document.getElementById('character-select-canvas') as HTMLCanvasElement;
+    this.detailWeapon = document.getElementById('detail-weapon');
     this.backButtonEl = document.getElementById('back-to-main-btn') as HTMLButtonElement;
 
     this.initializeCharacters();
@@ -87,7 +98,80 @@ export class CharacterSelectPanel {
   public show(): void {
     if (this.panelElement) {
       this.panelElement.style.display = 'flex'; // Or 'block', depending on desired layout
+      console.log('CharacterSelectPanel: show() called, panelElement display set to flex.');
+      if (this.characterSelectCanvas) {
+        // Set canvas dimensions to match window size
+        this.characterSelectCanvas.width = window.innerWidth;
+        this.characterSelectCanvas.height = window.innerHeight;
+        window.addEventListener('resize', this.handleResize);
+        console.log('CharacterSelectPanel: Canvas resized and resize listener added.');
+      }
+      if (this.characterSelectCanvas) {
+        this.drawMatrixBackground(this.characterSelectCanvas.getContext('2d')!, this.characterSelectCanvas);
+        console.log('CharacterSelectPanel: Matrix background drawn.');
+      }
       this.render(); // Re-render when shown
+      console.log('CharacterSelectPanel: render() called from show().');
+
+      // Log computed styles after rendering
+      setTimeout(() => {
+        if (this.panelElement) {
+          const panelStyle = window.getComputedStyle(this.panelElement);
+          console.log('Computed Style - .character-select-panel:', {
+            display: panelStyle.display,
+            flexDirection: panelStyle.flexDirection,
+            alignItems: panelStyle.alignItems,
+            justifyContent: panelStyle.justifyContent,
+            width: panelStyle.width,
+            height: panelStyle.height,
+            zIndex: panelStyle.zIndex,
+          });
+        }
+        const characterSelectContent = document.querySelector('.character-select-content');
+        if (characterSelectContent) {
+          const contentStyle = window.getComputedStyle(characterSelectContent);
+          console.log('Computed Style - .character-select-content:', {
+            display: contentStyle.display,
+            flexDirection: contentStyle.flexDirection,
+            alignItems: contentStyle.alignItems,
+            justifyContent: contentStyle.justifyContent,
+            gap: contentStyle.gap,
+            width: contentStyle.width,
+            maxWidth: contentStyle.maxWidth,
+            flexWrap: contentStyle.flexWrap,
+            zIndex: contentStyle.zIndex,
+          });
+        }
+        if (this.characterGrid) {
+          const gridStyle = window.getComputedStyle(this.characterGrid);
+          console.log('Computed Style - .character-grid:', {
+            display: gridStyle.display,
+            gridTemplateColumns: gridStyle.gridTemplateColumns,
+            gridTemplateRows: gridStyle.gridTemplateRows,
+            gap: gridStyle.gap,
+            minWidth: gridStyle.minWidth,
+            maxWidth: gridStyle.maxWidth,
+            padding: gridStyle.padding,
+            zIndex: gridStyle.zIndex,
+          });
+        }
+        const characterInfoBox = document.querySelector('.character-info-box');
+        if (characterInfoBox) {
+          const infoBoxStyle = window.getComputedStyle(characterInfoBox);
+          console.log('Computed Style - .character-info-box:', {
+            display: infoBoxStyle.display,
+            flexDirection: infoBoxStyle.flexDirection,
+            alignItems: infoBoxStyle.alignItems,
+            justifyContent: infoBoxStyle.justifyContent,
+            minWidth: infoBoxStyle.minWidth,
+            maxWidth: infoBoxStyle.maxWidth,
+            minHeight: infoBoxStyle.minHeight,
+            alignSelf: infoBoxStyle.alignSelf,
+            zIndex: infoBoxStyle.zIndex,
+          });
+        }
+        console.log('Number of characters rendered:', this.characterGrid?.children.length);
+      }, 500); // Delay to ensure styles are applied
     }
   }
 
@@ -97,15 +181,23 @@ export class CharacterSelectPanel {
   public hide(): void {
     if (this.panelElement) {
       this.panelElement.style.display = 'none';
+      if (this.characterSelectCanvas) {
+        window.removeEventListener('resize', this.handleResize);
+      }
     }
   }
 
   private render() {
-    if (!this.characterGrid) return; // Ensure characterGrid is not null
+    console.log('CharacterSelectPanel: render() called.');
+    if (!this.characterGrid) {
+      console.error('CharacterSelectPanel: characterGrid element not found!');
+      return;
+    }
 
     this.characterGrid.innerHTML = ''; // Clear existing grid
+    console.log('CharacterSelectPanel: characterGrid cleared.');
 
-    this.characters.forEach((char, index) => {
+    this.characters.slice(0, 12).forEach((char, index) => { // Limit to 12 characters for 2x6 grid
       const charBox = document.createElement('div');
       charBox.className = 'character-box';
       if (index === this.selectedCharacterIndex) {
@@ -116,12 +208,15 @@ export class CharacterSelectPanel {
         this.selectedCharacterIndex = index;
         this.render(); // Re-render to update selection highlight
       });
+
       if (this.characterGrid) {
         this.characterGrid.appendChild(charBox);
+        console.log(`CharacterSelectPanel: Appended character box for ${char.name}.`);
       }
     });
 
     this.updateDetailsPanel();
+    console.log('CharacterSelectPanel: updateDetailsPanel() called from render().');
   }
 
   private updateDetailsPanel() {
@@ -133,12 +228,18 @@ export class CharacterSelectPanel {
     this.detailHp.textContent = selectedChar.stats.hp?.toString() || 'N/A';
     this.detailSpeed.textContent = selectedChar.stats.speed?.toString() || 'N/A';
     this.detailDamage.textContent = selectedChar.stats.damage?.toString() || 'N/A';
+
+    if (this.characterPortraitPreview) {
+      this.characterPortraitPreview.src = selectedChar.icon || ''; // Use the icon path directly
+    }
+    if (this.detailWeapon) {
+      this.detailWeapon.textContent = selectedChar.defaultWeapon?.toString() || 'N/A';
+    }
   }
 
   private handleSelect() {
     const selectedChar = this.characters[this.selectedCharacterIndex];
     if (selectedChar) {
-      Logger.debug(`[CharacterSelectPanel] Selected character: ${selectedChar.name}, Default Weapon: ${WeaponType[selectedChar.defaultWeapon!]}, Weapon Types: ${selectedChar.weaponTypes?.map(wt => WeaponType[wt]).join(', ')}`);
       // Dispatch 'startGame' event with selected character data
       window.dispatchEvent(new CustomEvent('startGame', { detail: selectedChar }));
       this.hide();
@@ -301,14 +402,12 @@ export class CharacterSelectPanel {
   defaultWeapon: template.defaultWeapon, // Ensure defaultWeapon is copied
   weaponTypes: template.weaponTypes // Ensure weaponTypes is copied
       };
-      Logger.debug(`[CharacterSelectPanel] Initialized character: ${characterData.name}, Default Weapon: ${WeaponType[characterData.defaultWeapon!]}, Weapon Types: ${characterData.weaponTypes?.map(wt => WeaponType[wt]).join(', ')}`);
       return characterData;
     });
   }
 
   draw(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
     ctx.save();
-    Logger.debug('Drawing CharacterSelectPanel. Selected Index:', this.selectedCharacterIndex);
 
     // Background
     ctx.fillStyle = '#1a1a2e'; // Dark background, inspired by cyberpunk theme
@@ -738,7 +837,6 @@ export class CharacterSelectPanel {
       if (mouseX >= x && mouseX <= x + this.charBoxSize &&
           mouseY >= y && mouseY <= y + this.charBoxSize) {
         this.selectedCharacterIndex = i;
-        Logger.debug(`Character box clicked: ${this.characters[i].name}`);
         return this.characters[i]; // Return the selected character data
       }
     }
@@ -747,11 +845,9 @@ export class CharacterSelectPanel {
     // Use the stored backButton properties for click detection
     if (mouseX >= this.backButton.x && mouseX <= this.backButton.x + this.backButton.width &&
         mouseY >= this.backButton.y && mouseY <= this.backButton.y + this.backButton.height) {
-      Logger.debug('Back to Main Menu button clicked');
       return 'backToMainMenu';
     }
 
-    Logger.debug('No interactive element clicked.');
     return null;
   }
 
@@ -768,6 +864,63 @@ export class CharacterSelectPanel {
     }
   }
 
+  /**
+   * Draws the animated matrix background effect on the character select canvas.
+   * Slower, smoother, and glitchy: slow drops, random glitch columns, color flicker.
+   * @param ctx Canvas 2D context
+   * @param canvas Canvas element
+   */
+  private drawMatrixBackground(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
+    // Matrix effect parameters
+    const fontSize = 32;
+    const columns = Math.floor(canvas.width / fontSize);
+
+    // Preallocate drops array only once per resize
+    if (!this.matrixDrops || this.matrixDrops.length !== columns) {
+      this.matrixDrops = new Array(columns);
+      for (let i = 0; i < columns; i++) this.matrixDrops[i] = 1;
+    }
+
+    // Force solid black background first
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Semi-transparent trail for smoothness
+    ctx.fillStyle = 'rgba(0,32,48,0.5)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.font = `${fontSize}px monospace`;
+
+    // Use a preallocated array for chars
+    if (!this._matrixChars || this._matrixChars.length !== columns) {
+      this._matrixChars = new Array(columns);
+    }
+
+    for (let i = 0; i < columns; i++) {
+      // Glitch effect: random columns flicker and change color/char rapidly
+      let isGlitch = Math.random() < 0.08;
+      if (isGlitch) {
+        ctx.fillStyle = Math.random() < 0.5 ? '#00eaff' : '#fff'; // cyan or white flicker
+        this._matrixChars[i] = String.fromCharCode(0x30A0 + (Math.random() * 96) | 0);
+      } else {
+        ctx.fillStyle = '#00eaff';
+        if (!this._matrixChars[i] || this.matrixDrops[i] % 18 === 0) {
+          this._matrixChars[i] = String.fromCharCode(0x30A0 + (Math.random() * 96) | 0);
+        }
+      }
+      ctx.fillText(this._matrixChars[i], i * fontSize, this.matrixDrops[i] * fontSize);
+
+      // Slow down drop speed for smoothness
+      if (this.matrixDrops[i] * fontSize > canvas.height && Math.random() > 0.99) {
+        this.matrixDrops[i] = 0;
+      }
+      // Move drops much slower
+      this.matrixDrops[i] += isGlitch ? 1.5 : 0.25;
+    }
+
+    // Request next frame
+    requestAnimationFrame(() => this.drawMatrixBackground(ctx, canvas));
+  }
   private wrapText(ctx: CanvasRenderingContext2D, text: string, maxCharLength: number): string[] {
     const words = text.split(' ');
     const lines: string[] = [];
@@ -784,6 +937,13 @@ export class CharacterSelectPanel {
     lines.push(currentLine); // Add the last line
     return lines;
   }
+
+  private handleResize = () => {
+    if (this.characterSelectCanvas) {
+      this.characterSelectCanvas.width = window.innerWidth;
+      this.characterSelectCanvas.height = window.innerHeight;
+    }
+  };
 }
 
 

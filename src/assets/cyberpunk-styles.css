@@ -1,0 +1,415 @@
+/* --- CyberSurvivor Character Select: Modern Cyberpunk Layout --- */
+
+.character-select-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  min-height: 100vh;
+  background: none; /* Canvas handles background */
+  position: relative;
+  padding: 20px 10px; /* Smaller padding around the whole panel */
+  box-sizing: border-box;
+  z-index: 1; /* Ensure panel is above canvas */
+}
+
+.character-select-content {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch; /* Stretch items to fill height */
+  justify-content: center;
+  gap: 30px; /* Smaller gap for better spacing */
+  width: 100%;
+  max-width: 1200px; /* Smaller max-width for wider screens */
+  flex-wrap: wrap; /* Allow content to wrap on smaller screens */
+  z-index: 2; /* Ensure content is above panel background */
+}
+
+.character-grid-and-buttons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 20px; /* Smaller gap between grid and buttons */
+  flex-grow: 1; /* Allow this section to grow */
+  max-width: 900px; /* Smaller max width for the grid and buttons section */
+  z-index: 2;
+}
+
+.menu-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 2.5em; /* Smaller title */
+  color: #FFD700;
+  text-shadow: 0 0 20px #00FFFF, 0 0 40px #FF00FF; /* Smaller glow */
+  margin: 0 0 20px 0; /* Less space below title */
+  text-align: center;
+  width: 100%;
+  letter-spacing: 0.08em; /* Slightly smaller letter spacing */
+  z-index: 2;
+}
+
+.character-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr); /* Explicitly 6 columns */
+  grid-template-rows: repeat(2, 1fr); /* Explicitly 2 rows */
+  gap: 16px; /* Smaller gap for grid items */
+  background: rgba(10, 20, 30, 0.4); /* More transparent background */
+  backdrop-filter: blur(8px); /* Frosted glass effect */
+  border-radius: 18px;
+  box-shadow: 0 0 28px #00FFFF66, 0 0 56px #FF00FF33; /* Smaller shadow */
+  padding: 20px 16px;
+  min-width: 720px; /* Smaller min-width for 6 columns */
+  max-width: 900px;
+  justify-items: center;
+  align-items: center;
+  margin: 0 auto;
+  z-index: 2;
+}
+
+.character-grid-second-row {
+  display: none; /* This is no longer needed with explicit 2x6 grid */
+}
+
+.character-box {
+  background: linear-gradient(135deg, #1a1a3e 0%, #28285a 100%); /* Darker gradient */
+  border: 3px solid #00FFFF; /* Thicker border */
+  border-radius: 20px;
+  box-shadow: 0 0 28px #00FFFF, 0 0 60px #FF00FF; /* Stronger shadow */
+  color: #FFD700;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 1em; /* Smaller font */
+  padding: 10px 5px;
+  min-width: 100px;
+  min-height: 70px;
+  text-align: center;
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s; /* Faster transition */
+  user-select: none;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.character-box.selected {
+  border: 3px solid #FFD700; /* Thinner selected border */
+  box-shadow: 0 0 30px #FFD700, 0 0 60px #00FFFF; /* Smaller selected shadow */
+  transform: scale(1.08); /* Less pronounced scale */
+}
+.character-box:hover {
+  border-color: #FF00FF;
+  box-shadow: 0 0 30px #FF00FF, 0 0 60px #00FFFF;
+  transform: scale(1.05);
+}
+.character-portrait {
+  width: 60px; /* Smaller portrait for details panel */
+  height: 60px;
+  border-radius: 12px;
+  margin-bottom: 10px;
+  box-shadow: 0 0 14px #00FFFFBB, 0 0 28px #FF00FF77; /* Smaller shadow */
+  background: #282828;
+  object-fit: cover;
+  align-self: center;
+  z-index: 2;
+}
+
+.character-info-box {
+  background: rgba(25,25,40,0.9); /* Slightly less opaque */
+  backdrop-filter: blur(12px); /* Stronger frosted glass */
+  border-radius: 28px;
+  box-shadow: 0 0 56px #00FFFF66, 0 0 112px #FF00FF33;
+  padding: 40px 50px;
+  color: #FFFFFF;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 1.1em; /* Smaller font */
+  letter-spacing: 0.03em;
+  min-width: 300px;
+  max-width: 400px;
+  min-height: 200px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-start;
+  position: relative;
+  align-self: stretch;
+  z-index: 2;
+}
+.character-info-box h2 {
+  color: #FFD700;
+  font-size: 1.8em; /* Smaller heading */
+  margin-bottom: 10px;
+  text-shadow: 0 0 10px #FF00FF, 0 0 20px #00FFFF; /* Smaller glow */
+}
+.character-info-box p {
+  color: #E0E0FF;
+  font-size: 1em;
+  margin-bottom: 6px;
+}
+.character-info-box .stat {
+  color: #00FFFF;
+  font-size: 1em;
+  margin-bottom: 4px;
+}
+.character-info-box .traits {
+  margin-top: 12px;
+  color: #88FF99;
+  font-size: 0.9em;
+}
+.character-info-box .weapon {
+  margin-top: 12px;
+  color: #FFD700;
+  font-size: 0.9em;
+}
+
+.character-select-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+  margin-top: 30px;
+  z-index: 2;
+}
+
+.menu-button {
+  font-size: 1.5em;
+  margin: 0;
+  padding: 10px 25px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #1a1a3e 0%, #28285a 100%);
+  color: #FFD700;
+  border: none;
+  box-shadow: 0 0 14px #FF00FF, 0 0 30px #00FFFF;
+  cursor: pointer;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.2s;
+  font-family: 'Orbitron', sans-serif;
+  display: inline-block;
+  width: auto;
+  min-width: 150px;
+  max-width: 250px;
+  box-sizing: border-box;
+  vertical-align: middle;
+  z-index: 2;
+}
+.menu-button:hover {
+  background: linear-gradient(90deg, #28285a 0%, #1a1a3e 100%);
+  box-shadow: 0 0 30px #FFD700, 0 0 60px #00FFFF;
+  transform: scale(1.05);
+}
+
+/* --- Character Select Canvas Background --- */
+#character-select-canvas {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0; /* Place behind all other content */
+}
+
+/* --- Upgrade Panel Styles --- */
+#upgrade-panel {
+  position: fixed;
+  top: 0; /* Position at top-left corner */
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.85); /* Dark overlay background */
+  backdrop-filter: blur(5px); /* Subtle blur effect */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center; /* Center content vertically */
+  z-index: 1000; /* Ensure it's on top of everything */
+  pointer-events: auto; /* Allow interactions */
+}
+
+#upgrade-panel.hidden {
+  display: none; /* Hidden by default */
+  pointer-events: none; /* Disable interactions when hidden */
+}
+
+#upgrade-panel h2 {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 2.8em;
+  color: #00FFFF;
+  text-shadow: 0 0 20px #00FFFF, 0 0 40px #FF00FF;
+  margin-bottom: 40px;
+}
+
+.upgrade-options-container {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  background: rgba(10, 20, 30, 0.9);
+  border-radius: 16px;
+  box-shadow: 0 0 30px #00FFFF55, 0 0 60px #FF00FF22;
+  padding: 30px;
+  min-width: 400px;
+  max-width: 600px;
+}
+
+.upgrade-option {
+  background: linear-gradient(135deg, #1a1a3e 0%, #28285a 100%);
+  border: 2px solid #00FFFF;
+  border-radius: 12px;
+  box-shadow: 0 0 16px #00FFFF, 0 0 32px #FF00FF;
+  color: #FFD700;
+  font-family: 'Orbitron', sans-serif;
+  padding: 15px 20px;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  cursor: pointer;
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.upgrade-option:hover {
+  box-shadow: 0 0 30px #FFD700, 0 0 60px #00FFFF;
+  transform: translateY(-3px);
+}
+
+.upgrade-icon img {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+}
+
+.upgrade-info {
+  flex-grow: 1;
+}
+
+.upgrade-title {
+  font-size: 1.4em;
+  color: #FFD700;
+  margin-bottom: 5px;
+}
+
+.upgrade-desc {
+  font-size: 0.9em;
+  color: #E0E0FF;
+}
+
+.upgrade-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 0.8em;
+  color: #00FFFF;
+  margin-top: 5px;
+}
+
+.upgrade-key {
+  font-size: 1.5em;
+  color: #FF00FF;
+  font-weight: bold;
+}
+
+/* --- Responsive Adjustments for AAA Feel --- */
+@media (max-width: 1600px) {
+  .character-select-content {
+    gap: 20px;
+  }
+  .character-grid {
+    min-width: 500px;
+    max-width: 700px;
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+    gap: 10px;
+    padding: 14px 10px;
+  }
+  .character-box {
+    min-width: 80px;
+    min-height: 50px;
+    font-size: 0.8em;
+    padding: 8px 4px;
+  }
+  .character-info-box {
+    min-width: 250px;
+    max-width: 350px;
+    padding: 15px 20px;
+    font-size: 0.9em;
+  }
+  .menu-title {
+    font-size: 2.2em;
+    margin-bottom: 15px;
+  }
+  .character-select-actions {
+    gap: 10px;
+    margin-top: 20px;
+  }
+  .menu-button {
+    font-size: 1.2em;
+    padding: 8px 20px;
+    min-width: 120px;
+    max-width: 200px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .character-select-content {
+    flex-direction: column; /* Stack vertically on smaller screens */
+    align-items: center;
+    gap: 15px;
+  }
+  .character-grid-and-buttons {
+    max-width: 100%;
+  }
+  .character-grid {
+    min-width: 90vw;
+    max-width: 90vw;
+    grid-template-columns: repeat(2, 1fr); /* 2 columns on very small screens */
+    grid-template-rows: repeat(6, 1fr);
+    gap: 8px;
+    padding: 8px 1px;
+  }
+  .character-info-box {
+    min-width: 80vw;
+    max-width: 90vw;
+    min-height: 100px;
+    padding: 12px 6px;
+    font-size: 0.8em;
+  }
+  .character-select-actions {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .menu-button {
+    width: 100%;
+    max-width: 200px;
+  }
+}
+
+@media (max-width: 768px) {
+  .menu-title {
+    font-size: 1.8em;
+    margin-bottom: 10px;
+  }
+  .character-grid {
+    grid-template-columns: repeat(1, 1fr); /* Single column on tiny screens */
+    grid-template-rows: repeat(12, 1fr);
+    gap: 6px;
+    padding: 6px 1px;
+  }
+  .character-box {
+    min-width: 80px;
+    min-height: 50px;
+    font-size: 0.7em;
+    padding: 6px 3px;
+  }
+  .character-portrait {
+    width: 40px;
+    height: 40px;
+    margin-bottom: 6px;
+  }
+  .character-info-box {
+    min-width: 80vw;
+    padding: 10px 5px;
+    font-size: 0.7em;
+  }
+  .menu-button {
+    font-size: 1em;
+    padding: 6px 15px;
+    min-width: 100px;
+  }
+}

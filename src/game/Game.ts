@@ -670,7 +670,6 @@ async init() {
       case 'PAUSE':
       case 'UPGRADE_MENU':
       case 'GAME_OVER':
-        Logger.debug(`[Game.render] Rendering state: ${this.state}`);
         // Draw cyberpunk grid background before camera transform
         this.ctx.save();
         // Night city gradient sky
@@ -728,15 +727,12 @@ async init() {
         }
         break;
       case 'MAIN_MENU':
-        Logger.debug('[Game.render] MAIN_MENU state, hiding canvas.');
         if (canvasElem) canvasElem.style.zIndex = '-1';
         break;
       case 'CHARACTER_SELECT':
-        Logger.debug('[Game.render] CHARACTER_SELECT state.');
         this.characterSelectPanel.draw(this.ctx, this.canvas);
         break;
       case 'CINEMATIC':
-        Logger.debug('[Game.render] CINEMATIC state.');
         this.cinematic.draw(this.ctx, this.canvas);
         break;
     }

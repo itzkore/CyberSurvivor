@@ -503,15 +503,6 @@ export class Player {
   // Use characterData.sprite if present, else id, else fallback to 'cyber_runner'
   let assetKey = this.characterData?.sprite || this.characterData?.id || 'cyber_runner';
     // Debug: log assetKey and image path used for rendering
-    if (this.gameContext?.assetLoader) {
-      const imgPath = `/assets/player/${assetKey}.png`;
-      const img = this.gameContext.assetLoader.getImage(imgPath);
-      if (!img) {
-        Logger.debug(`[Player.render] Image not loaded for assetKey: ${assetKey}, path: ${imgPath}`);
-      } else {
-        Logger.debug(`[Player.render] Image loaded for assetKey: ${assetKey}, path: ${imgPath}, src: ${img.src}`);
-      }
-    }
     const img = this.gameContext?.assetLoader?.getImage(`/assets/player/${assetKey}.png`) as HTMLImageElement | undefined;
     if (img && img.complete && img.naturalWidth > 0) {
       ctx.save();
