@@ -35,6 +35,15 @@ window.onload = async () => {
 
   mainMenu.show(); // Show the main menu initially
 
+  // --- Sound Settings Panel & Music ---
+  import('./ui/SoundSettingsPanel').then(({ SoundSettingsPanel }) => {
+    const soundPanel = new SoundSettingsPanel();
+    soundPanel.show();
+  });
+  import('./game/SoundManager').then(({ SoundManager }) => {
+    SoundManager.playMusic('assets/music/bg-music.mp3');
+  });
+
   window.addEventListener('startGame', (event: Event) => {
     const customEvent = event as CustomEvent;
     const selectedCharData = customEvent.detail;

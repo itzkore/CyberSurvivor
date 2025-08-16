@@ -71,9 +71,7 @@ export class Player {
       this.applyCharacterData(characterData);
       // Clear all weapons and add only the default weapon
       this.activeWeapons.clear();
-      Logger.debug(`[Player] activeWeapons cleared. Size: ${this.activeWeapons.size}`);
       if (characterData.defaultWeapon !== undefined) {
-        // Explicitly set level to 1 for the default weapon on new game
         this.activeWeapons.set(characterData.defaultWeapon, 1);
         Logger.debug(`[Player] Default weapon added: ${WeaponType[characterData.defaultWeapon]}. Current level: ${this.activeWeapons.get(characterData.defaultWeapon)}`);
       }
@@ -110,21 +108,13 @@ export class Player {
     this.upgrades = []; // Clear upgrade history
     this.shootCooldowns.clear(); // Clear weapon cooldowns
 
-    // Re-add the default weapon based on characterData, if available
-    if (this.characterData && this.characterData.defaultWeapon !== undefined) {
-      this.activeWeapons.set(this.characterData.defaultWeapon, 1); // Set to level 1
-      Logger.debug(`[Player.resetState] Default weapon re-added: ${WeaponType[this.characterData.defaultWeapon]}. Current level: ${this.activeWeapons.get(this.characterData.defaultWeapon)}`);
-    } else if (this.characterData && Array.isArray(this.characterData.weaponTypes) && this.characterData.weaponTypes.length > 0) {
-      this.activeWeapons.set(this.characterData.weaponTypes[0], 1); // Set to level 1
-      Logger.warn('[Player.resetState] No defaultWeapon found, fallback to first class weapon.');
-    } else {
-      const weaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
-      if (weaponTypes.length > 0) {
-        this.activeWeapons.set(weaponTypes[0], 1); // Set to level 1
-        Logger.warn('[Player.resetState] No defaultWeapon or class weapon found, fallback to first WeaponType.');
-      }
+    // Re-add all weapons at level 1 for new run
+    this.activeWeapons.clear();
+    const allWeaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
+    for (const wt of allWeaponTypes) {
+      this.activeWeapons.set(wt, 1);
     }
-    Logger.debug(`[Player.resetState] Player state reset. Active weapons: ${Array.from(this.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
+    Logger.debug(`[Player.resetState] All weapons unlocked at level 1. Weapons: ${Array.from(this.activeWeapons.entries()).map(([wt, lvl]) => WeaponType[wt] + ':' + lvl).join(', ')}`);
   }
 
   get exp(): number {

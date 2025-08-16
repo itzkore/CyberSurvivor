@@ -221,8 +221,8 @@ export class UpgradePanel {
     const allWeaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
     for (const wt of allWeaponTypes) {
       const spec = WEAPON_SPECS[wt];
-      // Exclude class weapons and the player's specific class weapon if it's already added as option 1
-      if (!spec || spec.isClassWeapon || (classWeaponOption && wt === classWeaponOption.id)) {
+      // Exclude only the player's specific class weapon if it's already added as option 1
+      if (!spec || (classWeaponOption && wt === classWeaponOption.id)) {
         continue;
       }
 
