@@ -24,7 +24,7 @@ export interface CharacterData {
 
 export const CHARACTERS: CharacterData[] = [
   {
-    id: 'runner',
+    id: 'cyber_runner',
     name: 'The Runner',
     description: 'A nimble survivor with enhanced speed and a rapid-fire weapon.',
     icon: '/assets/characters/runner_icon.png',
@@ -65,5 +65,4 @@ export const CHARACTERS: CharacterData[] = [
     color: '#FF4500',
         weaponTypes: [WeaponType.SHOTGUN, WeaponType.BEAM, WeaponType.PLASMA, WeaponType.RAILGUN, WeaponType.WARRIOR_CANNON],
       }
-    ];
-aaa
+];

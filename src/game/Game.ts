@@ -47,7 +47,7 @@ export class Game {
   private particleManager: ParticleManager;
   private hud: HUD;
   private upgradePanel!: UpgradePanel; // Changed to be set later
-  private cinematic: Cinematic;
+  public cinematic: Cinematic;
   private mainMenu!: MainMenu; // Changed to be set later
   private characterSelectPanel!: CharacterSelectPanel; // Changed to be set later
   private selectedCharacterData: any | null = null; // To store selected character
@@ -442,6 +442,15 @@ export class Game {
 async init() {
   try {
     await this.assetLoader.loadAllFromManifest('/assets');
+    // Explicitně načíst asset hráče podle id (default cyber_runner)
+    await this.assetLoader.loadImage('/assets/player/cyber_runner.png');
+    // Debug: log src if loaded
+    const img = this.assetLoader.getImage('/assets/player/cyber_runner.png');
+    if (img) {
+      Logger.info(`[Game.init] cyber_runner.png loaded, src: ${img.src}`);
+    } else {
+      Logger.warn('[Game.init] cyber_runner.png NOT loaded!');
+    }
   } catch (error) {
     console.error("Error loading assets:", error);
     // ignore missing assets; placeholders will be used

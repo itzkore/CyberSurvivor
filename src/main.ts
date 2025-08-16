@@ -5,6 +5,19 @@ import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import Char
 import { Logger } from './core/Logger'; // Import Logger
 
 window.onload = async () => {
+  // --- Cinematic skip button click handler ---
+  // Move click handler after canvas is assigned
+  setTimeout(() => {
+    canvas.addEventListener('mousedown', (e) => {
+      if (!game.cinematic || !game.cinematic.active) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      if (game.cinematic.handleClick(x, y, canvas)) {
+        Logger.info('[main.ts] Cinematic skipped via button');
+      }
+    });
+  }, 0);
   const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
   if (!canvas) {
     Logger.error('Canvas element with ID "gameCanvas" not found.');
@@ -46,12 +59,19 @@ window.onload = async () => {
     soundPanel.show();
     Logger.info('[main.ts] SoundSettingsPanel shown');
   });
-  import('./game/SoundManager').then(({ SoundManager }) => {
-    SoundManager.playMusic('assets/music/bg-music.mp3');
-    Logger.info('[main.ts] Background music started');
-  });
+  // Hudba se spustí až po startu hry (po interakci uživatele)
+  let musicStarted = false;
+  function startMusic() {
+    if (musicStarted) return;
+    import('./game/SoundManager').then(({ SoundManager }) => {
+      SoundManager.playMusic('/assets/music/bg-music.mp3');
+      Logger.info('[main.ts] Background music started');
+      musicStarted = true;
+    });
+  }
 
   window.addEventListener('startGame', (event: Event) => {
+  startMusic(); // Spustit hudbu po startu hry
     const customEvent = event as CustomEvent;
     const selectedCharData = customEvent.detail;
     Logger.info('[main.ts] startGame event received, selectedCharData:', selectedCharData);

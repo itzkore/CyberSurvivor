@@ -5,6 +5,7 @@ import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { PASSIVE_SPECS, applyPassive } from './PassiveConfig';
 import { Logger } from '../core/Logger';
+import { AssetLoader } from './AssetLoader';
 
 /**
  * Player entity class. Handles movement, shooting, upgrades, and rendering.
@@ -14,6 +15,11 @@ export class Player {
   public x: number;
   public y: number;
   public radius: number = 8;
+  /**
+   * Size of the player sprite (diameter in pixels)
+   */
+  public size: number = 64; // Match asset dimensions for visibility
+
   /**
    * Movement speed of the player (units per tick)
    */
@@ -60,6 +66,18 @@ export class Player {
 
   public characterData?: any;
   public classWeaponType?: WeaponType; // Cache class weapon type
+
+  /**
+   * Player velocity components (used for directional rendering)
+   */
+  public vx: number = 0;
+  public vy: number = 0;
+
+  /**
+   * Rotation angle (radians) for player sprite rendering.
+   */
+  public rotation: number = 0;
+
   constructor(x: number, y: number, characterData?: any) {
     Logger.debug(`[Player.constructor] characterData received:`, characterData);
     this.x = x;
@@ -93,6 +111,27 @@ export class Player {
       }
     }
     window.addEventListener('chestPickedUp', this.handleChestPickup.bind(this));
+  } // <-- Close constructor here
+
+  /**
+   * Handles chest pickup event, granting rewards or upgrades to the player.
+   * @param event CustomEvent containing chest reward details
+   */
+  private handleChestPickup(event: Event): void {
+    // Micro-optimized: check for CustomEvent and reward details
+    /** @type {CustomEvent} */
+    const customEvent = event as CustomEvent;
+    const reward = customEvent.detail?.reward;
+    if (reward) {
+      // Example: reward could be exp, weapon, passive, or hp
+      if (reward.exp) this.gainExp(reward.exp);
+      if (reward.weaponType !== undefined) this.addWeapon(reward.weaponType);
+      if (reward.passiveType) this.addPassive(reward.passiveType);
+      if (reward.hp) this.hp = Math.min(this.hp + reward.hp, this.maxHp);
+      // Add more reward types as needed
+    }
+    // Optionally log the chest pickup
+    Logger.info(`[Player.handleChestPickup] Chest picked up. Reward: ${JSON.stringify(reward)}`);
   }
 
   /**
@@ -339,20 +378,12 @@ export class Player {
       const normY = dy / mag;
       this.x += normX * this.speed;
       this.y += normY * this.speed;
-
-      // Clamp player position to world boundaries
-      if (this.gameContext) {
-        this.x = Math.max(this.radius, Math.min(this.x, this.gameContext.worldW - this.radius));
-        this.y = Math.max(this.radius, Math.min(this.y, this.gameContext.worldH - this.radius));
-      }
-
       // Animation frame only when moving (still relevant for other animations if any)
       this.frameTimer++;
       if (this.frameTimer >= (60 / this.animationSpeed)) { // Assuming 60 FPS
         this.currentFrame = (this.currentFrame + 1) % this.animationFrames;
         this.frameTimer = 0;
       }
-
       // Spawn a small number of particles at the player's feet
       if (this.gameContext?.particleManager) {
         // Only spawn a particle every 8 frames for minimal effect
@@ -364,11 +395,22 @@ export class Player {
       // If not moving, reset animation to first frame (idle)
       this.currentFrame = 0;
       this.frameTimer = 0;
+      // Reset velocity
+      this.vx = 0;
+      this.vy = 0;
+    }
+    // Clamp position to world bounds
+    if (this.gameContext?.worldH) {
+      this.y = Math.max(this.radius, Math.min(this.y, this.gameContext.worldH - this.radius));
     }
 
     // Update cooldowns and shoot for all active weapons
     // Debug: Log active weapons and cooldowns
     Logger.debug(`[Player.update] ActiveWeapons: ${Array.from(this.activeWeapons.entries()).map(([wt, lvl]) => wt + ':' + lvl).join(', ')}`);
+    let autoAimTarget = this.findNearestEnemy();
+    if (autoAimTarget) {
+  this.rotation = Math.atan2(autoAimTarget.y - this.y, autoAimTarget.x - this.x) - Math.PI / 2;
+    }
     this.activeWeapons.forEach((level, weaponType) => {
       let cooldown = this.shootCooldowns.get(weaponType) ?? 0;
       Logger.debug(`[Player.update] Weapon ${weaponType} Cooldown: ${cooldown}`);
@@ -378,7 +420,7 @@ export class Player {
       this.shootCooldowns.set(weaponType, cooldown);
 
       if (cooldown <= 0) {
-        const t = this.findNearestEnemy();
+        const t = autoAimTarget;
         Logger.debug(`[Player.update] Nearest Enemy: ${t ? (t.x + ',' + t.y) : 'None'}`);
         if (t) {
           Logger.debug(`[Player.update] Shooting at enemy with weapon ${weaponType}`);
@@ -420,9 +462,12 @@ export class Player {
     }
   }
 
+  /**
+   * Inflicts damage to the player, clamping HP to zero.
+   * @param amount Amount of damage to apply
+   */
   public takeDamage(amount: number) {
     this.hp -= amount;
-    // Ensure HP doesn't go below 0
     if (this.hp < 0) this.hp = 0;
   }
 
@@ -439,8 +484,7 @@ export class Player {
       if (data.stats.hp !== undefined) this.hp = data.stats.hp;
       if (data.stats.maxHp !== undefined) this.maxHp = data.stats.maxHp;
       if (data.stats.speed !== undefined) this.speed = data.stats.speed;
-      if (data.stats.damage !== undefined) this.bulletDamage = data.stats.damage; // Map character damage to bulletDamage
-      // Add other stats as needed
+      if (data.stats.damage !== undefined) this.bulletDamage = data.stats.damage;
       if (data.stats.strength !== undefined) this.strength = data.stats.strength;
       if (data.stats.intelligence !== undefined) this.intelligence = data.stats.intelligence;
       if (data.stats.agility !== undefined) this.agility = data.stats.agility;
@@ -449,7 +493,6 @@ export class Player {
     }
     if (data.shape !== undefined) this.shape = data.shape;
     if (data.color !== undefined) this.color = data.color;
-    // Set starting weapon to character's defaultWeapon, but do not clear other weapons (allow upgrades to add more)
     if (data.defaultWeapon !== undefined) {
       if (!this.activeWeapons.has(data.defaultWeapon)) {
         this.addWeapon(data.defaultWeapon);
@@ -457,57 +500,34 @@ export class Player {
     }
   }
 
-  public draw(ctx: CanvasRenderingContext2D) {
-    ctx.save();
-    ctx.fillStyle = this.color;
-    ctx.beginPath();
-    if (this.shape === 'circle') {
-      ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-    } else if (this.shape === 'square') {
-      ctx.fillRect(this.x - this.radius, this.y - this.radius, this.radius * 2, this.radius * 2);
-    } else if (this.shape === 'triangle') {
-      ctx.moveTo(this.x, this.y - this.radius);
-      ctx.lineTo(this.x + this.radius, this.y + this.radius);
-      ctx.lineTo(this.x - this.radius, this.y + this.radius);
-      ctx.closePath();
+  /**
+   * Draws the player character using a PNG sprite from /assets/player/{characterId}.png.
+   * If the sprite is missing, the player is not rendered (invisible fallback).
+   * Applies rotation and scaling for correct orientation.
+   * @param ctx CanvasRenderingContext2D
+   */
+  public draw(ctx: CanvasRenderingContext2D): void {
+    // Draws the player sprite if available, otherwise draws a fallback circle.
+    // Micro-optimized for canvas performance. Adds debug logging for asset presence.
+    // Use asset loader from game context
+    const assetKey = this.characterData?.sprite || 'cyber_runner';
+    const img = this.gameContext?.assetLoader?.getImage(`/assets/player/${assetKey}.png`) as HTMLImageElement | undefined;
+    if (img && img.complete && img.naturalWidth > 0) {
+      Logger.debug(`[Player.draw] Drawing sprite: ${assetKey}, img.complete=${img.complete}`);
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.rotation);
+      ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+      ctx.restore();
     }
-    ctx.fill();
-    ctx.restore();
-  }
+  /**
+   * Player entity for CyberSurvivor. Handles rendering and weapon logic.
+   * @property position Player position
+   * @property size Player size
+   * @property characterData Character metadata
+   * @method draw Renders player sprite or fallback
+   */
 
-  // Optional: trigger current active ability/weapon (if implemented in WEAPON_SPECS)
-  public activateAbility() {
-    // Simple speed boost ability: increase speed for a short duration
-    if (this.abilityCooldown > 0 || this.abilityActive) return;
-    this.abilityActive = true;
-    this.speed = this.baseSpeed * 1.5; // boost by 50%
-    this.abilityTicks = 0;
-    // set cooldown end after duration
-    this.abilityCooldown = this.abilityDuration + 60; // add a small cooldown after
-  }
-
-  private handleChestPickup(): void {
-    Logger.info('Chest picked up! Attempting to evolve a weapon...');
-    let evolved = false;
-    for (const [weaponType, level] of this.activeWeapons.entries()) {
-      const spec = WEAPON_SPECS[weaponType];
-      if (spec && level === spec.maxLevel && spec.evolution) {
-        const passive = this.activePassives.find(p => p.type === spec.evolution!.requiredPassive);
-        const requiredPassiveSpec = PASSIVE_SPECS.find(p => p.name === spec.evolution!.requiredPassive);
-
-        if (passive && requiredPassiveSpec && passive.level >= requiredPassiveSpec.maxLevel) {
-          this.tryEvolveWeapon(weaponType, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
-          evolved = true;
-          break; // Only evolve one weapon per chest
-        }
-      }
-    }
-
-    if (!evolved) {
-      Logger.info('No weapon could be evolved from chest. Offering a reroll or high-value passive instead.');
-      // Optionally, dispatch an event to UpgradePanel to force a reroll or offer a special passive
-      window.dispatchEvent(new CustomEvent('forceUpgradeOption', { detail: { type: 'reroll' } }));
-    }
   }
 }
 

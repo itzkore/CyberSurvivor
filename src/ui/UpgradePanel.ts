@@ -202,9 +202,22 @@ export class UpgradePanel {
     const ownedWeapons = Array.from(this.player.activeWeapons.keys());
     const ownedPassives = this.player.activePassives.map(p => p.type);
     const maxWeapons = 5;
-    const allowedWeaponTypes: WeaponType[] = Array.isArray(this.player.characterData?.weaponTypes)
-      ? this.player.characterData.weaponTypes.filter((wt: WeaponType) => WEAPON_SPECS[wt])
-      : [];
+    /**
+     * Patch: Allow all weapons in WEAPON_SPECS to be available for upgrade selection,
+     * not just those in characterData.weaponTypes. This enables Cyber Runner to get any weapon.
+     */
+    /**
+     * Patch: Allow all weapons except other class weapons (isClassWeapon=true and not Runner Gun).
+     * Cyber Runner should get only non-class weapons and their own class weapon (Runner Gun).
+     */
+    const allowedWeaponTypes: WeaponType[] = Object.keys(WEAPON_SPECS)
+      .map(wt => Number(wt))
+      .filter(wt => {
+        const spec = WEAPON_SPECS[wt as WeaponType];
+        if (!spec) return false;
+        // Allow if not a class weapon, or is Runner Gun
+        return !spec.isClassWeapon || wt === WeaponType.RUNNER_GUN;
+      });
     // Build weapon upgrade/unlock pool
     const weaponOptions: UpgradeOption[] = [];
     for (const wt of allowedWeaponTypes) {

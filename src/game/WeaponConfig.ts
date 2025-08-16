@@ -1,15 +1,46 @@
 import { WeaponType } from './WeaponType';
 
 export interface ProjectileVisual {
+  /**
+   * Type of projectile visual.
+   */
   type: 'bullet' | 'laser' | 'beam' | 'plasma' | 'slime' | 'spray' | 'explosive' | 'boomerang' | 'ricochet' | 'drone' | 'arrow';
-  color: string; // Hex color
-  size?: number; // For bullets/plasma/slime
-  length?: number; // For lasers/beams
-  thickness?: number; // For lasers/beams
-  glowColor?: string; // For glow effects
-  glowRadius?: number; // For glow effects
-  trailColor?: string; // For trails
-  trailLength?: number; // For trails
+  /**
+   * Hex color for the projectile.
+   */
+  color?: string;
+  /**
+   * Optional sprite path for the projectile.
+   */
+  sprite?: string;
+  /**
+   * Size of the projectile (for bullets/plasma/slime).
+   */
+  size?: number;
+  /**
+   * Length of the projectile (for lasers/beams).
+   */
+  length?: number;
+  /**
+   * Thickness of the projectile (for lasers/beams).
+   */
+  thickness?: number;
+  /**
+   * Glow color for effects.
+   */
+  glowColor?: string;
+  /**
+   * Glow radius for effects.
+   */
+  glowRadius?: number;
+  /**
+   * Trail color for the projectile.
+   */
+  trailColor?: string;
+  /**
+   * Trail length for the projectile.
+   */
+  trailLength?: number;
 }
 
 export interface WeaponEvolution {
@@ -55,34 +86,32 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     cooldown: 80, // faster fire rate
     salvo: 1,
     spread: 0,
-    projectile: 'bullet_gold',
-    speed: 8,
+  projectile: 'bullet_cyan', // Use PNG asset for projectile
+  speed: 12, // Increased speed for faster bullet
     range: 440,
     maxLevel: 8,
-    damage: 14,
+  damage: 56, // Doubled base damage for even stronger one-shot capability
     /**
      * Returns scaled stats for Desert Eagle at a given level.
      * @param level Weapon level (1-based)
      */
     getLevelStats(level: number) {
-      // Aggressive scaling: each level is a big jump
+      // Thinner, faster bullet scaling, higher damage
       return {
-        damage: 14 + level * 8, // +8 per level
-        speed: 8 + level * 1.2, // +1.2 per level
+        damage: 56 + level * 20, // +20 per level, doubled scaling
+        speed: 12 + level * 1.5, // +1.5 per level, starts faster
         recoil: 1 + level * 0.25, // +0.25 per level
         cooldown: Math.max(40, 80 - level * 5), // faster fire rate
-        projectileSize: 12 + level * 2, // bigger bullets
+        projectileSize: 7 + level * 1.2, // thinner bullet, slower growth
         explosionRadius: 100 + level * 10 // bigger splash
       };
     },
     projectileVisual: {
       type: 'bullet',
-      color: '#FFD700',
-      size: 12,
-      glowColor: '#FFFACD',
-      glowRadius: 10,
+      sprite: '/assets/projectiles/bullet_cyan.png',
+      size: 7, // Desert Eagle: thin
       trailColor: 'rgba(255,215,0,0.5)',
-      trailLength: 14
+      trailLength: 18
     },
     explosionRadius: 100,
     traits: ['Heavy', 'High Damage', 'Strong Recoil', 'Large Caliber'],
@@ -104,10 +133,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     damage: 9,
     projectileVisual: {
       type: 'bullet',
-      color: '#A0522D',
-      size: 10,
-      glowColor: '#FFD700',
-      glowRadius: 8,
+      sprite: '/assets/projectiles/bullet_cyan.png',
+      size: 10, // Shotgun: medium
       trailColor: 'rgba(160,82,45,0.5)',
       trailLength: 10
     },
@@ -153,10 +180,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     damage: 4,
     projectileVisual: {
       type: 'bullet',
-      color: '#00FF00',
-      size: 7,
-      glowColor: '#00FFCC',
-      glowRadius: 6,
+      sprite: '/assets/projectiles/bullet_cyan.png',
+      size: 7, // Rapid: thin
       trailColor: 'rgba(0,255,0,0.5)',
       trailLength: 10
     },
@@ -225,7 +250,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     range: 420,
     maxLevel: 5,
     damage: 12,
-    projectileVisual: { type: 'bullet', color: '#0080FF', size: 10, glowColor: '#0080FF', glowRadius: 7 },
+  projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 10, trailColor: 'rgba(0,128,255,0.5)', trailLength: 8 },
     traits: ['Bounces Between Enemies', 'Locks On Next Target', 'Max 3 Bounces', 'Low Damage'],
     isClassWeapon: false,
     knockback: 18 // Ricochet: moderate knockback
@@ -290,8 +315,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
      isClassWeapon: false
   },
   [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma',  icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60,  salvo: 4, spread: 0.25, projectile: 'bullet_cyan', speed: 11.2, range: 350, maxLevel: 5, damage: 10, projectileVisual: { type: 'plasma', color: '#00FFFF', size: 12, glowColor: '#00FFFF', glowRadius: 10, trailColor: 'rgba(0,255,255,0.3)', trailLength: 5 }, isClassWeapon: false },
-  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 7, projectileVisual: { type: 'spray', color: '#00FFFF', size: 5, glowColor: '#00FFFF', glowRadius: 6, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12 }, traits: ['Spray', 'Fast', 'Low Damage'], isClassWeapon: true, knockback: 5 // Half of current state (10 -> 5)
-  },
+  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 7, projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12 }, traits: ['Spray', 'Fast', 'Low Damage'], isClassWeapon: true, knockback: 5 },
   [WeaponType.WARRIOR_CANNON]: { id: WeaponType.WARRIOR_CANNON, name: 'Warrior Cannon', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60, salvo: 1, spread: 0, projectile: 'bullet_red', speed: 5.6, range: 250, maxLevel: 5, damage: 40, projectileVisual: { type: 'explosive', color: '#FF0000', size: 14, glowColor: '#FF0000', glowRadius: 12 }, traits: ['Explosive', 'High Damage', 'Slow'], isClassWeapon: true },
   [WeaponType.SORCERER_ORB]: {
     id: WeaponType.SORCERER_ORB,
@@ -334,7 +358,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   },
   [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 5, damage: 10, projectileVisual: { type: 'slime', color: '#00FF00', size: 13, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison', 'Area', 'Debuff'], isClassWeapon: true },
   [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 5, damage: 12, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP', 'Disrupt', 'Pierces'], isClassWeapon: true },
-  [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 10, salvo: 1, spread: 0.28, projectile: 'bullet_brown', speed: 7.7, range: 320, maxLevel: 5, damage: 6, projectileVisual: { type: 'spray', color: '#A52A2A', size: 6, glowColor: '#A52A2A', glowRadius: 5, trailColor: 'rgba(165,42,42,0.5)', trailLength: 8 }, traits: ['Spray', 'Rapid', 'Lower Damage', 'Wider Spread', 'Balanced'], isClassWeapon: true },
+  [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 10, salvo: 1, spread: 0.28, projectile: 'bullet_cyan', speed: 7.7, range: 320, maxLevel: 5, damage: 6, projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 6, trailColor: 'rgba(165,42,42,0.5)', trailLength: 8 }, traits: ['Spray', 'Rapid', 'Lower Damage', 'Wider Spread', 'Balanced'], isClassWeapon: true },
   [WeaponType.PSIONIC_WAVE]: {
     id: WeaponType.PSIONIC_WAVE,
     name: 'Psionic Wave',

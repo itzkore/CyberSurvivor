@@ -1,6 +1,34 @@
 export class Cinematic {
+  /**
+   * Draws the skip button at the bottom left and handles click detection.
+   * @param ctx CanvasRenderingContext2D
+   * @param canvas HTMLCanvasElement
+   */
+  private drawSkipButton(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
+    const btnWidth = 120;
+    const btnHeight = 44;
+    const x = 32;
+    const y = canvas.height - btnHeight - 32;
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = '#222';
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(x, y, btnWidth, btnHeight, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = 'bold 22px Orbitron, sans-serif';
+    ctx.fillStyle = '#0ff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#00f6ff';
+    ctx.shadowBlur = 12;
+    ctx.fillText('Skip', x + btnWidth / 2, y + btnHeight / 2);
+    ctx.restore();
+  }
   private progress: number = 0;
-  private active: boolean = false;
+  public active: boolean = false;
   private onComplete: (() => void) | null = null;
   private duration: number = 900; // 15 seconds at 60fps
 
@@ -87,6 +115,26 @@ export class Cinematic {
       ctx.shadowBlur = 0;
       ctx.fillText('Good luck...', canvas.width / 2, canvas.height / 2 + 60);
     }
-    ctx.restore();
+  // Draw skip button
+  this.drawSkipButton(ctx, canvas);
+  ctx.restore();
+  }
+
+  /**
+   * Handles click events for the skip button. Should be called from main game input handler.
+   * Returns true if skip was triggered.
+   */
+  public handleClick(x: number, y: number, canvas: HTMLCanvasElement): boolean {
+    if (!this.active) return false;
+    const btnWidth = 120;
+    const btnHeight = 44;
+    const btnX = 32;
+    const btnY = canvas.height - btnHeight - 32;
+    if (x >= btnX && x <= btnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
+      this.active = false;
+      if (this.onComplete) this.onComplete();
+      return true;
+    }
+    return false;
   }
 }

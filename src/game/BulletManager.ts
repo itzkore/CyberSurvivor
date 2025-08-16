@@ -220,12 +220,30 @@ export class BulletManager {
       // General bullet drawing logic (including what was Mech Mortar)
       if (visual?.type === 'bullet') {
         ctx.save(); // Ensure save/restore for bullet drawing
-        ctx.shadowColor = visual.glowColor ?? visual.color ?? '#FFD700';
-        ctx.shadowBlur = visual.glowRadius ?? 10;
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
-        ctx.fillStyle = visual.color ?? '#FFD700';
-        ctx.fill();
+        if (visual.sprite) {
+          // Use PNG sprite for bullet, rotated to match direction
+          const bulletImage = this.assetLoader.getImage(visual.sprite);
+          if (bulletImage) {
+            const size = (visual.size ?? b.radius) * 2;
+            const drawX = b.x;
+            const drawY = b.y;
+            // Calculate angle from velocity
+            const angle = Math.atan2(b.vy, b.vx);
+            ctx.save();
+            ctx.translate(drawX, drawY);
+            ctx.rotate(angle);
+            ctx.drawImage(bulletImage, -size / 2, -size / 2, size, size);
+            ctx.restore();
+          }
+        } else {
+          // Fallback: draw colored circle
+          ctx.shadowColor = visual.glowColor ?? visual.color ?? '#FFD700';
+          ctx.shadowBlur = visual.glowRadius ?? 10;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
+          ctx.fillStyle = visual.color ?? '#FFD700';
+          ctx.fill();
+        }
         ctx.restore(); // Restore after bullet drawing
       } else if (visual?.type === 'plasma' || visual?.type === 'slime') {
         ctx.save(); // Ensure save/restore for plasma/slime drawing
@@ -265,7 +283,12 @@ export class BulletManager {
     const speed = spec?.speed ?? 2;
     const projectileImageKey = spec?.projectile ?? 'bullet_cyan';
     // Removed Mech Mortar specific projectile visual override
-    const projectileVisual = spec?.projectileVisual ?? { type: 'bullet', color: '#0ff', size: 6 };
+    // Increase Desert Eagle bullet size by 5x for visual impact
+    let projectileVisual = spec?.projectileVisual ?? { type: 'bullet', color: '#0ff', size: 6 };
+    // Desert Eagle is WeaponType.PISTOL
+    if (weapon === WeaponType.PISTOL) {
+      projectileVisual = { ...projectileVisual, size: (projectileVisual.size ?? 6) * 5 };
+    }
 
     let b: Bullet | undefined = this.bulletPool.pop(); // Try to get from pool
 
