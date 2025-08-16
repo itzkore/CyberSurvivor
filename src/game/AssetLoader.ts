@@ -34,6 +34,15 @@ export class AssetLoader {
       case 'psionic_weaver': return { w: 64, h: 64 }; // Ensure psionic_weaver is handled
   case 'bio_engineer': return { w: 64, h: 64 }; // Ensure bio_engineer is handled
   case 'titan_mech': return { w: 64, h: 64 }; // Ensure titan_mech is handled
+  case 'ghost_operative': return { w: 64, h: 64 }; // Ensure ghost_operative is handled
+  case 'data_sorcerer': return { w: 64, h: 64 }; // Ensure data_sorcerer is handled
+  case 'neural_nomad': return { w: 64, h: 64 }; // Ensure neural_nomad is handled
+  case 'shadow_operative': return { w: 64, h: 64 }; // Ensure shadow_operative is handled
+  case 'tech_warrior': return { w: 64, h: 64 }; // Ensure tech_warrior is handled
+  case 'heavy_gunner': return { w: 64, h: 64 }; // Ensure heavy_gunner is handled
+  case 'wasteland_scavenger': return { w: 64, h: 64 }; // Ensure wasteland_scavenger is handled
+  case 'rogue_hacked': return { w: 64, h: 64 }; // Ensure rogue_hacked is handled
+  case 'rogue_hacker': return { w: 64, h: 64 }; // Ensure rogue_hacker is handled
       case 'tech_warrior_anim': return { w: 64, h: 64 }; // Example entry for new animated character
       case 'character_select_bg': return { w: 1920, h: 1080 }; // Added for character select background
       default: return { w: 64, h: 64 };

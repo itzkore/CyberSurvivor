@@ -441,6 +441,22 @@ async init() {
   await this.assetLoader.loadImage('/assets/player/bio_engineer.png');
   // Explicitně načíst asset hráče titan_mech
   await this.assetLoader.loadImage('/assets/player/titan_mech.png');
+  // Explicitně načíst asset hráče ghost_operative
+  await this.assetLoader.loadImage('/assets/player/ghost_operative.png');
+  // Explicitně načíst asset hráče data_sorcerer
+  await this.assetLoader.loadImage('/assets/player/data_sorcerer.png');
+  // Explicitně načíst asset hráče neural_nomad
+  await this.assetLoader.loadImage('/assets/player/neural.nomad.png');
+  // Explicitně načíst asset hráče shadow_operative
+  await this.assetLoader.loadImage('/assets/player/shadow_operative.png');
+  // Explicitně načíst asset hráče tech_warrior
+  await this.assetLoader.loadImage('/assets/player/tech_warrior.png');
+  // Explicitně načíst asset hráče heavy_gunner
+  await this.assetLoader.loadImage('/assets/player/heavy_gunner.png');
+  // Explicitně načíst asset hráče wasteland_scavenger
+  await this.assetLoader.loadImage('/assets/player/wasteland_scavenger.png');
+    // Explicitně načíst asset hráče rogue_hacker
+    await this.assetLoader.loadImage('/assets/player/rogue_hacker.png');
     // Debug: log src if loaded
     const img = this.assetLoader.getImage('/assets/player/cyber_runner.png');
     if (img) {

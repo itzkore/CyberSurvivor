@@ -56,14 +56,81 @@
       "h": 64,
       "frames": 1,
       "glow": "cyan"
-    }
-    ,
+    },
     "titan_mech": {
       "file": "assets/player/titan_mech.png",
       "w": 64,
       "h": 64,
       "frames": 1,
       "glow": "cyan"
+    },
+    "rogue_hacked": {
+      "file": "assets/player/rogue_hacked.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "magenta"
+    },
+    "ghost_operative": {
+      "file": "assets/player/ghost_operative.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    },
+    "rogue_hacker": {
+      "file": "assets/player/rogue_hacker.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "magenta"
+    },
+    "data_sorcerer": {
+      "file": "assets/player/data_sorcerer.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "neural_nomad": {
+  "file": "assets/player/neural_nomad.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "shadow_operative": {
+      "file": "assets/player/shadow_operative.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "tech_warrior": {
+      "file": "assets/player/tech_warrior.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "heavy_gunner": {
+      "file": "assets/player/heavy_gunner.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "yellow"
+    }
+    ,
+    "wasteland_scavenger": {
+      "file": "assets/player/wasteland_scavenger.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "gray"
     }
   },
   "boss": {
