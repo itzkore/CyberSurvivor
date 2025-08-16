@@ -4,12 +4,12 @@ import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
 import type { Enemy } from './EnemyManager'; // Import Enemy type
 import { Logger } from '../core/Logger';
+import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
+import { ParticleManager } from './ParticleManager'; // Import ParticleManager
+import { EnemyManager } from './EnemyManager'; // Import EnemyManager
 
 declare global {
   interface Window {
-    enemyManager?: {
-      getEnemies: () => Array<Enemy>; // Use Enemy type
-    };
     player?: { x: number; y: number };
   }
 }
@@ -19,9 +19,15 @@ export class BulletManager {
   private bulletPool: Bullet[] = []; // Dedicated pool for inactive bullets
   private assetLoader: AssetLoader;
   private readonly initialPoolSize: number = 200; // Pre-allocate a reasonable number of bullets
+  private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid for enemies
+  private particleManager: ParticleManager; // Injected ParticleManager
+  private enemyManager: EnemyManager; // Injected EnemyManager
 
-  constructor(assetLoader: AssetLoader) {
+  constructor(assetLoader: AssetLoader, enemySpatialGrid: SpatialGrid<Enemy>, particleManager: ParticleManager, enemyManager: EnemyManager) {
     this.assetLoader = assetLoader;
+    this.enemySpatialGrid = enemySpatialGrid; // Assign spatial grid
+    this.particleManager = particleManager; // Assign particle manager
+    this.enemyManager = enemyManager; // Assign enemy manager
     this.preallocateBullets();
   }
 
@@ -87,123 +93,104 @@ export class BulletManager {
     for (let i = 0; i < this.bullets.length; i++) {
       const b = this.bullets[i];
       if (!b.active) {
-        // Ensure explosion properties are reset when returning to pool (removed Mech Mortar specific resets)
-        // b._exploded = false;
-        // b._explosionStartTime = undefined;
-        // b._maxExplosionDuration = undefined;
         this.bulletPool.push(b); // Return to pool if inactive
         continue;
       }
 
-      // --- Mech Mortar (Titan Mech) logic ---
-      if (b.weaponType === WeaponType.MECH_MORTAR) {
-        const prevX = b.x; // Store previous position for swept-sphere collision
-        const prevY = b.y;
+      // Store previous position for swept-sphere collision
+      const prevX = b.x;
+      const prevY = b.y;
 
-        // Move the projectile
-        b.x += b.vx;
-        b.y += b.vy;
-        b.life--;
-
-        let hitEnemy: Enemy | null = null;
-        let intersectionPoint: { x: number, y: number } | null = null;
-
-        if (window.enemyManager && typeof window.enemyManager.getEnemies === 'function') {
-          for (const enemy of window.enemyManager.getEnemies()) {
-            intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius);
-            if (intersectionPoint) {
-              hitEnemy = enemy;
-              // --- Knockback direction (corrected to push away from bullet) ---
-              const dx = enemy.x - b.x; // Vector from bullet to enemy
-              const dy = enemy.y - b.y; // Vector from bullet to enemy
-              const dist = Math.hypot(dx, dy) || 1;
-              const hitDirection = { x: dx / dist, y: dy / dist };
-              // Pass weapon level if available (default 1)
-              const weaponLevel = (b as any).level ?? 1;
-              // Apply damage and knockback
-              if (typeof (window.enemyManager as any).takeDamage === 'function') {
-                (window.enemyManager as any).takeDamage(enemy, b.damage, false, false, b.weaponType, window.player?.x, window.player?.y, weaponLevel);
-              }
-              break; // Stop at first hit
-            }
-          }
-        }
-
-        // If collision detected OR life expires, trigger explosion event and deactivate projectile
-        if (hitEnemy || b.life <= 0) {
-           b.active = false; // Immediately deactivate projectile
-           b.vx = 0; // Stop movement
-           b.vy = 0; // Stop movement
-
-           // Explosion state: keep explosion timing independent from bullet lifecycle
-           (b as any)._exploded = true;
-           (b as any)._explosionStartTime = performance.now();
-           (b as any)._maxExplosionDuration = 1000;
-           b.life = 0;
-
-           // Determine explosion point
-           const explosionX = intersectionPoint ? intersectionPoint.x : b.x;
-           const explosionY = intersectionPoint ? intersectionPoint.y : b.y;
-
-           // Dispatch explosion event (damage and particles handled by Game.ts) with radius
-           window.dispatchEvent(new CustomEvent('mortarExplosion', {
-             detail: {
-               x: explosionX,
-               y: explosionY,
-               damage: b.damage,
-               hitEnemy: hitEnemy, // Pass hit enemy for direct damage
-               radius: b.explosionRadius ?? 100
-             }
-           }));
-           continue; // Skip adding to activeBullets for this frame, as it's now inactive and exploded
-         }
-         activeBullets.push(b); // Only push if it's still active (didn't explode/expire)
-         continue;
-       }
-      // --- End Mech Mortar logic ---
-
-      // General collision detection for all other weapons
-      if (window.enemyManager && typeof window.enemyManager.getEnemies === 'function') {
-        for (const enemy of window.enemyManager.getEnemies()) {
-          if (!enemy.active || enemy.hp <= 0) continue; // Only check active, alive enemies
-
-          const dx = b.x - enemy.x;
-          const dy = b.y - enemy.y;
-          const dist = Math.hypot(dx, dy);
-
-          if (dist < b.radius + enemy.radius) {
-            // Collision detected
-            b.active = false; // Deactivate bullet on hit
-            this.bulletPool.push(b); // Return to pool
-
-            // Calculate hit direction from bullet to enemy for knockback (pushes enemy away from bullet)
-            const hitDirection = { x: (enemy.x - b.x) / dist, y: (enemy.y - b.y) / dist };
-            const weaponLevel = (b as any).level ?? 1; // Pass weapon level if available (default 1)
-
-            if (typeof (window.enemyManager as any).takeDamage === 'function') {
-              (window.enemyManager as any).takeDamage(enemy, b.damage, false, false, b.weaponType, window.player?.x, window.player?.y, weaponLevel);
-            }
-            break; // Stop at first hit for this bullet
-          }
-        }
-      }
-
-      // Basic movement for other weapons
+      // Move the projectile
       b.x += b.vx;
       b.y += b.vy;
       b.life--;
-      if (b.life <= 0) {
-        // For BIO_TOXIN, spawn a poison puddle on expiry
-        if (b.weaponType === WeaponType.BIO_TOXIN) {
-          if (window.enemyManager && typeof (window.enemyManager as any).spawnPoisonPuddle === 'function') {
-            (window.enemyManager as any).spawnPoisonPuddle(b.x, b.y);
+
+      let hitEnemy: Enemy | null = null;
+      let intersectionPoint: { x: number, y: number } | null = null;
+
+      // Use spatial grid to find potential enemies near the bullet
+      const potentialEnemies = this.enemySpatialGrid.query(b.x, b.y, b.radius);
+      for (const enemy of potentialEnemies) {
+        if (!enemy.active || enemy.hp <= 0) continue; // Only check active, alive enemies
+
+        // For Mech Mortar, use swept-sphere collision
+        if (b.weaponType === WeaponType.MECH_MORTAR) {
+          intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius);
+        } else {
+          // For other bullets, use simple circle-circle collision
+          const dx = b.x - enemy.x;
+          const dy = b.y - enemy.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist < b.radius + enemy.radius) {
+            intersectionPoint = { x: b.x, y: b.y }; // Approximate intersection point
           }
         }
+
+        if (intersectionPoint) {
+          hitEnemy = enemy;
+          // Calculate hit direction from bullet to enemy for knockback (pushes enemy away from bullet)
+          const dx = enemy.x - b.x; // Vector from bullet to enemy
+          const dy = enemy.y - b.y; // Vector from bullet to enemy
+          const dist = Math.hypot(dx, dy) || 1;
+          const hitDirection = { x: dx / dist, y: dy / dist };
+          const weaponLevel = (b as any).level ?? 1;
+
+          // Apply damage and knockback (using injected enemyManager)
+          this.enemyManager.takeDamage(enemy, b.damage, false, false, b.weaponType, window.player?.x, window.player?.y, weaponLevel);
+
+          // Deactivate bullet immediately on hit (removed Mech Mortar exception)
+          b.active = false;
+          if (b.weaponType !== WeaponType.MECH_MORTAR) { // Mech Mortar handles its own explosion
+            this.bulletPool.push(b); // Return to pool if not a Mech Mortar
+          }
+          this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00'); // Use injected particleManager
+          break; // Stop at first hit for this bullet
+        }
+      }
+
+      // If Mech Mortar and collision detected OR life expires, trigger explosion event and deactivate projectile
+      if (b.weaponType === WeaponType.MECH_MORTAR && (hitEnemy || b.life <= 0)) {
+        b.active = false; // Immediately deactivate projectile
+        b.vx = 0; // Stop movement
+        b.vy = 0; // Stop movement
+
+        // Explosion state: keep explosion timing independent from bullet lifecycle
+        (b as any)._exploded = true;
+        (b as any)._explosionStartTime = performance.now();
+        (b as any)._maxExplosionDuration = 1000;
+        b.life = 0;
+
+        // Determine explosion point
+        const explosionX = intersectionPoint ? intersectionPoint.x : b.x;
+        const explosionY = intersectionPoint ? intersectionPoint.y : b.y;
+
+        // Dispatch explosion event (damage and particles handled by Game.ts) with radius
+        window.dispatchEvent(new CustomEvent('mortarExplosion', {
+          detail: {
+            x: explosionX,
+            y: explosionY,
+            damage: b.damage,
+            hitEnemy: hitEnemy, // Pass hit enemy for direct damage
+            radius: b.explosionRadius ?? 100
+          }
+        }));
+        this.bulletPool.push(b); // Return to pool
+        continue; // Skip adding to activeBullets for this frame, as it's now inactive and exploded
+      }
+
+      // For BIO_TOXIN, spawn a poison puddle on expiry
+      if (b.life <= 0 && b.weaponType === WeaponType.BIO_TOXIN) {
+        this.enemyManager.spawnPoisonPuddle(b.x, b.y); // Use injected enemyManager
         b.active = false; // Mark as inactive to be returned to pool
         this.bulletPool.push(b);
         continue;
       }
-      activeBullets.push(b); // Keep active bullets
+
+      // If bullet is still active and not a Mech Mortar or Bio Toxin that expired, add to active list
+      if (b.active) {
+        activeBullets.push(b);
+      }
     }
     this.bullets = activeBullets; // Update the active bullets list
   }
@@ -213,9 +200,6 @@ export class BulletManager {
       if (!b.active) continue;
       ctx.save();
       let visual: any = b.projectileVisual ?? { type: 'bullet', color: '#0ff', size: b.radius, glowColor: '#0ff', glowRadius: 8 };
-
-      // --- Mech Mortar drawing (REMOVED - now handled by general bullet drawing) ---
-      // if (b.weaponType === WeaponType.MECH_MORTAR) { ... removed ... }
 
       // General bullet drawing logic (including what was Mech Mortar)
       if (visual?.type === 'bullet') {

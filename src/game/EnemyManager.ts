@@ -15,6 +15,7 @@ import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
 import { Logger } from '../core/Logger';
 import { WEAPON_SPECS } from './WeaponConfig';
+import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
 
 interface Wave {
   startTime: number; // in seconds
@@ -37,6 +38,7 @@ export class EnemyManager {
   private chestPool: Chest[] = []; // Chest pool
   private assetLoader: AssetLoader | null = null;
   private waves: Wave[];
+  private bulletSpatialGrid: SpatialGrid<Bullet>; // Spatial grid for bullets
 
   // Poison puddle system
   private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean }[] = [];
@@ -44,27 +46,29 @@ export class EnemyManager {
   /**
    * EnemyManager constructor
    * @param player Player instance
+   * @param bulletSpatialGrid SpatialGrid for bullets
    * @param particleManager ParticleManager instance
    * @param assetLoader AssetLoader instance
    * @param difficulty Difficulty multiplier
    */
-  constructor(player: Player, particleManager?: ParticleManager, assetLoader?: AssetLoader, difficulty: number = 1) {
+  constructor(player: Player, bulletSpatialGrid: SpatialGrid<Bullet>, particleManager?: ParticleManager, assetLoader?: AssetLoader, difficulty: number = 1) {
     this.player = player;
+    this.bulletSpatialGrid = bulletSpatialGrid; // Assign spatial grid
     this.particleManager = particleManager || null;
     this.assetLoader = assetLoader || null;
     this.preallocateEnemies(difficulty);
     this.preallocateGems();
     this.preallocateChests();
     this.waves = [
-      { startTime: 0,    enemyType: 'small',  count: 20, spawnInterval: 60, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
-      { startTime: 30,   enemyType: 'small',  count: 30, spawnInterval: 45, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
-      { startTime: 60,   enemyType: 'medium', count: 15, spawnInterval: 90, spawned: 0, lastSpawnTime: 0, spawnPattern: 'ring' },
-      { startTime: 90,   enemyType: 'small',  count: 50, spawnInterval: 30, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
-      { startTime: 120,  enemyType: 'medium', count: 25, spawnInterval: 75, spawned: 0, lastSpawnTime: 0, spawnPattern: 'cone' },
-      { startTime: 150,  enemyType: 'large',  count: 10, spawnInterval: 120, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
-      { startTime: 180,  enemyType: 'small',  count: 100, spawnInterval: 20, spawned: 0, lastSpawnTime: 0, spawnPattern: 'surge' },
-      { startTime: 210,  enemyType: 'medium', count: 40, spawnInterval: 60, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
-      { startTime: 240,  enemyType: 'large',  count: 20, spawnInterval: 90, spawned: 0, lastSpawnTime: 0, spawnPattern: 'ring' },
+      { startTime: 0,    enemyType: 'small',  count: 10, spawnInterval: 60, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 30,   enemyType: 'small',  count: 15, spawnInterval: 45, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 60,   enemyType: 'medium', count: 7, spawnInterval: 90, spawned: 0, lastSpawnTime: 0, spawnPattern: 'ring' },
+      { startTime: 90,   enemyType: 'small',  count: 25, spawnInterval: 30, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 120,  enemyType: 'medium', count: 12, spawnInterval: 75, spawned: 0, lastSpawnTime: 0, spawnPattern: 'cone' },
+      { startTime: 150,  enemyType: 'large',  count: 5, spawnInterval: 120, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 180,  enemyType: 'small',  count: 50, spawnInterval: 20, spawned: 0, lastSpawnTime: 0, spawnPattern: 'surge' },
+      { startTime: 210,  enemyType: 'medium', count: 20, spawnInterval: 60, spawned: 0, lastSpawnTime: 0, spawnPattern: 'normal' },
+      { startTime: 240,  enemyType: 'large',  count: 10, spawnInterval: 90, spawned: 0, lastSpawnTime: 0, spawnPattern: 'ring' },
     ];
     // Listen for spawnChest event from BossManager
     window.addEventListener('spawnChest', (e: Event) => {
@@ -147,7 +151,7 @@ export class EnemyManager {
     window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: amount, isCritical: isCritical } }));
   }
 
-  private spawnPoisonPuddle(x: number, y: number) {
+  public spawnPoisonPuddle(x: number, y: number) {
     let puddle = this.poisonPuddles.find(p => !p.active);
     if (!puddle) {
       puddle = { x, y, radius: 32, life: 180, maxLife: 180, active: true };
@@ -323,8 +327,10 @@ export class EnemyManager {
         this.player.takeDamage(enemy.damage);
       }
       // Bullet collisions
-      for (let b = 0; b < bullets.length; b++) {
-        const bullet = bullets[b];
+      // Use spatial grid to find potential bullets near enemy
+      const potentialBullets = this.bulletSpatialGrid.query(enemy.x, enemy.y, enemy.radius);
+      for (let b = 0; b < potentialBullets.length; b++) {
+        const bullet = potentialBullets[b];
         if (!bullet.active) continue;
         const ddx = bullet.x - enemy.x;
         const ddy = bullet.y - enemy.y;
@@ -409,25 +415,25 @@ export class EnemyManager {
     enemy._damageFlash = 0;
     switch (type) {
       case 'small':
-        enemy.hp = 50; // Increased HP for small enemies
-        enemy.maxHp = 50;
+        enemy.hp = 100; // Increased HP for small enemies
+        enemy.maxHp = 100;
         enemy.radius = 12;
         enemy.speed = 1.5 * 0.4; // Further reduced speed (40% of original)
-        enemy.damage = 5;
-        break;
-      case 'medium':
-        enemy.hp = 150; // Increased HP for medium enemies
-        enemy.maxHp = 150;
-        enemy.radius = 18;
-        enemy.speed = 1 * 0.4; // Further reduced speed (40% of original)
         enemy.damage = 10;
         break;
+      case 'medium':
+        enemy.hp = 300; // Increased HP for medium enemies
+        enemy.maxHp = 300;
+        enemy.radius = 18;
+        enemy.speed = 1 * 0.4; // Further reduced speed (40% of original)
+        enemy.damage = 20;
+        break;
       case 'large':
-        enemy.hp = 400; // Increased HP for large enemies
-        enemy.maxHp = 400;
+        enemy.hp = 800; // Increased HP for large enemies
+        enemy.maxHp = 800;
         enemy.radius = 24;
         enemy.speed = 0.7 * 0.4; // Further reduced speed (40% of original)
-        enemy.damage = 20;
+        enemy.damage = 40;
         break;
     }
     // Restore original spawn distance and pattern logic

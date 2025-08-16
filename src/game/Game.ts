@@ -15,6 +15,7 @@ import { GameLoop } from '../core/GameLoop';
 import { Logger } from '../core/Logger';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
+import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
 
 export class Game {
   /**
@@ -66,6 +67,8 @@ export class Game {
   private dpsLog: number[] = [];
   private dpsFrameDamage: number = 0;
   private gameLoop: GameLoop;
+  private enemySpatialGrid: SpatialGrid<any>; // Spatial grid for enemies
+  private bulletSpatialGrid: SpatialGrid<any>; // Spatial grid for bullets
 
   // DPS Tracking
   private totalDamageDealt: number = 0;
@@ -89,13 +92,24 @@ export class Game {
     this.gameTime = 0;
     this.assetLoader = new AssetLoader(); // Initialization remains here
     this.particleManager = new ParticleManager(160);
-    this.bulletManager = new BulletManager(this.assetLoader);
+    // Initialize spatial grids first
+    this.enemySpatialGrid = new SpatialGrid<any>(200); // Cell size 200
+    this.bulletSpatialGrid = new SpatialGrid<any>(100); // Cell size 100
+
+    // Initialize enemyManager before bulletManager as it's a dependency
+    this.player = new Player(this.worldW / 2, this.worldH / 2);
+    this.player.radius = 18;
+    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
+
+    // Now initialize bulletManager with its dependencies
+    this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager); // Pass spatial grid, particle and enemy managers
+
     // ExplosionManager will be initialized after EnemyManager is created
     this.cinematic = new Cinematic();
     // Initialize player and managers here
     this.player = new Player(this.worldW / 2, this.worldH / 2);
     this.player.radius = 18;
-    this.enemyManager = new EnemyManager(this.player, this.particleManager, this.assetLoader, 1);
+    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
     this.bossManager = new BossManager(this.player, this.particleManager);
     if (!this.explosionManager) {
       this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
@@ -326,7 +340,9 @@ export class Game {
   }
 
     // Reset managers with new player reference
-    this.enemyManager = new EnemyManager(this.player, this.particleManager, this.assetLoader, 1);
+    this.enemySpatialGrid.clear(); // Clear grid on reset
+    this.bulletSpatialGrid.clear(); // Clear grid on reset
+    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
     this.bossManager = new BossManager(this.player, this.particleManager);
     // Ensure player uses the new enemyManager for enemyProvider
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
@@ -586,11 +602,28 @@ async init() {
     this.bulletManager.update();
     this.particleManager.update();
     this.damageTextManager.update();
+
+    // Clear and re-populate spatial grids
+    this.enemySpatialGrid.clear();
+    for (const enemy of this.enemyManager.enemies) {
+      if (enemy.active) {
+        this.enemySpatialGrid.insert(enemy);
+      }
+    }
+    this.bulletSpatialGrid.clear();
+    for (const bullet of this.bulletManager.bullets) {
+      if (bullet.active) {
+        this.bulletSpatialGrid.insert(bullet);
+      }
+    }
+
     // --- Boss bullet collision ---
     const boss = this.bossManager.getActiveBoss();
     if (boss) {
-      for (let i = 0; i < this.bulletManager.bullets.length; i++) {
-        const b = this.bulletManager.bullets[i];
+      // Use spatial grid to find potential bullets near boss
+      const potentialBullets = this.bulletSpatialGrid.query(boss.x, boss.y, boss.radius);
+      for (let i = 0; i < potentialBullets.length; i++) {
+        const b = potentialBullets[i];
         if (!b.active) continue;
         const dx = b.x - boss.x;
         const dy = b.y - boss.y;

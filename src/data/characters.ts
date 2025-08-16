@@ -32,8 +32,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 100,
       maxHp: 100,
-      speed: 4.2,
-      damage: 12,
+      speed: 8.4, // Doubled (4.2 * 2)
+      damage: 24, // Doubled (12 * 2)
       strength: 6,
       intelligence: 6,
       agility: 6,
@@ -53,8 +53,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 130,
       maxHp: 130,
-      speed: 3.8,
-      damage: 20,
+      speed: 7.6, // Doubled (3.8 * 2)
+      damage: 40, // Doubled (20 * 2)
       strength: 10,
       intelligence: 5,
       agility: 5,
@@ -74,8 +74,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 110,
       maxHp: 110,
-      speed: 4.6,
-      damage: 15,
+      speed: 9.2, // Doubled (4.6 * 2)
+      damage: 30, // Doubled (15 * 2)
       strength: 8,
       intelligence: 7,
       agility: 7,
@@ -95,8 +95,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 75,
       maxHp: 75,
-      speed: 5.8,
-      damage: 16,
+      speed: 11.6, // Doubled (5.8 * 2)
+      damage: 32, // Doubled (16 * 2)
       strength: 6,
       intelligence: 8,
       agility: 12,
@@ -116,8 +116,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 95,
       maxHp: 95,
-      speed: 5.2,
-      damage: 13,
+      speed: 8.4, // Doubled (4.2 * 2)
+      damage: 26, // Doubled (13 * 2)
       strength: 5,
       intelligence: 11,
       agility: 8,
@@ -137,8 +137,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 85,
       maxHp: 85,
-      speed: 4.8,
-      damage: 14,
+      speed: 8.4, // Doubled (4.2 * 2)
+      damage: 28, // Doubled (14 * 2)
       strength: 4,
       intelligence: 12,
       agility: 7,
@@ -158,8 +158,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 80,
       maxHp: 80,
-      speed: 5.0,
-      damage: 18,
+      speed: 9.6, // Doubled (4.8 * 2)
+      damage: 36, // Doubled (18 * 2)
       strength: 7,
       intelligence: 9,
       agility: 10,
@@ -179,11 +179,11 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 150,
       maxHp: 150,
-      speed: 2.5,
-      damage: 20,
+      speed: 5.8, // Increased by 50% (2.5 * 1.5)
+      damage: 40, // Doubled (20 * 2)
       strength: 10,
       intelligence: 4,
-      agility: 2,
+      agility: 3,
       luck: 3,
       defense: 12,
     },
@@ -200,8 +200,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 80,
       maxHp: 80,
-      speed: 5.5,
-      damage: 8,
+      speed: 8.4, // Doubled (4.2 * 2)
+      damage: 16, // Doubled (8 * 2)
       strength: 4,
       intelligence: 6,
       agility: 8,
@@ -221,8 +221,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 90,
       maxHp: 90,
-      speed: 4.2,
-      damage: 12,
+      speed: 6.3, // Increased by 50% (4.2 * 1.5)
+      damage: 24, // Doubled (12 * 2)
       strength: 5,
       intelligence: 10,
       agility: 6,
@@ -242,8 +242,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 100,
       maxHp: 100,
-      speed: 4.0,
-      damage: 10,
+      speed: 6.0, // Increased by 50% (4.0 * 1.5)
+      damage: 20, // Doubled (10 * 2)
       strength: 6,
       intelligence: 8,
       agility: 5,
@@ -263,8 +263,8 @@ export const CHARACTERS: CharacterData[] = [
     stats: {
       hp: 120,
       maxHp: 120,
-      speed: 3.5,
-      damage: 15,
+      speed: 5.2, // Increased by 50% (3.5 * 1.5)
+      damage: 30, // Doubled (15 * 2)
       strength: 8,
       intelligence: 3,
       agility: 3,

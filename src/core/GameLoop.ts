@@ -5,7 +5,7 @@
 export class GameLoop {
     private lastTime: number = 0;
     private accumulatedTime: number = 0;
-    private readonly fixedUpdateInterval: number = 1000 / 60; // 60 updates per second
+    private readonly fixedUpdateInterval: number = 1000 / 60; // 60 updates per second (restored original speed)
 
     private update: (deltaTime: number) => void;
     private render: (deltaTime: number) => void;
