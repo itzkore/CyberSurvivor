@@ -11,26 +11,26 @@ export class ParticleManager {
     return { x: -9999, y: -9999, vx: 0, vy: 0, life: 0, size: 2, color: '#fff', active: false };
   }
 
-  public spawn(x: number, y: number, count = 8, color = '#ff0') {
+  public spawn(x: number, y: number, count = 8, color = '#ff0', opts?: { sizeMin?: number; sizeMax?: number; life?: number; speedMin?: number; speedMax?: number }) {
     for (let i = 0; i < count; i++) {
-      const p = this.pool.find((p) => !p.active);
-      if (!p) {
-        const np = this.createDead();
-        this.pool.push(np);
-        this.activate(np, x, y, color);
-      } else this.activate(p, x, y, color);
+      const p = this.pool.find(p => !p.active) || (() => { const np = this.createDead(); this.pool.push(np); return np; })();
+      this.activate(p, x, y, color, opts);
     }
   }
 
-  private activate(p: Particle, x: number, y: number, color: string) {
+  private activate(p: Particle, x: number, y: number, color: string, opts?: { sizeMin?: number; sizeMax?: number; life?: number; speedMin?: number; speedMax?: number }) {
+    const sizeMin = opts?.sizeMin ?? 1;
+    const sizeMax = opts?.sizeMax ?? 4;
+    const speedMin = opts?.speedMin ?? 2;
+    const speedMax = opts?.speedMax ?? 4;
     p.x = x + (Math.random() - 0.5) * 8;
     p.y = y + (Math.random() - 0.5) * 8;
-    const speed = 2 + Math.random() * 2;
+    const speed = speedMin + Math.random() * (speedMax - speedMin);
     const ang = Math.random() * Math.PI * 2;
     p.vx = Math.cos(ang) * speed;
     p.vy = Math.sin(ang) * speed;
-    p.life = 60; // Set a fixed life for explosion particles (approx 1 second at 60 FPS)
-    p.size = 1 + Math.random() * 3;
+    p.life = opts?.life ?? 60;
+    p.size = sizeMin + Math.random() * (sizeMax - sizeMin);
     p.color = color;
     p.active = true;
   }

@@ -71,6 +71,8 @@ export interface WeaponSpec {
    * Knockback force applied to enemies hit by this weapon (pixels/frame or arbitrary units)
    */
   knockback?: number;
+  /** Optional explicit projectile lifetime override (frames). If absent, derived from range/speed. */
+  lifetime?: number;
   /**
    * Returns scaled stats for the weapon at a given level.
    * @param level Weapon level (1-based)
@@ -315,109 +317,17 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
      isClassWeapon: false
   },
   [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma',  icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60,  salvo: 4, spread: 0.25, projectile: 'bullet_cyan', speed: 11.2, range: 350, maxLevel: 5, damage: 10, projectileVisual: { type: 'plasma', color: '#00FFFF', size: 12, glowColor: '#00FFFF', glowRadius: 10, trailColor: 'rgba(0,255,255,0.3)', trailLength: 5 }, isClassWeapon: false },
-  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 7, projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12 }, traits: ['Spray', 'Fast', 'Low Damage'], isClassWeapon: true, knockback: 5 },
-  [WeaponType.WARRIOR_CANNON]: { id: WeaponType.WARRIOR_CANNON, name: 'Warrior Cannon', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60, salvo: 1, spread: 0, projectile: 'bullet_red', speed: 5.6, range: 250, maxLevel: 5, damage: 40, projectileVisual: { type: 'explosive', color: '#FF0000', size: 14, glowColor: '#FF0000', glowRadius: 12 }, traits: ['Explosive', 'High Damage', 'Slow'], isClassWeapon: true },
-  [WeaponType.SORCERER_ORB]: {
-    id: WeaponType.SORCERER_ORB,
-    name: 'Arcane Orb',
-    icon: '/assets/ui/icons/upgrade_speed.png',
-    cooldown: 144, // 4x original cooldown
-    salvo: 1,
-    spread: 0,
-    projectile: 'orb_yellow',
-    speed: 3.2,
-    range: 1200, // Increased initial range for longer travel before first impact
-    maxLevel: 5,
-    damage: 25, // Base damage for Sorcerer Orb
-    projectileVisual: {
-      type: 'bullet',
-      color: '#FFD700',
-      size: 10,
-      glowColor: '#FFD700',
-      glowRadius: 18
-    },
-    traits: ['Piercing', 'Homing', 'Needle', 'Returns', 'Runs Through Enemies', 'Snake', 'Ricochet'],
-    isClassWeapon: true
-  },
-  [WeaponType.SHADOW_DAGGER]: {
-    id: WeaponType.SHADOW_DAGGER,
-    name: 'Shadow Dagger',
-    icon: '/assets/ui/icons/upgrade_speed.png',
-    cooldown: 18,
-    salvo: 1,
-    spread: 0,
-    projectile: 'dagger_purple',
-    speed: 12.6,
-    range: 420,
-    maxLevel: 5,
-    damage: 18,
-    projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 },
-    traits: ['Ricochet', 'Critical', 'Fast'],
-    isClassWeapon: true,
-    knockback: 20 // Dagger: moderate knockback
-  },
-  [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 5, damage: 10, projectileVisual: { type: 'slime', color: '#00FF00', size: 13, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison', 'Area', 'Debuff'], isClassWeapon: true },
-  [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 5, damage: 12, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP', 'Disrupt', 'Pierces'], isClassWeapon: true },
-  [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 10, salvo: 1, spread: 0.28, projectile: 'bullet_cyan', speed: 7.7, range: 320, maxLevel: 5, damage: 6, projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 6, trailColor: 'rgba(165,42,42,0.5)', trailLength: 8 }, traits: ['Spray', 'Rapid', 'Lower Damage', 'Wider Spread', 'Balanced'], isClassWeapon: true },
-  [WeaponType.PSIONIC_WAVE]: {
-    id: WeaponType.PSIONIC_WAVE,
-    name: 'Psionic Wave',
-    icon: '/assets/ui/icons/upgrade_speed.png',
-    cooldown: 28,
-    salvo: 1,
-    spread: 0,
-    projectile: 'wave_pink',
-    speed: 9.1,
-    range: 500,
-    maxLevel: 5,
-    damage: 22, // Base damage for Psionic Wave
-    projectileVisual: {
-      type: 'beam',
-      color: '#FFC0CB',
-      thickness: 14,
-      length: 120,
-      glowColor: '#FF00FF',
-      glowRadius: 40,
-      trailColor: '#FFD700',
-      trailLength: 40
-    },
-    traits: ['Boss Wave', 'Epic Glow', 'Animated Core', 'Pierces', 'Area'],
-    isClassWeapon: true
-  },
-  [WeaponType.SCAVENGER_SLING]: {
-    id: WeaponType.SCAVENGER_SLING,
-    name: 'Scavenger Sling',
-    icon: '/assets/ui/icons/upgrade_speed.png',
-    cooldown: 38,
-    salvo: 1,
-    spread: 0,
-    projectile: 'rock_gray',
-    speed: 7,
-    range: 300,
-    maxLevel: 5,
-    damage: 15,
-    projectileVisual: { type: 'bullet', color: '#808080', size: 10, glowColor: '#808080', glowRadius: 7 },
-    traits: ['Random', 'Bounces', 'Medium Damage'],
-    isClassWeapon: true,
-    knockback: 24 // Sling: medium knockback
-  },
-  [WeaponType.NOMAD_NEURAL]: { id: WeaponType.NOMAD_NEURAL, name: 'Neural Pulse', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 24, salvo: 1, spread: 0, projectile: 'pulse_teal', speed: 9.8, range: 400, maxLevel: 5, damage: 14, projectileVisual: { type: 'plasma', color: '#008080', size: 11, glowColor: '#008080', glowRadius: 9 }, traits: ['Pulse', 'Stun', 'Pierces'], isClassWeapon: true },
-  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 110, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 5, damage: 60, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser', 'Critical', 'Long Range'], isClassWeapon: true },
-  [WeaponType.MECH_MORTAR]: {
-    id: WeaponType.MECH_MORTAR,
-    name: 'Mech Mortar',
-    icon: '/assets/ui/icons/upgrade_speed.png', // Pistol icon
-    cooldown: 90, // Pistol cooldown
-    salvo: 1, // Pistol salvo
-    spread: 0, // Pistol spread
-    projectile: 'bullet_gold', // Pistol projectile
-    speed: 7, // Original speed
-    damage: 60, // Revert to original balanced damage
-     range: 420, // Pistol range
-     maxLevel: 8, // Pistol maxLevel
-     projectileVisual: { type: 'bullet', color: '#FFD700', size: 10, glowColor: '#FFD700', glowRadius: 8 }, // Pistol projectileVisual
-     explosionRadius: 200, // Revert explosion radius to 200px as requested
-  traits: ['Heavy', 'High Damage', 'Strong Recoil', 'Large Caliber'], // Pistol traits
-  isClassWeapon: true
-  }
+  // Rebalanced Runner Gun: base damage set for ~60 DPS (damage * salvo * 60 / cooldown)
+  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 6, projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12 }, traits: ['Spray', 'Fast', 'Scaling'], isClassWeapon: true, knockback: 5, getLevelStats(level: number) { const baseDamage=6, baseCooldown=12, mult=5.833333; const dmg=Math.round(baseDamage*(1+ (level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1- (level-1)*0.30/4)); return { damage:dmg, cooldown:cd }; } },
+  [WeaponType.WARRIOR_CANNON]: { id: WeaponType.WARRIOR_CANNON, name: 'Warrior Cannon', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60, salvo: 1, spread: 0, projectile: 'bullet_red', speed: 5.6, range: 250, maxLevel: 5, damage: 60, projectileVisual: { type: 'explosive', color: '#FF0000', size: 14, glowColor: '#FF0000', glowRadius: 12 }, traits: ['Explosive', 'Burst', 'Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=60, baseCooldown=60, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.SORCERER_ORB]: { id: WeaponType.SORCERER_ORB, name: 'Arcane Orb', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 144, salvo: 1, spread: 0, projectile: 'orb_yellow', speed: 3.2, range: 1200, maxLevel: 5, damage: 144, projectileVisual: { type: 'bullet', color: '#FFD700', size: 10, glowColor: '#FFD700', glowRadius: 18 }, traits: ['Piercing','Homing','Returns','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=144, baseCooldown=144, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.SHADOW_DAGGER]: { id: WeaponType.SHADOW_DAGGER, name: 'Shadow Dagger', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 18, salvo: 1, spread: 0, projectile: 'dagger_purple', speed: 12.6, range: 420, maxLevel: 5, damage: 18, projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 }, traits: ['Ricochet','Critical','Scaling'], isClassWeapon: true, knockback: 20, getLevelStats(level:number){ const baseDamage=18, baseCooldown=18, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 5, damage: 88, projectileVisual: { type: 'slime', color: '#00FF00', size: 13, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison','Area','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=88, baseCooldown=88, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 5, damage: 32, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP','Disrupt','Pierces','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=32, baseCooldown=32, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 10, salvo: 1, spread: 0.28, projectile: 'bullet_cyan', speed: 7.7, range: 320, maxLevel: 5, damage: 10, projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 6, trailColor: 'rgba(165,42,42,0.5)', trailLength: 8 }, traits: ['Spray','Rapid','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=10, baseCooldown=10, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 28, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.1, range: 500, maxLevel: 5, damage: 28, projectileVisual: { type: 'beam', color: '#FFC0CB', thickness: 14, length: 120, glowColor: '#FF00FF', glowRadius: 40, trailColor: '#FFD700', trailLength: 40 }, traits: ['Pierces','Area','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=28, baseCooldown=28, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.SCAVENGER_SLING]: { id: WeaponType.SCAVENGER_SLING, name: 'Scavenger Sling', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 38, salvo: 1, spread: 0, projectile: 'rock_gray', speed: 7, range: 300, maxLevel: 5, damage: 38, projectileVisual: { type: 'bullet', color: '#808080', size: 10, glowColor: '#808080', glowRadius: 7 }, traits: ['Bounces','Scaling'], isClassWeapon: true, knockback: 24, getLevelStats(level:number){ const baseDamage=38, baseCooldown=38, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.NOMAD_NEURAL]: { id: WeaponType.NOMAD_NEURAL, name: 'Neural Pulse', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 24, salvo: 1, spread: 0, projectile: 'pulse_teal', speed: 9.8, range: 400, maxLevel: 5, damage: 24, projectileVisual: { type: 'plasma', color: '#008080', size: 11, glowColor: '#008080', glowRadius: 9 }, traits: ['Pulse','Pierces','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=24, baseCooldown=24, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 5, damage: 95, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=95, baseCooldown=95, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.MECH_MORTAR]: { id: WeaponType.MECH_MORTAR, name: 'Mech Mortar', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 90, salvo: 1, spread: 0, projectile: 'bullet_gold', speed: 7, damage: 90, range: 420, maxLevel: 8, projectileVisual: { type: 'bullet', color: '#FFD700', size: 10, glowColor: '#FFD700', glowRadius: 8 }, explosionRadius: 200, traits: ['Heavy','AoE','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=90, baseCooldown=90, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } }
 };

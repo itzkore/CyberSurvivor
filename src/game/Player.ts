@@ -86,6 +86,9 @@ export class Player {
    */
   public rotation: number = 0;
 
+  /** Alternating side toggle for Titan Mech's Mech Mortar barrels (-1 left, 1 right) */
+  private mechMortarSide: number = -1;
+
   constructor(x: number, y: number, characterData?: any) {
     this.x = x;
     this.y = y;
@@ -157,12 +160,17 @@ export class Player {
     this.activePassives = []; // Clear all passives
     this.upgrades = []; // Clear upgrade history
     this.shootCooldowns.clear(); // Clear weapon cooldowns
-
-    // Re-add all weapons at level 1 for new run
-    this.activeWeapons.clear();
-    const allWeaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
-    for (const wt of allWeaponTypes) {
-      this.activeWeapons.set(wt, 1);
+    // Re-add only the character's starting weapon (preserve class identity)
+    if (this.characterData) {
+      if (this.characterData.id === 'psionic_weaver') {
+        this.activeWeapons.set(WeaponType.PSIONIC_WAVE, 1);
+      } else if (this.characterData.id === 'bio_engineer') {
+        this.activeWeapons.set(WeaponType.BIO_TOXIN, 1);
+      } else if (this.characterData.defaultWeapon !== undefined) {
+        this.activeWeapons.set(this.characterData.defaultWeapon, 1);
+      } else if (Array.isArray(this.characterData.weaponTypes) && this.characterData.weaponTypes.length > 0) {
+        this.activeWeapons.set(this.characterData.weaponTypes[0], 1);
+      }
     }
   }
 
@@ -337,14 +345,62 @@ export class Player {
         const toShoot = spec.salvo;
         const spread = spec.spread;
         // Only use class stats for class default weapon, otherwise use base bulletDamage
-        let bulletDamage = this.bulletDamage;
-        if (this.characterData && weaponType !== this.characterData.defaultWeapon) {
-          bulletDamage = 10; // Use base damage for non-class weapons (or set per weapon if needed)
+        const weaponLevel = this.activeWeapons.get(weaponType) ?? 1;
+        let bulletDamage = spec.damage;
+        if (spec.getLevelStats) {
+          const scaled = spec.getLevelStats(weaponLevel);
+          if (scaled.damage != null) bulletDamage = scaled.damage;
         }
 
-        for (let i = 0; i < toShoot; i++) {
+        // Special handling: Railgun uses charge then single beam; defer actual spawn
+        if (weaponType === WeaponType.RAILGUN) {
+          this.handleRailgunFire(baseAngle, target, spec, weaponLevel);
+          return; // Skip normal projectile loop
+        }
+
+  for (let i = 0; i < toShoot; i++) {
           const angle = baseAngle + (i - (toShoot - 1) / 2) * spread;
-          bm.spawnBullet(this.x, this.y, this.x + Math.cos(angle) * 100, this.y + Math.sin(angle) * 100, weaponType, bulletDamage);
+          // For Runner Gun: spawn from left/right gun barrels instead of exact center
+          let originX = this.x;
+          let originY = this.y;
+          if (weaponType === WeaponType.RUNNER_GUN) {
+            const sideOffsetBase = 22; // pixel distance from center to each gun barrel
+            // Perpendicular vector to firing direction
+            const perpX = -Math.sin(baseAngle);
+            const perpY =  Math.cos(baseAngle);
+            // Index centered around 0: for 2-shot salvo -> -0.5, +0.5
+            const centeredIndex = (i - (toShoot - 1) / 2);
+            // Convert to sign (-1 or 1) to anchor fully at each side
+            const sideSign = centeredIndex < 0 ? -1 : 1;
+            originX += perpX * sideOffsetBase * sideSign;
+            originY += perpY * sideOffsetBase * sideSign;
+          } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
+            // Titan Mech dual heavy cannons: alternate each shot left/right
+            // Determine perpendicular to firing direction
+            const perpX = -Math.sin(baseAngle);
+            const perpY =  Math.cos(baseAngle);
+            const barrelOffset = 30; // distance from center to each cannon
+            originX += perpX * barrelOffset * this.mechMortarSide;
+            originY += perpY * barrelOffset * this.mechMortarSide;
+            // Slight forward offset to place at muzzle tip
+            originX += Math.cos(baseAngle) * 18;
+            originY += Math.sin(baseAngle) * 18;
+            // Flip for next shot
+            this.mechMortarSide *= -1;
+          }
+          // Converging fire: if Runner Gun, recompute angle so each barrel aims exactly at target (covers middle)
+          let finalAngle = angle;
+          if (weaponType === WeaponType.RUNNER_GUN) {
+            const tdx = target.x - originX;
+            const tdy = target.y - originY;
+            finalAngle = Math.atan2(tdy, tdx);
+          } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
+            // Ensure each mortar shell aims from its barrel directly toward target center
+            const tdx = target.x - originX;
+            const tdy = target.y - originY;
+            finalAngle = Math.atan2(tdy, tdx);
+          }
+          bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
         }
       } else {
         Logger.warn(`[Player.shootAt] No weapon spec found for weaponType: ${weaponType}`);
@@ -352,6 +408,103 @@ export class Player {
     } else {
       Logger.warn('[Player.shootAt] No bulletManager in gameContext');
     }
+  }
+
+  /** Railgun charge + beam fire sequence */
+  private handleRailgunFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+    // Use a state flag on player to prevent re-entry during charge
+    if ((this as any)._railgunCharging) return;
+    (this as any)._railgunCharging = true;
+  const chargeTimeMs = 800; // quicker charge
+    const startTime = performance.now();
+    const originX = this.x;
+    const originY = this.y - 10; // slight upward to eye line
+  const particleInterval = 40; // denser small particles
+    let lastParticle = 0;
+    const pm = this.gameContext?.particleManager;
+    const beamEvents: Array<() => void> = [];
+
+    const chargeStep = () => {
+      const now = performance.now();
+      const elapsed = now - startTime;
+      // Suck-in small particles toward core
+      if (pm && now - lastParticle > particleInterval) {
+        lastParticle = now;
+        for (let i = 0; i < 5; i++) {
+          const ang = Math.random() * Math.PI * 2;
+          const dist = 60 + Math.random() * 60;
+          const px = originX + Math.cos(ang) * dist;
+          const py = originY + Math.sin(ang) * dist;
+          // Neon micro particle (cyan / magenta mix)
+          const color = Math.random() < 0.5 ? '#00FFFF' : '#FF00FF';
+          pm.spawn(px, py, 1, color, { sizeMin: 0.6, sizeMax: 1.4, life: 50, speedMin: 1.2, speedMax: 2.2 });
+        }
+      }
+      // After spawning, pull existing active particles slightly toward core for vortex feel
+      if (pm && pm['pool']) {
+        const pool: any[] = pm['pool'];
+        for (const p of pool) {
+          if (!p.active) continue;
+            const dx = originX - p.x;
+            const dy = originY - p.y;
+            const d = Math.hypot(dx, dy) || 1;
+            const pull = 0.22; // slightly softer pull for smaller particles
+            p.vx += (dx / d) * pull;
+            p.vy += (dy / d) * pull;
+        }
+      }
+      if (elapsed < chargeTimeMs) {
+        requestAnimationFrame(chargeStep);
+        return;
+      }
+      // Fire beam (single persistent beam hitbox for fixed duration)
+      (this as any)._railgunCharging = false;
+      const beamAngle = Math.atan2(target.y - originY, target.x - originX);
+  const beamDurationMs = 160; // faster snap beam
+      const beamStart = performance.now();
+      const range = spec.range || 900;
+  const beamDamageTotal = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 1.25; // tuned burst
+      const dps = beamDamageTotal / (beamDurationMs / 1000);
+      // Register beam effect object on game context for rendering & ticking
+      const game: any = this.gameContext;
+      if (!game._activeBeams) game._activeBeams = [];
+      const beamObj = {
+        type: 'railgun',
+        x: originX,
+        y: originY,
+        angle: beamAngle,
+        range,
+        start: beamStart,
+        duration: beamDurationMs,
+        lastTick: beamStart,
+        weaponLevel,
+        dealDamage: (now:number) => {
+          const enemies = game.enemyManager?.getEnemies() || [];
+          const cosA = Math.cos(beamAngle);
+          const sinA = Math.sin(beamAngle);
+          const thickness = 14; // thinner collision core
+          for (const e of enemies) {
+            if (!e.active || e.hp <= 0) continue;
+            const relX = e.x - originX;
+            const relY = e.y - originY;
+            const proj = relX * cosA + relY * sinA; // distance along beam
+            if (proj < 0 || proj > range) continue;
+            const ortho = Math.abs(-sinA * relX + cosA * relY);
+            if (ortho <= thickness + e.radius) {
+              // Apply tick damage once per frame segment
+              const deltaSec = (now - beamObj.lastTick)/1000;
+              const dmg = dps * deltaSec;
+              game.enemyManager.takeDamage(e, dmg, false, false, WeaponType.RAILGUN, this.x, this.y, weaponLevel);
+            }
+          }
+          beamObj.lastTick = now;
+        }
+      };
+      game._activeBeams.push(beamObj);
+      // Screen shake & flash
+  window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 4 } }));
+    };
+    requestAnimationFrame(chargeStep);
   }
 
   public update(delta: number) {
@@ -420,7 +573,12 @@ export class Player {
         if (t) {
           this.shootAt(t, weaponType);
           const spec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
-          const baseCooldown = spec?.cooldown ?? 10;
+          let baseCooldown = spec?.cooldown ?? 10;
+          const weaponLevel = this.activeWeapons.get(weaponType) ?? 1;
+          if (spec?.getLevelStats) {
+            const scaled = spec.getLevelStats(weaponLevel);
+            if (scaled.cooldown != null) baseCooldown = scaled.cooldown;
+          }
           const newCooldown = Math.max(1, Math.floor(baseCooldown / (this.fireRateModifier * this.attackSpeed))); // cooldown reduced by attackSpeed
           this.shootCooldowns.set(weaponType, newCooldown);
         }
@@ -460,8 +618,16 @@ export class Player {
    * @param amount Amount of damage to apply
    */
   public takeDamage(amount: number) {
-    this.hp -= amount;
-    if (this.hp < 0) this.hp = 0;
+  // Invulnerability window (i-frames)
+  const now = performance.now();
+  const last = (this as any)._lastDamageTime || 0;
+  const iframeMs = 800; // 0.8s of invulnerability
+  if (now - last < iframeMs) return; // ignore if still invulnerable
+  (this as any)._lastDamageTime = now;
+  this.hp -= amount;
+  if (this.hp < 0) this.hp = 0;
+  // Flash effect marker
+  (this as any)._damageFlashTime = now;
   }
 
   /**
@@ -470,13 +636,18 @@ export class Player {
    */
   public applyCharacterData(data: any) {
     if (!data) return;
+  const SPEED_SCALE = 0.45; // Adjusted global slowdown factor (lower = slower overall movement)
     if (data.defaultWeapon !== undefined) {
       this.classWeaponType = data.defaultWeapon;
     }
     if (data.stats) {
       if (data.stats.hp !== undefined) this.hp = data.stats.hp;
       if (data.stats.maxHp !== undefined) this.maxHp = data.stats.maxHp;
-      if (data.stats.speed !== undefined) this.speed = data.stats.speed;
+  if (data.stats.speed !== undefined) {
+      // Apply scaling and clamp to a sane max to prevent edge-case bursts
+      const scaled = data.stats.speed * SPEED_SCALE;
+      this.speed = Math.min(scaled, 8); // Hard cap safeguard
+  }
       if (data.stats.damage !== undefined) this.bulletDamage = data.stats.damage;
       if (data.stats.strength !== undefined) this.strength = data.stats.strength;
       if (data.stats.intelligence !== undefined) this.intelligence = data.stats.intelligence;
@@ -486,11 +657,13 @@ export class Player {
     }
     if (data.shape !== undefined) this.shape = data.shape;
     if (data.color !== undefined) this.color = data.color;
-    if (data.defaultWeapon !== undefined) {
+  if (data.defaultWeapon !== undefined) {
       if (!this.activeWeapons.has(data.defaultWeapon)) {
         this.addWeapon(data.defaultWeapon);
       }
     }
+  // Cache baseSpeed AFTER scaling applied
+  this.baseSpeed = this.speed;
   }
 
   /**
@@ -508,11 +681,24 @@ export class Player {
       ctx.save();
       ctx.translate(this.x, this.y);
       ctx.rotate(this.rotation);
+      // Damage flash: add white overlay pulse for first 200ms after hit
+      const flashTime = (this as any)._damageFlashTime || 0;
+      const since = performance.now() - flashTime;
+      const flashing = since < 200;
       if (this.isFlipped) {
         ctx.scale(-1, 1);
         ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
       } else {
         ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+      }
+      if (flashing) {
+        const alpha = 0.45 * (1 - since / 200) + 0.2; // fade out
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath();
+        ctx.arc(0, 0, this.size/2, 0, Math.PI*2);
+        ctx.fill();
       }
       ctx.restore();
     }

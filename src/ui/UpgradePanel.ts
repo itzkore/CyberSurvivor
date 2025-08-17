@@ -55,12 +55,21 @@ export class UpgradePanel {
     if (!this.panelElement) {
       this.panelElement = document.createElement('div');
       this.panelElement.id = 'upgrade-panel';
-      this.panelElement.className = 'upgrade-panel-container hidden'; // Start hidden
+      // Use unified overlay + panel theme classes
+      this.panelElement.className = 'upgrade-panel-overlay hidden'; // Start hidden
       document.body.appendChild(this.panelElement);
     }
     this.panelElement.innerHTML = `
-      <h2 class="neon-text-cyan">Choose Upgrade</h2>
-      <div class="upgrade-options-container"></div>
+      <div class="upgrade-panel ui-panel">
+        <div class="upgrade-header">
+          <h2 class="panel-title">Choose Upgrade</h2>
+          <div class="upgrade-hint">Press number (1-3) or ESC to skip</div>
+        </div>
+        <div class="upgrade-options-grid" data-upgrade-options></div>
+        <div class="upgrade-footer compact-text">
+          <span class="legend"><span class="badge badge-weapon">W</span> Weapon <span class="badge badge-passive">P</span> Passive <span class="badge badge-class">C</span> Class Weapon</span>
+        </div>
+      </div>
     `;
   }
 
@@ -88,7 +97,8 @@ export class UpgradePanel {
     this.renderOptions();
     if (this.panelElement) {
       this.panelElement.classList.remove('hidden');
-      this.panelElement.style.display = 'block';
+  // Keep flex container from CSS for perfect centering
+  this.panelElement.style.display = 'flex';
       this.panelElement.style.zIndex = '9999';
       this.panelElement.style.pointerEvents = 'auto';
     }
@@ -111,29 +121,52 @@ export class UpgradePanel {
    */
   private renderOptions(): void {
     if (!this.panelElement) return;
-    const container = this.panelElement.querySelector('.upgrade-options-container');
+    const container = this.panelElement.querySelector('[data-upgrade-options]');
     if (!container) return;
 
     container.innerHTML = ''; // Clear existing options
 
-    this.options.forEach((opt, i) => {
-      const card = document.createElement('div');
-      card.className = 'upgrade-option neon-border';
+    for (let i = 0; i < this.options.length; i++) {
+      const opt = this.options[i];
+      const isClassWeapon = opt.type === 'weapon' && opt.id === this.player.characterData?.defaultWeapon;
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'upgrade-card';
+      if (opt.type === 'weapon') card.classList.add('is-weapon');
+      if (opt.type === 'passive') card.classList.add('is-passive');
+      if (isClassWeapon) card.classList.add('is-class');
+
+      // Progress (only for non-skip options)
+      let progressHtml = '';
+      if (opt.type !== 'skip' && opt.currentLevel !== undefined) {
+        const spec = opt.type === 'weapon' ? WEAPON_SPECS[opt.id as WeaponType] : PASSIVE_SPECS.find(p => p.id === opt.id);
+        const max = spec ? (spec as any).maxLevel ?? 1 : 1;
+        const current = Math.min(opt.currentLevel, max);
+        const pct = Math.min(100, Math.round(((current) / max) * 100));
+        progressHtml = `<div class="upgrade-progress" aria-label="Progress ${current}/${max}">
+          <div class="upgrade-progress-bar" style="--progress:${pct}%;"></div>
+          <div class="upgrade-progress-text">Lv ${current}/${max}</div>
+        </div>`;
+      }
+
       card.innerHTML = `
-        <div class="upgrade-icon">${opt.icon ? `<img src="${opt.icon}" alt="${opt.name}" style="width:48px;height:48px;object-fit:contain;" />` : ''}</div>
-        <div class="upgrade-info">
-          <div class="upgrade-title">${opt.name}</div>
-          <div class="upgrade-desc">${opt.description}</div>
-          <div class="upgrade-meta">
-            <span class="upgrade-type">${opt.type === 'weapon' ? 'Weapon' : opt.type === 'passive' ? 'Passive' : 'Skip'}</span>
-            ${opt.currentLevel !== undefined && opt.type !== 'skip' ? `<span class="upgrade-level">Lv.${opt.currentLevel + 1}</span>` : ''}
+        <div class="upgrade-key-indicator">${i + 1}</div>
+        <div class="upgrade-icon">${opt.icon ? `<img src="${opt.icon}" alt="${opt.name}" />` : ''}</div>
+        <div class="upgrade-body">
+          <div class="upgrade-row">
+            <div class="upgrade-title-line">
+              <span class="upgrade-title">${opt.name}</span>
+              ${isClassWeapon ? '<span class="badge badge-class" title="Class Weapon">C</span>' : ''}
+            </div>
+            <div class="upgrade-type-line">${opt.type === 'weapon' ? '<span class="badge badge-weapon">Weapon</span>' : opt.type === 'passive' ? '<span class="badge badge-passive">Passive</span>' : '<span class="badge badge-skip">Skip</span>'}</div>
           </div>
+          <div class="upgrade-desc">${opt.description}</div>
+          ${progressHtml}
         </div>
-        <div class="upgrade-key">[${i + 1}]</div>
       `;
-      card.onclick = () => this.applyUpgrade(i);
+      card.addEventListener('click', () => this.applyUpgrade(i));
       container.appendChild(card);
-    });
+    }
   }
 
   /**

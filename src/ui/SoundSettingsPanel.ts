@@ -14,14 +14,15 @@ export class SoundSettingsPanel {
     this.panel = document.createElement('div');
     this.panel.id = 'sound-settings-panel';
     this.panel.className = 'sound-settings-panel';
-    this.panel.style.position = 'fixed';
-    this.panel.style.bottom = '24px';
-    this.panel.style.right = '24px';
+    // Fixed small panel in absolute top-right corner
+    this.panel.style.position = 'absolute';
+    this.panel.style.top = '0px';
+    this.panel.style.right = '0px';
   this.panel.style.zIndex = '10001';
-  this.panel.style.background = 'rgba(25,25,40,0.95)';
-  this.panel.style.border = '2px solid #00FFFF';
-  this.panel.style.borderRadius = '12px';
-  this.panel.style.padding = '8px';
+    this.panel.style.background = 'rgba(25,25,40,0.92)';
+    this.panel.style.border = '2px solid #00FFFF';
+    this.panel.style.borderRadius = '8px';
+    this.panel.style.padding = '4px 6px';
   this.panel.style.boxShadow = '0 2px 8px #00FFFF55';
   this.panel.style.pointerEvents = 'auto';
 
@@ -29,8 +30,8 @@ export class SoundSettingsPanel {
     label.textContent = '🔊';
     label.style.color = '#00FFFF';
     label.style.fontFamily = 'Orbitron, sans-serif';
-    label.style.fontSize = '16px';
-    label.style.marginRight = '8px';
+    label.style.fontSize = '12px';
+    label.style.marginRight = '4px';
 
     this.slider = document.createElement('input');
     this.slider.type = 'range';
@@ -38,7 +39,7 @@ export class SoundSettingsPanel {
     this.slider.max = '1';
     this.slider.step = '0.01';
     this.slider.value = String(Howler.volume());
-    this.slider.style.width = '80px';
+    this.slider.style.width = '42px'; // roughly half original width
     this.slider.style.verticalAlign = 'middle';
     this.slider.oninput = () => {
       Howler.volume(parseFloat(this.slider.value));
@@ -48,6 +49,9 @@ export class SoundSettingsPanel {
     this.panel.appendChild(this.slider);
 
   document.body.appendChild(this.panel);
+    // Force fixed top-right placement (no dynamic reposition logic now)
+    this.panel.style.left = 'auto';
+    this.panel.style.bottom = 'auto';
   }
 
   /**
@@ -62,5 +66,14 @@ export class SoundSettingsPanel {
    */
   public hide() {
     this.panel.style.display = 'none';
+  }
+
+  /**
+   * Detects overlap with currency display (or other HUD pills) and repositions if necessary.
+   * Strategy: if overlapping element with id 'currency-amount' (inside its parent) -> move panel to top-left.
+   * Fallback: if still overlap, place bottom-right.
+   */
+  private adjustPosition() {
+    // adjustPosition removed (static placement desired)
   }
 }

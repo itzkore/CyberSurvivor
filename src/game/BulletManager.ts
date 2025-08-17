@@ -106,6 +106,17 @@ export class BulletManager {
       b.y += b.vy;
       b.life--;
 
+      // Hard distance cap (independent of frame-based life) for consistent range feel
+      if (b.maxDistanceSq !== undefined && b.startX !== undefined && b.startY !== undefined) {
+        const dxRange = b.x - b.startX;
+        const dyRange = b.y - b.startY;
+        if ((dxRange * dxRange + dyRange * dyRange) >= b.maxDistanceSq) {
+          b.active = false;
+          this.bulletPool.push(b);
+          continue;
+        }
+      }
+
       let hitEnemy: Enemy | null = null;
       let intersectionPoint: { x: number, y: number } | null = null;
 
@@ -259,12 +270,12 @@ export class BulletManager {
     }
   }
 
-  public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number) {
+  public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1) {
     const spec = (WEAPON_SPECS as any)[weapon] ?? (WEAPON_SPECS as any)[WeaponType.PISTOL];
     const dx = targetX - x;
     const dy = targetY - y;
     const angle = Math.atan2(dy, dx);
-    const speed = spec?.speed ?? 2;
+  const speed = spec?.speed ?? 2;
     const projectileImageKey = spec?.projectile ?? 'bullet_cyan';
     // Removed Mech Mortar specific projectile visual override
     // Increase Desert Eagle bullet size by 5x for visual impact
@@ -287,9 +298,41 @@ export class BulletManager {
     b.vx = Math.cos(angle) * speed;
     b.vy = Math.sin(angle) * speed;
     b.radius = projectileVisual.size ?? 6; // Ensure radius matches the new visual size
-    b.life = spec?.lifetime ?? 60; // Use weapon spec lifetime
+    // Derive life from weapon range if available: life (frames) = range / speed.
+    // Clamp to avoid extremely long-lived projectiles; fallback to 60 if insufficient data.
+    let appliedDamage = spec?.damage ?? damage;
+    let appliedCooldown = spec?.cooldown ?? 10;
+    // Apply per-level scaling if function present
+    if (spec?.getLevelStats) {
+      const scaled = spec.getLevelStats(level);
+      if (scaled.damage != null) appliedDamage = scaled.damage;
+      if (scaled.cooldown != null) appliedCooldown = scaled.cooldown;
+    }
+
+    // Range & lifetime derivation (gentler compression of very large ranges)
+    if (spec && typeof spec.range === 'number' && speed > 0) {
+      const baseRange = spec.range;
+      let scaledRange = baseRange;
+      // Only compress if above thresholds so short-range weapons keep identity
+      if (baseRange > 900) {
+        scaledRange = 900 + (baseRange - 900) * 0.85; // retain 85% beyond 900
+      } else if (baseRange > 600) {
+        scaledRange = 600 + (baseRange - 600) * 0.9; // retain 90% 600-900
+      } else if (baseRange > 300) {
+        scaledRange = 300 + (baseRange - 300) * 0.95; // retain 95% 300-600
+      }
+      // Global range boost (requested +30%) applied after compression so user perceives full increase
+      scaledRange *= 1.3;
+      const rawLife = scaledRange / speed;
+      b.life = Math.min(Math.max(Math.round(rawLife), 8), 624); // 480 * 1.3 proportional cap
+      b.startX = x;
+      b.startY = y;
+      b.maxDistanceSq = scaledRange * scaledRange;
+    } else {
+      b.life = spec?.lifetime ?? 60;
+    }
     b.active = true;
-    b.damage = spec?.damage ?? damage; // Use weapon spec damage, fallback to passed damage
+    b.damage = appliedDamage; // leveled damage
     b.weaponType = weapon;
     b.projectileImageKey = projectileImageKey;
     b.projectileVisual = projectileVisual;

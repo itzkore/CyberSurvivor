@@ -22,4 +22,10 @@ export type Bullet = {
   _maxExplosionDuration?: number;
   _hit?: boolean;
   explosionRadius?: number;
+  /** Starting X position for range tracking */
+  startX?: number;
+  /** Starting Y position for range tracking */
+  startY?: number;
+  /** Squared max travel distance (pixels^2) for efficient checks */
+  maxDistanceSq?: number;
 };

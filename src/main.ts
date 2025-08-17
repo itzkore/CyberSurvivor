@@ -49,7 +49,7 @@ window.onload = async () => {
   await game.assetLoader.loadManifest();
 
   // Instantiate CharacterSelectPanel after assets are loaded
-  const characterSelectPanel = new CharacterSelectPanel(game.assetLoader);
+  const characterSelectPanel = new CharacterSelectPanel();
   game.setCharacterSelectPanel(characterSelectPanel);
 
   // Instantiate UpgradePanel after player is initialized
@@ -116,6 +116,13 @@ window.onload = async () => {
     canvas.style.zIndex = '-1';
   });
 
+  window.addEventListener('backToMenu', () => {
+    Logger.info('[main.ts] backToMenu event received');
+    characterSelectPanel.hide();
+    mainMenu.show();
+    canvas.style.zIndex = '-1';
+  });
+
   window.addEventListener('pauseGame', () => {
     Logger.info('[main.ts] pauseGame event received');
     game.pause();
@@ -135,44 +142,7 @@ window.onload = async () => {
     canvas.style.display = 'block';
     canvas.style.zIndex = '10';
   });
-  // --- Matrix Background Animation ---
-  let matrixActive = true;
-  function renderMatrixBackground() {
-    const menuEl = mainMenu.getMainMenuElement();
-    if (!menuEl || menuEl.style.display === 'none') {
-      matrixActive = false;
-      return;
-    }
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      mainMenu.drawMatrixBackground(ctx, canvas);
-    }
-    if (matrixActive) {
-      requestAnimationFrame(renderMatrixBackground);
-    }
-  }
-
-  // Start matrix background immediately on load
-  renderMatrixBackground();
-
-  // Start matrix background when menu is shown
-  mainMenu.show = function() {
-    const menuEl = this.getMainMenuElement();
-    if (menuEl) {
-      menuEl.style.display = 'flex';
-    }
-    this.updateStartButtonState();
-    matrixActive = true;
-    renderMatrixBackground();
-  };
-
-  // Stop matrix background when game starts
-  window.addEventListener('startGame', () => {
-    matrixActive = false;
-    const ctx = canvas.getContext('2d');
-    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
-  });
+  // Matrix background now managed by MatrixBackground singleton (auto on show/hide)
 };
 
 window.onresize = () => {

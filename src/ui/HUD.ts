@@ -18,72 +18,92 @@ export class HUD {
     const height = ctx.canvas.height;
 
     ctx.save();
-    ctx.font = '18px Orbitron, sans-serif';
-    ctx.fillStyle = '#fff';
+    // --- THEME CONSTANTS ---
+    const FONT_TITLE = 'bold 32px Orbitron, sans-serif';
+    const FONT_SECTION = 'bold 18px Orbitron, sans-serif';
+    const FONT_STAT = '14px Orbitron, sans-serif';
+    const FONT_BODY = '12px Orbitron, sans-serif';
+    const COLOR_CYAN = '#00ffff';
+    const COLOR_MAGENTA = '#ff00ff';
+    const COLOR_BG_PANEL = 'rgba(8,14,24,0.55)';
+    const COLOR_BG_PANEL_DEEP = 'rgba(12,18,32,0.80)';
+    const COLOR_TEXT = '#e9f9ff';
+    const COLOR_TEXT_DIM = 'rgba(200,230,240,0.65)';
+    ctx.imageSmoothingEnabled = true;
 
-    // Timer
+    // --- TIMER (center top) ---
     const minutes = Math.floor(gameTime / 60).toString().padStart(2, '0');
     const seconds = Math.floor(gameTime % 60).toString().padStart(2, '0');
-    ctx.font = 'bold 32px Orbitron, sans-serif';
+    ctx.font = FONT_TITLE;
     ctx.textAlign = 'center';
-    ctx.fillText(`${minutes}:${seconds}`, width / 2, 50);
+    this.drawGlowText(ctx, `${minutes}:${seconds}`, width / 2, 46, COLOR_TEXT, COLOR_CYAN, 14);
 
-    // Level and Stats
-    ctx.textAlign = 'left';
-    ctx.font = 'bold 20px Orbitron, sans-serif';
-    ctx.fillText(`Level: ${this.player.level}`, 20, 40);
-    ctx.fillText(`Strength: ${this.player.strength}`, 20, 65);
-    // --- Optimized Stat Display ---
-    ctx.save();
-    ctx.font = 'bold 20px Orbitron, sans-serif';
-    ctx.fillStyle = '#0ff';
-    ctx.textAlign = 'left';
-    ctx.fillText('STATS', 20, 80);
-    ctx.font = '18px Orbitron, sans-serif';
-    ctx.fillStyle = '#fff';
-    const statStartY = 110;
-    const statPad = 32;
-    const stats = [
-      [`HP`, `${this.player.hp} / ${this.player.maxHp}`],
-      [`Speed`, `${this.player.speed.toFixed(2)}`],
-      [`Damage`, `${this.player.bulletDamage ?? 0}`],
-      [`Strength`, `${this.player.strength ?? 0}`],
-      [`Defense`, `${this.player.defense ?? 0}`],
-      [`Attack Speed`, `${(this.player.attackSpeed ?? 1).toFixed(2)}`],
-      [`Magnet`, `${this.player.magnetRadius ?? 0}`],
-      [`Regen`, `${this.player.regen ?? 0}`],
-      [`Luck`, `${this.player.luck ?? 0}`],
-      [`Intelligence`, `${this.player.intelligence ?? 0}`],
-      [`Agility`, `${this.player.agility ?? 0}`],
-      [`DPS`, `${this.currentDPS.toFixed(2)}`], // Display DPS
-    ];
-    for (let i = 0; i < stats.length; i++) {
-      ctx.fillText(`${stats[i][0]}: ${stats[i][1]}`, 20, statStartY + i * 24);
-    }
-    ctx.restore();
+    // --- LEFT PANEL (Stats + Level) ---
+    const panelX = 14;
+    const panelY = 14;
+  const panelW = 250;
+  // Dynamic panel height: base + per-stat lines (15 stats currently)
+  const statCount = 15;
+  const panelH = 70 + statCount * 20 + 16;
+  this.drawPanel(ctx, panelX, panelY, panelW, panelH, () => {
+      ctx.save();
+      ctx.textAlign = 'left';
+      ctx.font = FONT_SECTION;
+      this.drawGlowText(ctx, `LEVEL ${this.player.level}`, panelX + 12, panelY + 32, COLOR_TEXT, COLOR_MAGENTA, 8);
+
+      // Derive extended stats
+      const critChance = this.computeCritChance();
+      const survivability = Math.round(this.player.maxHp * (1 + (this.player.defense || 0) / 50));
+      const powerScore = this.computePowerScore();
+
+      const stats: [string, string][] = [
+        ['HP', `${this.player.hp} / ${this.player.maxHp}`],
+        ['Speed', `${this.player.speed.toFixed(2)}`],
+        ['Damage', `${this.player.bulletDamage ?? 0}`],
+        ['Strength', `${this.player.strength ?? 0}`],
+        ['Defense', `${this.player.defense ?? 0}`],
+        ['Atk Spd', `${(this.player.attackSpeed ?? 1).toFixed(2)}`],
+        ['Magnet', `${this.player.magnetRadius ?? 0}`],
+        ['Regen', `${this.player.regen ?? 0}`],
+        ['Luck', `${this.player.luck ?? 0}`],
+        ['Intel', `${this.player.intelligence ?? 0}`],
+        ['Agility', `${this.player.agility ?? 0}`],
+        ['Crit %', `${critChance.toFixed(0)}`],
+        ['Survive', `${survivability}`],
+        ['Power', `${powerScore}`],
+        ['DPS', `${this.currentDPS.toFixed(2)}`]
+      ];
+      ctx.font = FONT_STAT;
+      ctx.fillStyle = COLOR_TEXT;
+      let y = panelY + 60;
+      for (let i = 0; i < stats.length; i++) {
+        const [label, value] = stats[i];
+        ctx.fillStyle = COLOR_TEXT_DIM;
+        ctx.fillText(label + ':', panelX + 14, y);
+        ctx.fillStyle = COLOR_CYAN;
+        ctx.fillText(value, panelX + 120, y);
+        y += 20;
+      }
+      ctx.restore();
+    });
 
     // HP Bar
-    const hpBarY = height - 60;
-    const hpBarWidth = 320; // Fixed width for HP bar
-    this.drawBar(ctx, 20, hpBarY, hpBarWidth, 20, Math.max(0, Math.min(1, this.player.hp / this.player.maxHp)), '#ff0000', '#550000');
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 18px Orbitron, sans-serif';
-    ctx.fillText(`HP: ${this.player.hp} / ${this.player.maxHp}`, 30, hpBarY + 15);
+    const hpBarY = height - 64;
+    const hpBarWidth = Math.min(480, width - 320);
+    this.drawThemedBar(ctx, 20, hpBarY, hpBarWidth, 22, this.player.hp / this.player.maxHp, '#fe2740', '#4a0910', COLOR_CYAN, `HP ${this.player.hp}/${this.player.maxHp}`);
 
     // XP Bar
-    const xpBarY = height - 30;
+    const xpBarY = height - 34;
     const nextExp = this.player.getNextExp();
-    this.drawBar(ctx, 20, xpBarY, width - 40, 15, this.player.exp / nextExp, '#00ffff', '#005555');
-    ctx.fillStyle = '#fff';
-    ctx.fillText(`XP: ${this.player.exp} / ${nextExp}`, 30, xpBarY + 12);
+    this.drawThemedBar(ctx, 20, xpBarY, width - 40, 14, this.player.exp / nextExp, '#00b7ff', '#022e33', COLOR_MAGENTA, `XP ${this.player.exp}/${nextExp}`);
 
     // Minimap
     if (this.showMinimap) {
       this.drawMinimap(ctx, this.player.x, this.player.y, enemies, worldW, worldH);
     }
 
-    // Upgrade History Panel
-    this.drawUpgradeHistory(ctx, upgrades);
+    // Upgrade History Panel (right side)
+    this.drawUpgradeHistory(ctx, upgrades, width - 260, 110);
 
     ctx.restore();
   }
@@ -133,60 +153,210 @@ export class HUD {
     ctx.restore();
   }
 
-  private drawUpgradeHistory(ctx: CanvasRenderingContext2D, upgrades: string[]): void {
+  private drawUpgradeHistory(ctx: CanvasRenderingContext2D, upgrades: string[], panelX: number, panelY: number): void {
     const panelWidth = 240;
-    const panelHeight = 300;
-    const panelX = 20; // Left side, below stats
-    const panelY = 400; // Adjust Y position as needed to not overlap with stats
-
     ctx.save();
-    ctx.globalAlpha = 0.7; // Semi-transparent background
-    ctx.fillStyle = '#111';
-    ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
-    ctx.strokeStyle = '#0ff';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(panelX, panelY, panelWidth, panelHeight);
-
-    ctx.fillStyle = '#0ff';
-    ctx.font = 'bold 18px Orbitron, sans-serif';
+    ctx.font = '12px Orbitron, sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText('Upgrade History', panelX + 10, panelY + 25);
-
-    ctx.font = '14px Orbitron, sans-serif';
-    ctx.fillStyle = '#fff';
-    const textStartX = panelX + 10;
-    let textStartY = panelY + 50;
-    const lineHeight = 18;
-
-    // Display only the highest level for each weapon upgrade
-    const upgradeMap: Record<string, string> = {};
-    for (const upgrade of upgrades) {
-      let upgradeText = upgrade;
-      if (upgradeText.startsWith('Weapon Upgrade:')) {
-        upgradeText = upgradeText.replace('Weapon Upgrade:', 'Wep:');
-      }
-      if (upgradeText.startsWith('Passive Unlock:')) {
-        upgradeText = upgradeText.replace('Passive Unlock:', 'Pas:');
-      }
-      // Extract base name and level
-      const match = upgradeText.match(/Wep: (.+) Lv\.(\d+)/);
-      if (match) {
-        const base = match[1].trim();
-        const level = parseInt(match[2], 10);
-        if (!upgradeMap[base] || parseInt(upgradeMap[base].match(/Lv\.(\d+)/)?.[1] || '0', 10) < level) {
-          upgradeMap[base] = upgradeText;
+      // Build condensed map of highest levels for weapons & passives
+      const weaponLevels: Record<string, number> = {};
+      const passiveLevels: Record<string, number> = {};
+      for (const raw of upgrades) {
+        if (raw.startsWith('Weapon Upgrade:')) {
+          const m = raw.match(/Weapon Upgrade:\s+(.+) Lv\.(\d+)/);
+          if (m) {
+            const name = m[1].trim();
+            const lvl = parseInt(m[2], 10);
+            if (!weaponLevels[name] || weaponLevels[name] < lvl) weaponLevels[name] = lvl;
+          }
+        } else if (raw.startsWith('Weapon Evolution:')) {
+          // treat evolution as new weapon at level 1 if needed
+          const m = raw.match(/Weapon Evolution:\s+.+ -> (.+)/);
+          if (m) weaponLevels[m[1].trim()] = weaponLevels[m[1].trim()] || 1;
+        } else if (raw.startsWith('Passive Unlock:')) {
+          const m = raw.match(/Passive Unlock:\s+(.+) Lv\.(\d+)/);
+          if (m) {
+            const name = m[1].trim();
+            const lvl = parseInt(m[2], 10);
+            if (!passiveLevels[name] || passiveLevels[name] < lvl) passiveLevels[name] = lvl;
+          }
+        } else if (raw.startsWith('Passive Upgrade:')) {
+          const m = raw.match(/Passive Upgrade:\s+(.+) Lv\.(\d+)/);
+          if (m) {
+            const name = m[1].trim();
+            const lvl = parseInt(m[2], 10);
+            if (!passiveLevels[name] || passiveLevels[name] < lvl) passiveLevels[name] = lvl;
+          }
         }
-      } else {
-        // For upgrades without level, just keep the latest
-        upgradeMap[upgradeText] = upgradeText;
       }
+      // Compose display lines
+    let displayUpgrades: string[] = [];
+      for (const [name, lvl] of Object.entries(weaponLevels)) {
+        displayUpgrades.push(`Wep: ${name} Lv.${lvl}`);
+      }
+      for (const [name, lvl] of Object.entries(passiveLevels)) {
+        displayUpgrades.push(`Pas: ${name} Lv.${lvl}`);
+      }
+      // Sort for stable ordering (weapons first) then alphabetically
+      displayUpgrades.sort((a,b)=>{
+        const aw = a.startsWith('Wep:') ? 0 : 1;
+        const bw = b.startsWith('Wep:') ? 0 : 1;
+        if (aw !== bw) return aw - bw;
+        return a.localeCompare(b);
+      });
+    // Simple truncate to avoid overflow horizontally
+    const maxLineChars = 30;
+    displayUpgrades = displayUpgrades.map(t => (t.length > maxLineChars ? t.slice(0, maxLineChars - 1) + '…' : t));
+    const lineHeight = 16;
+    const headerSpace = 50;
+    const desiredHeight = headerSpace + displayUpgrades.length * lineHeight + 12;
+    const maxHeight = 340;
+    const panelHeight = Math.min(maxHeight, desiredHeight);
+    const maxVisibleLines = Math.floor((panelHeight - headerSpace - 12) / lineHeight);
+    if (displayUpgrades.length > maxVisibleLines) {
+      // Keep most recent (end of array) lines, add ellipsis marker at top
+      displayUpgrades = ['…'] .concat(displayUpgrades.slice(displayUpgrades.length - maxVisibleLines));
     }
-    const displayUpgrades = Object.values(upgradeMap);
-    for (let i = 0; i < displayUpgrades.length; i++) {
-      ctx.fillText(displayUpgrades[i], textStartX, textStartY + i * lineHeight);
-    }
-
     ctx.restore();
+    this.drawPanel(ctx, panelX, panelY, panelWidth, panelHeight, () => {
+      ctx.save();
+      // Title bar background inside panel
+      const titleBarH = 34;
+      const gradTitle = ctx.createLinearGradient(panelX, panelY, panelX + panelWidth, panelY);
+      gradTitle.addColorStop(0, 'rgba(255,0,255,0.20)');
+      gradTitle.addColorStop(1, 'rgba(0,255,255,0.15)');
+      ctx.fillStyle = gradTitle;
+      ctx.fillRect(panelX + 1, panelY + 1, panelWidth - 2, titleBarH);
+      // Divider line
+      ctx.strokeStyle = '#00ffff55';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(panelX + 4, panelY + titleBarH + 0.5);
+      ctx.lineTo(panelX + panelWidth - 4, panelY + titleBarH + 0.5);
+      ctx.stroke();
+      // Header text (reduced glow to avoid bleeding outside)
+  ctx.font = 'bold 20px Orbitron, sans-serif';
+  ctx.textAlign = 'center';
+  this.drawGlowText(ctx, 'UPGRADES', panelX + panelWidth / 2, panelY + 24, '#e9f9ff', '#ff00ff', 4);
+  ctx.textAlign = 'left';
+      // Content list
+      ctx.font = '12px Orbitron, sans-serif';
+      ctx.textAlign = 'left';
+      let y = panelY + titleBarH + 18;
+      for (let i = 0; i < displayUpgrades.length; i++) {
+        ctx.fillStyle = 'rgba(180,220,255,0.85)';
+        ctx.fillText(displayUpgrades[i], panelX + 12, y);
+        y += lineHeight;
+      }
+      ctx.restore();
+    });
+  }
+
+  // --- Helper: Neon panel wrapper ---
+  private drawPanel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, body: () => void) {
+    ctx.save();
+    // Outer glow
+    ctx.shadowColor = '#00ffff55';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = 'rgba(8,14,24,0.55)';
+    ctx.fillRect(x, y, w, h);
+    // Inner gradient overlay
+    const grad = ctx.createLinearGradient(x, y, x + w, y + h);
+    grad.addColorStop(0, 'rgba(0,255,255,0.08)');
+    grad.addColorStop(0.55, 'rgba(255,0,255,0.05)');
+    grad.addColorStop(1, 'rgba(0,255,255,0.06)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, w, h);
+    // Border
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#00ffffaa';
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    // Corner accents
+    ctx.strokeStyle = '#ff00ffbb';
+    const c = 18;
+    ctx.beginPath();
+    ctx.moveTo(x, y + c);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x + c, y);
+    ctx.moveTo(x + w - c, y);
+    ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w, y + c);
+    ctx.moveTo(x, y + h - c);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x + c, y + h);
+    ctx.moveTo(x + w - c, y + h);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x + w, y + h - c);
+    ctx.stroke();
+    ctx.restore();
+    // Body
+    body();
+  }
+
+  // --- Helper: Glow text ---
+  private drawGlowText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, fill: string, glow: string, glowSize: number) {
+    ctx.save();
+    ctx.fillStyle = fill;
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = glowSize;
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+
+  // --- Helper: Themed bar with label ---
+  private drawThemedBar(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, progress: number, fg: string, bg: string, accent: string, label: string) {
+    progress = Math.max(0, Math.min(1, progress));
+    ctx.save();
+    // Background
+    ctx.fillStyle = bg;
+    ctx.fillRect(x, y, w, h);
+    // Foreground gradient
+    const grad = ctx.createLinearGradient(x, y, x + w, y);
+    grad.addColorStop(0, fg);
+    grad.addColorStop(1, accent);
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, w * progress, h);
+    // Border
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  // Label (centered vertically for readability)
+  ctx.font = '12px Orbitron, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  // Add subtle dark backing for contrast
+  const textY = y + h / 2;
+  const padX = 6;
+  const padY = 4;
+  const metrics = ctx.measureText(label);
+  const textW = metrics.width + padX * 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(x + 4 - 2, textY - (metrics.actualBoundingBoxAscent / 2) - padY, textW, (metrics.actualBoundingBoxAscent + metrics.actualBoundingBoxDescent) + padY * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = accent;
+  ctx.shadowBlur = 8;
+  ctx.fillText(label, x + 4 + padX, textY + 1);
+    ctx.restore();
+  }
+
+  private computeCritChance(): number {
+    // Mirror formula used in character data derivation
+    const agility = this.player.agility || 0;
+    const luck = this.player.luck || 0;
+    return Math.min(60, (agility * 0.8 + luck * 1.2) * 0.5);
+  }
+
+  private computePowerScore(): number {
+    return Math.round(
+      (this.player.bulletDamage || 0) * 1.8 +
+      (this.player.strength || 0) * 1.2 +
+      (this.player.intelligence || 0) * 1.4 +
+      (this.player.agility || 0) * 1.1 +
+      (this.player.luck || 0) * 0.9 +
+      (this.player.defense || 0) * 0.8 +
+      (this.player.speed || 0) * 3
+    );
   }
 
   public drawAliveEnemiesCount(ctx: CanvasRenderingContext2D, count: number): void {

@@ -54,6 +54,7 @@ export class Game {
   private selectedCharacterData: any | null = null; // To store selected character
   private state: 'MENU' | 'MAIN_MENU' | 'CHARACTER_SELECT' | 'CINEMATIC' | 'GAME' | 'PAUSE' | 'GAME_OVER' | 'UPGRADE_MENU';
   private gameTime: number = 0;
+  private _activeBeams: any[] = [];
 
   // world/camera
   private worldW = 4000 * 100; // 100x larger
@@ -221,9 +222,7 @@ export class Game {
    */
   private initInput() {
     window.addEventListener('keydown', (e) => {
-      if (this.state === 'CHARACTER_SELECT') {
-        this.characterSelectPanel.handleInput(e); // Allow panel to handle input first
-      } else if (this.state === 'GAME' && e.key === 'Escape') {
+      if (this.state === 'GAME' && e.key === 'Escape') {
         this.state = 'PAUSE';
         // this.mainMenu.hide(); // Main menu is HTML, no need to hide here
       } else if (this.state === 'PAUSE' && e.key === 'Escape') {
@@ -246,12 +245,7 @@ export class Game {
     });
 
     this.canvas.addEventListener('mousemove', (e) => {
-      if (this.state === 'CHARACTER_SELECT') {
-        const rect = this.canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        this.characterSelectPanel.handleMouseMove(mouseX, mouseY, this.canvas);
-      }
+      // Character select panel now uses HTML/DOM instead of canvas events
     });
 
     this.canvas.addEventListener('click', (e) => {
@@ -266,24 +260,12 @@ export class Game {
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
-      // Character select click handling on canvas
-      if (this.state === 'CHARACTER_SELECT') {
+      // Character select click handling is now done via HTML/DOM events
+      if (this.state === 'GAME_OVER') { // Add this condition
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
-        const clickResult = this.characterSelectPanel.handleClick(mouseX, mouseY, this.canvas);
-        // clickResult is CharacterData when a character is clicked, or 'backToMainMenu'
-        /**
-         * Defensive: Only accept complete character data (must have stats, visuals, and weapon)
-         */
-        if (clickResult && typeof clickResult === 'object' && clickResult.stats && clickResult.defaultWeapon !== undefined) {
-          this.selectedCharacterData = clickResult;
-          this.state = 'MAIN_MENU';
-          this.mainMenu.show();
-        } else if (clickResult === 'backToMainMenu') {
-          this.state = 'MAIN_MENU';
-          this.mainMenu.show();
-        }
+        this.handlePauseMenuClick(mouseX, mouseY);
       } else if (this.state === 'PAUSE') {
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
@@ -591,6 +573,15 @@ async init() {
     this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets);
     this.bossManager.update(deltaTime, this.gameTime);
     this.bulletManager.update();
+    // Update active beams (damage + expiry)
+    if (this._activeBeams.length) {
+      const now = performance.now();
+      this._activeBeams = this._activeBeams.filter(b => {
+        if (now - b.start >= b.duration) return false;
+        if (typeof b.dealDamage === 'function') b.dealDamage(now);
+        return true;
+      });
+    }
     this.particleManager.update();
     this.damageTextManager.update();
 
@@ -624,7 +615,8 @@ async init() {
           boss._damageFlash = 12;
           b.active = false;
           this.particleManager.spawn(boss.x, boss.y, 1, '#FFD700');
-          window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: b.damage, isCritical: false } }));
+          // Dispatch with boss coordinates for accurate damage text positioning
+          window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: b.damage, isCritical: false, x: boss.x, y: boss.y } }));
         }
       }
     }
@@ -736,6 +728,40 @@ async init() {
         this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);
         this.enemyManager.draw(this.ctx, this.camX, this.camY);
         this.bulletManager.draw(this.ctx);
+        // Active beams (railgun) under player for proper layering
+        if (this._activeBeams && this._activeBeams.length) {
+          for (const beam of this._activeBeams) {
+            const elapsed = performance.now() - beam.start;
+            const t = elapsed / beam.duration;
+            if (t >= 1) continue;
+            const fade = 1 - t;
+            this.ctx.save();
+            this.ctx.translate(beam.x, beam.y);
+            this.ctx.rotate(beam.angle);
+            const thickness = 24 * (0.9 + 0.1 * Math.sin(elapsed * 0.12));
+            const len = beam.range;
+            const grad = this.ctx.createLinearGradient(0, 0, len, 0);
+            grad.addColorStop(0, `rgba(255,255,255,${0.95 * fade})`);
+            grad.addColorStop(0.15, `rgba(0,255,255,${0.8 * fade})`);
+            grad.addColorStop(0.6, `rgba(0,128,255,${0.35 * fade})`);
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            this.ctx.fillStyle = grad;
+            this.ctx.shadowColor = '#00FFFF';
+            this.ctx.shadowBlur = 36;
+            this.ctx.globalCompositeOperation = 'lighter';
+            this.ctx.beginPath();
+            this.ctx.rect(0, -thickness/2, len, thickness);
+            this.ctx.fill();
+            // Core line
+            this.ctx.strokeStyle = `rgba(255,255,255,${0.6 * fade})`;
+            this.ctx.lineWidth = 2.5;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0,0);
+            this.ctx.lineTo(len,0);
+            this.ctx.stroke();
+            this.ctx.restore();
+          }
+        }
         this.player.draw(this.ctx);
         this.particleManager.draw(this.ctx);
         this.explosionManager?.draw(this.ctx);
@@ -754,7 +780,8 @@ async init() {
         if (canvasElem) canvasElem.style.zIndex = '-1';
         break;
       case 'CHARACTER_SELECT':
-        this.characterSelectPanel.draw(this.ctx, this.canvas);
+        // Character select panel now uses HTML/DOM rendering, not canvas
+        if (canvasElem) canvasElem.style.zIndex = '-1';
         break;
       case 'CINEMATIC':
         this.cinematic.draw(this.ctx, this.canvas);
@@ -766,9 +793,10 @@ async init() {
     const damageAmount = event.detail.amount;
     const isCritical = event.detail.isCritical || false; // Get isCritical from event detail
     this.dpsHistory.push({ time: performance.now(), damage: damageAmount });
-    // Spawn damage text at player's position (or enemy's position if available in event detail)
-    // For now, using player's position as a placeholder, ideally it should be enemy's position
-    this.damageTextManager.spawn(this.player.x, this.player.y, damageAmount, undefined, isCritical);
+  // Spawn damage text at source coordinates if provided (enemy/boss position), fallback to player
+  const sx = event.detail.x ?? this.player.x;
+  const sy = event.detail.y ?? this.player.y;
+  this.damageTextManager.spawn(sx, sy, damageAmount, undefined, isCritical);
   }
 
   /**

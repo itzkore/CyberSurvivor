@@ -148,7 +148,8 @@ export class EnemyManager {
         enemy.knockbackTimer = 8; // Knockback lasts for 8 frames (~133ms)
       }
     }
-    window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: amount, isCritical: isCritical } }));
+  // Dispatch damage event with enemy world coordinates so floating damage text appears above the enemy
+  window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount, isCritical, x: enemy.x, y: enemy.y } }));
   }
 
   public spawnPoisonPuddle(x: number, y: number) {
@@ -324,7 +325,22 @@ export class EnemyManager {
       }
       // Player-enemy collision
       if (dist < enemy.radius + this.player.radius) {
-        this.player.takeDamage(enemy.damage);
+        // Hit cooldown: enemies can damage player at most once per second
+        const now = performance.now();
+        const lastHit = (enemy as any)._lastPlayerHitTime || 0;
+        if (now - lastHit >= 1000) {
+          (enemy as any)._lastPlayerHitTime = now;
+          // Clamp enemy damage into 1-10 range
+          const dmg = Math.min(10, Math.max(1, enemy.damage || 1));
+          this.player.takeDamage(dmg);
+          // Apply small knockback to player away from enemy
+          const kdx = (this.player.x - enemy.x);
+          const kdy = (this.player.y - enemy.y);
+          const kd = Math.hypot(kdx, kdy) || 1;
+          const kb = 24; // pixels immediate displacement
+          this.player.x += (kdx / kd) * kb;
+          this.player.y += (kdy / kd) * kb;
+        }
       }
       // Bullet collisions
       // Use spatial grid to find potential bullets near enemy
@@ -351,18 +367,7 @@ export class EnemyManager {
       if (enemy.hp <= 0 && enemy.active) {
         enemy.active = false;
         this.spawnGem(enemy.x, enemy.y, 1);
-        // Dispatch enemy death explosion event only if killed by a mortar
-        if (enemy._lastHitByWeapon === WeaponType.MECH_MORTAR) {
-          window.dispatchEvent(new CustomEvent('enemyDeathExplosion', {
-            detail: {
-              x: enemy.x,
-              y: enemy.y,
-              damage: enemy.damage * 2, // Increased damage for enemy death explosion
-              radius: 150, // Larger radius for enemy death explosion
-              color: '#FF4500' // Orange-red color for death explosion
-            }
-          }));
-        }
+  // Removed on-kill explosion effect for Mech Mortar (Titan Mech)
         this.enemyPool.push(enemy);
       }
     }
@@ -419,21 +424,21 @@ export class EnemyManager {
         enemy.maxHp = 100;
         enemy.radius = 12;
         enemy.speed = 1.5 * 0.4; // Further reduced speed (40% of original)
-        enemy.damage = 10;
+        enemy.damage = 4; // within 1-10
         break;
       case 'medium':
         enemy.hp = 300; // Increased HP for medium enemies
         enemy.maxHp = 300;
         enemy.radius = 18;
         enemy.speed = 1 * 0.4; // Further reduced speed (40% of original)
-        enemy.damage = 20;
+        enemy.damage = 7; // within 1-10
         break;
       case 'large':
         enemy.hp = 800; // Increased HP for large enemies
         enemy.maxHp = 800;
         enemy.radius = 24;
         enemy.speed = 0.7 * 0.4; // Further reduced speed (40% of original)
-        enemy.damage = 40;
+        enemy.damage = 10; // cap at 10
         break;
     }
     // Restore original spawn distance and pattern logic
