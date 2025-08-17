@@ -1,3 +1,5 @@
+import { Logger } from '../core/Logger';
+
 export type Manifest = any;
 
 export class AssetLoader {
@@ -180,7 +182,7 @@ export class AssetLoader {
 
   public getAsset(key: string): string {
     if (!this.manifest) {
-      console.warn('Manifest not loaded.');
+      Logger.warn('Manifest not loaded.');
       return '';
     }
     const asset = this.manifest.assets.find((a: any) => a.key === key);

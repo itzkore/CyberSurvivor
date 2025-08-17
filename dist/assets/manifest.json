@@ -1,26 +1,247 @@
 {
+  "palette": {
+    "cyan": "#00FFD1",
+    "magenta": "#FF00E6",
+    "yellow": "#FFD300",
+    "white": "#FFFFFF",
+    "bg_dark": "#0b0b0b"
+  },
   "enemies": {
-    "small": { "file": "assets/enemies/enemy_small.png", "w": 48, "h": 48 },
-    "medium": { "file": "assets/enemies/enemy_medium.png", "w": 64, "h": 64 },
-    "large": { "file": "assets/enemies/enemy_large.png", "w": 96, "h": 96 }
+    "small": {
+      "file": "assets/enemies/enemy_small.png",
+      "w": 48,
+      "h": 48,
+      "frames": 1
+    },
+    "medium": {
+      "file": "assets/enemies/enemy_medium.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1
+    },
+    "large": {
+      "file": "assets/enemies/enemy_large.png",
+      "w": 96,
+      "h": 96,
+      "frames": 1,
+      "innerCore": true
+    }
   },
   "player": {
-    "player_base_anim": { "file": "assets/player/player_base_anim.png", "frameW": 64, "frameH": 64, "frames": 4 },
-    "player_ghost_anim": { "file": "assets/player/player_ghost_anim.png", "frameW": 64, "frameH": 64, "frames": 4 },
-    "player_titan_anim": { "file": "assets/player/player_titan_anim.png", "frameW": 64, "frameH": 64, "frames": 4 }
+    "base": {
+      "file": "assets/player/player_base.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    },
+    "cyber_runner": {
+      "file": "assets/player/cyber_runner.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+  },
+    "psionic_weaver": {
+      "file": "assets/player/psionic_weaver.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+  }
+    ,
+    "bio_engineer": {
+      "file": "assets/player/bio_engineer.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    },
+    "titan_mech": {
+      "file": "assets/player/titan_mech.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    },
+    "rogue_hacked": {
+      "file": "assets/player/rogue_hacked.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "magenta"
+    },
+    "ghost_operative": {
+      "file": "assets/player/ghost_operative.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    },
+    "rogue_hacker": {
+      "file": "assets/player/rogue_hacker.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "magenta"
+    },
+    "data_sorcerer": {
+      "file": "assets/player/data_sorcerer.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "neural_nomad": {
+  "file": "assets/player/neural_nomad.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "shadow_operative": {
+      "file": "assets/player/shadow_operative.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "tech_warrior": {
+      "file": "assets/player/tech_warrior.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "cyan"
+    }
+    ,
+    "heavy_gunner": {
+      "file": "assets/player/heavy_gunner.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "yellow"
+    }
+    ,
+    "wasteland_scavenger": {
+      "file": "assets/player/wasteland_scavenger.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "glow": "gray"
+    }
   },
   "boss": {
-    "phase1": { "file": "assets/boss/boss_phase1.png", "w": 256, "h": 256 },
-    "phase2": { "file": "assets/boss/boss_phase2.png", "w": 256, "h": 256 },
-    "phase3": { "file": "assets/boss/boss_phase3.png", "w": 256, "h": 256 }
+    "phase1": {
+      "file": "assets/boss/boss_phase1.png",
+      "w": 256,
+      "h": 256,
+      "frames": 1,
+      "telegraph": true
+    },
+    "phase2": {
+      "file": "assets/boss/boss_phase2.png",
+      "w": 256,
+      "h": 256,
+      "frames": 1,
+      "telegraph": true
+    },
+    "phase3": {
+      "file": "assets/boss/boss_phase3.png",
+      "w": 256,
+      "h": 256,
+      "frames": 1,
+      "telegraph": true
+    }
+  },
+  "spritesheets": {
+    "boss_phase1_anim": {
+      "file": "assets/boss/boss_phase1_anim.png",
+      "frameW": 256,
+      "frameH": 256,
+      "frames": 3,
+      "fps": 6
+    },
+    "boss_phase2_anim": {
+      "file": "assets/boss/boss_phase2_anim.png",
+      "frameW": 256,
+      "frameH": 256,
+      "frames": 3,
+      "fps": 6
+    },
+    "boss_phase3_anim": {
+      "file": "assets/boss/boss_phase3_anim.png",
+      "frameW": 256,
+      "frameH": 256,
+      "frames": 3,
+      "fps": 6
+    },
+    "boss_shot": {
+      "file": "assets/projectiles/boss_shot_set.png",
+      "frameW": 24,
+      "frameH": 24,
+      "frames": 6,
+      "rows": 1,
+      "cols": 6,
+      "fps": 12
+    },
+    "particles": {
+      "file": "assets/particles/particles_sheet.png",
+      "tileW": 8,
+      "tileH": 8,
+      "gridW": 8,
+      "gridH": 8,
+      "sheetW": 64,
+      "sheetH": 64,
+      "sequences": {
+        "explosion_small": {
+          "row": 0,
+          "startCol": 0,
+          "length": 4,
+          "fps": 16
+        },
+        "spark": {
+          "row": 1,
+          "startCol": 0,
+          "length": 6,
+          "fps": 20
+        }
+      }
+    }
   },
   "projectiles": {
-    "bullet_cyan": { "file": "assets/projectiles/bullet_cyan.png", "w": 16, "h": 16 },
-    "boss_shot": { "file": "assets/projectiles/boss_shot_set.png", "frameW": 24, "frameH": 24, "frames": 6 }
+    "bullet_cyan": {
+      "file": "assets/projectiles/bullet_cyan.png",
+      "w": 16,
+      "h": 16,
+      "frames": 1
+    }
   },
-  "particles": { "file": "assets/particles/particles_sheet.png", "tileW": 8, "tileH": 8, "cols": 8, "rows": 8 },
   "ui": {
-    "hp_bg": { "file": "assets/ui/hp_bar_bg.png", "w": 128, "h": 16 },
-    "hp_fill": { "file": "assets/ui/hp_bar_fill.png", "w": 128, "h": 16 }
+    "hp_bar_bg": {
+      "file": "assets/ui/hp_bar_bg.png",
+      "w": 128,
+      "h": 16
+    },
+    "hp_bar_fill": {
+      "file": "assets/ui/hp_bar_fill.png",
+      "w": 128,
+      "h": 16
+    },
+    "icons": {
+      "upgrade_speed_svg": {
+        "file": "assets/ui/icons/upgrade_speed.svg",
+        "w": 64,
+        "h": 64,
+        "format": "svg"
+      },
+      "upgrade_speed_png": {
+        "file": "assets/ui/icons/upgrade_speed.png",
+        "w": 64,
+        "h": 64
+      }
+    }
   }
 }

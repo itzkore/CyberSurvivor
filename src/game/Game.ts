@@ -96,21 +96,14 @@ export class Game {
     this.enemySpatialGrid = new SpatialGrid<any>(200); // Cell size 200
     this.bulletSpatialGrid = new SpatialGrid<any>(100); // Cell size 100
 
-    // Initialize enemyManager before bulletManager as it's a dependency
+    // Initialize player and managers in correct dependency order
     this.player = new Player(this.worldW / 2, this.worldH / 2);
     this.player.radius = 18;
-    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
-
-    // Now initialize bulletManager with its dependencies
-    this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager); // Pass spatial grid, particle and enemy managers
-
-    // ExplosionManager will be initialized after EnemyManager is created
-    this.cinematic = new Cinematic();
-    // Initialize player and managers here
-    this.player = new Player(this.worldW / 2, this.worldH / 2);
-    this.player.radius = 18;
-    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
+    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1);
+    this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager);
     this.bossManager = new BossManager(this.player, this.particleManager);
+    this.cinematic = new Cinematic();
+    
     if (!this.explosionManager) {
       this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
     }
@@ -419,10 +412,8 @@ export class Game {
   }
 
   public showCharacterSelect() {
-  console.log('Game.showCharacterSelect called, setting state to CHARACTER_SELECT');
     this.state = 'CHARACTER_SELECT';
-    // Debug log for state transition
-    window.dispatchEvent(new CustomEvent('debugLog', { detail: 'Entering CHARACTER_SELECT state' }));
+    Logger.debug('Entering CHARACTER_SELECT state');
     try {
       (this.mainMenu as any)?.hideMenuElement();
       const htmlCharPanel = document.getElementById('character-select-panel');
@@ -495,7 +486,7 @@ async init() {
       Logger.warn('[Game.init] bio_engineer.png NOT loaded!');
     }
   } catch (error) {
-    console.error("Error loading assets:", error);
+    Logger.error("Error loading assets:", error);
     // ignore missing assets; placeholders will be used
   }
 }

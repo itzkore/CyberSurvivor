@@ -98,7 +98,7 @@ export class CharacterSelectPanel {
   public show(): void {
     if (this.panelElement) {
       this.panelElement.style.display = 'flex'; // Or 'block', depending on desired layout
-      console.log('CharacterSelectPanel: show() called, panelElement display set to flex.');
+      Logger.debug('CharacterSelectPanel: show() called, panelElement display set to flex.');
       if (this.characterSelectCanvas) {
         // Set canvas dimensions to match window size
         this.characterSelectCanvas.width = window.innerWidth;
@@ -190,7 +190,7 @@ export class CharacterSelectPanel {
   private render() {
     console.log('CharacterSelectPanel: render() called.');
     if (!this.characterGrid) {
-      console.error('CharacterSelectPanel: characterGrid element not found!');
+      Logger.error('CharacterSelectPanel: characterGrid element not found!');
       return;
     }
 

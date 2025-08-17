@@ -1,3 +1,5 @@
+import { Logger } from '../core/Logger';
+
 export class MainMenu {
   private mainMenuElement: HTMLElement | null;
   private startGameButton: HTMLButtonElement | null;
@@ -24,8 +26,7 @@ export class MainMenu {
 
     if (this.characterSelectButton) {
       this.characterSelectButton.addEventListener('click', () => {
-        console.log('Character Select button clicked');
-        window.dispatchEvent(new CustomEvent('debugLog', { detail: 'Character Select button clicked' }));
+        Logger.debug('Character Select button clicked');
         // Always hide HTML character select panel if present
         const htmlCharPanel = document.getElementById('character-select-panel');
         if (htmlCharPanel) htmlCharPanel.style.display = 'none';

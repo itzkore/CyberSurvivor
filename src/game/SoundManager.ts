@@ -27,12 +27,12 @@ export class SoundManager {
         html5: true,
         onplay: () => {
           if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('debugLog', { detail: 'Background music started.' }));
+            Logger.debug('Background music started.');
           }
         },
         onloaderror: (id, err) => {
           if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('debugLog', { detail: 'Music load error: ' + err }));
+            Logger.error('Music load error: ' + err);
           }
         }
       });
