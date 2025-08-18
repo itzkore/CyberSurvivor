@@ -8,8 +8,17 @@
     "build": "vite build",
     "preview": "vite preview",
     "electron:dev": "cross-env NODE_ENV=development concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run build && electron-builder",
-    "postinstall": "electron-builder install-app-deps"
+  "electron:build": "npm run build && electron-builder",
+  "clean": "rimraf dist",
+  "repackage": "npm run clean && npm run electron:build",
+  "electron:zip": "npm run build && electron-builder --win zip",
+  "dir": "npm run build && electron-builder --dir",
+  "zip:manual": "npm run dir && powershell -Command Compress-Archive -Path dist/win-unpacked/* -DestinationPath dist/CyberSurvivor-win64.zip -Force",
+  "packager:win": "npm run build && npx @electron/packager . CyberSurvivor --platform=win32 --arch=x64 --out=release --overwrite --prune=false --ignore=\"(^/release$|^/tests)\"",
+  "zip:packager": "npm run packager:win && powershell -Command Compress-Archive -Path release/CyberSurvivor-win32-x64/* -DestinationPath release/CyberSurvivor-win32-x64.zip -Force",
+  "package:full": "npm run clean && npm run packager:win && node scripts/make-zip.js",
+  "version:patch": "npm version patch -m 'chore(release): bump version to %s'",
+  "postinstall": "electron-builder install-app-deps"
   },
   "build": {
     "appId": "com.cybersurvivor.app",
@@ -26,9 +35,9 @@
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
-      ],
-      "icon": "build/icon.ico"
+        { "target": "portable", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ]
     },
     "nsis": {
       "oneClick": true,
@@ -45,7 +54,9 @@
     "electron-builder": "^24.9.1",
     "concurrently": "^8.2.2",
     "wait-on": "^7.2.0",
-    "cross-env": "^7.0.3"
+    "cross-env": "^7.0.3",
+  "rimraf": "^5.0.5",
+  "@electron/packager": "^18.3.0"
   },
   "dependencies": {
     "howler": "^2.2.4"
