@@ -61,7 +61,8 @@ window.onload = async () => {
 
   // Start background music immediately after game initialization
   import('./game/SoundManager').then(({ SoundManager }) => {
-    SoundManager.playMusic('assets/music/bg-music.mp3');
+    const musicPathInit = (location.protocol === 'file:' ? './assets/music/bg-music.mp3' : '/assets/music/bg-music.mp3');
+    SoundManager.playMusic(musicPathInit);
   });
 
   game.start();
@@ -81,7 +82,8 @@ window.onload = async () => {
   function startMusic() {
     if (musicStarted) return;
     import('./game/SoundManager').then(({ SoundManager }) => {
-      SoundManager.playMusic('/assets/music/bg-music.mp3');
+      const musicPath = (location.protocol === 'file:' ? './assets/music/bg-music.mp3' : '/assets/music/bg-music.mp3');
+      SoundManager.playMusic(musicPath);
       Logger.info('[main.ts] Background music started');
       musicStarted = true;
     });

@@ -16,13 +16,24 @@ function createWindow() {
   });
 
   if (process.env.NODE_ENV === 'development') {
-    // Vite dev server default port
     mainWindow.loadURL('http://localhost:5173');
   } else {
-    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+    const indexPath = path.join(__dirname, 'dist', 'index.html');
+    console.log('[electron] loading index from', indexPath);
+    mainWindow.webContents.once('did-fail-load', (_e, errorCode, errorDesc, validatedURL) => {
+      console.error('[electron] did-fail-load', { errorCode, errorDesc, validatedURL });
+    });
+    mainWindow.webContents.once('did-finish-load', () => {
+      console.log('[electron] did-finish-load');
+    });
+    try {
+      mainWindow.loadFile(indexPath);
+    } catch (err) {
+      console.error('[electron] Failed to load index.html at', indexPath, err);
+    }
+    // Open devtools in production temporarily for white screen debugging
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
-  // Open the DevTools.
-  // mainWindow.webContents.openDevTools();
 }
 
 app.whenReady().then(() => {

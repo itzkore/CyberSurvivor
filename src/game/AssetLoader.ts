@@ -96,7 +96,7 @@ export class AssetLoader {
     return img;
   }
 
-  public async loadManifest(url = '/assets/manifest.json') {
+  public async loadManifest(url = (location.protocol === 'file:' ? './assets/manifest.json' : '/assets/manifest.json')) {
     const resp = await fetch(url);
     this.manifest = await resp.json();
     return this.manifest;
@@ -124,13 +124,16 @@ export class AssetLoader {
     }
   }
 
-  public async loadAllFromManifest(base = '/assets') {
+  public async loadAllFromManifest(base = (location.protocol === 'file:' ? './assets' : '/assets')) {
     if (!this.manifest) await this.loadManifest(base + '/manifest.json');
     const files: string[] = [];
     const walk = (obj: any) => {
       for (const k in obj) {
         const v = obj[k];
-        if (v && v.file) files.push('/' + v.file);
+        if (v && v.file) {
+          const prefix = (location.protocol === 'file:' ? './' : '/');
+          files.push(prefix + v.file.replace(/^\//, ''));
+        }
         else if (typeof v === 'object') walk(v);
       }
     };

@@ -2,7 +2,7 @@ import { Player } from './Player';
 import { EnemyManager } from './EnemyManager';
 import { ExplosionManager } from './ExplosionManager';
 import { HUD } from '../ui/HUD';
-import { UpgradePanel } from '../ui/UpgradePanel'; // Import UpgradePanel
+import type { UpgradePanel } from '../ui/UpgradePanel'; // Type-only import to avoid bundling; actual code loaded dynamically in main.ts
 import { Cinematic } from '../ui/Cinematic';
 import { BossManager } from './BossManager';
 import { BulletManager } from './BulletManager';
@@ -86,7 +86,7 @@ export class Game {
   constructor(canvas: HTMLCanvasElement) {
   // Load static background image
   this.backgroundImage = new window.Image();
-  this.backgroundImage.src = 'assets/background.png';
+  this.backgroundImage.src = (location.protocol === 'file:' ? './assets/background.png' : 'assets/background.png');
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
     this.state = 'MAIN_MENU';
@@ -283,10 +283,7 @@ export class Game {
         this.mainMenu.hide(); // Hide main menu
         this.resetGame(this.selectedCharacterData); // Reset game with selected character data
 
-        // Instantiate UpgradePanel here, after player is initialized with character data
-        if (!this.upgradePanel) { // Only instantiate once
-          this.upgradePanel = new UpgradePanel(this.player, this); // Pass initialized player and game
-        }
+  // UpgradePanel is instantiated in main.ts and injected via setUpgradePanel()
       }
     });
   }

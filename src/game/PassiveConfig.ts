@@ -21,6 +21,13 @@ export const PASSIVE_SPECS: PassiveSpec[] = [
   { id: 9, name: 'Regen', icon: '/assets/ui/icons/passive_regen.png', description: 'Regenerate HP over time', maxLevel: 5 }
 ];
 
+// Normalize asset paths for file:// protocol (Electron packaged)
+if (typeof location !== 'undefined' && location.protocol === 'file:') {
+  for (const p of PASSIVE_SPECS) {
+    if (p.icon && p.icon.startsWith('/assets/')) p.icon = '.' + p.icon; // becomes ./assets/...
+  }
+}
+
 export function applyPassive(player: Player, passiveId: number, level: number) {
   switch (passiveId) {
     case 0: // Speed Boost

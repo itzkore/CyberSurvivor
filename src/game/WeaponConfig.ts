@@ -331,3 +331,18 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 5, damage: 95, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=95, baseCooldown=95, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
   [WeaponType.MECH_MORTAR]: { id: WeaponType.MECH_MORTAR, name: 'Mech Mortar', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 90, salvo: 1, spread: 0, projectile: 'bullet_gold', speed: 7, damage: 90, range: 420, maxLevel: 8, projectileVisual: { type: 'bullet', color: '#FFD700', size: 10, glowColor: '#FFD700', glowRadius: 8 }, explosionRadius: 200, traits: ['Heavy','AoE','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=90, baseCooldown=90, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } }
 };
+
+// Normalize asset paths (icons & projectile sprites) for file:// protocol so absolute /assets paths work in packaged Electron
+if (typeof location !== 'undefined' && location.protocol === 'file:') {
+  for (const key in WEAPON_SPECS) {
+    const spec = WEAPON_SPECS[key as unknown as WeaponType];
+    if (!spec) continue;
+    if (spec.icon && spec.icon.startsWith('/assets/')) spec.icon = '.' + spec.icon;
+    if (spec.projectileVisual && spec.projectileVisual.sprite && spec.projectileVisual.sprite.startsWith('/assets/')) {
+      spec.projectileVisual.sprite = '.' + spec.projectileVisual.sprite;
+    }
+    if (spec.beamVisual && spec.beamVisual.sprite && spec.beamVisual.sprite.startsWith('/assets/')) {
+      spec.beamVisual.sprite = '.' + spec.beamVisual.sprite;
+    }
+  }
+}

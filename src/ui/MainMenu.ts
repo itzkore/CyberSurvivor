@@ -129,7 +129,7 @@ export class MainMenu {
           <div class="selected-character-preview" id="character-preview">
             <div class="preview-title">SELECTED OPERATIVE</div>
             <div class="preview-portrait" id="preview-portrait">
-              <img src="/assets/player/wasteland_scavenger.png" alt="Character" />
+              <img src="${location.protocol === 'file:' ? './assets/player/wasteland_scavenger.png' : '/assets/player/wasteland_scavenger.png'}" alt="Character" />
             </div>
             <div class="preview-name" id="preview-name">Select Character</div>
             <div class="preview-stats" id="preview-stats">
