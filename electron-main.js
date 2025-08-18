@@ -15,7 +15,12 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile('index.html');
+  if (process.env.NODE_ENV === 'development') {
+    // Vite dev server default port
+    mainWindow.loadURL('http://localhost:5173');
+  } else {
+    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+  }
   // Open the DevTools.
   // mainWindow.webContents.openDevTools();
 }
