@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+release/
+win-unpacked/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS clutter
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Electron Builder cache (optional)
+# Caches are in user AppData, not repo, but keep pattern just in case
+**/electron-builder.yml
