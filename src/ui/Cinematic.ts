@@ -7,8 +7,11 @@ export class Cinematic {
   private drawSkipButton(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
     const btnWidth = 120;
     const btnHeight = 44;
+    const dpr = (window as any).devicePixelRatio || 1;
+    const rs = (window as any).__renderScale || 1;
+    const logicalH = canvas.height / (dpr * rs);
     const x = 32;
-    const y = canvas.height - btnHeight - 32;
+    const y = logicalH - btnHeight - 32;
     ctx.save();
     ctx.globalAlpha = 0.85;
     ctx.fillStyle = '#222';
@@ -69,6 +72,10 @@ export class Cinematic {
   public draw(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
     if (!this.active) return;
     ctx.save();
+    const dpr = (window as any).devicePixelRatio || 1;
+    const rs = (window as any).__renderScale || 1;
+    const logicalW = canvas.width / (dpr * rs);
+    const logicalH = canvas.height / (dpr * rs);
     // Fade in/out effect
     let alpha = 1;
     if (this.progress < 60) {
@@ -88,41 +95,41 @@ export class Cinematic {
       ctx.fillStyle = '#0ff';
       ctx.shadowColor = '#00f6ff';
       ctx.shadowBlur = 24;
-      ctx.fillText('CYBER SURVIVOR', canvas.width / 2, canvas.height / 2 - 40);
+      ctx.fillText('CYBER SURVIVOR', logicalW / 2, logicalH / 2 - 40);
       ctx.font = '28px Orbitron, sans-serif';
       ctx.fillStyle = '#fff';
       ctx.shadowBlur = 0;
-      ctx.fillText('A Neon Roguelike Experience', canvas.width / 2, canvas.height / 2 + 30);
+      ctx.fillText('A Neon Roguelike Experience', logicalW / 2, logicalH / 2 + 30);
     } else if (this.progress < 420) {
       ctx.font = 'bold 42px Orbitron, sans-serif';
       ctx.fillStyle = '#ff00cc';
       ctx.shadowColor = '#ff00cc';
       ctx.shadowBlur = 18;
-      ctx.fillText('In the year 2088...', canvas.width / 2, canvas.height / 2 - 20);
+      ctx.fillText('In the year 2088...', logicalW / 2, logicalH / 2 - 20);
       ctx.font = '24px Orbitron, sans-serif';
       ctx.fillStyle = '#fff';
       ctx.shadowBlur = 0;
-      ctx.fillText('Mega-cities are ruled by rogue AIs.', canvas.width / 2, canvas.height / 2 + 30);
+      ctx.fillText('Mega-cities are ruled by rogue AIs.', logicalW / 2, logicalH / 2 + 30);
     } else if (this.progress < 660) {
       ctx.font = 'bold 42px Orbitron, sans-serif';
       ctx.fillStyle = '#00ffea';
       ctx.shadowColor = '#00ffea';
       ctx.shadowBlur = 18;
-      ctx.fillText('You are the last survivor...', canvas.width / 2, canvas.height / 2 - 20);
+      ctx.fillText('You are the last survivor...', logicalW / 2, logicalH / 2 - 20);
       ctx.font = '24px Orbitron, sans-serif';
       ctx.fillStyle = '#fff';
       ctx.shadowBlur = 0;
-      ctx.fillText('Fight through endless waves of enemies.', canvas.width / 2, canvas.height / 2 + 30);
+      ctx.fillText('Fight through endless waves of enemies.', logicalW / 2, logicalH / 2 + 30);
     } else {
       ctx.font = 'bold 48px Orbitron, sans-serif';
       ctx.fillStyle = '#0ff';
       ctx.shadowColor = '#00f6ff';
       ctx.shadowBlur = 24;
-      ctx.fillText('Survive the Neon Onslaught!', canvas.width / 2, canvas.height / 2);
+      ctx.fillText('Survive the Neon Onslaught!', logicalW / 2, logicalH / 2);
       ctx.font = '24px Orbitron, sans-serif';
       ctx.fillStyle = '#fff';
       ctx.shadowBlur = 0;
-      ctx.fillText('Good luck...', canvas.width / 2, canvas.height / 2 + 60);
+      ctx.fillText('Good luck...', logicalW / 2, logicalH / 2 + 60);
     }
   // Draw skip button
   this.drawSkipButton(ctx, canvas);
@@ -137,8 +144,11 @@ export class Cinematic {
     if (!this.active) return false;
     const btnWidth = 120;
     const btnHeight = 44;
+    const dpr = (window as any).devicePixelRatio || 1;
+    const rs = (window as any).__renderScale || 1;
+    const logicalH = canvas.height / (dpr * rs);
     const btnX = 32;
-    const btnY = canvas.height - btnHeight - 32;
+    const btnY = logicalH - btnHeight - 32;
     if (x >= btnX && x <= btnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
       this.active = false;
       if (this.onComplete) this.onComplete();

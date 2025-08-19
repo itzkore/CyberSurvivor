@@ -209,8 +209,9 @@ export class Game {
   this.perf = new PerformanceMonitor();
 
     // Initialize camera position to center on player
-    this.camX = this.player.x - this.canvas.width / 2;
-    this.camY = this.player.y - this.canvas.height / 2;
+    // Use logical (design) dimensions so small window (low resolution) starts centered correctly.
+    this.camX = this.player.x - this.designWidth / 2;
+    this.camY = this.player.y - this.designHeight / 2;
 
     // Ensure game starts in MAIN_MENU state, not GAME_OVER
     this.state = 'MAIN_MENU'; // Explicitly set initial state
@@ -515,6 +516,21 @@ export class Game {
     this.initialUpgradeOffered = false;
   }
 
+  /** Fully stop gameplay and return to MAIN_MENU (no simulation continues in background). */
+  public stopToMainMenu() {
+    try { if (this.gameLoop) this.gameLoop.stop(); } catch { /* ignore */ }
+    this.state = 'MENU';
+    // Clear transient combat collections to free refs & ensure no residual updates if loop accidentally restarts
+    try {
+      this.enemyManager?.enemies?.forEach(e=> e.active = false);
+      this.bulletManager?.bullets?.forEach(b=> b.active = false);
+      this._activeBeams.length = 0;
+    } catch {}
+    // Reset shake / timers
+    this.shakeDuration = 0; this.currentShakeTime = 0; this.shakeIntensity = 0;
+    (this as any).pendingInitialUpgrade = false; // will be re-armed on next resetGame/start
+  }
+
   /** Public getter for current high-level game state (for global key handlers). */
   public getState() {
     return this.state;
@@ -598,10 +614,10 @@ export class Game {
   }
 
   private worldToScreenX(x: number) {
-    return x - this.camX + this.canvas.width / 2;
+    return x - this.camX + this.designWidth / 2;
   }
   private worldToScreenY(y: number) {
-    return y - this.camY + this.canvas.height / 2;
+    return y - this.camY + this.designHeight / 2;
   }
 
 async init() {
@@ -726,13 +742,14 @@ async init() {
     this.hud.currentDPS = currentDPS;
   if (currentDPS > (this.hud as any).maxDPS) (this.hud as any).maxDPS = currentDPS;
   t=p?.begin('camera')!;
-  this.camX += (this.player.x - this.canvas.width / 2 - this.camX) * this.camLerp;
-  this.camY += (this.player.y - this.designHeight / 2 - this.camY) * this.camLerp;
-    // Clamp using logical (design) dimensions so camera framing unaffected by scaling
+  // Follow player using logical viewport dimensions only (canvas.width includes DPR * renderScale which caused offset)
+  const targetCamX = this.player.x - this.designWidth / 2;
+  const targetCamY = this.player.y - this.designHeight / 2;
+  this.camX += (targetCamX - this.camX) * this.camLerp;
+  this.camY += (targetCamY - this.camY) * this.camLerp;
+    // Clamp within world using logical viewport
     this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.designWidth));
     this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.designHeight));
-    this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.canvas.width));
-    this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.canvas.height));
   p?.end('camera', t);
   (window as any).__camX = this.camX;
   (window as any).__camY = this.camY;

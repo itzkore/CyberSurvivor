@@ -176,6 +176,15 @@ window.onload = async () => {
   game.start();
   Logger.info('[main.ts] Game loop started');
 
+  // Responsive resize: adjust canvas + game logical size on window resize
+  const handleResize = () => {
+    applyCanvasSizeGlobal(canvas);
+    game.resize(window.innerWidth, window.innerHeight);
+  };
+  window.addEventListener('resize', handleResize);
+  // In case of orientation change / zoom adjustments
+  window.addEventListener('orientationchange', () => setTimeout(handleResize, 50));
+
   // (Render hook removed while worker disabled.)
 
   mainMenu.show(); // Show the main menu initially
@@ -222,7 +231,8 @@ window.onload = async () => {
 
   window.addEventListener('showMainMenu', () => {
     Logger.info('[main.ts] showMainMenu event received');
-    characterSelectPanel.hide(); // Hide character select if coming from there
+  characterSelectPanel.hide(); // Hide character select if coming from there
+  try { game.stopToMainMenu(); } catch {}
     mainMenu.show();
     canvas.style.zIndex = '-1';
   try { game.onReturnToMainMenu(); } catch { /* ignore if not yet defined */ }

@@ -110,7 +110,8 @@ export class PauseOverlay {
   private returnToMenu() {
     if (!this.visible) return;
     this.hide();
-    window.dispatchEvent(new CustomEvent('showMainMenu'));
+  try { (this.game as any).stopToMainMenu(); } catch {}
+  window.dispatchEvent(new CustomEvent('showMainMenu'));
   }
 
   private restartRun() {

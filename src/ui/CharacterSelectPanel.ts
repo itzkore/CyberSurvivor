@@ -2,6 +2,7 @@ import { WeaponType } from '../game/WeaponType';
 import { Logger } from '../core/Logger';
 import { CHARACTERS } from '../data/characters';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
+import { SPEED_SCALE } from '../game/Balance';
 import { matrixBackground } from './MatrixBackground';
 
 interface CharacterStats {
@@ -236,7 +237,7 @@ export class CharacterSelectPanel {
             <div class="stat-box"><div class="stat-label">HP</div><div class="stat-value">${s.hp}</div></div>
             <div class="stat-box"><div class="stat-label">Max HP</div><div class="stat-value">${s.maxHp}</div></div>
             <div class="stat-box"><div class="stat-label">Damage</div><div class="stat-value">${s.damage}</div></div>
-            <div class="stat-box"><div class="stat-label">Speed</div><div class="stat-value">${s.speed}</div></div>
+            <div class="stat-box"><div class="stat-label">Speed</div><div class="stat-value" title="Effective in-game speed after global scaling applies">${(s.speed * SPEED_SCALE).toFixed(2)}</div></div>
             <div class="stat-box"><div class="stat-label">Defense</div><div class="stat-value">${s.defense}</div></div>
             <div class="stat-box"><div class="stat-label">Luck</div><div class="stat-value">${s.luck}</div></div>
             <div class="stat-box"><div class="stat-label">Intelligence</div><div class="stat-value">${s.intelligence}</div></div>
@@ -315,6 +316,12 @@ export class CharacterSelectPanel {
     if (this.panelElement) {
       this.panelElement.style.display = 'flex';
       this.updateDisplay();
+  // Ensure it fills viewport (CSS handles sizing)
+  this.panelElement.style.left = '0';
+  this.panelElement.style.top = '0';
+  this.panelElement.style.transform = 'none';
+  this.panelElement.style.width = '100%';
+  this.panelElement.style.height = '100%';
     }
   matrixBackground.start();
   // Boost visibility slightly for this panel
@@ -338,4 +345,6 @@ export class CharacterSelectPanel {
   public getSelectedCharacter(): CharacterData | null {
     return this.characters[this.selectedCharacterIndex] || null;
   }
+
+  // Removed custom scaling logic; CSS layout now handles full-screen responsiveness.
 }

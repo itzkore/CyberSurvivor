@@ -707,10 +707,9 @@
 /* ===== CHARACTER CAROUSEL ===== */
 .character-select-panel {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
   background: linear-gradient(135deg, #0f0820, #1a0d2e, #16213e);
   display: flex;
   flex-direction: column;
@@ -718,13 +717,15 @@
   font-family: 'Orbitron', monospace;
   color: #00ffff;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .carousel-header {
-  padding: 30px 50px;
+  padding: 28px 34px 24px 34px;
   border-bottom: 2px solid rgba(0, 255, 255, 0.3);
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.28);
   text-align: center;
+  flex-shrink: 0;
 }
 
 .carousel-title {
@@ -749,12 +750,13 @@
   flex: 1 1 auto;
   display: flex;
   position: relative;
-  overflow: hidden; /* Hide arrows overflow but prevent horizontal scroll */
+  overflow: hidden;
   width: 100%;
-  height: 500px; /* Fixed height */
-  min-height: 500px;
+  height: 100%;
+  min-height: 0;
   box-sizing: border-box;
-  padding: 0 20px; /* Internal horizontal padding prevents right cut */
+  padding: 0 34px 0 34px;
+  gap: 34px;
 }
 
 .carousel-main {
@@ -1118,12 +1120,13 @@
 }
 
 .carousel-footer {
-  padding: 30px 50px;
+  padding: 20px 34px 28px 34px;
   border-top: 2px solid rgba(0, 255, 255, 0.3);
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0,0,0,0.28);
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .select-button {

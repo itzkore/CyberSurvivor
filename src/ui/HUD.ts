@@ -15,8 +15,12 @@ export class HUD {
   }
 
   public draw(ctx: CanvasRenderingContext2D, gameTime: number, enemies: Enemy[], worldW: number, worldH: number, upgrades: string[]) { // Added upgrades parameter
-    const width = ctx.canvas.width;
-    const height = ctx.canvas.height;
+    // Convert from backing pixel size to logical design size (canvas scaled by dpr * renderScale in Game.render)
+    const dpr = (window as any).devicePixelRatio || 1;
+    const renderScale = (window as any).__renderScale || 1;
+    const scale = dpr * renderScale;
+    const width = ctx.canvas.width / scale;
+    const height = ctx.canvas.height / scale;
     ctx.save();
     // Force neutral render state so leaked alpha/composite from gameplay layers can't fade UI
     ctx.globalAlpha = 1;
@@ -71,7 +75,7 @@ export class HUD {
         ['Defense', `${this.player.defense ?? 0}`],
         ['Atk Spd', `${(this.player.attackSpeed ?? 1).toFixed(2)}`],
         ['Magnet', `${this.player.magnetRadius ?? 0}`],
-        ['Regen', `${this.player.regen ?? 0}`],
+        ['Regen', `${(this.player.regen || 0).toFixed(1)}/s`],
         ['Luck', `${this.player.luck ?? 0}`],
         ['Intel', `${this.player.intelligence ?? 0}`],
         ['Agility', `${this.player.agility ?? 0}`],

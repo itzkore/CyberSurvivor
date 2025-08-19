@@ -4,6 +4,7 @@ import { Enemy } from './EnemyManager';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { PASSIVE_SPECS, applyPassive } from './PassiveConfig';
+import { SPEED_SCALE } from './Balance';
 import { Logger } from '../core/Logger';
 import { AssetLoader } from './AssetLoader';
 
@@ -32,6 +33,8 @@ export class Player {
    * Movement speed of the player (units per tick)
    */
   public speed: number = 4.0; // Increased for better game feel
+  /** Cached innate movement speed before passive modifiers (used so speed passives are additive, not overriding faster characters) */
+  private baseMoveSpeed: number = 4.0;
   public hp: number = 100;
   public maxHp: number = 100;
   public strength: number = 5;
@@ -40,6 +43,7 @@ export class Player {
   public luck: number = 5;
   public defense: number = 5;
   public regen: number = 0; // HP regeneration per second
+  private _regenRemainder: number = 0; // carry fractional regen between frames
   public shape: 'circle' | 'square' | 'triangle' = 'circle'; // Added shape property
   public color: string = '#00FFFF'; // Added color property
   private _exp: number = 0;
@@ -94,6 +98,7 @@ export class Player {
     this.x = x;
     this.y = y;
     this.baseSpeed = this.speed;
+  this.baseMoveSpeed = this.speed; // initialize innate base
     if (characterData) {
       this.characterData = characterData;
       // Always apply full character data (stats, visuals, weapon)
@@ -617,6 +622,20 @@ export class Player {
       this.y = Math.max(this.radius, Math.min(this.y, this.gameContext.worldH - this.radius));
     }
 
+    // --- HP Regeneration ---
+    // Apply continuous regeneration (regen = HP per second). Supports fractional values smoothly.
+    if (this.regen > 0 && this.hp < this.maxHp) {
+      const heal = this.regen * (delta / 1000); // delta is ms
+      this._regenRemainder += heal;
+      // Apply in 0.25 HP slices to avoid many tiny floating ops; keep leftover remainder
+      while (this._regenRemainder >= 0.25 && this.hp < this.maxHp) {
+        const slice = Math.min(0.25, this._regenRemainder, this.maxHp - this.hp);
+        this.hp += slice;
+        this._regenRemainder -= slice;
+      }
+    } else if (this.regen <= 0) {
+      this._regenRemainder = 0; // reset if no regen
+    }
     // Update cooldowns and shoot for all active weapons
     let autoAimTarget = this.findNearestEnemy();
     if (autoAimTarget) {
@@ -724,7 +743,6 @@ export class Player {
    */
   public applyCharacterData(data: any) {
     if (!data) return;
-  const SPEED_SCALE = 0.45; // Adjusted global slowdown factor (lower = slower overall movement)
     if (data.defaultWeapon !== undefined) {
       this.classWeaponType = data.defaultWeapon;
     }
@@ -732,9 +750,10 @@ export class Player {
       if (data.stats.hp !== undefined) this.hp = data.stats.hp;
       if (data.stats.maxHp !== undefined) this.maxHp = data.stats.maxHp;
   if (data.stats.speed !== undefined) {
-      // Apply scaling and clamp to a sane max to prevent edge-case bursts
+      // Apply scaling using shared constant and clamp
       const scaled = data.stats.speed * SPEED_SCALE;
-      this.speed = Math.min(scaled, 8); // Hard cap safeguard
+      this.speed = Math.min(scaled, 8);
+      this.baseMoveSpeed = this.speed;
   }
       if (data.stats.damage !== undefined) this.bulletDamage = data.stats.damage;
       if (data.stats.strength !== undefined) this.strength = data.stats.strength;
@@ -753,6 +772,9 @@ export class Player {
   // Cache baseSpeed AFTER scaling applied
   this.baseSpeed = this.speed;
   }
+
+  /** Returns the innate (pre-passive) movement speed for additive passives */
+  public getBaseMoveSpeed(): number { return this.baseMoveSpeed; }
 
   /**
    * Draws the player character using a PNG sprite from /assets/player/{characterId}.png.

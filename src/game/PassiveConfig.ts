@@ -31,7 +31,15 @@ if (typeof location !== 'undefined' && location.protocol === 'file:') {
 export function applyPassive(player: Player, passiveId: number, level: number) {
   switch (passiveId) {
     case 0: // Speed Boost
-      player.speed = 2.0 + (level * 0.5); // Base speed + 0.5 per level
+      // Previously overwrote speed with a flat baseline causing slowdown for faster characters.
+      // Now: additive bonus on top of the character's base movement speed.
+      try {
+        const base = (player as any).getBaseMoveSpeed ? (player as any).getBaseMoveSpeed() : player.speed;
+        player.speed = base + (level * 0.5); // +0.5 per level over innate base
+      } catch {
+        // Fallback: maintain old behavior if getter unavailable
+        player.speed = 2.0 + (level * 0.5);
+      }
       break;
     case 1: // Max HP
       player.maxHp = 100 + (level * 20);
@@ -59,8 +67,9 @@ export function applyPassive(player: Player, passiveId: number, level: number) {
     case 8: // Piercing
       (player as any).piercing = true; // This might need more complex logic for scaling
       break;
-    case 9: // Regen
-      (player as any).regen = (level * 0.5); // hp per second
+    case 9: // Regen (scaled down by 75%)
+      // Previously 0.5 * level HP/s. Reduced to 0.125 * level (25% of prior) for balance.
+      (player as any).regen = (level * 0.125); // hp per second
       break;
   }
 }
