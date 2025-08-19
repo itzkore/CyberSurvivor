@@ -322,6 +322,15 @@ export const CHARACTERS: CharacterData[] = [
   },
 ];
 
+// Normalize icon paths for file:// protocol so leading '/assets/' becomes './assets/'
+if (typeof location !== 'undefined' && location.protocol === 'file:') {
+  for (const c of CHARACTERS) {
+    if (c.icon.startsWith('/assets/')) {
+      c.icon = '.' + c.icon; // '/assets/x.png' -> './assets/x.png'
+    }
+  }
+}
+
 // Post-process derived stats for balance transparency
 for (const c of CHARACTERS) {
   const s = c.stats;

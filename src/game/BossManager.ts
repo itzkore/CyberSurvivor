@@ -1,5 +1,6 @@
 import { Player } from './Player';
 import { ParticleManager } from './ParticleManager';
+import { AssetLoader } from './AssetLoader';
 
 export type Boss = { x: number; y: number; hp: number; maxHp: number; radius: number; active: boolean; telegraph: number; state: 'TELEGRAPH' | 'ACTIVE' | 'DEAD'; attackTimer: number; _damageFlash?: number; specialCharge?: number; specialReady?: boolean } | null;
 
@@ -8,14 +9,26 @@ export class BossManager {
   private boss: Boss = null;
   private spawnTimer: number = 0; // Use gameTime directly
   private particleManager: ParticleManager | null = null;
+  private assetLoader: AssetLoader | null = null;
+  private bossImage: HTMLImageElement | null = null;
   private difficulty: number = 1;
   private lastBossSpawnTime: number = 0; // Track last spawn time
 
-  constructor(player: Player, particleManager?: ParticleManager, difficulty = 1) {
+  constructor(player: Player, particleManager?: ParticleManager, difficulty = 1, assetLoader?: AssetLoader) {
     this.player = player;
     this.particleManager = particleManager || null;
     this.difficulty = difficulty;
     this.lastBossSpawnTime = 0; // Initialize to 0
+    this.assetLoader = assetLoader || null;
+    this.loadBossImage();
+  }
+
+  private loadBossImage() {
+    const path = (location.protocol === 'file:' ? './assets/boss/boss_phase1.png' : '/assets/boss/boss_phase1.png');
+    const img = new Image();
+    img.onload = () => { this.bossImage = img; };
+    img.onerror = () => { /* fallback: circle */ };
+    img.src = path;
   }
 
   public update(deltaTime: number, gameTime: number) { // Added gameTime parameter
@@ -27,7 +40,8 @@ export class BossManager {
       }
     } else if (this.boss.state === 'TELEGRAPH') {
       this.boss.telegraph--;
-      if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#f55');
+      // Throttle telegraph particles to every 3rd frame to reduce GPU pressure
+      if (this.particleManager && this.boss.telegraph % 3 === 0) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#f55');
       if (this.boss.telegraph <= 0) {
         this.boss.state = 'ACTIVE';
         this.boss.attackTimer = 60;
@@ -91,10 +105,25 @@ export class BossManager {
       if (this.boss._damageFlash && this.boss._damageFlash > 0) {
         this.boss._damageFlash--;
       }
+      // Phase thresholds
+      const hpPct = this.boss.hp / this.boss.maxHp;
+      if (hpPct < 0.4 && (this.boss as any)._phase < 3) {
+        (this.boss as any)._phase = 3;
+        this.boss.attackTimer = 30; // faster
+        if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#FF00FF');
+      } else if (hpPct < 0.7 && (this.boss as any)._phase < 2) {
+        (this.boss as any)._phase = 2;
+        this.boss.attackTimer = 45;
+        if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#C400FF');
+      }
       if (this.boss.hp <= 0) {
         this.boss.state = 'DEAD';
         this.spawnChest(this.boss.x, this.boss.y); // Spawn chest on boss defeat
         window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 500, intensity: 15 } })); // Stronger shake on boss defeat
+        // Vacuum gems QoL
+        window.dispatchEvent(new CustomEvent('bossGemVacuum'));
+  // Notify game systems for reward handling (double upgrade)
+  window.dispatchEvent(new CustomEvent('bossDefeated'));
       }
     }
   }
@@ -112,7 +141,7 @@ export class BossManager {
       window.dispatchEvent(new CustomEvent('bossSpawn', { detail: { x: bx, y: by, cinematic: true } }));
       window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 200, intensity: 8 } })); // Initial shake on boss spawn
     }
-    const bossHp = 3000 + (this.difficulty - 1) * 1000;
+  const bossHp = 1500; // Fixed boss HP per request
     this.boss = {
       x: bx,
       y: by,
@@ -125,6 +154,7 @@ export class BossManager {
       attackTimer: 0,
       _damageFlash: 0
     };
+  (this.boss as any)._phase = 1;
     // Immediately activate boss fight overlay
     if (window && window.dispatchEvent) {
       window.dispatchEvent(new CustomEvent('bossFightStart', { detail: { boss: this.boss } }));
@@ -151,6 +181,15 @@ export class BossManager {
     window.dispatchEvent(event);
     // Visual effect: flash
     if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#fff'); // Reduced particles
+    // XP spray at 20% HP chunks
+    if (this.boss && this.boss.state === 'ACTIVE') {
+      const pct = this.boss.hp / this.boss.maxHp;
+      const lastPct = (this.boss as any)._lastSprayPct ?? 1;
+      if (pct < lastPct - 0.20) {
+        (this.boss as any)._lastSprayPct = pct;
+        window.dispatchEvent(new CustomEvent('bossXPSpray', { detail: { x: this.boss.x, y: this.boss.y } }));
+      }
+    }
   }
  
    public draw(ctx: CanvasRenderingContext2D) {
@@ -189,9 +228,11 @@ export class BossManager {
       ctx.shadowBlur = 24;
       ctx.fillStyle = '#222';
       ctx.fillRect(this.boss.x - 120, this.boss.y - this.boss.radius - 38, 240, 22);
-      ctx.fillStyle = '#f00';
-      const hpPct = Math.max(0, this.boss.hp) / (3000 + (this.difficulty - 1) * 1000);
-      ctx.fillRect(this.boss.x - 120, this.boss.y - this.boss.radius - 38, 240 * hpPct, 22);
+  ctx.fillStyle = '#f00';
+  // Use dynamic maxHp instead of a hard-coded denominator so bar reflects real progress
+  const hpPctRaw = this.boss.maxHp > 0 ? this.boss.hp / this.boss.maxHp : 0;
+  const hpPct = Math.min(1, Math.max(0, hpPctRaw));
+  ctx.fillRect(this.boss.x - 120, this.boss.y - this.boss.radius - 38, 240 * hpPct, 22);
       ctx.font = 'bold 18px Orbitron, Arial';
       ctx.fillStyle = '#FFD700';
       ctx.textAlign = 'center';
@@ -205,22 +246,29 @@ export class BossManager {
         ctx.shadowColor = '#FFD700';
         ctx.shadowBlur = 48;
       }
-      ctx.beginPath();
-      ctx.arc(this.boss.x, this.boss.y, this.boss.radius, 0, Math.PI * 2);
-      ctx.fillStyle = '#FFD700';
-      ctx.fill();
+      if (this.bossImage) {
+        const size = this.boss.radius*2;
+        ctx.drawImage(this.bossImage, this.boss.x - size/2, this.boss.y - size/2, size, size);
+      } else {
+        ctx.beginPath();
+        ctx.arc(this.boss.x, this.boss.y, this.boss.radius, 0, Math.PI * 2);
+        ctx.fillStyle = '#FFD700';
+        ctx.fill();
+      }
       ctx.restore();
-      // Monster eyes, now glowing and animated
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(this.boss.x-48, this.boss.y-32, 24, 0, Math.PI*2);
-      ctx.arc(this.boss.x+48, this.boss.y-32, 24, 0, Math.PI*2);
-      ctx.fillStyle = '#fff';
-      ctx.shadowColor = '#FF00FF';
-      ctx.shadowBlur = 32;
-      ctx.globalAlpha = 0.9 + 0.1*Math.sin(Date.now()/200);
-      ctx.fill();
-      ctx.restore();
+      // Eye overlay suppressed when using boss image (eyes baked into PNG)
+      if (!this.bossImage) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(this.boss.x-48, this.boss.y-32, 24, 0, Math.PI*2);
+        ctx.arc(this.boss.x+48, this.boss.y-32, 24, 0, Math.PI*2);
+        ctx.fillStyle = '#fff';
+        ctx.shadowColor = '#FF00FF';
+        ctx.shadowBlur = 32;
+        ctx.globalAlpha = 0.9 + 0.1*Math.sin(Date.now()/200);
+        ctx.fill();
+        ctx.restore();
+      }
     }
   }
 

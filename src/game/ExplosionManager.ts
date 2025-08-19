@@ -9,6 +9,8 @@ export class ExplosionManager {
   private onShake?: (duration: number, intensity: number) => void;
   private player: Player; // Add player reference
   private aoeZones: AoEZone[] = []; // Manage active AoE zones
+  // Lightweight shockwave rings (purely visual)
+  private shockwaves: { x: number; y: number; startR: number; endR: number; life: number; maxLife: number; color: string }[] = [];
 
   constructor(particleManager: ParticleManager, enemyManager: EnemyManager, player: Player, onShake?: (duration: number, intensity: number) => void) {
     this.particleManager = particleManager;
@@ -18,9 +20,33 @@ export class ExplosionManager {
   }
 
   public triggerExplosion(x: number, y: number, damage: number, hitEnemy?: any, radius: number = 100, color: string = '#FFA07A') {
-    // Create and add a new AoEZone instead of spawning particles directly
-    const zoneLife = 60; // 1 second at 60 FPS
-    this.aoeZones.push(new AoEZone(x, y, radius, damage, zoneLife, color, this.enemyManager, this.player)); // Pass player to AoEZone
+    // Spawn core lingering AoE zone (damage applied instantly on create)
+    const zoneLifeMs = 900; // slightly quicker fade for clarity
+    this.aoeZones.push(new AoEZone(x, y, radius, damage, zoneLifeMs, color, this.enemyManager, this.player));
+
+    // Add expanding shockwave ring (visual only)
+    // Short-lived (250ms) ring that expands beyond damage radius for feedback
+    const waveColor = color;
+    this.shockwaves.push({
+      x,
+      y,
+      startR: Math.max(4, radius * 0.35),
+      endR: radius * 1.55,
+      life: 250,
+      maxLife: 250,
+      color: waveColor
+    });
+
+    // Secondary faint outer wave (gives layered look)
+    this.shockwaves.push({
+      x,
+      y,
+      startR: Math.max(10, radius * 0.6),
+      endR: radius * 2.1,
+      life: 350,
+      maxLife: 350,
+      color: waveColor
+    });
 
     if (hitEnemy && typeof hitEnemy.takeDamage === 'function') {
       hitEnemy.takeDamage(damage);
@@ -39,16 +65,42 @@ export class ExplosionManager {
     if (this.onShake) this.onShake(150, 5);
   }
 
-  public update(): void {
+  /**
+   * Shockwave-only instant explosion (no lingering filled AoE zone). Applies damage immediately and spawns wave rings.
+   */
+  public triggerShockwave(x: number, y: number, damage: number, radius: number = 100, color: string = '#FFA07A') {
+    // Immediate damage application (single tick)
+    if (this.enemyManager && this.enemyManager.getEnemies) {
+      const enemies = this.enemyManager.getEnemies();
+      for (let i=0;i<enemies.length;i++) {
+        const e = enemies[i];
+        const dx = e.x - x; const dy = e.y - y;
+        if (dx*dx + dy*dy <= radius*radius) this.enemyManager.takeDamage(e, damage);
+      }
+    }
+    // Shockwave visuals (reuse logic path by manually pushing similar rings)
+    this.shockwaves.push({ x, y, startR: Math.max(6, radius*0.25), endR: radius*1.7, life: 260, maxLife: 260, color });
+    this.shockwaves.push({ x, y, startR: Math.max(12, radius*0.55), endR: radius*2.3, life: 380, maxLife: 380, color });
+    if (this.onShake) this.onShake(140, 5);
+  }
+
+  public update(deltaMs: number = 16.6667): void {
     // Update all active AoE zones
     for (let i = 0; i < this.aoeZones.length; i++) {
       const zone = this.aoeZones[i];
       if (zone.active) {
-        zone.update();
+  zone.update(deltaMs);
       }
     }
     // Filter out inactive zones
     this.aoeZones = this.aoeZones.filter(zone => zone.active);
+
+    // Update shockwaves
+    for (let i = 0; i < this.shockwaves.length; i++) {
+      const sw = this.shockwaves[i];
+      sw.life -= deltaMs;
+    }
+    this.shockwaves = this.shockwaves.filter(sw => sw.life > 0);
   }
 
   public draw(ctx: CanvasRenderingContext2D): void {
@@ -58,6 +110,36 @@ export class ExplosionManager {
       if (zone.active) {
         zone.draw(ctx);
       }
+    }
+
+    // Draw shockwaves after zones (so rings appear atop)
+    for (let i = 0; i < this.shockwaves.length; i++) {
+      const sw = this.shockwaves[i];
+      const t = 1 - sw.life / sw.maxLife; // 0..1 progress
+      const radius = sw.startR + (sw.endR - sw.startR) * t;
+      const alpha = (1 - t) * 0.55; // fade out
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineWidth = Math.max(1.5, 6 * (1 - t));
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
+      // Radial gradient stroke effect (simulate inner bright edge)
+      const grad = ctx.createRadialGradient(sw.x, sw.y, radius * 0.65, sw.x, sw.y, radius);
+      grad.addColorStop(0, `${sw.color}80`); // semi
+      grad.addColorStop(0.75, `${sw.color}30`);
+      grad.addColorStop(1, `${sw.color}00`);
+      ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.8})`;
+      ctx.shadowColor = sw.color;
+      ctx.shadowBlur = 24 * (1 - t * 0.7);
+      ctx.globalAlpha = alpha;
+      ctx.stroke();
+      // Soft fill halo
+      ctx.fillStyle = grad;
+      ctx.globalAlpha = alpha * 0.6;
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
   }
 }

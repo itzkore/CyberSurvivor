@@ -156,6 +156,9 @@ export class MainMenu {
     `;
 
     document.body.appendChild(this.mainMenuElement);
+  // Show sound panel (if exists) while in main menu
+  const soundPanel = document.getElementById('sound-settings-panel');
+  if (soundPanel) soundPanel.style.display = 'block';
   }
 
   private setupEventListeners(): void {
@@ -207,6 +210,7 @@ export class MainMenu {
     this.hide();
     window.dispatchEvent(new CustomEvent('showCharacterSelect'));
   }
+
 
   private showUpgrades(): void {
     // Create upgrades modal
@@ -395,6 +399,18 @@ export class MainMenu {
       this.updateCurrencyDisplay();
     }
   matrixBackground.start();
+  const soundPanel = document.getElementById('sound-settings-panel');
+    if (soundPanel) {
+      soundPanel.style.display = 'block';
+    } else {
+      // Lazy load original floating sound settings panel (main menu only)
+      import('./SoundSettingsPanel').then(mod => {
+        try {
+          const panel = new mod.SoundSettingsPanel();
+          panel.show();
+        } catch { /* ignore */ }
+      }).catch(()=>{/* ignore */});
+    }
   }
 
   public hide(): void {
@@ -402,6 +418,8 @@ export class MainMenu {
       this.mainMenuElement.style.display = 'none';
     }
   matrixBackground.stop();
+  const soundPanel = document.getElementById('sound-settings-panel');
+  if (soundPanel) soundPanel.style.display = 'none';
   }
 
   public updateScore(characterId: string, score: number): void {

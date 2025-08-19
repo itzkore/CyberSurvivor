@@ -55,6 +55,15 @@ export class Cinematic {
     this.progress = 0;
     this.active = true;
     this.onComplete = onComplete;
+    // Attach temporary key listener for ESC skip
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this.active) {
+        this.active = false;
+        if (this.onComplete) this.onComplete();
+        window.removeEventListener('keydown', escHandler);
+      }
+    };
+    window.addEventListener('keydown', escHandler);
   }
 
   public draw(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {

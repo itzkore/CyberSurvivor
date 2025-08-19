@@ -10,6 +10,8 @@ export type DamageText = {
 
 export class DamageTextManager {
   private pool: DamageText[] = [];
+  // Reusable buffer to avoid allocations when formatting numbers
+  private formatterTmp = { v: 0 };
 
   constructor(initial = 40) {
     for (let i = 0; i < initial; i++) this.pool.push(this.createDead());
@@ -21,9 +23,11 @@ export class DamageTextManager {
 
   public spawn(x: number, y: number, value: number, color = '#FFD700', isCritical: boolean = false) { // Added isCritical parameter
     const t = this.pool.find((t) => !t.active) || this.createDead();
-    t.x = x + (Math.random() - 0.5) * 12;
-    t.y = y + (Math.random() - 0.5) * 12;
-    t.value = value;
+  // Store precise world coords (add only tiny vertical offset so text is above source).
+  // Random horizontal jitter caused misalignment vs boss/enemy position; remove it for clarity.
+  t.x = x;
+  t.y = y - 8; // small upward bias
+    t.value = value; // store raw; format on draw
     t.life = isCritical ? 40 : 24 + Math.floor(Math.random() * 8); // Longer life for critical
     t.color = isCritical ? '#FF00FF' : color; // Purple for critical
     t.active = true;
@@ -50,20 +54,49 @@ export class DamageTextManager {
    * @param camX Camera X offset
    * @param camY Camera Y offset
    */
-  public draw(ctx: CanvasRenderingContext2D, camX: number, camY: number) {
-    for (const t of this.pool) {
-      if (!t.active) continue;
-      ctx.save();
-      ctx.globalAlpha = Math.max(0.2, t.life / (t.isCritical ? 40 : 32)); // Fade out based on life
-      ctx.font = t.isCritical ? 'bold 24px Orbitron, Arial' : 'bold 18px Orbitron, Arial'; // Larger font for critical
-      ctx.fillStyle = t.color;
-      ctx.textAlign = 'center';
-      if (t.isCritical) {
-        ctx.shadowColor = t.color;
-        ctx.shadowBlur = 10;
+  public draw(ctx: CanvasRenderingContext2D, camX: number, camY: number, renderScale: number = 1) {
+    // Batch by (isCritical) since styles differ; could extend to color bucket if many colors appear.
+    const normal: DamageText[] = [];
+    const crit: DamageText[] = [];
+    for (const t of this.pool) { if (!t.active) continue; (t.isCritical ? crit : normal).push(t); }
+    ctx.textAlign = 'center';
+    // Draw normal hits
+    if (normal.length) {
+      ctx.font = 'bold 18px Orbitron, Arial';
+      for (let i=0;i<normal.length;i++) {
+        const t = normal[i];
+        ctx.globalAlpha = Math.max(0.2, t.life / 32);
+        ctx.fillStyle = t.color;
+        const raw = t.value;
+        let display: string;
+        if (raw >= 1000000) display = (raw / 1000000).toFixed(raw >= 10000000 ? 0 : 1) + 'm';
+        else if (raw >= 1000) display = (raw / 1000).toFixed(raw >= 10000 ? 0 : 1) + 'k';
+        else display = Math.round(raw).toString();
+        const sx = (t.x - camX) * renderScale;
+        const sy = (t.y - camY) * renderScale;
+        ctx.fillText(display, sx, sy);
       }
-      ctx.fillText(`${t.value}`, t.x - camX + ctx.canvas.width / 2, t.y - camY + ctx.canvas.height / 2); // Adjust for camera
-      ctx.restore();
+    }
+    // Draw critical hits (with glow)
+    if (crit.length) {
+      ctx.font = 'bold 24px Orbitron, Arial';
+      ctx.shadowBlur = 10;
+      for (let i=0;i<crit.length;i++) {
+        const t = crit[i];
+        ctx.globalAlpha = Math.max(0.2, t.life / 40);
+        ctx.fillStyle = t.color;
+        ctx.shadowColor = t.color;
+        const raw = t.value;
+        let display: string;
+        if (raw >= 1000000) display = (raw / 1000000).toFixed(raw >= 10000000 ? 0 : 1) + 'm';
+        else if (raw >= 1000) display = (raw / 1000).toFixed(raw >= 10000 ? 0 : 1) + 'k';
+        else display = Math.round(raw).toString();
+        const sx = (t.x - camX) * renderScale;
+        const sy = (t.y - camY) * renderScale;
+        ctx.fillText(display, sx, sy);
+      }
+      // Reset glow state minimally
+      ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
     }
   }
 }

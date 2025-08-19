@@ -27,6 +27,14 @@
 </head>
 <body>
     <canvas id="gameCanvas"></canvas>
+        <div id="loading-overlay" style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050510;z-index:1000;font-family:'Orbitron',sans-serif;color:#0ff;letter-spacing:1px;">
+            <div style="font-size:38px;margin-bottom:18px;text-shadow:0 0 12px #00ffff,0 0 24px #0088ff;">CYBER SURVIVOR</div>
+            <div id="loading-status" style="font-size:14px;margin-bottom:12px;opacity:0.85;">Initializing...</div>
+            <div style="width:380px;max-width:80%;height:14px;border:2px solid #0ff;box-shadow:0 0 10px #0ff inset,0 0 10px #0ff;position:relative;border-radius:8px;overflow:hidden;">
+                <div id="loading-bar" style="position:absolute;left:0;top:0;height:100%;width:0;background:linear-gradient(90deg,#00ffff,#00aaff,#00ffff);box-shadow:0 0 12px #00ffff;transition:width .18s ease-out;"></div>
+            </div>
+            <div id="loading-tip" style="margin-top:14px;font-size:11px;color:#7dd;opacity:0.7;">Loading assets...</div>
+        </div>
     <script type="module" src="./src/main.ts"></script>
 </body>
 </html>

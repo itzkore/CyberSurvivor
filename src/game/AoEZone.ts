@@ -7,20 +7,20 @@ export class AoEZone {
   y: number;
   radius: number;
   damage: number;
-  life: number; // Current life in frames
-  maxLife: number; // Total life in frames (e.g., 60 frames for 1 second)
+  life: number; // Current life in ms
+  maxLife: number; // Total life in ms
   active: boolean;
   color: string;
   private enemyManager: EnemyManager;
   private player: Player; // Add player reference
 
-  constructor(x: number, y: number, radius: number, damage: number, life: number, color: string, enemyManager: EnemyManager, player: Player) {
+  constructor(x: number, y: number, radius: number, damage: number, lifeMs: number, color: string, enemyManager: EnemyManager, player: Player) {
     this.x = x;
     this.y = y;
     this.radius = radius;
     this.damage = damage;
-    this.life = life;
-    this.maxLife = life;
+  this.life = lifeMs;
+  this.maxLife = lifeMs;
     this.active = true;
     this.color = color;
     this.enemyManager = enemyManager;
@@ -28,10 +28,9 @@ export class AoEZone {
     this._applyDamage(); // Apply damage immediately on creation
   }
 
-  update(): void {
+  update(deltaMs: number = 16.6667): void {
     if (!this.active) return;
-
-    this.life--;
+    this.life -= deltaMs;
     if (this.life <= 0) {
       this.active = false;
       return;
@@ -42,7 +41,7 @@ export class AoEZone {
     if (!this.active) return;
 
     ctx.save();
-    const alpha = Math.max(0, this.life / this.maxLife); // Fade out based on remaining life
+  const alpha = Math.max(0, this.life / this.maxLife); // Fade out based on remaining life (ms)
     ctx.globalAlpha = alpha * 0.6; // Max 60% opacity for the zone
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);

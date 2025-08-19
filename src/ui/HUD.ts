@@ -6,7 +6,8 @@ export class HUD {
   private player: Player;
   private loader: AssetLoader | null = null;
   public currentDPS: number = 0; // New property for DPS
-  public showMinimap: boolean = false; // New property for minimap toggle
+  public maxDPS: number = 0; // Peak DPS this run
+  public showMinimap: boolean = true; // Always on now
 
   constructor(player: Player, loader?: AssetLoader) {
     this.player = player;
@@ -16,8 +17,12 @@ export class HUD {
   public draw(ctx: CanvasRenderingContext2D, gameTime: number, enemies: Enemy[], worldW: number, worldH: number, upgrades: string[]) { // Added upgrades parameter
     const width = ctx.canvas.width;
     const height = ctx.canvas.height;
-
     ctx.save();
+    // Force neutral render state so leaked alpha/composite from gameplay layers can't fade UI
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
     // --- THEME CONSTANTS ---
     const FONT_TITLE = 'bold 32px Orbitron, sans-serif';
     const FONT_SECTION = 'bold 18px Orbitron, sans-serif';
@@ -38,10 +43,12 @@ export class HUD {
     ctx.textAlign = 'center';
     this.drawGlowText(ctx, `${minutes}:${seconds}`, width / 2, 46, COLOR_TEXT, COLOR_CYAN, 14);
 
-    // --- LEFT PANEL (Stats + Level) ---
-    const panelX = 14;
-    const panelY = 14;
-  const panelW = 250;
+  // --- LEFT PANEL (Stats + Level) ---
+  const panelX = 14;
+  const panelY = 14;
+  // Match minimap width for consistent layout (minimap = 150)
+  const minimapSize = 150;
+  const panelW = minimapSize;
   // Dynamic panel height: base + per-stat lines (15 stats currently)
   const statCount = 15;
   const panelH = 70 + statCount * 20 + 16;
@@ -76,12 +83,15 @@ export class HUD {
       ctx.font = FONT_STAT;
       ctx.fillStyle = COLOR_TEXT;
       let y = panelY + 60;
+      // Dynamic right-aligned values for narrow panel
       for (let i = 0; i < stats.length; i++) {
         const [label, value] = stats[i];
         ctx.fillStyle = COLOR_TEXT_DIM;
-        ctx.fillText(label + ':', panelX + 14, y);
+        ctx.textAlign = 'left';
+        ctx.fillText(label + ':', panelX + 10, y);
         ctx.fillStyle = COLOR_CYAN;
-        ctx.fillText(value, panelX + 120, y);
+        ctx.textAlign = 'right';
+        ctx.fillText(value, panelX + panelW - 10, y);
         y += 20;
       }
       ctx.restore();
@@ -97,13 +107,16 @@ export class HUD {
     const nextExp = this.player.getNextExp();
     this.drawThemedBar(ctx, 20, xpBarY, width - 40, 14, this.player.exp / nextExp, '#00b7ff', '#022e33', COLOR_MAGENTA, `XP ${this.player.exp}/${nextExp}`);
 
-    // Minimap
-    if (this.showMinimap) {
-      this.drawMinimap(ctx, this.player.x, this.player.y, enemies, worldW, worldH);
-    }
+  // Minimap (always on)
+  const minimapPositionSize = minimapSize; // ensure consistent reference
+  this.drawMinimap(ctx, this.player.x, this.player.y, enemies, worldW, worldH);
 
-    // Upgrade History Panel (right side)
-    this.drawUpgradeHistory(ctx, upgrades, width - 260, 110);
+  // Upgrade History Panel directly beneath minimap, same width & left edge
+  const minimapPanelTop = 20; // must match drawMinimap
+  const minimapX = width - minimapPositionSize - 20; // replicate internal minimap X calc
+  const upgradesPanelX = minimapX;
+  const upgradesPanelY = minimapPanelTop + minimapPositionSize + 20; // gap below minimap
+  this.drawUpgradeHistory(ctx, upgrades, upgradesPanelX, upgradesPanelY, minimapPositionSize);
 
     ctx.restore();
   }
@@ -153,8 +166,7 @@ export class HUD {
     ctx.restore();
   }
 
-  private drawUpgradeHistory(ctx: CanvasRenderingContext2D, upgrades: string[], panelX: number, panelY: number): void {
-    const panelWidth = 240;
+  private drawUpgradeHistory(ctx: CanvasRenderingContext2D, upgrades: string[], panelX: number, panelY: number, panelWidth: number = 150): void {
     ctx.save();
     ctx.font = '12px Orbitron, sans-serif';
     ctx.textAlign = 'left';
@@ -205,8 +217,34 @@ export class HUD {
         return a.localeCompare(b);
       });
     // Simple truncate to avoid overflow horizontally
-    const maxLineChars = 30;
-    displayUpgrades = displayUpgrades.map(t => (t.length > maxLineChars ? t.slice(0, maxLineChars - 1) + '…' : t));
+    // Dynamically size font so longest line fits panel width (minus padding)
+    // Preserve full weapon/passive names (avoid horizontal truncation when possible)
+    const horizontalPadding = 24; // left + right combined inside panel
+    const availableLineWidth = panelWidth - horizontalPadding;
+    let contentFontSize = 12;
+    const minFontSize = 8;
+    const measureFits = (size: number) => {
+      ctx.font = `${size}px Orbitron, sans-serif`;
+      for (let i = 0; i < displayUpgrades.length; i++) {
+        if (ctx.measureText(displayUpgrades[i]).width > availableLineWidth) return false;
+      }
+      return true;
+    };
+    // Decrease font size until all lines fit or reach min
+    while (contentFontSize > minFontSize && !measureFits(contentFontSize)) {
+      contentFontSize -= 1;
+    }
+    // If still overflowing at min size, fall back to truncation with ellipsis
+    if (!measureFits(contentFontSize)) {
+      ctx.font = `${contentFontSize}px Orbitron, sans-serif`;
+      displayUpgrades = displayUpgrades.map(line => {
+        let truncated = line;
+        while (truncated.length > 2 && ctx.measureText(truncated + '…').width > availableLineWidth) {
+          truncated = truncated.slice(0, -1);
+        }
+        return truncated === line ? line : truncated + '…';
+      });
+    }
     const lineHeight = 16;
     const headerSpace = 50;
     const desiredHeight = headerSpace + displayUpgrades.length * lineHeight + 12;
@@ -240,7 +278,7 @@ export class HUD {
   this.drawGlowText(ctx, 'UPGRADES', panelX + panelWidth / 2, panelY + 24, '#e9f9ff', '#ff00ff', 4);
   ctx.textAlign = 'left';
       // Content list
-      ctx.font = '12px Orbitron, sans-serif';
+  ctx.font = `${contentFontSize}px Orbitron, sans-serif`;
       ctx.textAlign = 'left';
       let y = panelY + titleBarH + 18;
       for (let i = 0; i < displayUpgrades.length; i++) {

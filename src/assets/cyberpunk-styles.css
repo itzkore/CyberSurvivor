@@ -1309,8 +1309,8 @@
 .upgrade-panel.ui-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  width: min(960px, 100%);
+  gap: 20px;
+  width: min(1100px, 100%); /* widened to fit 3 fixed cards */
   border: 2px solid var(--color-accent-cyan, #00ffff);
   background: linear-gradient(165deg, rgba(20,30,50,0.85) 0%, rgba(15,15,35,0.88) 55%, rgba(10,12,30,0.92) 100%);
   box-shadow: 0 0 24px #00ffff55, 0 0 64px #ff00ff22;
@@ -1318,6 +1318,8 @@
   padding: 28px clamp(18px,2.2vw,40px) 24px;
   position: relative;
   overflow: hidden;
+  transform: scale(var(--panel-scale, 1));
+  transform-origin: center center;
 }
 .upgrade-panel.ui-panel:before, .upgrade-panel.ui-panel:after {
   content: '';
@@ -1350,17 +1352,71 @@
 
 .upgrade-options-grid {
   display:grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px,1fr));
-  gap: 18px clamp(12px,1.6vw,24px);
-  align-items: stretch;
+  grid-template-columns: repeat(3, 300px); /* exactly 3 cards per row */
+  gap: 22px;
+  justify-content:center;
+  justify-items:center;
+}
+.upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,300px)!important; }
+.upgrade-options-grid.fixed-three .upgrade-card { width:300px; }
+/* Prevent media queries from collapsing columns when fixed-three is present */
+@media (max-width: 1280px) {
+  .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,260px)!important; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:260px; }
+}
+@media (max-width: 980px) {
+  .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,240px)!important; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:240px; }
+}
+@media (max-width: 780px) {
+  .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,210px)!important; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:210px; height:175px; }
+}
+@media (max-width: 680px) {
+  .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,190px)!important; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:190px; height:170px; }
+}
+@media (max-width: 600px) {
+  .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,170px)!important; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:170px; height:160px; padding:10px 10px 30px; }
+}
+@media (max-width: 540px) {
+  .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,150px)!important; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:150px; height:150px; padding:8px 8px 26px; }
+  .upgrade-options-grid.fixed-three .upgrade-icon { width:42px; height:42px; }
+  .upgrade-options-grid.fixed-three .upgrade-icon img { width:40px; height:40px; }
+  .upgrade-options-grid.fixed-three .upgrade-title { font-size:.8rem; }
+  .upgrade-options-grid.fixed-three .upgrade-desc { font-size:.55rem; -webkit-line-clamp:3; line-clamp:3; }
+}
+
+/* Responsive scaling tiers for upgrade panel/cards */
+@media (max-width: 1280px) {
+  .upgrade-panel.ui-panel { width:min(100%, 1000px); }
+  .upgrade-options-grid { grid-template-columns: repeat(3, 260px); gap:18px; }
+  .upgrade-card { width:260px; height:175px; padding:12px 12px 36px 12px; }
+  .upgrade-progress-wrapper { left:12px; right:12px; bottom:8px; }
+  .upgrade-icon { width:52px; height:52px; }
+  .upgrade-icon img { width:48px; height:48px; }
+  .upgrade-title { font-size:.95rem; }
+  .upgrade-desc { -webkit-line-clamp:3; line-clamp:3; }
+}
+@media (max-width: 980px) {
+  .upgrade-panel.ui-panel { width:min(100%, 860px); }
+  .upgrade-options-grid { grid-template-columns: repeat(2, 260px); }
+}
+@media (max-width: 640px) {
+  .upgrade-panel.ui-panel { width:min(100%, 420px); }
+  .upgrade-options-grid { grid-template-columns: repeat(1, 260px); }
 }
 
 .upgrade-card {
   --border-color: var(--color-accent-cyan,#00ffff);
   position:relative;
   display:flex;
-  gap:14px;
-  padding:14px 16px 16px 54px;
+  flex-direction:column;
+  width:300px;
+  height:190px; /* fixed height */
+  padding:14px 14px 40px 14px; /* reserve bottom space for level bar */
   background: linear-gradient(145deg, rgba(25,40,65,0.55) 0%, rgba(18,22,48,0.70) 60%, rgba(15,18,38,0.9) 100%);
   border:1px solid var(--border-color);
   border-radius:14px;
@@ -1410,14 +1466,33 @@
   text-shadow:0 0 6px var(--border-color);
   box-shadow:0 0 10px var(--border-color) inset, 0 0 8px var(--border-color);
 }
-.upgrade-icon { width:56px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; }
-.upgrade-icon img { width:48px; height:48px; object-fit:contain; filter: drop-shadow(0 0 6px rgba(0,255,255,0.5)); }
-.upgrade-body { flex:1; display:flex; flex-direction:column; gap:6px; }
-.upgrade-row { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
-.upgrade-title-line { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-.upgrade-title { font-size:1.05rem; letter-spacing:.5px; font-weight:600; color:#fff; text-shadow:0 0 8px var(--border-color); }
-.upgrade-type-line { font-size:.65rem; opacity:.75; letter-spacing:.15em; text-transform:uppercase; font-weight:500; }
-.upgrade-desc { font-size:.72rem; line-height:1.25; opacity:.84; font-weight:400; }
+.upgrade-icon { width:56px; height:56px; flex:0 0 auto; display:flex; align-items:center; justify-content:center; margin-bottom:4px; }
+.upgrade-icon.top-right { position:absolute; top:8px; right:10px; margin-bottom:0; }
+.upgrade-icon.top-right img { width:48px; height:48px; }
+.upgrade-icon img { width:52px; height:52px; object-fit:contain; filter: drop-shadow(0 0 6px rgba(0,255,255,0.5)); }
+/* Passive (green arrow) SVG styling */
+.upgrade-icon .passive-arrow { filter: drop-shadow(0 0 6px #00ff99) drop-shadow(0 0 12px #00ff9966); }
+/* Passive icon framed (orange theme) */
+/* Passive icon inherits same base frame; only glow tint differs */
+.upgrade-card.is-passive .upgrade-icon.top-right { top:8px; right:10px; }
+.upgrade-card.is-passive .upgrade-icon.top-right .passive-arrow { width:52px; height:52px; }
+/* When icon is top-right, push text body below it */
+.upgrade-icon.top-right + .upgrade-body { margin-top:50px; }
+@media (max-width: 780px) { .upgrade-icon.top-right + .upgrade-body { margin-top:46px; } }
+@media (max-width: 600px) { .upgrade-icon.top-right + .upgrade-body { margin-top:42px; } }
+.upgrade-body { flex:1; display:flex; flex-direction:column; gap:4px; overflow:hidden; }
+.upgrade-row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+.upgrade-title-line { display:flex; gap:8px; align-items:center; flex-wrap:nowrap; }
+.upgrade-title { font-size:1.05rem; letter-spacing:.5px; font-weight:600; color:#fff; text-shadow:0 0 8px var(--border-color); line-height:1.05; }
+.upgrade-type-line { font-size:.6rem; opacity:.75; letter-spacing:.15em; text-transform:uppercase; font-weight:500; }
+.upgrade-desc { font-size:.70rem; line-height:1.15; opacity:.84; font-weight:400; flex:1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:4; line-clamp:4; -webkit-box-orient:vertical; }
+
+/* Adaptive text scaling inside fixed box */
+.upgrade-card .upgrade-title, .upgrade-card .upgrade-desc { transition: font-size .15s ease; }
+.upgrade-card[data-text-small="1"] .upgrade-title { font-size:.95rem; }
+.upgrade-card[data-text-small="1"] .upgrade-desc { font-size:.64rem; }
+.upgrade-card[data-text-small="2"] .upgrade-title { font-size:.88rem; }
+.upgrade-card[data-text-small="2"] .upgrade-desc { font-size:.58rem; }
 
 .badge { display:inline-flex; align-items:center; justify-content:center; font-size:.55rem; line-height:1; padding:4px 6px 3px; border-radius:6px; letter-spacing:.05em; font-weight:600; text-transform:uppercase; background:#222; border:1px solid currentColor; }
 .badge-weapon { color:#00fff2; background:linear-gradient(140deg,#012d31,#023f44); }
@@ -1425,9 +1500,10 @@
 .badge-class { color:#ff2ad4; background:linear-gradient(140deg,#38002d,#4d0040); }
 .badge-skip { color:#8aa1b1; background:linear-gradient(140deg,#202a32,#2e3a44); }
 
-.upgrade-progress { position:relative; height:10px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); border-radius:6px; overflow:hidden; margin-top:4px; }
+.upgrade-progress-wrapper { position:absolute; left:14px; right:14px; bottom:10px; display:flex; justify-content:center; }
+.upgrade-progress { position:relative; width:100%; max-width:260px; height:12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); border-radius:6px; overflow:hidden; }
 .upgrade-progress-bar { position:absolute; top:0; left:0; bottom:0; width:var(--progress,0%); background:linear-gradient(90deg,#00fff2,#ff00ff 85%); box-shadow:0 0 12px #00fff2; }
-.upgrade-progress-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:.55rem; font-weight:600; letter-spacing:.08em; color:#fff; text-shadow:0 0 6px #000; mix-blend-mode:screen; }
+.upgrade-progress-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:.6rem; font-weight:600; letter-spacing:.08em; color:#fff; text-shadow:0 0 6px #000; mix-blend-mode:screen; }
 
 .upgrade-footer { display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08); font-size:.6rem; letter-spacing:.1em; text-transform:uppercase; opacity:.7; }
 .legend { display:flex; gap:8px; flex-wrap:wrap; }

@@ -63,11 +63,12 @@ export class UpgradePanel {
       <div class="upgrade-panel ui-panel">
         <div class="upgrade-header">
           <h2 class="panel-title">Choose Upgrade</h2>
-          <div class="upgrade-hint">Press number (1-3) or ESC to skip</div>
+          <div class="upgrade-hint">Hotkeys: 1 · 2 · 3 (R = reroll · ESC = skip)</div>
         </div>
         <div class="upgrade-options-grid" data-upgrade-options></div>
         <div class="upgrade-footer compact-text">
           <span class="legend"><span class="badge badge-weapon">W</span> Weapon <span class="badge badge-passive">P</span> Passive <span class="badge badge-class">C</span> Class Weapon</span>
+          <button type="button" class="btn-reroll" data-reroll title="Reroll upgrade options (testing)">Reroll</button>
         </div>
       </div>
     `;
@@ -76,14 +77,44 @@ export class UpgradePanel {
   private addEventListeners(): void {
     window.addEventListener('keydown', (e) => {
       if (!this.visible) return;
-      const idx = parseInt(e.key);
-      if (!isNaN(idx) && idx >= 1 && idx <= this.options.length) {
-        this.applyUpgrade(idx - 1);
-      } else if (e.key === 'Escape') {
+      const rawKey = e.key;
+      const key = rawKey.toLowerCase();
+      // Map multiple physical / layout-specific keys to option indices
+      const keyMap: Record<string, number> = {
+        '1': 0, '+': 0,         // first option
+        '2': 1,                 // second option
+        '3': 2, ',': 2, 'š': 2  // third option (map 'š' to option 3 for alt keyboard layout)
+      };
+      if (key in keyMap) {
+        const targetIdx = keyMap[key];
+        if (targetIdx < this.options.length) {
+          this.applyUpgrade(targetIdx);
+          e.preventDefault();
+          return;
+        }
+      }
+      if (key === 'r') { // Reroll hotkey
+        this.reroll();
+        e.preventDefault();
+        return;
+      }
+      const idxNum = parseInt(rawKey, 10);
+      if (!isNaN(idxNum) && idxNum >= 1 && idxNum <= this.options.length) {
+        this.applyUpgrade(idxNum - 1);
+      } else if (key === 'escape') {
         this.hide();
         if (this.game && typeof this.game.setState === 'function') {
           this.game.setState('GAME'); // Unpause if escape is pressed
         }
+      }
+    });
+
+    // Delegate reroll button click
+    document.addEventListener('click', (ev) => {
+      const target = ev.target as HTMLElement;
+      if (!target) return;
+      if (target.matches('[data-reroll]')) {
+        if (this.visible) this.reroll();
       }
     });
   }
@@ -101,6 +132,26 @@ export class UpgradePanel {
   this.panelElement.style.display = 'flex';
       this.panelElement.style.zIndex = '9999';
       this.panelElement.style.pointerEvents = 'auto';
+  // Apply uniform scale so aspect / internal ratio does not reflow (3 cards stay fixed)
+  this.applyScale();
+  // Ensure grid forced to 3 columns (no wrapping to 2/1) regardless of media queries
+  const grid = this.panelElement.querySelector('.upgrade-options-grid');
+  if (grid) grid.classList.add('fixed-three');
+    }
+  }
+
+  /**
+   * Rerolls (regenerates) the upgrade options without closing the panel.
+   * Intended for rapid testing of different upgrade pools.
+   * Does nothing if panel is not visible.
+   */
+  private reroll(): void {
+    if (!this.visible) return;
+    this.options = this.generateOptions();
+    this.renderOptions();
+    // Optional: emit event for external listeners / analytics
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('upgradeRerolled'));
     }
   }
 
@@ -149,9 +200,26 @@ export class UpgradePanel {
         </div>`;
       }
 
+      // Decide icon markup: weapons keep their image; passives use neon green arrow SVG
+      let iconHtml = '';
+      if (opt.type === 'weapon' && opt.icon) {
+        iconHtml = `<img src="${opt.icon}" alt="${opt.name}" />`;
+      } else if (opt.type === 'passive') {
+  iconHtml = `<svg viewBox='0 0 64 64' width='52' height='52' role='img' aria-label='Passive Upgrade' class='passive-arrow'>
+          <defs>
+            <linearGradient id='gradPassive' x1='0' y1='1' x2='0' y2='0'>
+              <stop offset='0%' stop-color='#00a85a'/>
+              <stop offset='50%' stop-color='#00ff88'/>
+              <stop offset='100%' stop-color='#b6ffd9'/>
+            </linearGradient>
+          </defs>
+          <path d='M30.9 7.2 10.4 30.1c-1.6 1.8-1.6 4.6.1 6.3 1.7 1.7 4.4 1.7 6.1 0l9.9-10.6v29.5c0 2.4 2 4.3 4.4 4.3s4.4-1.9 4.4-4.3V25.8l9.9 10.6c1.7 1.7 4.4 1.7 6.1 0 1.7-1.7 1.7-4.5.1-6.3L31.9 7.2a1.4 1.4 0 0 0-1-.4c-.4 0-.8.1-1 .4Z' fill='url(#gradPassive)' stroke='#00ff99' stroke-width='2' stroke-linejoin='round' stroke-linecap='round' />
+        </svg>`;
+      }
+
       card.innerHTML = `
         <div class="upgrade-key-indicator">${i + 1}</div>
-        <div class="upgrade-icon">${opt.icon ? `<img src="${opt.icon}" alt="${opt.name}" />` : ''}</div>
+        <div class="upgrade-icon top-right">${iconHtml}</div>
         <div class="upgrade-body">
           <div class="upgrade-row">
             <div class="upgrade-title-line">
@@ -161,9 +229,18 @@ export class UpgradePanel {
             <div class="upgrade-type-line">${opt.type === 'weapon' ? '<span class="badge badge-weapon">Weapon</span>' : opt.type === 'passive' ? '<span class="badge badge-passive">Passive</span>' : '<span class="badge badge-skip">Skip</span>'}</div>
           </div>
           <div class="upgrade-desc">${opt.description}</div>
-          ${progressHtml}
         </div>
+        ${progressHtml ? `<div class="upgrade-progress-wrapper">${progressHtml}</div>` : ''}
       `;
+      // Simple adaptive sizing: measure text lengths and add data attribute
+      const titleLen = opt.name.length;
+      const descLen = opt.description?.length || 0;
+      if (titleLen > 24 || descLen > 140) {
+        card.setAttribute('data-text-small','1');
+      }
+      if (titleLen > 32 || descLen > 200) {
+        card.setAttribute('data-text-small','2');
+      }
       card.addEventListener('click', () => this.applyUpgrade(i));
       container.appendChild(card);
     }
@@ -342,5 +419,34 @@ export class UpgradePanel {
     }
 
     return options.slice(0, 3);
+  }
+
+  /** Uniform scaling: keep 3-column layout, shrink/grow whole panel via transform without ratio distortion */
+  private applyScale() {
+    const root = this.panelElement?.querySelector('.upgrade-panel.ui-panel') as HTMLElement | null;
+    if (!root) return;
+    root.classList.add('scaled');
+    // Base design dimensions for panel contents
+    const baseW = 1100; // matches CSS width
+    const baseH = 420;  // approximate typical height; refine using bounding box
+    // Measure actual height after render if available
+    const rect = root.getBoundingClientRect();
+    const hRef = rect.height || baseH;
+    // Compute scale to fit within viewport padding (leave some margin)
+    const availW = window.innerWidth * 0.94;
+    const availH = window.innerHeight * 0.9;
+    let scale = Math.min(availW / baseW, availH / hRef, 1);
+    if (scale < 0.55) scale = 0.55; // readability floor
+    root.style.setProperty('--panel-scale', scale.toFixed(3));
+    // Re-center by adjusting margin when scaled down (since flex centers original box size)
+    root.style.margin = '0 auto';
+
+    // Attach resize listener once
+    if (!(window as any).__upgradePanelScaleBound) {
+      (window as any).__upgradePanelScaleBound = true;
+      window.addEventListener('resize', () => {
+        if (this.visible) this.applyScale();
+      });
+    }
   }
 }

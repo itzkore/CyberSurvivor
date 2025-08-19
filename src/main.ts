@@ -3,6 +3,31 @@ import { Game } from './game/Game';
 import { MainMenu } from './ui/MainMenu';
 import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import CharacterSelectPanel
 import { Logger } from './core/Logger'; // Import Logger
+import { FPSCounter } from './core/FPSCounter';
+import { ensurePauseOverlay } from './ui/PauseOverlay';
+import { ensureGameOverOverlay } from './ui/GameOverOverlay';
+
+/** Lightweight frame snapshot for worker (packed minimal fields). */
+interface WorkerFrame {
+  camX:number; camY:number; scale:number;
+  player?: { x:number; y:number; r:number };
+  enemies: { x:number; y:number; r:number; hp:number; max:number }[];
+  bullets: { x:number; y:number; r:number }[];
+}
+
+function applyCanvasSizeGlobal(canvas: HTMLCanvasElement) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const targetW = Math.round(w * dpr);
+  const targetH = Math.round(h * dpr);
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+}
 
 window.onload = async () => {
   // --- Cinematic skip button click handler ---
@@ -24,16 +49,98 @@ window.onload = async () => {
     return;
   }
 
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-  canvas.style.position = 'absolute';
-  canvas.style.top = '0';
-  canvas.style.left = '0';
-  canvas.style.zIndex = '-1'; // Ensure canvas is behind HTML menu
+  canvas.style.position = 'fixed';
+  canvas.style.inset = '0';
+  canvas.style.margin = '0';
+  canvas.style.padding = '0';
+  canvas.style.width = '100vw';
+  canvas.style.height = '100vh';
+  canvas.style.zIndex = '-1';
   canvas.style.display = 'block';
+  applyCanvasSizeGlobal(canvas);
 
   const game = new Game(canvas); // Instantiate Game first
+  (window as any).__game = game; // expose for resize handling
+  // Experimental Offscreen worker DISABLED for now (caused start-game stutter due to large postMessage payloads).
+  // Leave scaffold for future refinement.
+  // (window as any).__workerRender = false;
+  // Attach FPS overlay (only in electron / production profiling). Could gate behind env later.
+  const fps = new FPSCounter();
+  (game as any).gameLoop?.setFrameHook?.((dt:number)=>fps.frame(dt));
+
+  // --- Optional Offscreen worker renderer (enable via ?worker=1) ---
+  const useWorker = /[?&]worker=1/.test(location.search) && (window as any).OffscreenCanvas;
+  let worker: Worker | null = null;
+  if (useWorker) {
+    try {
+      worker = new Worker(new URL('./renderWorker.ts', import.meta.url), { type: 'module' });
+      const offscreen = canvas.transferControlToOffscreen();
+      worker.postMessage({ type: 'init', canvas: offscreen, width: canvas.width, height: canvas.height }, [offscreen]);
+      // Hook after in-thread render logic to send snapshot (very lightweight arrays)
+      (game as any).gameLoop?.setRenderHook?.(() => {
+        // Build compact snapshot without allocating large new arrays each frame
+        const enemiesSrc = game.getEnemyManager().getEnemies();
+        const bulletsSrc = game.getBulletManager().bullets;
+        const eLen = enemiesSrc.length;
+        const bLen = bulletsSrc.length;
+        const enemies: WorkerFrame['enemies'] = new Array(eLen);
+        for (let i=0;i<eLen;i++) {
+          const e:any = enemiesSrc[i];
+          enemies[i] = { x:e.x, y:e.y, r:e.radius, hp:e.hp, max:e.maxHp };
+        }
+        const bullets: WorkerFrame['bullets'] = new Array(bLen);
+        for (let i=0;i<bLen;i++) {
+          const b:any = bulletsSrc[i];
+          bullets[i] = { x:b.x, y:b.y, r:b.radius };
+        }
+        const frame: WorkerFrame = {
+          camX: (game as any).camX ?? 0,
+          camY: (game as any).camY ?? 0,
+          scale: 1,
+          player: { x: game.player.x, y: game.player.y, r: game.player.radius },
+          enemies,
+          bullets
+        };
+        worker?.postMessage({ type:'frame', payload: frame });
+      });
+    } catch (err) {
+      console.warn('[main] Worker init failed, reverting to main-thread render', err);
+    }
+  }
   const mainMenu = new MainMenu(game); // Pass game instance to MainMenu
+  // Instantiate pause overlay immediately so Escape can show it right away
+  const pauseOverlay = ensurePauseOverlay(game);
+  // Instantiate game over overlay early so event will show it instantly
+  const gameOverOverlay = ensureGameOverOverlay(game);
+  // Robust capture-phase ESC handler (prevents race conditions / missed pause)
+  let escToggleGuard = 0; // timestamp of last ESC handling
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    // Basic debounce (~75ms) to avoid double toggle from multiple listeners
+    const now = performance.now();
+    if (now - escToggleGuard < 75) return;
+    escToggleGuard = now;
+    const st = game.getState ? game.getState() : (game as any).state;
+    if (st === 'GAME') {
+      e.preventDefault();
+      game.pause();
+    } else if (st === 'PAUSE') {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent('resumeGame'));
+    }
+  }, true); // capture phase so it runs before other handlers
+  // Gate showing the pause overlay strictly to when the internal state is PAUSE
+  window.addEventListener('showPauseOverlay', (e: Event) => {
+    const st = game.getState ? game.getState() : (game as any).state;
+    if (st !== 'PAUSE') {
+      Logger.warn('[main.ts] showPauseOverlay ignored, state =', st);
+      return; // Prevent showing before gameplay has started
+    }
+    const detail = (e as CustomEvent).detail || {};
+    pauseOverlay.show(!!detail.auto);
+    Logger.info('[main.ts] Pause overlay shown (auto=' + (!!detail.auto) + ')');
+  });
+  window.addEventListener('hidePauseOverlay', () => pauseOverlay.hide());
 
   // Now pass UI panels to game after they are instantiated
   game.setMainMenu(mainMenu);
@@ -44,9 +151,10 @@ window.onload = async () => {
 
   await game.init();
   Logger.info('[main.ts] Game assets loaded');
+  // Enable variable timestep mode (systems now scale by delta). Can disable via console: __game.gameLoop.setVariableTimestep(false)
+  (game as any).gameLoop?.setVariableTimestep?.(true);
 
-  // Ensure manifest is loaded before CharacterSelectPanel is instantiated
-  await game.assetLoader.loadManifest();
+  // Manifest already loaded inside game.init() via loadAllFromManifest; avoid redundant second fetch.
 
   // Instantiate CharacterSelectPanel after assets are loaded
   const characterSelectPanel = new CharacterSelectPanel();
@@ -68,15 +176,13 @@ window.onload = async () => {
   game.start();
   Logger.info('[main.ts] Game loop started');
 
+  // (Render hook removed while worker disabled.)
+
   mainMenu.show(); // Show the main menu initially
   Logger.info('[main.ts] Main menu shown');
 
   // --- Sound Settings Panel & Music ---
-  import('./ui/SoundSettingsPanel').then(({ SoundSettingsPanel }) => {
-    const soundPanel = new SoundSettingsPanel();
-    soundPanel.show();
-    Logger.info('[main.ts] SoundSettingsPanel shown');
-  });
+  // Sound settings now only accessible via Pause -> Options; no auto panel on gameplay start
   // Hudba se spustí až po startu hry (po interakci uživatele)
   let musicStarted = false;
   function startMusic() {
@@ -90,6 +196,9 @@ window.onload = async () => {
   }
 
   window.addEventListener('startGame', (event: Event) => {
+  // Hide legacy floating sound panel if it exists (now only inside pause overlay)
+  const legacySound = document.getElementById('sound-settings-panel');
+  if (legacySound) legacySound.style.display = 'none';
   startMusic(); // Spustit hudbu po startu hry
     const customEvent = event as CustomEvent;
     const selectedCharData = customEvent.detail;
@@ -116,6 +225,7 @@ window.onload = async () => {
     characterSelectPanel.hide(); // Hide character select if coming from there
     mainMenu.show();
     canvas.style.zIndex = '-1';
+  try { game.onReturnToMainMenu(); } catch { /* ignore if not yet defined */ }
   });
 
   window.addEventListener('backToMenu', () => {
@@ -127,12 +237,12 @@ window.onload = async () => {
 
   window.addEventListener('pauseGame', () => {
     Logger.info('[main.ts] pauseGame event received');
-    game.pause();
+    game.pause(); // Game.pause() will emit showPauseOverlay only if state transitioned from GAME
   });
 
   window.addEventListener('resumeGame', () => {
     Logger.info('[main.ts] resumeGame event received');
-    game.resume();
+    game.resume(); // Game.resume() emits hidePauseOverlay itself
     canvas.style.display = 'block';
     canvas.style.zIndex = '10';
   });
@@ -145,12 +255,22 @@ window.onload = async () => {
     canvas.style.zIndex = '10';
   });
   // Matrix background now managed by MatrixBackground singleton (auto on show/hide)
+
+  // Fallback Escape (kept minimal) if game listener not yet attached
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const g: any = (window as any).__game;
+    if (!g) return;
+    const st = g.getState ? g.getState() : g.state;
+    if (st === 'GAME') g.pause();
+    else if (st === 'PAUSE') window.dispatchEvent(new CustomEvent('resumeGame'));
+    // Ignore in menus / character select / cinematic
+  });
 };
 
 window.onresize = () => {
-  const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
-  if (canvas) {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-  }
+  const canvasEl = document.getElementById('gameCanvas') as HTMLCanvasElement | null;
+  if (canvasEl) applyCanvasSizeGlobal(canvasEl);
+  const g = (window as any).__game as Game | undefined;
+  if (g) g.resize(window.innerWidth, window.innerHeight);
 };

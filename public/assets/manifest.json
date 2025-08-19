@@ -28,110 +28,18 @@
     }
   },
   "player": {
-    "base": {
-      "file": "assets/player/player_base.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    },
-    "cyber_runner": {
-      "file": "assets/player/cyber_runner.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-  },
-    "psionic_weaver": {
-      "file": "assets/player/psionic_weaver.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-  }
-    ,
-    "bio_engineer": {
-      "file": "assets/player/bio_engineer.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    },
-    "titan_mech": {
-      "file": "assets/player/titan_mech.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    },
-    "rogue_hacked": {
-      "file": "assets/player/rogue_hacked.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "magenta"
-    },
-    "ghost_operative": {
-      "file": "assets/player/ghost_operative.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    },
-    "rogue_hacker": {
-      "file": "assets/player/rogue_hacker.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "magenta"
-    },
-    "data_sorcerer": {
-      "file": "assets/player/data_sorcerer.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    }
-    ,
-    "neural_nomad": {
-  "file": "assets/player/neural_nomad.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    }
-    ,
-    "shadow_operative": {
-      "file": "assets/player/shadow_operative.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    }
-    ,
-    "tech_warrior": {
-      "file": "assets/player/tech_warrior.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "cyan"
-    }
-    ,
-    "heavy_gunner": {
-      "file": "assets/player/heavy_gunner.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "yellow"
-    }
-    ,
-    "wasteland_scavenger": {
-      "file": "assets/player/wasteland_scavenger.png",
-      "w": 64,
-      "h": 64,
-      "frames": 1,
-      "glow": "gray"
-    }
+    "bio_engineer": { "file": "assets/player/bio_engineer.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "cyber_runner": { "file": "assets/player/cyber_runner.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "data_sorcerer": { "file": "assets/player/data_sorcerer.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "ghost_operative": { "file": "assets/player/ghost_operative.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "heavy_gunner": { "file": "assets/player/heavy_gunner.png", "w": 64, "h": 64, "frames": 1, "glow": "yellow" },
+    "neural_nomad": { "file": "assets/player/neural_nomad.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "psionic_weaver": { "file": "assets/player/psionic_weaver.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "rogue_hacker": { "file": "assets/player/rogue_hacker.png", "w": 64, "h": 64, "frames": 1, "glow": "magenta" },
+    "shadow_operative": { "file": "assets/player/shadow_operative.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "tech_warrior": { "file": "assets/player/tech_warrior.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "titan_mech": { "file": "assets/player/titan_mech.png", "w": 64, "h": 64, "frames": 1, "glow": "cyan" },
+    "wasteland_scavenger": { "file": "assets/player/wasteland_scavenger.png", "w": 64, "h": 64, "frames": 1, "glow": "gray" }
   },
   "boss": {
     "phase1": {
@@ -212,12 +120,13 @@
     }
   },
   "projectiles": {
-    "bullet_cyan": {
-      "file": "assets/projectiles/bullet_cyan.png",
-      "w": 16,
-      "h": 16,
-      "frames": 1
-    }
+    "bullet_crossbow": { "file": "assets/projectiles/bullet_crossbow.png", "w": 16, "h": 16, "frames": 1 },
+    "bullet_cyan": { "file": "assets/projectiles/bullet_cyan.png", "w": 16, "h": 16, "frames": 1 },
+  "bullet_deagle": { "file": "assets/projectiles/bullet_deagle.png", "w": 16, "h": 16, "frames": 1 },
+  "bullet_shotgun": { "file": "assets/projectiles/bullet_shotgun.png", "w": 16, "h": 16, "frames": 1 },
+  "bullet_smart": { "file": "assets/projectiles/bullet_smart.png", "w": 16, "h": 16, "frames": 1 },
+  "bullet_laserblaster": { "file": "assets/projectiles/bullet_laserblaster.png", "w": 16, "h": 16, "frames": 1 },
+  "bullet_drone": { "file": "assets/projectiles/bullet_drone.png", "w": 48, "h": 48, "frames": 1 }
   },
   "ui": {
     "hp_bar_bg": {

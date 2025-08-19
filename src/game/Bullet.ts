@@ -7,7 +7,8 @@ export type Bullet = {
   vx: number;
   vy: number;
   radius: number;
-  life: number;
+  life: number; // deprecated frame-based life
+  lifeMs?: number; // ms-based lifetime
   active: boolean;
   damage: number;
   speed?: number;
@@ -28,4 +29,23 @@ export type Bullet = {
   startY?: number;
   /** Squared max travel distance (pixels^2) for efficient checks */
   maxDistanceSq?: number;
+  /** Remaining enemies the bullet can pierce after the current one */
+  pierceRemaining?: number;
+  /** Recent positions for a lightweight trail */
+  trail?: { x: number; y: number }[];
+  /** Enemies already damaged by this bullet (prevents double-hit consuming pierce on same target) */
+  hitIds?: string[];
+  /** Locked target id for homing (Smart Rifle) */
+  targetId?: string;
+  /** Timestamp (ms, performance.now) when spawned; used for visual time-based effects */
+  _spawnTime?: number;
+  /** Drone phased behavior */
+  phase?: 'ASCEND' | 'HOVER' | 'DIVE';
+  phaseStartTime?: number;
+  orbitAngle?: number;
+  orbitRadius?: number;
+  targetX?: number;
+  targetY?: number;
+  searchCooldownMs?: number;
+  altitudeScale?: number;
 };

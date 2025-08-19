@@ -18,7 +18,6 @@ export class AssetLoader {
   private getDimsForPath(path: string): { w: number; h: number } {
     const name = this.getName(path);
     switch (name) {
-      case 'player_base': return { w: 64, h: 64 };
       case 'enemy_small': return { w: 48, h: 48 };
       case 'enemy_medium': return { w: 64, h: 64 };
       case 'enemy_large': return { w: 96, h: 96 };
@@ -26,6 +25,12 @@ export class AssetLoader {
       case 'boss_phase2':
       case 'boss_phase3': return { w: 256, h: 256 };
       case 'bullet_cyan': return { w: 16, h: 16 };
+  case 'bullet_deagle': return { w: 16, h: 16 };
+  case 'bullet_shotgun': return { w: 16, h: 16 };
+  case 'bullet_crossbow': return { w: 16, h: 16 }; // crossbow bolt sprite
+  case 'bullet_smart': return { w: 16, h: 16 }; // smart rifle dart sprite
+  case 'bullet_laserblaster': return { w: 16, h: 16 }; // laser blaster bolt sprite
+  case 'bullet_drone': return { w: 48, h: 48 }; // kamikaze drone sprite
       case 'boss_shot_set': return { w: 24, h: 24 };
       case 'particles_sheet': return { w: 64, h: 64 };
       case 'hp_bar_bg': return { w: 128, h: 16 };
@@ -43,7 +48,6 @@ export class AssetLoader {
   case 'tech_warrior': return { w: 64, h: 64 }; // Ensure tech_warrior is handled
   case 'heavy_gunner': return { w: 64, h: 64 }; // Ensure heavy_gunner is handled
   case 'wasteland_scavenger': return { w: 64, h: 64 }; // Ensure wasteland_scavenger is handled
-  case 'rogue_hacked': return { w: 64, h: 64 }; // Ensure rogue_hacked is handled
   case 'rogue_hacker': return { w: 64, h: 64 }; // Ensure rogue_hacker is handled
       case 'tech_warrior_anim': return { w: 64, h: 64 }; // Example entry for new animated character
       case 'character_select_bg': return { w: 1920, h: 1080 }; // Added for character select background
@@ -126,15 +130,18 @@ export class AssetLoader {
 
   public async loadAllFromManifest(base = (location.protocol === 'file:' ? './assets' : '/assets')) {
     if (!this.manifest) await this.loadManifest(base + '/manifest.json');
+    // Collect file paths (single pass recursion). Preallocate using rough upper bound if available.
     const files: string[] = [];
-    const walk = (obj: any) => {
+    const prefix = (location.protocol === 'file:' ? './' : '/');
+    const walk = (obj: any): void => {
       for (const k in obj) {
         const v = obj[k];
-        if (v && v.file) {
-          const prefix = (location.protocol === 'file:' ? './' : '/');
-          files.push(prefix + v.file.replace(/^\//, ''));
+        if (!v) continue;
+        if (v.file) {
+          files.push(prefix + (v.file as string).replace(/^\//, ''));
+        } else if (typeof v === 'object') {
+          walk(v);
         }
-        else if (typeof v === 'object') walk(v);
       }
     };
     walk(this.manifest);

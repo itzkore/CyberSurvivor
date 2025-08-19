@@ -48,6 +48,7 @@ export class Player {
   public activePassives: { type: string, level: number }[] = [];
   public upgrades: string[] = []; // Tracks all upgrades
 
+  // Weapon cooldown timers in milliseconds (time until next shot for each weapon)
   private shootCooldowns: Map<WeaponType, number> = new Map();
   private enemyProvider: () => Enemy[] = () => [];
 
@@ -61,7 +62,7 @@ export class Player {
 
   // Ability system (AAA-like): temporary speed boost
   private baseSpeed: number;
-  private abilityCooldown: number = 0;
+  private abilityCooldown: number = 0; // ms until ability can be used again
   private abilityTicks: number = 0;
   private abilityDuration: number = 180; // frames (~3s at 60fps)
   private abilityActive: boolean = false;
@@ -159,7 +160,7 @@ export class Player {
     this.activeWeapons.clear(); // Clear all weapons
     this.activePassives = []; // Clear all passives
     this.upgrades = []; // Clear upgrade history
-    this.shootCooldowns.clear(); // Clear weapon cooldowns
+  this.shootCooldowns.clear(); // Clear weapon cooldowns (ms timers)
     // Re-add only the character's starting weapon (preserve class identity)
     if (this.characterData) {
       if (this.characterData.id === 'psionic_weaver') {
@@ -192,7 +193,8 @@ export class Player {
   }
 
   public getNextExp(): number {
-    return 4 + (this.level - 1) * 3;
+    const n = this.level - 1;
+    return 6 + n * 3 + Math.floor(n * n * 0.35);
   }
 
   public gainExp(amount: number) {
@@ -305,15 +307,15 @@ export class Player {
   // Removed setPlayerLook as player look is now based on shape/color
 
   private findNearestEnemy(): Enemy | null {
-    // Autoaim: prioritize boss if present and alive
-    let boss = null;
+    // Autoaim: pick absolute nearest target (boss no longer forced priority)
+    const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
+    // Optionally include active boss in distance comparison (without auto-priority)
     if (this.gameContext && typeof this.gameContext.bossManager?.getActiveBoss === 'function') {
-      boss = this.gameContext.bossManager.getActiveBoss();
+      const boss = this.gameContext.bossManager.getActiveBoss();
       if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-        return boss as any;
+        enemies.push(boss as any);
       }
     }
-    const enemies = this.enemyProvider ? this.enemyProvider() : [];
     let nearest: Enemy | null = null;
     let bestD2 = Number.POSITIVE_INFINITY;
     for (const e of enemies) {
@@ -339,21 +341,44 @@ export class Player {
         const dx = target.x - this.x;
         const dy = target.y - this.y;
         const baseAngle = Math.atan2(dy, dx);
-
-        // Use weapon-specific stats, not class stats
-        const speed = spec.speed;
-        const toShoot = spec.salvo;
-        const spread = spec.spread;
-        // Only use class stats for class default weapon, otherwise use base bulletDamage
+        // Resolve per-level scaling (salvo, spread, damage). Speed handled in BulletManager.
         const weaponLevel = this.activeWeapons.get(weaponType) ?? 1;
+        let toShoot = spec.salvo;
+        let spread = spec.spread;
         let bulletDamage = spec.damage;
         if (spec.getLevelStats) {
           const scaled = spec.getLevelStats(weaponLevel);
-          if (scaled.damage != null) bulletDamage = scaled.damage;
+            if (scaled.salvo != null) toShoot = scaled.salvo;
+            if (scaled.spread != null) spread = scaled.spread;
+            if (scaled.damage != null) bulletDamage = scaled.damage;
+        }
+
+        // Staggered burst logic for Blaster (LASER): fire salvo shots sequentially with small gap instead of simultaneously
+        if (weaponType === WeaponType.LASER && toShoot > 1) {
+          const gapMs = 55; // delay between shots (~3 frames)
+          for (let i = 0; i < toShoot; i++) {
+            const delay = i * gapMs;
+            if (delay === 0) {
+              this.spawnSingleProjectile(bm, weaponType, bulletDamage, weaponLevel, baseAngle, i, toShoot, spread, target);
+            } else {
+              // Queue delayed shots on next frames using requestAnimationFrame timing fallback to performance.now
+              const start = performance.now();
+              const schedule = () => {
+                if (performance.now() - start >= delay) {
+                  this.spawnSingleProjectile(bm, weaponType, bulletDamage, weaponLevel, baseAngle, i, toShoot, spread, target);
+                } else {
+                  requestAnimationFrame(schedule);
+                }
+              };
+              requestAnimationFrame(schedule);
+            }
+          }
+          // Cooldown handled outside; early return to avoid simultaneous spawn loop below
+          return;
         }
 
         // Special handling: Railgun uses charge then single beam; defer actual spawn
-        if (weaponType === WeaponType.RAILGUN) {
+  if (weaponType === WeaponType.RAILGUN) {
           this.handleRailgunFire(baseAngle, target, spec, weaponLevel);
           return; // Skip normal projectile loop
         }
@@ -400,7 +425,19 @@ export class Player {
             const tdy = target.y - originY;
             finalAngle = Math.atan2(tdy, tdx);
           }
-          bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
+          // Smart Rifle: inject artificial arc spread before homing correction so they visibly curve in
+          if (weaponType === WeaponType.RAPID) {
+            const arcSpread = 0.35; // radians total fan baseline
+            const arcIndex = (i - (toShoot - 1) / 2);
+            const arcAngle = finalAngle + arcIndex * (arcSpread / Math.max(1,(toShoot-1)||1));
+            bm.spawnBullet(originX, originY, originX + Math.cos(arcAngle) * 100, originY + Math.sin(arcAngle) * 100, weaponType, bulletDamage, weaponLevel);
+          } else {
+            bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
+          }
+        }
+        // Tiny screen shake for Desert Eagle impact feel
+        if (weaponType === WeaponType.PISTOL) {
+          window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 2 } }));
         }
       } else {
         Logger.warn(`[Player.shootAt] No weapon spec found for weaponType: ${weaponType}`);
@@ -410,16 +447,38 @@ export class Player {
     }
   }
 
+  /** Spawn one projectile for a (possibly staggered) multi-shot weapon. */
+  private spawnSingleProjectile(bm: any, weaponType: WeaponType, bulletDamage: number, weaponLevel: number, baseAngle: number, index: number, total: number, spread: number, target: Enemy) {
+    const angle = baseAngle + (index - (total - 1) / 2) * spread;
+    let originX = this.x;
+    let originY = this.y;
+    if (weaponType === WeaponType.RUNNER_GUN) {
+      const sideOffsetBase = 22; const perpX = -Math.sin(baseAngle); const perpY = Math.cos(baseAngle); const centeredIndex = (index - (total - 1) / 2); const sideSign = centeredIndex < 0 ? -1 : 1; originX += perpX * sideOffsetBase * sideSign; originY += perpY * sideOffsetBase * sideSign;
+    } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
+      const perpX = -Math.sin(baseAngle); const perpY = Math.cos(baseAngle); const barrelOffset = 30; originX += perpX * barrelOffset * this.mechMortarSide; originY += perpY * barrelOffset * this.mechMortarSide; originX += Math.cos(baseAngle) * 18; originY += Math.sin(baseAngle) * 18; this.mechMortarSide *= -1;
+    }
+    let finalAngle = angle;
+    if (weaponType === WeaponType.RUNNER_GUN || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
+      const tdx = target.x - originX; const tdy = target.y - originY; finalAngle = Math.atan2(tdy, tdx);
+    }
+    if (weaponType === WeaponType.RAPID) {
+      const arcSpread = 0.35; const arcIndex = (index - (total - 1) / 2); const arcAngle = finalAngle + arcIndex * (arcSpread / Math.max(1,(total-1)||1));
+      bm.spawnBullet(originX, originY, originX + Math.cos(arcAngle) * 100, originY + Math.sin(arcAngle) * 100, weaponType, bulletDamage, weaponLevel);
+    } else {
+      bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
+    }
+  }
+
   /** Railgun charge + beam fire sequence */
   private handleRailgunFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
     // Use a state flag on player to prevent re-entry during charge
     if ((this as any)._railgunCharging) return;
     (this as any)._railgunCharging = true;
-  const chargeTimeMs = 800; // quicker charge
+  const chargeTimeMs = 800; // reverted to original charge time
     const startTime = performance.now();
     const originX = this.x;
     const originY = this.y - 10; // slight upward to eye line
-  const particleInterval = 40; // denser small particles
+  const particleInterval = 28; // higher spawn frequency
     let lastParticle = 0;
     const pm = this.gameContext?.particleManager;
     const beamEvents: Array<() => void> = [];
@@ -430,14 +489,14 @@ export class Player {
       // Suck-in small particles toward core
       if (pm && now - lastParticle > particleInterval) {
         lastParticle = now;
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 7; i++) { // denser particles per burst
           const ang = Math.random() * Math.PI * 2;
-          const dist = 60 + Math.random() * 60;
+          const dist = 40 + Math.random() * 50; // spawn closer for compact core
           const px = originX + Math.cos(ang) * dist;
           const py = originY + Math.sin(ang) * dist;
           // Neon micro particle (cyan / magenta mix)
           const color = Math.random() < 0.5 ? '#00FFFF' : '#FF00FF';
-          pm.spawn(px, py, 1, color, { sizeMin: 0.6, sizeMax: 1.4, life: 50, speedMin: 1.2, speedMax: 2.2 });
+          pm.spawn(px, py, 1, color, { sizeMin: 0.5, sizeMax: 1.1, life: 60, speedMin: 1.0, speedMax: 2.0 });
         }
       }
       // After spawning, pull existing active particles slightly toward core for vortex feel
@@ -448,7 +507,7 @@ export class Player {
             const dx = originX - p.x;
             const dy = originY - p.y;
             const d = Math.hypot(dx, dy) || 1;
-            const pull = 0.22; // slightly softer pull for smaller particles
+            const pull = 0.34; // stronger inward gravitational pull
             p.vx += (dx / d) * pull;
             p.vy += (dy / d) * pull;
         }
@@ -460,10 +519,10 @@ export class Player {
       // Fire beam (single persistent beam hitbox for fixed duration)
       (this as any)._railgunCharging = false;
       const beamAngle = Math.atan2(target.y - originY, target.x - originX);
-  const beamDurationMs = 160; // faster snap beam
+  const beamDurationMs = 160; // reverted to original duration
       const beamStart = performance.now();
-      const range = spec.range || 900;
-  const beamDamageTotal = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 1.25; // tuned burst
+      const range = spec.range || 900; // reverted to original range
+  const beamDamageTotal = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 1.25; // original burst multiplier
       const dps = beamDamageTotal / (beamDurationMs / 1000);
       // Register beam effect object on game context for rendering & ticking
       const game: any = this.gameContext;
@@ -482,7 +541,7 @@ export class Player {
           const enemies = game.enemyManager?.getEnemies() || [];
           const cosA = Math.cos(beamAngle);
           const sinA = Math.sin(beamAngle);
-          const thickness = 14; // thinner collision core
+          const thickness = 9; // much thinner collision core for precision
           for (const e of enemies) {
             if (!e.active || e.hp <= 0) continue;
             const relX = e.x - originX;
@@ -520,8 +579,10 @@ export class Player {
       const mag = Math.sqrt(dx * dx + dy * dy);
       const normX = dx / mag;
       const normY = dy / mag;
-      this.x += normX * this.speed;
-      this.y += normY * this.speed;
+      // Scale movement by frame delta (delta is ms in current loop design)
+      const moveScale = (delta / 16.6667); // 1 at 60fps
+      this.x += normX * this.speed * moveScale;
+      this.y += normY * this.speed * moveScale;
       // Animation frame only when moving (still relevant for other animations if any)
       this.frameTimer++;
       // Flip animation: toggle isFlipped every 0.2s (12 frames at 60fps)
@@ -562,25 +623,51 @@ export class Player {
   this.rotation = Math.atan2(autoAimTarget.y - this.y, autoAimTarget.x - this.x) - Math.PI / 2;
     }
     this.activeWeapons.forEach((level, weaponType) => {
-      let cooldown = this.shootCooldowns.get(weaponType) ?? 0;
-      cooldown--;
-      // Clamp cooldown to zero if negative
-      if (cooldown < 0) cooldown = 0;
-      this.shootCooldowns.set(weaponType, cooldown);
-
-      if (cooldown <= 0) {
-        const t = autoAimTarget;
-        if (t) {
-          this.shootAt(t, weaponType);
-          const spec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
-          let baseCooldown = spec?.cooldown ?? 10;
-          const weaponLevel = this.activeWeapons.get(weaponType) ?? 1;
-          if (spec?.getLevelStats) {
-            const scaled = spec.getLevelStats(weaponLevel);
-            if (scaled.cooldown != null) baseCooldown = scaled.cooldown;
+      let cooldownMs = this.shootCooldowns.get(weaponType) ?? 0;
+      if (cooldownMs > 0) {
+        cooldownMs -= delta; // delta is ms now via variable timestep loop
+        if (cooldownMs < 0) cooldownMs = 0;
+        this.shootCooldowns.set(weaponType, cooldownMs);
+      }
+      if (cooldownMs <= 0) {
+        // Kamikaze Drone: only one active at a time. If one exists, defer firing until it explodes.
+        if (weaponType === WeaponType.HOMING) {
+          const bm: any = (this.gameContext as any)?.bulletManager;
+          if (bm && bm.bullets && bm.bullets.some((b: any) => b.active && b.weaponType === WeaponType.HOMING)) {
+            return; // keep counting down cooldown; next shot will occur right after explosion
           }
-          const newCooldown = Math.max(1, Math.floor(baseCooldown / (this.fireRateModifier * this.attackSpeed))); // cooldown reduced by attackSpeed
-          this.shootCooldowns.set(weaponType, newCooldown);
+        }
+  // For Homing (Kamikaze Drone) we always want to spawn even with no enemies yet.
+  const t = autoAimTarget || (weaponType === WeaponType.HOMING ? { x: this.x + 200, y: this.y } as any : null);
+        if (t) {
+          // Range gate: only fire if target is within weapon range * 1.1 (10% slack)
+          const rgSpec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
+          let wr = rgSpec?.range ?? 0;
+          const rgLevel = this.activeWeapons.get(weaponType) ?? 1;
+          if (rgSpec?.getLevelStats) {
+            const scaled = rgSpec.getLevelStats(rgLevel);
+            if (scaled.range != null) wr = scaled.range;
+          }
+          if (wr > 0) {
+            const dxT = (t.x ?? 0) - (this.x ?? 0);
+            const dyT = (t.y ?? 0) - (this.y ?? 0);
+            const distSq = dxT*dxT + dyT*dyT;
+            const maxSq = (wr * 1.1) * (wr * 1.1);
+            if (distSq > maxSq) return; // skip firing for this weapon this cycle
+          }
+          this.shootAt(t, weaponType);
+          const cdSpec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
+          let baseCooldownFrames = cdSpec?.cooldown ?? 10; // original frame-based value
+          const cdLevel = this.activeWeapons.get(weaponType) ?? 1;
+          if (cdSpec?.getLevelStats) {
+            const scaled = cdSpec.getLevelStats(cdLevel);
+            if (scaled.cooldown != null) baseCooldownFrames = scaled.cooldown;
+          }
+          // Convert frames -> ms (assuming 60fps baseline) then divide by modifiers
+          const baseMs = (baseCooldownFrames / 60) * 1000;
+          const modMs = baseMs / (this.fireRateModifier * this.attackSpeed);
+          const finalMs = Math.max(15, modMs); // clamp to a minimal 15ms
+          this.shootCooldowns.set(weaponType, finalMs);
         }
       }
     });
@@ -601,7 +688,7 @@ export class Player {
 
     // Ability cooldown/duration handling
     if (this.abilityActive) {
-      this.abilityTicks++;
+      this.abilityTicks += delta; // treat abilityTicks as ms now
       if (this.abilityTicks >= this.abilityDuration) {
         // end ability
         this.abilityActive = false;
@@ -609,7 +696,8 @@ export class Player {
       }
     }
     if (this.abilityCooldown > 0) {
-      this.abilityCooldown--;
+      this.abilityCooldown -= delta;
+      if (this.abilityCooldown < 0) this.abilityCooldown = 0;
     }
   }
 
@@ -676,7 +764,8 @@ export class Player {
   // Use characterData.sprite if present, else id, else fallback to 'cyber_runner'
   let assetKey = this.characterData?.sprite || this.characterData?.id || 'cyber_runner';
     // Debug: log assetKey and image path used for rendering
-    const img = this.gameContext?.assetLoader?.getImage(`/assets/player/${assetKey}.png`) as HTMLImageElement | undefined;
+  const prefix = (location.protocol === 'file:' ? './assets/player/' : '/assets/player/');
+  const img = this.gameContext?.assetLoader?.getImage(prefix + assetKey + '.png') as HTMLImageElement | undefined;
     if (img && img.complete && img.naturalWidth > 0) {
       ctx.save();
       ctx.translate(this.x, this.y);
