@@ -40,13 +40,22 @@ body { margin:0; overflow:hidden; font-family: var(--ui-font, 'Orbitron', sans-s
 canvas { display:block; position:absolute; top:0; left:0; z-index:0; }
 #main-menu { z-index:1; }
 
+/* Orbitron variable font (TTF) self-hosted */
 @font-face {
   font-family: 'Orbitron';
-  /* NOTE: Provide the actual Orbitron variable font at this path. Placeholder path adjusted for build (self-host only). */
-  src: local('Orbitron'), url('./fonts/Orbitron-VariableFont_wght.woff2') format('woff2');
+  src: local('Orbitron Variable'), local('Orbitron'),
+       url('/assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf') format('truetype');
   font-weight: 100 900;
   font-display: swap;
+  font-style: normal;
 }
+/* Static weight fallbacks (if variable not supported) */
+@font-face { font-family: 'Orbitron'; src: local('Orbitron Regular'), url('/assets/fonts/Orbitron/static/Orbitron-Regular.ttf') format('truetype'); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron Medium'), url('/assets/fonts/Orbitron/static/Orbitron-Medium.ttf') format('truetype'); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron SemiBold'), url('/assets/fonts/Orbitron/static/Orbitron-SemiBold.ttf') format('truetype'); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron Bold'), url('/assets/fonts/Orbitron/static/Orbitron-Bold.ttf') format('truetype'); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron ExtraBold'), url('/assets/fonts/Orbitron/static/Orbitron-ExtraBold.ttf') format('truetype'); font-weight: 800; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron Black'), url('/assets/fonts/Orbitron/static/Orbitron-Black.ttf') format('truetype'); font-weight: 900; font-style: normal; font-display: swap; }
 html, body { font-family: 'Orbitron', sans-serif; }
 
 /* Global font application across project (buttons, inputs, headings) */
@@ -139,6 +148,33 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
   z-index: 1500; /* use highest of the two previous values */
   box-sizing: border-box;
 }
+
+/* =============================
+  Pause Overlay (migrated from inline for CSP + global font)
+  ============================= */
+#pause-overlay { position:fixed; inset:0; width:100%; height:100%; background:rgba(0,0,0,0.78); display:none; z-index:1700; backdrop-filter:blur(2px); pointer-events:auto; user-select:none; font-family:'Orbitron',sans-serif; color:#b3f5e6; text-shadow:0 0 6px #00ffaa44; }
+#pause-overlay.active { display:block; }
+.pause-overlay-content { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; max-width:720px; padding:48px 56px; border:1px solid #00b3a3; box-shadow:0 0 28px #00ffdd33, inset 0 0 28px #00ffdd11; border-radius:14px; background:linear-gradient(145deg,rgba(0,25,28,0.35),rgba(0,12,14,0.55)); backdrop-filter:blur(4px); }
+.pause-title { margin:0 0 12px; font-size:56px; letter-spacing:6px; font-weight:600; }
+.pause-reason { margin:0 0 22px; font-size:18px; opacity:.78; min-height:22px; }
+.pause-btn-row { display:flex; justify-content:center; gap:22px; margin:0 0 26px; flex-wrap:wrap; }
+.pause-btn { background:rgba(0,180,165,0.12); color:#bff; font-size:16px; letter-spacing:1px; padding:14px 34px; border:1px solid #00b3a3; border-radius:8px; cursor:pointer; font-family:'Orbitron',sans-serif; position:relative; overflow:hidden; transition:background .18s, transform .18s, box-shadow .18s; }
+.pause-btn:before { content:''; position:absolute; inset:0; background:linear-gradient(100deg,rgba(0,255,230,0.25),rgba(0,140,120,0) 60%); opacity:0; transition:opacity .25s; }
+.pause-btn:hover:before { opacity:1; }
+.pause-btn:hover { background:rgba(0,210,195,0.18); box-shadow:0 0 12px #00ffe533, 0 0 2px #00ffe5 inset; transform:translateY(-2px); }
+.pause-btn:active { transform:translateY(0); filter:brightness(.9); }
+.pause-audio { margin:0 0 28px; padding:18px 22px 24px; border:1px solid #00b3a3; border-radius:12px; background:linear-gradient(135deg,rgba(0,40,44,0.25),rgba(0,18,20,0.35)); box-shadow:0 0 18px #00ffe511 inset, 0 0 14px #00ffe522; max-width:520px; margin-left:auto; margin-right:auto; }
+.pause-audio-title { font-size:18px; letter-spacing:4px; margin:0 0 14px; font-weight:600; color:#bff; text-shadow:0 0 8px #00ffe5; }
+.pause-audio-row { display:flex; align-items:center; gap:14px; }
+.pause-audio-label { font-size:14px; letter-spacing:2px; color:#bff; }
+.pause-audio-val { font-size:13px; min-width:42px; text-align:right; letter-spacing:1px; color:#bff; }
+#pause-overlay input[type=range] { appearance:none; -webkit-appearance:none; width:260px; height:6px; background:rgba(0,255,230,0.15); border-radius:4px; outline:none; border:1px solid #00b3a3; box-shadow:0 0 6px #00ffe522 inset; }
+#pause-overlay input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:#00ffe5; border:2px solid #014a44; box-shadow:0 0 10px #00ffe5aa, 0 0 2px #fff inset; cursor:pointer; transition:transform .15s, box-shadow .15s; }
+#pause-overlay input[type=range]::-webkit-slider-thumb:hover { transform:scale(1.15); box-shadow:0 0 14px #00ffe5ff, 0 0 2px #fff inset; }
+#pause-overlay input[type=range]::-moz-range-track { height:6px; background:rgba(0,255,230,0.15); border:1px solid #00b3a3; border-radius:4px; }
+#pause-overlay input[type=range]::-moz-range-thumb { width:18px; height:18px; border-radius:50%; background:#00ffe5; border:2px solid #014a44; box-shadow:0 0 10px #00ffe5aa, 0 0 2px #fff inset; cursor:pointer; }
+.pause-hint { margin:0; font-size:13px; opacity:.42; }
+
 
 .character-select-content {
   display: flex;
