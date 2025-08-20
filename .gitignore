@@ -21,3 +21,8 @@ Thumbs.db
 # Electron Builder cache (optional)
 # Caches are in user AppData, not repo, but keep pattern just in case
 **/electron-builder.yml
+
+# Accidental large demo/media folder (purged from history)
+# Protect against variations like 'Kore Demos', 'kore-demos', etc.
+[Kk]ore*Demos*/
+[Kk]ore*Demo*/
