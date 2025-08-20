@@ -563,15 +563,13 @@ export class Game {
    * Resumes the game.
    */
   public resume() {
-  // Attempt resume even if state drifted (log for diagnostics)
-  const was = this.state;
+  // Only allow resume strictly from PAUSE; ignore spurious events (prevents restart after returning to menu)
   if (this.state !== 'PAUSE') {
-    // If overlay requested resume but state not PAUSE, still try to start loop
-    // (Edge case: event ordering or double-dispatch caused mismatch)
+    (window as any).__lastResumeIgnored = { prev: this.state, t: performance.now() };
+    return;
   }
-  if (this.gameLoop) {
-    this.gameLoop.start();
-  }
+  const was = this.state;
+  if (this.gameLoop) this.gameLoop.start();
   this.state = 'GAME';
   try { window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); } catch {}
   try { window.dispatchEvent(new CustomEvent('hidePauseOverlay')); } catch {}
