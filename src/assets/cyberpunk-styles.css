@@ -35,6 +35,19 @@
   --ui-scrollbar-thumb: rgba(0,255,255,0.4);
 }
 
+/* === Global base layout (moved from inline <style> blocks to satisfy stricter CSP) === */
+body { margin:0; overflow:hidden; font-family: var(--ui-font, 'Orbitron', sans-serif); }
+canvas { display:block; position:absolute; top:0; left:0; z-index:0; }
+#main-menu { z-index:1; }
+
+/* === Loading overlay (migrated from inline for CSP) === */
+.loading-overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#050510; z-index:1000; font-family:'Orbitron',sans-serif; color:#0ff; letter-spacing:1px; }
+.loading-title { font-size:38px; margin-bottom:18px; text-shadow:0 0 12px #00ffff,0 0 24px #0088ff; }
+.loading-status { font-size:14px; margin-bottom:12px; opacity:0.85; }
+.loading-bar-shell { width:380px; max-width:80%; height:14px; border:2px solid #0ff; box-shadow:0 0 10px #0ff inset,0 0 10px #0ff; position:relative; border-radius:8px; overflow:hidden; }
+.loading-bar-fill { position:absolute; left:0; top:0; height:100%; width:0; background:linear-gradient(90deg,#00ffff,#00aaff,#00ffff); box-shadow:0 0 12px #00ffff; transition:width .18s ease-out; }
+.loading-tip { margin-top:14px; font-size:11px; color:#7dd; opacity:0.7; }
+
 /* Scrollbar (webkit + chrome/edge) */
 *::-webkit-scrollbar { width: 10px; }
 *::-webkit-scrollbar-track { background: var(--ui-scrollbar-track); }
