@@ -74,12 +74,10 @@ export class Cinematic {
   public draw(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
     if (!this.active) return;
     ctx.save();
-  // Use the same high-DPI scaling convention as the main game render path:
-  // canvas.width/height are already multiplied by dpr * renderScale, so we upscale the context
-  // so that drawing at logical CSS coordinates produces crisp output without manual conversion.
+  // NOTE: Game.render already applied ctx.scale(dpr * renderScale, dpr * renderScale).
+  // Avoid double scaling here; just compute logical dimensions for layout.
   const dpr = (window as any).devicePixelRatio || 1;
   const rs = (window as any).__renderScale || 1;
-  ctx.scale(dpr * rs, dpr * rs);
   const logicalW = canvas.width / (dpr * rs);
   const logicalH = canvas.height / (dpr * rs);
     const fadeFrames = 60;
@@ -92,46 +90,87 @@ export class Cinematic {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const minDim = Math.min(logicalW, logicalH);
-  const titleBase = Math.round(minDim * 0.07); // tuned size for clearer separation
-  const subBase = Math.round(titleBase * 0.42);
+  let titleBase = Math.round(minDim * 0.072);
+  let subBase = Math.round(titleBase * 0.40);
     const centerY = logicalH / 2;
     const t = this.progress;
     // Subtle vertical easing motion for main title block
     const easeInOut = (x:number) => x<0.5 ? 2*x*x : -1+(4-2*x)*x;
     const motionPhase = Math.min(1, t / 90);
     const yOffset = -20 * (1 - easeInOut(motionPhase));
+    const wrapText = (text: string, font: string, maxWidth: number): string[] => {
+      if (!text) return [];
+      ctx.font = font;
+      const words = text.split(/\s+/);
+      const lines: string[] = [];
+      let cur = '';
+      for (let i=0;i<words.length;i++) {
+        const test = cur ? cur + ' ' + words[i] : words[i];
+        if (ctx.measureText(test).width > maxWidth && cur) {
+          lines.push(cur);
+          cur = words[i];
+        } else {
+          cur = test;
+        }
+      }
+      if (cur) lines.push(cur);
+      return lines;
+    };
     const drawBlock = (title: string, subtitle: string | null, gradStops: [string,string], glow: string) => {
       ctx.save();
-      // Compute a block layout so title + subtitle never overlap regardless of size.
-      const blockSpacing = subtitle ? subBase * 0.55 : 0; // gap between baseline of title & baseline of subtitle
-      const totalBlockHeight = subtitle ? (titleBase + blockSpacing + subBase) : titleBase;
-      const blockTop = centerY - totalBlockHeight / 2 + yOffset; // center vertically
-      const titleY = blockTop + titleBase * 0.85; // adjust for typical cap height vs full em
-      const subtitleY = subtitle ? (titleY + blockSpacing + subBase * 0.75) : 0;
-
-      const grad = ctx.createLinearGradient(
-        logicalW/2 - Math.min(400, titleBase * 6),
-        titleY - titleBase,
-        logicalW/2 + Math.min(400, titleBase * 6),
-        titleY + titleBase
-      );
-      grad.addColorStop(0, gradStops[0]);
-      grad.addColorStop(1, gradStops[1]);
+      const maxTitleWidth = logicalW * 0.84;
+      // Adaptive downscale if too wide
       ctx.font = `900 ${titleBase}px Orbitron, sans-serif`;
+      let titleWidth = ctx.measureText(title).width;
+      if (titleWidth > maxTitleWidth) {
+        const scaleFactor = maxTitleWidth / titleWidth;
+        titleBase = Math.max(28, Math.floor(titleBase * scaleFactor));
+        subBase = Math.round(titleBase * 0.40);
+      }
+      // Recompute fonts after possible resize
+      ctx.font = `900 ${titleBase}px Orbitron, sans-serif`;
+      // Multi-line wrap support for very long title phrases
+      const titleLines = wrapText(title, ctx.font, maxTitleWidth);
+      const titleLineHeight = Math.round(titleBase * 1.06);
+      const subtitleFont = `600 ${subBase}px Orbitron, sans-serif`;
+      const subtitleLines = subtitle ? wrapText(subtitle, subtitleFont, logicalW * 0.78) : [];
+      const subtitleLineHeight = Math.round(subBase * 1.12);
+      const gap = subtitle ? Math.max(12, subBase * 0.6) : 0;
+      const totalBlockHeight = titleLines.length * titleLineHeight + (subtitle ? gap + subtitleLines.length * subtitleLineHeight : 0);
+      const blockTop = centerY - totalBlockHeight / 2 + yOffset;
+      // Draw title lines
       ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(2, Math.round(titleBase * 0.055));
       ctx.strokeStyle = '#00191c';
       ctx.shadowColor = glow;
       ctx.shadowBlur = Math.max(8, titleBase * 0.45);
-      ctx.strokeText(title, logicalW/2, titleY);
-      ctx.fillStyle = grad;
-      ctx.fillText(title, logicalW/2, titleY);
+      ctx.lineWidth = Math.max(2, Math.round(titleBase * 0.055));
+      const grad = ctx.createLinearGradient(
+        logicalW/2 - Math.min(420, titleBase * 7),
+        blockTop - titleBase,
+        logicalW/2 + Math.min(420, titleBase * 7),
+        blockTop + titleBase * titleLines.length
+      );
+      grad.addColorStop(0, gradStops[0]);
+      grad.addColorStop(1, gradStops[1]);
+      for (let i=0;i<titleLines.length;i++) {
+        const y = blockTop + i * titleLineHeight + titleBase * 0.85;
+        const line = titleLines[i];
+        ctx.font = `900 ${titleBase}px Orbitron, sans-serif`;
+        ctx.strokeText(line, logicalW/2, y);
+        ctx.fillStyle = grad;
+        ctx.fillText(line, logicalW/2, y);
+      }
+      // Subtitles
       if (subtitle) {
-        ctx.font = `600 ${subBase}px Orbitron, sans-serif`;
         ctx.shadowBlur = Math.max(4, subBase * 0.35);
         ctx.shadowColor = '#001417';
         ctx.fillStyle = '#dff';
-        ctx.fillText(subtitle, logicalW/2, subtitleY);
+        ctx.font = subtitleFont;
+        const subStart = blockTop + titleLines.length * titleLineHeight + gap + subBase * 0.75;
+        for (let i=0;i<subtitleLines.length;i++) {
+          const y = subStart + i * subtitleLineHeight;
+          ctx.fillText(subtitleLines[i], logicalW/2, y);
+        }
       }
       ctx.restore();
     };
