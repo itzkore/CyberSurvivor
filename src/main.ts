@@ -60,7 +60,8 @@ window.onload = async () => {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      if (game.cinematic.handleClick(x, y, canvas)) {
+      const cinematicAny = game.cinematic as any;
+      if (cinematicAny && typeof cinematicAny.handleClick === 'function' && cinematicAny.handleClick(x, y, canvas)) {
         Logger.info('[main.ts] Cinematic skipped via button');
       }
     });
