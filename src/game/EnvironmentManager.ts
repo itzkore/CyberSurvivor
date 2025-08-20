@@ -40,8 +40,16 @@ export class EnvironmentManager {
   private transitionMs = 9000; // 9s transition
   private gradientCache?: CanvasGradient;
   private gradientBiomeKey = '';
-  private needsPatternRedraw = true;
-  private lowFX = false;
+  public needsPatternRedraw = true; // made public for prototype helpers
+  public lowFX = false; // accessed by ambient drawer
+  // --- Ambient Particles (biome accent glyphs) ---
+  public ambientParticles: AmbientParticle[] = [];
+  public ambientPoolSize = 64; // fixed pool (reuse objects)
+  public ambientInited = false;
+  // --- Day/Night Cycle ---
+  private dayLengthSec = 180; // full cycle length (3 min)
+  public dayFactor = 1; // 0.55 (night) .. 1 (midday)
+  private lastPhaseBucket = -1; // for potential future events
 
   constructor() {
     this.patternCanvas = document.createElement('canvas');
@@ -59,6 +67,7 @@ export class EnvironmentManager {
   }
 
   public update(gameTimeSec: number) {
+  // Update biome switching / blending
     const nowMs = gameTimeSec * 1000;
     if (nowMs - this.lastBiomeSwitch >= this.biomeDurationMs) {
       this.lastBiomeSwitch = nowMs;
@@ -77,6 +86,12 @@ export class EnvironmentManager {
     } else {
       this.biomeBlend = 1;
     }
+  // Day/Night factor (sinusoidal). 0 at start = sunrise.
+  const tDay = (gameTimeSec % this.dayLengthSec) / this.dayLengthSec; // 0..1
+  // Map sin wave (-1..1) -> brightness 0.55..1
+  this.dayFactor = 0.55 + (Math.sin(tDay * Math.PI * 2 - Math.PI/2) * 0.5 + 0.5) * (1 - 0.55);
+  // Bucket for phase changes (8 slices) - reserved for events (not dispatched now)
+  this.lastPhaseBucket = Math.floor(tDay * 8);
   }
 
   private lerpColor(c1: string, c2: string, t: number): string {
@@ -169,6 +184,114 @@ export class EnvironmentManager {
       ctx.fillStyle = rg;
       ctx.fillRect(0,0,canvasW,canvasH);
     }
+    // Initialize ambient particles lazily (after first draw when we have cam & viewport)
+    if (!this.ambientInited) {
+      this.initAmbient(camX, camY, canvasW, canvasH);
+      this.ambientInited = true;
+    }
+    // Update + draw ambient particles (before night overlay so they dim consistently)
+    this.updateAmbient(camX, camY, canvasW, canvasH);
+    this.drawAmbient(ctx, camX, camY, canvasW, canvasH);
+    // Night overlay (multiply darkness based on inverse dayFactor)
+    const darkness = 1 - this.dayFactor; // 0 (day) -> ~0.45 (night)
+    if (darkness > 0.02) {
+      ctx.fillStyle = `rgba(0,10,16,${(darkness*0.55).toFixed(3)})`;
+      ctx.fillRect(0,0,canvasW,canvasH);
+      if (!this.lowFX) {
+        // Subtle city light bloom at night
+        ctx.globalCompositeOperation = 'overlay';
+        const glow = ctx.createRadialGradient(canvasW*0.55, canvasH*0.42, 30, canvasW*0.55, canvasH*0.42, canvasH*0.85);
+        glow.addColorStop(0, `rgba(38,255,233,${0.12*darkness})`);
+        glow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(0,0,canvasW,canvasH);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
     ctx.restore();
   }
 }
+
+// ---- Ambient Particle Implementation ----
+interface AmbientParticle {
+  x: number; y: number; vx: number; vy: number; size: number; alpha: number; life: number; t: number; color: string;
+}
+
+// Extend prototype with particle helpers
+export interface EnvironmentManager {
+  initAmbient(camX: number, camY: number, vw: number, vh: number): void;
+  updateAmbient(camX: number, camY: number, vw: number, vh: number): void;
+  drawAmbient(ctx: CanvasRenderingContext2D, camX: number, camY: number, vw: number, vh: number): void;
+}
+
+EnvironmentManager.prototype.initAmbient = function(camX: number, camY: number, vw: number, vh: number) {
+  this.ambientParticles.length = 0;
+  const [a,b] = (this as any).getBiomePair();
+  const accents = b.accentDots || a.accentDots || ['#26ffe9'];
+  for (let i=0;i<this.ambientPoolSize;i++) {
+    this.ambientParticles.push({
+      x: camX + Math.random()*vw,
+      y: camY + Math.random()*vh,
+      vx: (Math.random()*0.12 - 0.06),
+      vy: (Math.random()*0.12 - 0.06),
+      size: 1 + Math.random()*2,
+      alpha: 0.15 + Math.random()*0.35,
+      life: 4 + Math.random()*16,
+      t: Math.random()*1000,
+      color: accents[i % accents.length]
+    });
+  }
+};
+
+EnvironmentManager.prototype.updateAmbient = function(camX: number, camY: number, vw: number, vh: number) {
+  const [a,b] = (this as any).getBiomePair();
+  const accents = b.accentDots || a.accentDots || ['#26ffe9'];
+  const wrapMargin = 40;
+  for (let i=0;i<this.ambientParticles.length;i++) {
+    const p = this.ambientParticles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.t += 0.01;
+    // gentle drift change
+    if ((i + (p.t|0)) % 240 === 0) {
+      p.vx += (Math.random()*0.06 - 0.03);
+      p.vy += (Math.random()*0.06 - 0.03);
+      // clamp
+      if (p.vx > 0.12) p.vx = 0.12; if (p.vx < -0.12) p.vx = -0.12;
+      if (p.vy > 0.12) p.vy = 0.12; if (p.vy < -0.12) p.vy = -0.12;
+    }
+    // wrap around camera view bounds with margin
+    const minX = camX - wrapMargin; const maxX = camX + vw + wrapMargin;
+    const minY = camY - wrapMargin; const maxY = camY + vh + wrapMargin;
+    if (p.x < minX) p.x = maxX; else if (p.x > maxX) p.x = minX;
+    if (p.y < minY) p.y = maxY; else if (p.y > maxY) p.y = minY;
+    // If biome changed (pattern flagged) occasionally retint
+    if (this.needsPatternRedraw && (i % 7 === 0)) {
+      p.color = accents[(Math.random()*accents.length)|0];
+    }
+  }
+};
+
+EnvironmentManager.prototype.drawAmbient = function(ctx: CanvasRenderingContext2D, camX: number, camY: number, vw: number, vh: number) {
+  if (!this.ambientParticles.length) return;
+  ctx.save();
+  // brightness mod by dayFactor (fewer visible at bright midday)
+  const globalFade = 0.6 + (1 - this.dayFactor) * 0.8; // night boosts visibility
+  ctx.globalAlpha = 1;
+  for (let i=0;i<this.ambientParticles.length;i++) {
+    const p = this.ambientParticles[i];
+    const sx = p.x - camX;
+    const sy = p.y - camY;
+    if (sx < -10 || sy < -10 || sx > vw+10 || sy > vh+10) continue;
+    const pulse = (Math.sin((p.t + i*0.37) * 2) * 0.5 + 0.5);
+    const a = p.alpha * globalFade * (0.55 + pulse*0.45);
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = a;
+    ctx.fillRect(Math.round(sx), Math.round(sy), p.size, p.size);
+    if (!this.lowFX && p.size > 1 && a > 0.2) {
+      ctx.globalAlpha = a * 0.35;
+      ctx.fillRect(Math.round(sx)-1, Math.round(sy)-1, p.size+2, p.size+2);
+    }
+  }
+  ctx.restore();
+};
