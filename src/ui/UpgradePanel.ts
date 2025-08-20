@@ -194,9 +194,9 @@ export class UpgradePanel {
         const max = spec ? (spec as any).maxLevel ?? 1 : 1;
         const current = Math.min(opt.currentLevel, max);
         const pct = Math.min(100, Math.round(((current) / max) * 100));
-        progressHtml = `<div class="upgrade-progress" aria-label="Progress ${current}/${max}">
-          <div class="upgrade-progress-bar" style="--progress:${pct}%;"></div>
-          <div class="upgrade-progress-text">Lv ${current}/${max}</div>
+        progressHtml = `<div class=\"upgrade-progress\" aria-label=\"Progress ${current}/${max}\">
+          <div class=\"upgrade-progress-bar\" data-progress=\"${pct}\"></div>
+          <div class=\"upgrade-progress-text\">Lv ${current}/${max}</div>
         </div>`;
       }
 
@@ -244,6 +244,11 @@ export class UpgradePanel {
       card.addEventListener('click', () => this.applyUpgrade(i));
       container.appendChild(card);
     }
+    // Apply progress widths (CSP-safe)
+    container.querySelectorAll('.upgrade-progress-bar[data-progress]').forEach(el => {
+      const pct = (el as HTMLElement).getAttribute('data-progress');
+      if (pct) (el as HTMLElement).style.width = pct + '%';
+    });
   }
 
   /**

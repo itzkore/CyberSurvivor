@@ -127,6 +127,7 @@ export class Game {
   private environment: EnvironmentManager; // biome + ambient background
   private roomManager: RoomManager; // random rooms structure
   private showRoomDebug: boolean = false;
+  public gameMode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN'; // game mode selection
   // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
@@ -195,7 +196,20 @@ export class Game {
   this.hud = new HUD(this.player, this.assetLoader);
   this.environment = new EnvironmentManager();
   this.roomManager = new RoomManager(this.worldW, this.worldH);
-  this.roomManager.generate(36);
+  // Generate structure only for Dungeon mode (default Showdown = open field)
+  if (this.gameMode === 'DUNGEON') {
+    this.roomManager.generate(60);
+    (this.roomManager as any).setOpenWorld(false);
+  }
+  else { (this.roomManager as any).setOpenWorld(true); }
+  // Expose globally for managers lacking direct reference (lightweight)
+  try { (window as any).__roomManager = this.roomManager; } catch {}
+  // Place player inside central room if currently outside any
+  const spawnRoom = this.roomManager.getRoomAt(this.player.x, this.player.y) || this.roomManager.getFarthestRoom(this.player.x, this.player.y, false);
+  if (spawnRoom) {
+    this.player.x = spawnRoom.x + spawnRoom.w/2;
+    this.player.y = spawnRoom.y + spawnRoom.h/2;
+  }
     // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // Will be set via setter
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
     this.player.setGameContext(this as any); // Cast to any to allow setting game context
@@ -467,7 +481,7 @@ export class Game {
     // Reset managers with new player reference
     this.enemySpatialGrid.clear(); // Clear grid on reset
     this.bulletSpatialGrid.clear(); // Clear grid on reset
-    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
+  this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
   this.bossManager = new BossManager(this.player, this.particleManager, 1, this.assetLoader);
     // Ensure player uses the new enemyManager for enemyProvider
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
@@ -476,6 +490,18 @@ export class Game {
     // Re-initialize explosionManager with the new enemyManager instance
     this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
     this.hud = new HUD(this.player, this.assetLoader);
+    // Recreate / regenerate rooms depending on mode.
+    if (!this.roomManager) {
+      this.roomManager = new RoomManager(this.worldW, this.worldH);
+    }
+    if (this.gameMode === 'DUNGEON') {
+      this.roomManager.generate(60);
+  (this.roomManager as any).setOpenWorld(false);
+    } else {
+      // SHOWDOWN mode: clear any existing rooms/corridors so walkable is everywhere
+      (this.roomManager as any).clear?.();
+  (this.roomManager as any).setOpenWorld(true);
+    }
     // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // UpgradePanel is now set via setter in main.ts
     this.gameTime = 0;
     this.dpsLog = [];
@@ -591,7 +617,17 @@ export class Game {
 
   public startCinematicAndGame() {
   this.setState('CINEMATIC');
-  this.cinematic.start(() => {
+  // If player switched mode in menu after Game constructed, ensure structures align now
+  if (this.gameMode === 'DUNGEON') {
+    // Regenerate fresh dungeon each run
+    this.roomManager.clear?.();
+    this.roomManager.generate(60);
+    (this.roomManager as any).setOpenWorld(false);
+  } else {
+    this.roomManager.clear?.();
+    (this.roomManager as any).setOpenWorld(true);
+  }
+  this.cinematic.start(this.gameMode, () => {
     this.setState('GAME');
   // pendingInitialUpgrade logic in setState will pick this up
   });
@@ -682,9 +718,38 @@ async init() {
   // Expose avg frame time for adaptive systems (particle manager) using rolling EMA
   (window as any).__avgFrameMs = ((window as any).__avgFrameMs ?? deltaTime) * 0.9 + deltaTime * 0.1;
   this.gameTime += deltaTime / 1000;
+  // Capture pre-move position for collision resolution
+  const pPrevX = this.player.x;
+  const pPrevY = this.player.y;
   this.player.update(deltaTime);
+  // Track player room & apply room collision constraints (post movement)
+  if (this.gameMode === 'DUNGEON') this.roomManager.trackPlayer(this.player.x, this.player.y);
+  const constrained = this.roomManager.constrainPosition(pPrevX, pPrevY, this.player.x, this.player.y, this.player.radius);
+  this.player.x = constrained.x; this.player.y = constrained.y;
+  // Post-knockback unstick: if somehow still outside walkable (rare embedding), project inward using clampToWalkable
+  const rmAny2: any = this.roomManager as any;
+  if (rmAny2 && typeof rmAny2.isWalkable === 'function' && !rmAny2.isWalkable(this.player.x, this.player.y, this.player.radius)) {
+    const proj = this.roomManager.clampToWalkable(this.player.x, this.player.y, this.player.radius);
+    this.player.x = proj.x; this.player.y = proj.y;
+  }
   this.explosionManager?.update(deltaTime);
   this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets);
+  // Enforce enemy collision with rooms / corridors (simple clamp against previous pos) to stop leaking through walls.
+  const rmAny: any = this.roomManager;
+  if (rmAny && typeof rmAny.constrainPosition === 'function') {
+    const enemies = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
+    if (enemies) {
+      for (let i=0;i<enemies.length;i++) {
+        const e = enemies[i];
+        if (!e.active) continue;
+        const prevEx = e._prevX ?? e.x;
+        const prevEy = e._prevY ?? e.y;
+        const c = this.roomManager.constrainPosition(prevEx, prevEy, e.x, e.y, e.radius || 18);
+        e.x = c.x; e.y = c.y;
+        e._prevX = e.x; e._prevY = e.y;
+      }
+    }
+  }
   this.bossManager.update(deltaTime, this.gameTime);
   this.bulletManager.update(deltaTime);
     // Update active beams (damage + expiry)
@@ -901,13 +966,19 @@ async init() {
   // Draw dynamic environment (biome aware)
   this.environment.setLowFX(this.lowFX);
   this.environment.draw(this.ctx, this.camX, this.camY, this.canvas.width, this.canvas.height);
-  if (this.showRoomDebug) {
+  // Light biome pocket tint overlay (not part of debug) for visual variety
+  if (!this.showRoomDebug) {
+    // New unified walkable underlay: darken outside + soft tint inside, beneath entities
+    if (this.gameMode === 'DUNGEON') {
+      this.roomManager.drawWalkableUnderlay(this.ctx, this.camX, this.camY);
+    }
+  } else {
     this.roomManager.debugDraw(this.ctx, this.camX, this.camY, 0.18);
   }
         // Now apply camera transform and draw entities
         this.ctx.save();
         this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);
-        this.enemyManager.draw(this.ctx, this.camX, this.camY);
+  this.enemyManager.draw(this.ctx, this.camX, this.camY);
         this.bulletManager.draw(this.ctx);
         // Active beams (railgun) under player for proper layering
         if (this._activeBeams && this._activeBeams.length) {
@@ -952,7 +1023,8 @@ async init() {
         this.particleManager.draw(this.ctx);
         this.explosionManager?.draw(this.ctx);
         this.bossManager.draw(this.ctx);
-        this.ctx.restore();
+  this.ctx.restore();
+  // (Removed post-entity drawWalkableMask; underlay already applied beneath entities)
   this.damageTextManager.draw(this.ctx, this.camX, this.camY, this.renderScale);
   // Removed full-screen additive overlay to prevent global flash; enemy hit feedback now strictly per-entity.
         this.hud.draw(this.ctx, this.gameTime, this.enemyManager.getEnemies(), this.worldW, this.worldH, this.player.upgrades);

@@ -8,6 +8,8 @@ export class HUD {
   public currentDPS: number = 0; // New property for DPS
   public maxDPS: number = 0; // Peak DPS this run
   public showMinimap: boolean = true; // Always on now
+  private baseWorldW?: number; // freeze initial world size for minimap scale
+  private baseWorldH?: number;
 
   constructor(player: Player, loader?: AssetLoader) {
     this.player = player;
@@ -154,38 +156,87 @@ export class HUD {
   }
 
   private drawMinimap(ctx: CanvasRenderingContext2D, playerX: number, playerY: number, enemies: Enemy[], worldW: number, worldH: number): void {
-    const minimapSize = 150; // Size of the square minimap
-    const minimapX = ctx.canvas.width - minimapSize - 20; // Top right corner
+    const minimapSize = 150;
+    const minimapX = ctx.canvas.width - minimapSize - 20;
     const minimapY = 20;
+    // View window radius around player (world units). Tighter for clarity than whole world.
+    const viewHalf = 900; // shows 1800x1800 area; tweak for zoom feel
+    const viewLeft = playerX - viewHalf;
+    const viewTop = playerY - viewHalf;
+    const viewSize = viewHalf * 2;
+    const scale = minimapSize / viewSize; // uniform (square window)
 
     ctx.save();
-    ctx.globalAlpha = 0.7; // Semi-transparent background
-    ctx.fillStyle = '#000';
+    // Panel background
+    ctx.globalAlpha = 0.82;
+    ctx.fillStyle = 'rgba(0,0,0,0.72)';
     ctx.fillRect(minimapX, minimapY, minimapSize, minimapSize);
-    ctx.strokeStyle = '#0ff';
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#26ffe9';
     ctx.lineWidth = 2;
     ctx.strokeRect(minimapX, minimapY, minimapSize, minimapSize);
 
-    // Calculate scaling factor for minimap
-    const scaleX = minimapSize / worldW;
-    const scaleY = minimapSize / worldH;
-
-    // Draw player on minimap
-    ctx.fillStyle = '#00FFFF'; // Player color
+    // Clip to minimap square so we can overshoot draws cleanly
+    ctx.save();
     ctx.beginPath();
-    ctx.arc(minimapX + playerX * scaleX, minimapY + playerY * scaleY, 3, 0, Math.PI * 2);
+    ctx.rect(minimapX, minimapY, minimapSize, minimapSize);
+    ctx.clip();
+
+    // Draw structural rooms & corridors within window
+    try {
+      const rm = (window as any).__roomManager;
+      if (rm) {
+        const rooms = rm.getRooms?.() || [];
+        ctx.lineWidth = 1;
+        for (let i=0;i<rooms.length;i++) {
+          const r = rooms[i];
+          // Cull outside view window (with small pad to keep edges visible when entering)
+          if (r.x + r.w < viewLeft - 40 || r.x > viewLeft + viewSize + 40 || r.y + r.h < viewTop - 40 || r.y > viewTop + viewSize + 40) continue;
+          const sx = minimapX + (r.x - viewLeft) * scale;
+          const sy = minimapY + (r.y - viewTop) * scale;
+          const sw = r.w * scale;
+          const sh = r.h * scale;
+          ctx.fillStyle = r.visited ? 'rgba(38,255,233,0.18)' : 'rgba(0,140,200,0.10)';
+          ctx.strokeStyle = r.biomeTag === 'neon' ? '#26ffe9' : '#008bff';
+          ctx.fillRect(sx, sy, sw, sh);
+          ctx.strokeRect(sx+0.5, sy+0.5, sw-1, sh-1);
+        }
+        const corrs = rm.getCorridors?.() || [];
+        ctx.fillStyle = 'rgba(0,220,190,0.18)';
+        for (let i=0;i<corrs.length;i++) {
+          const c = corrs[i];
+          if (c.x + c.w < viewLeft - 40 || c.x > viewLeft + viewSize + 40 || c.y + c.h < viewTop - 40 || c.y > viewTop + viewSize + 40) continue;
+          ctx.fillRect(minimapX + (c.x - viewLeft) * scale, minimapY + (c.y - viewTop) * scale, c.w * scale, c.h * scale);
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Player at center
+    ctx.fillStyle = '#00ffff';
+    ctx.beginPath();
+    ctx.arc(minimapX + minimapSize/2, minimapY + minimapSize/2, 3.2, 0, Math.PI*2);
     ctx.fill();
 
-    // Draw enemies on minimap
-    ctx.fillStyle = '#FF0000'; // Enemy color
-    for (const enemy of enemies) {
-      if (enemy.active) {
-        ctx.beginPath();
-        ctx.arc(minimapX + enemy.x * scaleX, minimapY + enemy.y * scaleY, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
+    // Enemies (relative positions); fade those near edge
+    const enemyBaseAlpha = 0.95;
+    for (let i=0;i<enemies.length;i++) {
+      const e = enemies[i];
+      if (!e.active) continue;
+      const dx = e.x - viewLeft;
+      const dy = e.y - viewTop;
+      if (dx < 0 || dx > viewSize || dy < 0 || dy > viewSize) continue; // outside window
+      // Edge fade: distance to center normalized
+      const cx = dx - viewHalf;
+      const cy = dy - viewHalf;
+      const distNorm = Math.min(1, Math.sqrt(cx*cx + cy*cy) / viewHalf);
+      const alpha = enemyBaseAlpha * (1 - distNorm*0.55);
+      ctx.fillStyle = `rgba(255,60,60,${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(minimapX + dx * scale, minimapY + dy * scale, 1.7, 0, Math.PI*2);
+      ctx.fill();
     }
 
+    ctx.restore(); // clip
     ctx.restore();
   }
 

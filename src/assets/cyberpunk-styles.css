@@ -1594,6 +1594,7 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
 .upgrade-progress-wrapper { position:absolute; left:14px; right:14px; bottom:10px; display:flex; justify-content:center; }
 .upgrade-progress { position:relative; width:100%; max-width:260px; height:12px; background:rgba(0,255,255,0.08); border:1px solid rgba(0,255,255,0.28); border-radius:6px; overflow:hidden; }
 .upgrade-progress-bar { position:absolute; top:0; left:0; bottom:0; width:var(--progress,0%); background:linear-gradient(90deg,#00ffe5,#00b3ff 85%); box-shadow:0 0 10px #00ffe5; }
+.upgrade-progress-bar[data-progress] { transition:width .25s ease; }
 .upgrade-progress-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:.6rem; font-weight:600; letter-spacing:.08em; color:#fff; text-shadow:0 0 6px #000; mix-blend-mode:screen; }
 
 .upgrade-footer { display:flex; justify-content:space-between; align-items:center; padding-top:10px; border-top:1px solid rgba(255,255,255,0.08); font-size:.58rem; letter-spacing:.14em; text-transform:uppercase; opacity:.75; }

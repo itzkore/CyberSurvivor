@@ -72,7 +72,7 @@ export class CharacterSelectPanel {
     this.panelElement = document.createElement('div');
     this.panelElement.id = 'character-select-panel';
     this.panelElement.className = 'character-select-panel';
-    this.panelElement.style.display = 'none';
+  this.panelElement.style.display = 'none';
 
     this.panelElement.innerHTML = `
       <div class="character-select-adaptive" id="character-select-adaptive">
@@ -326,14 +326,10 @@ export class CharacterSelectPanel {
 
   public show(): void {
     if (this.panelElement) {
-      this.panelElement.style.display = 'flex';
+  this.panelElement.style.display = 'flex';
       this.updateDisplay();
-  // Ensure it fills viewport (CSS handles sizing)
-  this.panelElement.style.left = '0';
-  this.panelElement.style.top = '0';
-  this.panelElement.style.transform = 'none';
-  this.panelElement.style.width = '100%';
-  this.panelElement.style.height = '100%';
+  // Removed direct positioning inline styles (handled via CSS class .character-select-panel--visible)
+  this.panelElement.classList.add('character-select-panel--visible');
       // Apply scaling after a frame to ensure DOM has laid out
       requestAnimationFrame(() => this.applyAutoScale());
       // Attach resize listener (once)
@@ -345,7 +341,7 @@ export class CharacterSelectPanel {
   matrixBackground.start();
   // Boost visibility slightly for this panel
   const canvas = document.getElementById('matrix-canvas');
-  if (canvas) canvas.style.opacity = '0.22';
+  if (canvas) canvas.setAttribute('data-opacity','22');
   }
 
   public hide(): void {
@@ -354,7 +350,7 @@ export class CharacterSelectPanel {
     }
   matrixBackground.stop();
   const canvas = document.getElementById('matrix-canvas');
-  if (canvas) canvas.style.opacity = '0.15';
+  if (canvas) canvas.setAttribute('data-opacity','15');
     // Detach listener when hidden to avoid unnecessary work
     if (this.resizeHandler) {
       window.removeEventListener('resize', this.resizeHandler);
@@ -383,7 +379,7 @@ export class CharacterSelectPanel {
     if (!adaptive) return;
 
     // Clear transforms to measure natural (unscaled) size
-    adaptive.style.transform = 'none';
+  adaptive.style.transform = 'none';
     adaptive.style.margin = '0';
 
     const vw = window.innerWidth;
@@ -429,7 +425,7 @@ export class CharacterSelectPanel {
       const translateX = (diffX / 2) / scale;
       const translateY = (diffY / 2) / scale;
       adaptive.style.transformOrigin = 'top left';
-      adaptive.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+  adaptive.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
       adaptive.setAttribute('data-scale', scale.toFixed(3));
       adaptive.setAttribute('data-scale-components', JSON.stringify({mode:'cover', coverDesired: coverDesired.toFixed(3), containDesired: containDesired.toFixed(3), used: scale.toFixed(3), maxUpscale, dpr}));
     } else {

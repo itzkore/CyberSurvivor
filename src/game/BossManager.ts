@@ -81,6 +81,12 @@ export class BossManager {
           this.boss.specialCharge = 0;
         }
       }
+      // Clamp boss to walkable after movement
+      const rm = (window as any).__roomManager;
+      if (rm && typeof rm.clampToWalkable === 'function') {
+        const c = rm.clampToWalkable(this.boss.x, this.boss.y, this.boss.radius || 80);
+        this.boss.x = c.x; this.boss.y = c.y;
+      }
       this.boss.attackTimer--;
       if (this.boss.attackTimer <= 0) {
         this.launchAttackWave();
@@ -140,7 +146,7 @@ export class BossManager {
     const px = this.player.x;
     const py = this.player.y;
     const angle = Math.random() * Math.PI * 2;
-    const dist = 220 + Math.random() * 80;
+  const dist = 300 + Math.random() * 160; // spawn slightly farther to reduce immediate crowding
     const bx = px + Math.cos(angle) * dist;
     const by = py + Math.sin(angle) * dist;
     // Oppenheimer-style cinematic entrance: screen shake, slow-motion, flash, sound event
@@ -149,12 +155,18 @@ export class BossManager {
       window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 200, intensity: 8 } })); // Initial shake on boss spawn
     }
   const bossHp = 1500; // Fixed boss HP per request
+    let spawnX = bx, spawnY = by;
+    const rm = (window as any).__roomManager;
+    if (rm && typeof rm.clampToWalkable === 'function') {
+      const c = rm.clampToWalkable(bx, by, 80);
+      spawnX = c.x; spawnY = c.y;
+    }
     this.boss = {
-      x: bx,
-      y: by,
+      x: spawnX,
+      y: spawnY,
       hp: bossHp,
   maxHp: bossHp, // Set maxHp for HP bar drawing
-      radius: 160,
+      radius: 80, // half previous size
       active: true,
       telegraph: 180,
       state: 'TELEGRAPH',

@@ -101,6 +101,18 @@ export class EnemyManager {
     // Listen for spawnChest event from BossManager
     window.addEventListener('spawnChest', (e: Event) => {
       const customEvent = e as CustomEvent;
+      // Redirect chest spawn to farthest (prefer unvisited) room center for exploration incentive
+      const rm = (window as any).__roomManager;
+      if (rm && typeof rm.getFarthestRoom === 'function') {
+        const player = this.player;
+        const far = rm.getFarthestRoom(player.x, player.y, true);
+        if (far) {
+          const fx = far.x + far.w/2;
+          const fy = far.y + far.h/2;
+          this.spawnChest(fx, fy);
+          return;
+        }
+      }
       this.spawnChest(customEvent.detail.x, customEvent.detail.y);
     });
     window.addEventListener('bossGemVacuum', () => this.vacuumGemsToPlayer());
@@ -560,6 +572,12 @@ export class EnemyManager {
           enemy.y += dy * inv * enemy.speed * moveScale;
         }
       }
+      // After position changes, clamp to walkable (prevents embedding in walls via knockback)
+      const rm = (window as any).__roomManager;
+      if (rm && typeof rm.clampToWalkable === 'function') {
+        const clamped = rm.clampToWalkable(enemy.x, enemy.y, enemy.radius || 20);
+        enemy.x = clamped.x; enemy.y = clamped.y;
+      }
       // Player-enemy collision
       if (dist < enemy.radius + this.player.radius) {
         // Hit cooldown: enemies can damage player at most once per second
@@ -768,8 +786,15 @@ export class EnemyManager {
         break;
       }
     }
-    enemy.x = spawnX;
-    enemy.y = spawnY;
+    // Constrain spawn to walkable (rooms / corridors) via global roomManager if available
+    const rm = (window as any).__roomManager;
+    if (rm && typeof rm.clampToWalkable === 'function') {
+      const clamped = rm.clampToWalkable(spawnX, spawnY, enemy.radius || 20);
+      enemy.x = clamped.x; enemy.y = clamped.y;
+    } else {
+      enemy.x = spawnX;
+      enemy.y = spawnY;
+    }
     this.enemies.push(enemy);
   }
 

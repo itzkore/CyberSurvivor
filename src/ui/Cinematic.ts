@@ -36,6 +36,21 @@ export class Cinematic {
   private duration: number = 900; // 15 seconds at 60fps
   // Cached skip button rect (logical space) for reliable hit detection
   private skipRect = { x:32, y:0, w:120, h:44 };
+  private mode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN';
+  private scripts: Record<'SHOWDOWN' | 'DUNGEON', Array<{ title: string; subtitle: string | null }>> = {
+    SHOWDOWN: [
+      { title: 'SHOWDOWN PROTOCOL', subtitle: 'Open-sector engagement initiated.' },
+      { title: 'NO WALLS • NO SANCTUARY', subtitle: 'An endless neon expanse. Hostiles can vector from any bearing.' },
+      { title: 'ADAPTIVE SWARM INBOUND', subtitle: 'Every second online amplifies the AI response matrix.' },
+      { title: 'LAST OPERATIVE ONLINE', subtitle: 'Hold the field. Rewrite the kill statistics.' }
+    ],
+    DUNGEON: [
+      { title: 'DUNGEON BREACH', subtitle: 'Subterranean node cluster detected beneath the megacity.' },
+      { title: 'SEGMENTED HALL NETWORK', subtitle: 'Procedural rooms. Choke points. Ambush geometry favored.' },
+      { title: 'ENEMY FABRICATORS ACTIVE', subtitle: 'Clear sectors, push deeper. Data shards fund survival.' },
+      { title: 'OVERRIDE THE CORE', subtitle: 'Advance. Isolate. Erase rogue sub-AIs.' }
+    ]
+  };
 
   /**
    * Returns true if the cinematic is finished.
@@ -56,10 +71,18 @@ export class Cinematic {
     }
   }
 
-  public start(onComplete: () => void) {
+  /** Start cinematic; supports legacy (onComplete) or (mode, onComplete) signatures. */
+  public start(modeOrCb: any, maybeCb?: () => void) {
     this.progress = 0;
     this.active = true;
-    this.onComplete = onComplete;
+    if (typeof modeOrCb === 'string') {
+      this.mode = (modeOrCb === 'DUNGEON' ? 'DUNGEON' : 'SHOWDOWN');
+      this.onComplete = maybeCb || null;
+    } else {
+      // legacy signature
+      this.onComplete = modeOrCb || null;
+      this.mode = 'SHOWDOWN';
+    }
     // Attach temporary key listener for ESC skip
     const escHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.active) {
@@ -193,10 +216,11 @@ export class Cinematic {
       ctx.restore();
     };
   // Pass muted monochromatic pairs to keep API stable while producing restrained visuals
-  if (t < 180) drawBlock('CYBER SURVIVOR', 'A Neon Roguelike Experience', ['#8cefff','#7dd2e6'], '#00f6ff');
-  else if (t < 420) drawBlock('In the year 2088...', 'Mega-cities are ruled by rogue AIs.', ['#8cefff','#7dd2e6'], '#00f6ff');
-  else if (t < 660) drawBlock('You are the last survivor...', 'Fight through endless waves of enemies.', ['#8cefff','#7dd2e6'], '#00f6ff');
-  else drawBlock('Survive the Neon Onslaught!', 'Good luck...', ['#8cefff','#7dd2e6'], '#00f6ff');
+  const script = this.scripts[this.mode];
+  const segLen = Math.max(1, Math.floor(this.duration / script.length));
+  const segIndex = Math.min(script.length - 1, Math.floor(t / segLen));
+  const seg = script[segIndex];
+  drawBlock(seg.title, seg.subtitle, ['#8cefff','#7dd2e6'], '#00f6ff');
   // Skip button drawn in adjusted logical coordinate space
   this.drawSkipButton(ctx, canvas, logicalH);
   // Update hit rect (match adaptive sizing logic)

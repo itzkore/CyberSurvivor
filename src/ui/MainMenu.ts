@@ -20,6 +20,7 @@ export class MainMenu {
   private matrixDrops?: number[];
   private _matrixChars?: string[];
   private playerProfile: PlayerProfile;
+  private selectedMode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN';
 
   constructor(game: any) {
     this.gameInstance = game;
@@ -108,6 +109,14 @@ export class MainMenu {
             <span class="btn-text">START MISSION</span>
             <span class="btn-glow"></span>
           </button>
+          <div class="mode-select-wrapper">
+            <label class="mode-label">GAME MODE</label>
+            <select id="game-mode-select" class="mode-select">
+              <option value="SHOWDOWN" selected>Showdown (Open)</option>
+              <option value="DUNGEON">Dungeon (Rooms)</option>
+            </select>
+            <div id="mode-desc" class="mode-desc"></div>
+          </div>
           
           <button class="cyberpunk-btn secondary-btn" id="character-select-btn">
             <span class="btn-text">SELECT OPERATIVE</span>
@@ -188,7 +197,7 @@ export class MainMenu {
       if (this.gameInstance.selectedCharacterData) {
         this.hide();
         window.dispatchEvent(new CustomEvent('startGame', { 
-          detail: this.gameInstance.selectedCharacterData 
+          detail: { character: this.gameInstance.selectedCharacterData, mode: this.selectedMode } 
         }));
       } else {
         this.showCharacterSelect();
@@ -221,6 +230,24 @@ export class MainMenu {
       this.savePlayerProfile();
       this.updateCurrencyDisplay();
     });
+
+    // Game mode select logic
+    const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
+    const modeDesc = document.getElementById('mode-desc');
+    const updateDesc = () => {
+      if (!modeSelect || !modeDesc) return;
+      const v = modeSelect.value as 'SHOWDOWN' | 'DUNGEON';
+      this.selectedMode = v;
+      if (v === 'SHOWDOWN') {
+        modeDesc.textContent = 'Showdown: Vast open cyber expanse. No walls, enemies can surround from any direction.';
+      } else {
+        modeDesc.textContent = 'Dungeon: Procedurally linked rooms & corridors. Funnel enemies, explore branches.';
+      }
+    };
+    if (modeSelect) {
+      modeSelect.addEventListener('change', updateDesc);
+      updateDesc();
+    }
   }
 
   private showCharacterSelect(): void {

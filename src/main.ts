@@ -257,9 +257,14 @@ window.onload = async () => {
   if (legacySound) legacySound.style.display = 'none';
   startMusic(false); // play after user interaction
     const customEvent = event as CustomEvent;
-    const selectedCharData = customEvent.detail;
+    const payload: any = customEvent.detail;
+    const selectedCharData = payload.character || payload; // backward compatibility
+    if (payload.mode) {
+      (game as any).gameMode = payload.mode;
+      Logger.info('[main.ts] Game mode set to ' + payload.mode);
+    }
     Logger.info('[main.ts] startGame event received, selectedCharData:', selectedCharData);
-    game.resetGame(selectedCharData); // Reset game with selected character
+    game.resetGame(selectedCharData); // Reset game with selected character & mode
     mainMenu.hide();
     Logger.info('[main.ts] Main menu hidden, starting cinematic and game');
     // Ensure canvas is visible and on top
