@@ -572,7 +572,9 @@ export class Player {
   }
 
   public update(delta: number) {
-    if (window.navigator.userAgent.includes('Mobile')) return; // Touch handled elsewhere
+    // WHAT: Guard against missing navigator in test (Node) environment.
+    // WHY: Prevent TypeError when running logic tests without a browser-like window.
+    if (typeof window !== 'undefined' && window.navigator && window.navigator.userAgent && window.navigator.userAgent.includes('Mobile')) return; // Touch handled elsewhere
     // Movement (micro-optimized)
     let dx = 0, dy = 0;
     if (keyState['arrowup'] || keyState['w']) dy -= 1;

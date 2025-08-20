@@ -32,3 +32,23 @@ describe('Speed passive additive behavior', () => {
     expect(fastP.speed).toBeGreaterThan(slowP.speed);
   });
 });
+
+describe('Regen passive scaling', () => {
+  it('applies 0.125 * level HP per second (fractional accumulation)', () => {
+    const p = new Player(0,0,{ stats: { speed: 10 } });
+    p.hp = 50; p.maxHp = 100;
+    applyPassive(p as any, 9, 4); // level 4 => 0.5 hp/s
+    // Simulate 2 seconds in 100 ms ticks
+    for (let i=0;i<20;i++) p.update(100);
+    // Expected heal ~ 1.0 HP (0.5 * 2s) allowing small float tolerance
+    expect(p.hp).toBeGreaterThanOrEqual(50.75); // at least 3 slices (0.75) likely more
+    expect(p.hp).toBeLessThanOrEqual(51.25); // not more than 1.25 (safety band)
+  });
+});
+
+describe('Speed scaling clamp', () => {
+  it('clamps scaled base speed to <= 8', () => {
+    const high = new Player(0,0,{ stats: { speed: 100 } }); // 100 * 0.45 = 45 -> clamp 8
+    expect(high.getBaseMoveSpeed()).toBeLessThanOrEqual(8);
+  });
+});
