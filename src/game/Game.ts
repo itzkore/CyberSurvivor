@@ -18,6 +18,7 @@ import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
 import { EnvironmentManager } from './EnvironmentManager';
+import { RoomManager } from './RoomManager';
 
 export class Game {
   /**
@@ -124,6 +125,8 @@ export class Game {
   private enemySpatialGrid: SpatialGrid<any>; // Spatial grid for enemies
   private bulletSpatialGrid: SpatialGrid<any>; // Spatial grid for bullets
   private environment: EnvironmentManager; // biome + ambient background
+  private roomManager: RoomManager; // random rooms structure
+  private showRoomDebug: boolean = false;
   // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
@@ -191,6 +194,8 @@ export class Game {
     }
   this.hud = new HUD(this.player, this.assetLoader);
   this.environment = new EnvironmentManager();
+  this.roomManager = new RoomManager(this.worldW, this.worldH);
+  this.roomManager.generate(36);
     // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // Will be set via setter
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
     this.player.setGameContext(this as any); // Cast to any to allow setting game context
@@ -386,6 +391,8 @@ export class Game {
   // Removed 'm' minimap toggle: minimap is now always visible
       } else if (e.key === 'F9' || e.key.toLowerCase() === 'p') {
         // Frame pulse debug overlay removed
+      } else if (e.key === 'F8') { // toggle room debug overlay
+        this.showRoomDebug = !this.showRoomDebug;
       } else if (e.key === 'F10') { // ultra simple render mode for pacing diagnostics
         (window as any).__simpleRender = !(window as any).__simpleRender;
       } else if (e.key === 'F11') { // toggle dynamic resolution scaling off/on
@@ -894,6 +901,9 @@ async init() {
   // Draw dynamic environment (biome aware)
   this.environment.setLowFX(this.lowFX);
   this.environment.draw(this.ctx, this.camX, this.camY, this.canvas.width, this.canvas.height);
+  if (this.showRoomDebug) {
+    this.roomManager.debugDraw(this.ctx, this.camX, this.camY, 0.18);
+  }
         // Now apply camera transform and draw entities
         this.ctx.save();
         this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);
