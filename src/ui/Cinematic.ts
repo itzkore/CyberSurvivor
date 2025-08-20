@@ -137,18 +137,22 @@ export class Cinematic {
   /** External click handler for reliable skip (coordinates already relative to canvas client box). */
   public handleClick(x:number, y:number, canvas:HTMLCanvasElement): boolean {
     if (!this.active) return false;
-    const dpr = (window as any).devicePixelRatio || 1;
-    const rs = (window as any).__renderScale || 1;
-    const scale = 1 / (dpr * rs);
-    // Convert from CSS pixels to logical (same space used in draw)
-    const lx = x * scale;
-    const ly = y * scale;
+    // Drawing code scales the context so that coordinates used are already in CSS pixels.
+    // The previous implementation incorrectly multiplied by scale, shrinking hit area.
+    const lx = x; // already CSS / logical space
+    const ly = y;
     const r = this.skipRect;
     if (lx >= r.x && lx <= r.x + r.w && ly >= r.y && ly <= r.y + r.h) {
-      this.active = false;
-      if (this.onComplete) this.onComplete();
+      this.skip();
       return true;
     }
     return false;
+  }
+
+  /** Programmatically skip the cinematic and enter gameplay. */
+  private skip() {
+    if (!this.active) return;
+    this.active = false;
+    if (this.onComplete) this.onComplete();
   }
 }
