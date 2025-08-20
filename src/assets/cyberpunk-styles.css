@@ -36,7 +36,7 @@
 }
 
 /* === Global base layout (moved from inline <style> blocks to satisfy stricter CSP) === */
-body { margin:0; overflow:hidden; font-family: var(--ui-font, 'Orbitron', sans-serif); }
+body { margin:0; overflow:hidden; font-family: var(--ui-font, 'Orbitron', sans-serif); padding:0; }
 canvas { display:block; position:absolute; top:0; left:0; z-index:0; }
 #main-menu { z-index:1; }
 /* Adaptive scaling wrappers (logical coordinate space) */
@@ -809,12 +809,15 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
 
 /* ===== CHARACTER CAROUSEL (Consolidated) ===== */
 .character-select-panel { position:fixed; inset:0; width:100%; height:100%; background:var(--ui-bg); display:flex; flex-direction:column; color:var(--ui-text-main); font-family:var(--ui-font); overflow:hidden; box-sizing:border-box; z-index:1500; }
-#character-select-adaptive { box-sizing:border-box; position:relative; width:100%; height:100%; display:flex; flex-direction:column; padding:clamp(24px,3vh,48px) clamp(32px,4vw,72px) clamp(20px,3vh,48px); gap:32px; }
-.carousel-header { display:flex; flex-direction:column; gap:6px; }
+/* Use dynamic viewport height to avoid iOS / Electron quirks & force full filling */
+#character-select-adaptive { box-sizing:border-box; position:relative; width:100%; height:100dvh; min-height:100%; display:flex; flex-direction:column; padding:0; gap:12px; }
+.carousel-header { display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
 .carousel-title { font-size:46px; letter-spacing:6px; margin:0; text-shadow:0 0 18px #00ffff; font-weight:700; }
 .carousel-subtitle { font-size:14px; letter-spacing:3px; opacity:.75; }
-.carousel-container { flex:1 1 auto; display:flex; gap:clamp(32px,5vw,80px); min-height:0; }
-.carousel-main { width:min(52%,860px); display:flex; flex-direction:column; align-items:center; }
+/* Core two-column container now truly fills remaining vertical space */
+.carousel-container { flex:1 1 auto; display:flex; align-items:stretch; gap:clamp(32px,5vw,72px); min-height:0; width:100%; overflow:hidden; }
+/* Allow main panel to grow instead of fixed width cap so wide windows are used */
+.carousel-main { flex:1 1 55%; max-width:100%; display:flex; flex-direction:column; align-items:center; justify-content:space-between; min-height:0; }
 .portrait-nav { display:flex; align-items:center; gap:18px; }
 .portrait-nav .nav-arrow { background:#08131e; border:2px solid #0ff; color:#0ff; width:52px; height:52px; font-size:28px; line-height:1; cursor:pointer; transition:background .18s, transform .18s; display:flex; align-items:center; justify-content:center; }
 .portrait-nav .nav-arrow:hover { background:#0d2536; transform:translateY(-2px); }
@@ -822,31 +825,26 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
 .character-portrait img { max-width:85%; image-rendering:pixelated; }
 .character-name { font-size:34px; letter-spacing:4px; margin:18px 0 4px; text-shadow:0 0 12px #00ffff; }
 .character-class { font-size:15px; opacity:.65; letter-spacing:3px; margin-bottom:22px; }
-.carousel-thumbnails { margin-top:28px; display:flex; flex-wrap:wrap; gap:14px; max-height:260px; overflow:auto; padding-right:6px; }
-/* Force single row for character thumbnails: prevent wrapping and allow horizontal scroll */
-.carousel-thumbnails { flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; max-height:90px; padding-bottom:4px; }
+/* Thumbnails sit in normal document flow now so portrait area + info panel stretch better */
+.carousel-thumbnails { margin-top:18px; display:flex; flex-wrap:nowrap; gap:12px; max-height:96px; overflow-x:auto; overflow-y:hidden; padding:4px 2px 8px; width:100%; justify-content:center; }
 .carousel-thumbnails .thumbnail { flex:0 0 auto; }
 .thumbnail { width:70px; height:70px; border:2px solid #0aa; border-radius:10px; display:flex; align-items:center; justify-content:center; background:#0a121c; cursor:pointer; transition:border-color .18s, box-shadow .18s, transform .18s; }
 .thumbnail.active { border-color:#00ffff; box-shadow:0 0 10px #00ffff66; }
 .thumbnail:hover { border-color:#00ffff; transform:translateY(-3px); }
-.info-panel { flex:1 1 0; display:flex; flex-direction:column; min-width:0; }
+/* Info panel consumes remaining width and full height with its own internal scroll */
+.info-panel { flex:1 1 45%; display:flex; flex-direction:column; min-width:0; min-height:0; }
 .info-tabs { display:flex; gap:10px; }
 .info-tab { background:rgba(0,0,0,0.35); border:2px solid #0c3a44; color:#66cfd9; padding:12px 20px; font-weight:600; letter-spacing:2px; cursor:pointer; font-size:13px; text-transform:uppercase; }
 .info-tab.active { border-color:#00ffff; color:#00ffff; background:rgba(0,255,255,0.15); }
 .tab-content { flex:1 1 auto; min-height:0; overflow:auto; margin-top:16px; border:1px solid #0b3942; padding:18px 20px; background:rgba(0,0,0,0.32); border-radius:12px; }
-.carousel-footer { display:flex; justify-content:space-between; gap:40px; padding-top:6px; }
+/* Footer pinned to bottom via parent flex; gap tightened for smaller windows */
+.carousel-footer { display:flex; justify-content:space-between; gap:32px; padding-top:4px; flex-shrink:0; }
 .back-button, .select-button { background:rgba(0,0,0,0.4); border:2px solid #00ffff; color:#00ffff; font-weight:600; padding:16px 34px; letter-spacing:3px; cursor:pointer; font-family:var(--ui-font); font-size:14px; text-transform:uppercase; position:relative; overflow:hidden; transition:background .22s, box-shadow .22s, transform .2s; }
 .back-button:hover, .select-button:hover { background:rgba(0,255,255,0.15); box-shadow:0 0 14px #00ffff55; transform:translateY(-2px); }
-@media (max-height: 760px) { #character-select-adaptive { padding:24px 32px 20px; gap:24px; } .carousel-container { gap:40px; } .character-portrait { width:220px; height:220px; } .carousel-thumbnails { max-height:200px; } }
-@media (max-height: 640px) { #character-select-adaptive { padding:18px 28px 18px; } .character-portrait { width:190px; height:190px; } .carousel-title { font-size:38px; } }
+@media (max-height: 760px) { #character-select-adaptive { gap:20px; } .carousel-container { gap:32px; } .character-portrait { width:220px; height:220px; } .carousel-thumbnails { max-height:200px; } }
+@media (max-height: 640px) { #character-select-adaptive { gap:16px; } .character-portrait { width:190px; height:190px; } .carousel-title { font-size:38px; } }
 
-.carousel-header {
-  padding: 28px 34px 24px 34px;
-  border-bottom: 2px solid rgba(0, 255, 255, 0.3);
-  background: rgba(0, 0, 0, 0.28);
-  text-align: center;
-  flex-shrink: 0;
-}
+.carousel-header { padding:10px 0 8px; border-bottom:2px solid rgba(0,255,255,0.25); background:rgba(0,0,0,0.28); text-align:center; flex-shrink:0; }
 
 .carousel-title {
   font-size: 2.5rem;
@@ -866,36 +864,21 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
   letter-spacing: 2px;
 }
 
-.carousel-container {
-  flex: 1 1 auto;
-  display: flex;
-  position: relative;
-  overflow: hidden;
-  width: 100%;
-  height: 100%;
-  min-height: 0;
-  box-sizing: border-box;
-  padding: 0 34px 0 34px;
-  gap: 34px;
-}
+.carousel-container { flex:1 1 auto; display:flex; position:relative; overflow:hidden; width:100%; height:100%; min-height:0; box-sizing:border-box; padding:0; gap:clamp(24px,3.5vw,56px); align-items:stretch; }
 
-.carousel-main {
-  flex: 1 1 0;
-  min-width: 0; /* Allow flexbox to shrink without overflow */
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  padding: 20px 32px;
-  position: relative;
-  box-sizing: border-box;
-}
+.carousel-main { flex:1 1 55%; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:space-between; padding:12px 0 4px; position:relative; box-sizing:border-box; min-height:0; }
 
 .character-display {
-  text-align: center;
-  max-width: 500px; /* Slightly smaller max-width */
-  width: 100%; /* Ensure it takes full available width */
-  margin: 0 auto; /* Center the character display horizontally */
+  text-align:center;
+  max-width:520px;
+  width:100%;
+  margin:0 auto;
+  flex:1 1 auto; /* allow to grow and center vertically */
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  min-height:0;
 }
 
 .character-portrait {
@@ -915,10 +898,12 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
   box-shadow: 0 0 35px rgba(0, 255, 255, 0.6);
 }
 
+/* Prevent cropping of sprite; ensure full sprite visible */
 .character-portrait img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  image-rendering: pixelated;
 }
 
 .character-name {
@@ -967,16 +952,8 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
 }
 
 /* Inline portrait nav container */
-.portrait-nav {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 20px;
-  width: 100%;
-  max-width: 560px;
-  margin: 0 auto 12px;
-}
-.portrait-nav .character-portrait { margin: 0; }
+.portrait-nav { display:flex; align-items:center; justify-content:center; gap:20px; width:100%; max-width:560px; margin:0 auto 8px; flex-wrap:nowrap; }
+.portrait-nav .character-portrait { margin:0; }
 
 /* Remove absolute offset adjustments when inside inline layout */
 .portrait-nav .nav-arrow.prev,
@@ -999,18 +976,7 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
   .portrait-nav .character-portrait { width:200px; height:200px; }
 }
 
-.carousel-thumbnails {
-  position: absolute;
-  bottom: 15px; /* Moved up slightly */
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 12px; /* Slightly smaller gap */
-  z-index: 10;
-  max-width: 90%; /* Prevent overflow */
-  overflow-x: auto; /* Allow horizontal scroll if needed */
-  padding: 5px;
-}
+/* (Deprecated absolute layout for thumbnails removed; now handled above) */
 
 .thumbnail {
   width: 70px; /* Smaller thumbnails */
@@ -1044,15 +1010,17 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
 }
 
 .info-panel {
-  flex: 1 1 0;
-  min-width: 0; /* Prevent overflow clipping on right */
-  background: rgba(0, 0, 0, 0.4);
-  border-left: 2px solid rgba(0, 255, 255, 0.3);
-  overflow-y: auto;
-  backdrop-filter: blur(10px);
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
+  flex:1 1 45%;
+  min-width:0;
+  min-height:0;
+  background:rgba(0,0,0,0.4);
+  border-left:2px solid rgba(0,255,255,0.3);
+  overflow:hidden; /* internal scroll in tab-content */
+  backdrop-filter:blur(10px);
+  display:flex;
+  flex-direction:column;
+  box-sizing:border-box;
+  padding:12px 12px 8px;
 }
 
 .info-tabs {
@@ -1088,14 +1056,14 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
 }
 
 .tab-content {
-  padding: 20px; /* Reduced padding */
-  line-height: 1.35; /* Match unified panel default */
-  flex: 1; /* Take up remaining space */
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start; /* Always align to top */
-  align-items: stretch; /* Stretch items to full width instead of flex-start */
-  overflow-y: auto; /* Allow scrolling if needed */
+  padding:16px 18px;
+  line-height:1.35;
+  flex:1 1 auto;
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  overflow:auto;
+  min-height:0; /* allow flex shrink */
 }
 
 .tab-content > * {
@@ -1239,15 +1207,7 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
   width: 100%; /* Full width */
 }
 
-.carousel-footer {
-  padding: 20px 34px 28px 34px;
-  border-top: 2px solid rgba(0, 255, 255, 0.3);
-  background: rgba(0,0,0,0.28);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-shrink: 0;
-}
+.carousel-footer { padding:16px 30px 20px; border-top:2px solid rgba(0,255,255,0.25); background:rgba(0,0,0,0.28); display:flex; justify-content:space-between; align-items:center; flex-shrink:0; }
 
 .select-button {
   background: linear-gradient(45deg, #ff0080, #00ffff);
@@ -1328,9 +1288,7 @@ html, body, button, input, select, textarea, h1, h2, h3, h4, h5, h6, .ui-panel, 
   to { opacity: 1; }
 }
 
-.character-display {
-  animation: fadeIn 0.5s ease;
-}
+.character-display { animation:fadeIn 0.5s ease; }
 
 .nav-arrow.prev:hover {
   animation: slideInLeft 0.3s ease;

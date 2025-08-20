@@ -123,7 +123,7 @@ export class Cinematic {
       if (cur) lines.push(cur);
       return lines;
     };
-    const drawBlock = (title: string, subtitle: string | null, gradStops: [string,string], glow: string) => {
+  const drawBlock = (title: string, subtitle: string | null, gradStops: [string,string], glow: string) => {
       ctx.save();
       const safePadX = Math.min(80, Math.max(32, logicalW * 0.05));
       const safePadTop = Math.min(120, Math.max(32, logicalH * 0.06));
@@ -158,18 +158,19 @@ export class Cinematic {
         tries++;
       }
       const blockTop = Math.round((logicalH - m.totalH) / 2);
+      // Subtle, restrained styling (no neon rainbow gradient)
       ctx.lineJoin = 'round';
-      ctx.strokeStyle = '#00191c';
-      ctx.shadowColor = glow; ctx.shadowBlur = Math.max(8, titleBase * 0.45);
-      ctx.lineWidth = Math.max(2, Math.round(titleBase * 0.055));
-      const grad = ctx.createLinearGradient(
-        logicalW/2 - Math.min(420, titleBase * 7),
-        blockTop - titleBase,
-        logicalW/2 + Math.min(420, titleBase * 7),
-        blockTop + titleBase * m.titleLines.length
-      );
-      grad.addColorStop(0, gradStops[0]);
-      grad.addColorStop(1, gradStops[1]);
+      ctx.strokeStyle = 'rgba(0,20,24,0.85)';
+      ctx.shadowColor = 'rgba(0,255,255,0.28)';
+      ctx.shadowBlur = Math.max(2, titleBase * 0.18); // much lower glow
+      ctx.lineWidth = Math.max(1, Math.round(titleBase * 0.035));
+      // Use near‑solid fill with very slight vertical luminance shift
+      const grad = ctx.createLinearGradient(0, blockTop - titleBase, 0, blockTop + titleBase * m.titleLines.length);
+      const baseA = gradStops[0] || '#7ce9ff';
+      const baseB = gradStops[1] || baseA;
+      // Blend second stop toward first to kill rainbow effect
+      grad.addColorStop(0, baseA);
+      grad.addColorStop(1, baseB);
       ctx.font = `900 ${titleBase}px Orbitron, sans-serif`;
       for (let i=0;i<m.titleLines.length;i++) {
         const y = blockTop + i * m.tLH + titleBase * 0.70; // reduced baseline offset for true visual centering
@@ -179,9 +180,9 @@ export class Cinematic {
         ctx.fillText(line, logicalW/2, y);
       }
       if (m.subtitleLines.length) {
-        ctx.shadowBlur = Math.max(4, subBase * 0.35);
-        ctx.shadowColor = '#001417';
-        ctx.fillStyle = '#dff';
+        ctx.shadowBlur = Math.max(1, subBase * 0.12);
+        ctx.shadowColor = 'rgba(0,255,255,0.18)';
+        ctx.fillStyle = '#c8f8ff'; // softer cyan-white
         ctx.font = `600 ${subBase}px Orbitron, sans-serif`;
   const subStart = blockTop + m.titleLines.length * m.tLH + m.gap + subBase * 0.65; // reduced baseline offset
         for (let i=0;i<m.subtitleLines.length;i++) {
@@ -191,10 +192,11 @@ export class Cinematic {
       }
       ctx.restore();
     };
-    if (t < 180) drawBlock('CYBER SURVIVOR', 'A Neon Roguelike Experience', ['#00ffff','#ff00cc'], '#00f6ff');
-    else if (t < 420) drawBlock('In the year 2088...', 'Mega-cities are ruled by rogue AIs.', ['#ff2ad9','#ffa400'], '#ff00cc');
-    else if (t < 660) drawBlock('You are the last survivor...', 'Fight through endless waves of enemies.', ['#00ffe0','#00b3ff'], '#00ffea');
-    else drawBlock('Survive the Neon Onslaught!', 'Good luck...', ['#00ffff','#ff00cc'], '#00f6ff');
+  // Pass muted monochromatic pairs to keep API stable while producing restrained visuals
+  if (t < 180) drawBlock('CYBER SURVIVOR', 'A Neon Roguelike Experience', ['#8cefff','#7dd2e6'], '#00f6ff');
+  else if (t < 420) drawBlock('In the year 2088...', 'Mega-cities are ruled by rogue AIs.', ['#8cefff','#7dd2e6'], '#00f6ff');
+  else if (t < 660) drawBlock('You are the last survivor...', 'Fight through endless waves of enemies.', ['#8cefff','#7dd2e6'], '#00f6ff');
+  else drawBlock('Survive the Neon Onslaught!', 'Good luck...', ['#8cefff','#7dd2e6'], '#00f6ff');
   // Skip button drawn in adjusted logical coordinate space
   this.drawSkipButton(ctx, canvas, logicalH);
   // Update hit rect (match adaptive sizing logic)

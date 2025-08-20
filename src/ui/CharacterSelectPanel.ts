@@ -37,6 +37,15 @@ export class CharacterSelectPanel {
   private selectedCharacterIndex: number = 0;
   private panelElement: HTMLElement | null = null;
   private currentTab: string = 'basic';
+  private resizeHandler: (() => void) | null = null;
+
+  // (Legacy) Baseline constants no longer used directly – kept if future clamp logic needed
+  private static readonly BASE_WIDTH = 1400; // px
+  private static readonly BASE_HEIGHT = 820; // px
+  // Target maximum proportional screen usage (leave breathing room even if content fits)
+  // Allow near full usage; user requested fuller window fill
+  private static readonly MAX_SCREEN_USAGE_W = 1; // full width usage
+  private static readonly MAX_SCREEN_USAGE_H = 1; // full height usage
 
   constructor() {
     this.initializeCharacters();
@@ -325,6 +334,13 @@ export class CharacterSelectPanel {
   this.panelElement.style.transform = 'none';
   this.panelElement.style.width = '100%';
   this.panelElement.style.height = '100%';
+      // Apply scaling after a frame to ensure DOM has laid out
+      requestAnimationFrame(() => this.applyAutoScale());
+      // Attach resize listener (once)
+      if (!this.resizeHandler) {
+        this.resizeHandler = () => this.applyAutoScale();
+        window.addEventListener('resize', this.resizeHandler);
+      }
     }
   matrixBackground.start();
   // Boost visibility slightly for this panel
@@ -339,6 +355,11 @@ export class CharacterSelectPanel {
   matrixBackground.stop();
   const canvas = document.getElementById('matrix-canvas');
   if (canvas) canvas.style.opacity = '0.15';
+    // Detach listener when hidden to avoid unnecessary work
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+      this.resizeHandler = null;
+    }
   }
 
   public isVisible(): boolean {
@@ -350,4 +371,71 @@ export class CharacterSelectPanel {
   }
 
   // Removed custom scaling logic; CSS layout now handles full-screen responsiveness.
+  /**
+   * Dynamically scales the entire character select adaptive container if the
+   * viewport is smaller than the baseline design size (helps when OS UI scaling
+   * or browser zoom causes cramped / overlapping layout). Uses a uniform scale
+   * to preserve proportions and centers the scaled content.
+   */
+  private applyAutoScale(): void {
+    if (!this.panelElement) return;
+    const adaptive = this.panelElement.querySelector('#character-select-adaptive') as HTMLElement | null;
+    if (!adaptive) return;
+
+    // Clear transforms to measure natural (unscaled) size
+    adaptive.style.transform = 'none';
+    adaptive.style.margin = '0';
+
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const rect = adaptive.getBoundingClientRect();
+    const naturalW = rect.width || CharacterSelectPanel.BASE_WIDTH;
+    const naturalH = rect.height || CharacterSelectPanel.BASE_HEIGHT;
+
+    // Desired usage area (we now allow modest UPSCALING to better fill large viewports / 125% OS scale)
+  const targetUsageW = CharacterSelectPanel.MAX_SCREEN_USAGE_W;
+  const targetUsageH = CharacterSelectPanel.MAX_SCREEN_USAGE_H;
+
+    // Compute scale needed to reach target usage (can be >1 if natural size is smaller)
+  const upScaleW = (vw * targetUsageW) / naturalW;
+  const upScaleH = (vh * targetUsageH) / naturalH;
+  // Contain (fits inside) and Cover (fills, may overflow) strategies
+  const containDesired = Math.min(upScaleW, upScaleH);
+  const coverDesired = Math.max(upScaleW, upScaleH); // ensures no gaps
+  // Always prefer cover for "no gaps" requirement
+  const desiredScale = coverDesired;
+
+    // Contain scale ensures we never overflow viewport (if natural bigger)
+  const containScale = Math.min(vw / naturalW, vh / naturalH, 1);
+
+    // Allow upscaling up to a safe cap so text doesn't become blurry; cap depends on DPR
+    const dpr = window.devicePixelRatio || 1;
+  const maxUpscale = dpr > 1.1 ? 1.35 : 1.50; // allow more enlargement so layout fills window fully
+
+    let scale: number;
+    if (desiredScale < 1) {
+      // If even cover wants shrink, use contain to avoid unnecessary overflow.
+      scale = Math.max(Math.min(containScale, desiredScale), 0.70);
+    } else {
+      scale = Math.min(desiredScale, maxUpscale);
+    }
+
+    if (scale !== 1) {
+      const scaledW = naturalW * scale;
+      const scaledH = naturalH * scale;
+      const diffX = vw - scaledW; // can be negative when covering
+      const diffY = vh - scaledH;
+      // Center even when negative (overflow) so cropping is symmetrical
+      const translateX = (diffX / 2) / scale;
+      const translateY = (diffY / 2) / scale;
+      adaptive.style.transformOrigin = 'top left';
+      adaptive.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+      adaptive.setAttribute('data-scale', scale.toFixed(3));
+      adaptive.setAttribute('data-scale-components', JSON.stringify({mode:'cover', coverDesired: coverDesired.toFixed(3), containDesired: containDesired.toFixed(3), used: scale.toFixed(3), maxUpscale, dpr}));
+    } else {
+      adaptive.style.transform = 'none';
+      adaptive.removeAttribute('data-scale');
+      adaptive.removeAttribute('data-scale-components');
+    }
+  }
 }

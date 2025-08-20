@@ -46,17 +46,7 @@ export class HUD {
     ctx.font = FONT_TITLE;
     ctx.textAlign = 'center';
     this.drawGlowText(ctx, `${minutes}:${seconds}`, width / 2, 46, COLOR_TEXT, COLOR_CYAN, 14);
-
-    // --- FPS (top right, unobtrusive) ---
-    try {
-      const fps = (window as any).__fpsSample | 0; // updated by Game.render
-      ctx.font = 'bold 14px Orbitron, sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillStyle = '#00ffff';
-      ctx.shadowColor = '#00ffff';
-      ctx.shadowBlur = 8;
-      ctx.fillText(fps + ' FPS', width - 18, 30);
-    } catch { /* ignore */ }
+  // We'll draw FPS later once minimap position vars are defined so it sits in the gap above minimap.
 
   // --- LEFT PANEL (Stats + Level) ---
   const panelX = 14;
@@ -125,6 +115,22 @@ export class HUD {
   // Minimap (always on)
   const minimapPositionSize = minimapSize; // ensure consistent reference
   this.drawMinimap(ctx, this.player.x, this.player.y, enemies, worldW, worldH);
+
+  // --- Tiny FPS readout centered in gap above minimap (no overlap) ---
+  try {
+    const fps = (window as any).__fpsSample | 0;
+    const minimapX = width - minimapPositionSize - 20; // replicate minimap X
+    const gapTopY = 12; // vertical center for the 20px gap (minimapY=20)
+    ctx.save();
+    ctx.font = 'bold 10px Orbitron, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8cf6ff';
+    ctx.shadowColor = '#00ffff55';
+    ctx.shadowBlur = 4;
+    const label = fps + ' FPS';
+    ctx.fillText(label, minimapX + minimapPositionSize / 2, gapTopY);
+    ctx.restore();
+  } catch { /* ignore */ }
 
   // Upgrade History Panel directly beneath minimap, same width & left edge
   const minimapPanelTop = 20; // must match drawMinimap
