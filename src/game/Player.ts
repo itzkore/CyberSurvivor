@@ -193,7 +193,11 @@ export class Player {
     while (this._exp >= this.getNextExp()) {
       this._exp -= this.getNextExp();
       this.level++;
-      window.dispatchEvent(new CustomEvent('levelup'));
+      if (typeof window !== 'undefined' && window.dispatchEvent) {
+        if (typeof window !== 'undefined' && (window as any).dispatchEvent) {
+          window.dispatchEvent(new CustomEvent('levelup'));
+        }
+      }
     }
   }
 
