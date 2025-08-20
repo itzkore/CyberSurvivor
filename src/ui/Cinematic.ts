@@ -74,12 +74,14 @@ export class Cinematic {
   public draw(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
     if (!this.active) return;
     ctx.save();
-    const dpr = (window as any).devicePixelRatio || 1;
-    const rs = (window as any).__renderScale || 1;
-    const scale = 1 / (dpr * rs);
-    ctx.scale(scale, scale);
-    const logicalW = canvas.width * scale;
-    const logicalH = canvas.height * scale;
+  // Use the same high-DPI scaling convention as the main game render path:
+  // canvas.width/height are already multiplied by dpr * renderScale, so we upscale the context
+  // so that drawing at logical CSS coordinates produces crisp output without manual conversion.
+  const dpr = (window as any).devicePixelRatio || 1;
+  const rs = (window as any).__renderScale || 1;
+  ctx.scale(dpr * rs, dpr * rs);
+  const logicalW = canvas.width / (dpr * rs);
+  const logicalH = canvas.height / (dpr * rs);
     const fadeFrames = 60;
     let alpha = 1;
     if (this.progress < fadeFrames) alpha = this.progress / fadeFrames; else if (this.progress > this.duration - fadeFrames) alpha = 1 - (this.progress - (this.duration - fadeFrames)) / fadeFrames;
@@ -90,8 +92,8 @@ export class Cinematic {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const minDim = Math.min(logicalW, logicalH);
-    const titleBase = Math.round(minDim * 0.075); // slightly smaller for cleaner layout
-    const subBase = Math.round(titleBase * 0.46);
+  const titleBase = Math.round(minDim * 0.07); // tuned size for clearer separation
+  const subBase = Math.round(titleBase * 0.42);
     const centerY = logicalH / 2;
     const t = this.progress;
     // Subtle vertical easing motion for main title block
@@ -100,26 +102,36 @@ export class Cinematic {
     const yOffset = -20 * (1 - easeInOut(motionPhase));
     const drawBlock = (title: string, subtitle: string | null, gradStops: [string,string], glow: string) => {
       ctx.save();
-      const titleY = centerY + yOffset - (subtitle ? subBase * 0.9 : 0);
-      // Gradient fill
-      const grad = ctx.createLinearGradient(logicalW/2 - 200, titleY - titleBase, logicalW/2 + 200, titleY + titleBase);
+      // Compute a block layout so title + subtitle never overlap regardless of size.
+      const blockSpacing = subtitle ? subBase * 0.55 : 0; // gap between baseline of title & baseline of subtitle
+      const totalBlockHeight = subtitle ? (titleBase + blockSpacing + subBase) : titleBase;
+      const blockTop = centerY - totalBlockHeight / 2 + yOffset; // center vertically
+      const titleY = blockTop + titleBase * 0.85; // adjust for typical cap height vs full em
+      const subtitleY = subtitle ? (titleY + blockSpacing + subBase * 0.75) : 0;
+
+      const grad = ctx.createLinearGradient(
+        logicalW/2 - Math.min(400, titleBase * 6),
+        titleY - titleBase,
+        logicalW/2 + Math.min(400, titleBase * 6),
+        titleY + titleBase
+      );
       grad.addColorStop(0, gradStops[0]);
       grad.addColorStop(1, gradStops[1]);
       ctx.font = `900 ${titleBase}px Orbitron, sans-serif`;
       ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(2, Math.round(titleBase * 0.06));
+      ctx.lineWidth = Math.max(2, Math.round(titleBase * 0.055));
       ctx.strokeStyle = '#00191c';
       ctx.shadowColor = glow;
-      ctx.shadowBlur = titleBase * 0.5;
+      ctx.shadowBlur = Math.max(8, titleBase * 0.45);
       ctx.strokeText(title, logicalW/2, titleY);
       ctx.fillStyle = grad;
       ctx.fillText(title, logicalW/2, titleY);
       if (subtitle) {
         ctx.font = `600 ${subBase}px Orbitron, sans-serif`;
-        ctx.shadowBlur = subBase * 0.4;
-        ctx.shadowColor = '#000';
+        ctx.shadowBlur = Math.max(4, subBase * 0.35);
+        ctx.shadowColor = '#001417';
         ctx.fillStyle = '#dff';
-        ctx.fillText(subtitle, logicalW/2, centerY + subBase * 0.4 + yOffset/2);
+        ctx.fillText(subtitle, logicalW/2, subtitleY);
       }
       ctx.restore();
     };
@@ -127,22 +139,18 @@ export class Cinematic {
     else if (t < 420) drawBlock('In the year 2088...', 'Mega-cities are ruled by rogue AIs.', ['#ff2ad9','#ffa400'], '#ff00cc');
     else if (t < 660) drawBlock('You are the last survivor...', 'Fight through endless waves of enemies.', ['#00ffe0','#00b3ff'], '#00ffea');
     else drawBlock('Survive the Neon Onslaught!', 'Good luck...', ['#00ffff','#ff00cc'], '#00f6ff');
-    // Skip button needs logical coordinates (not scaled afterwards)
-    this.drawSkipButton(ctx, canvas);
-    // Update skip rect y for hit detection
-    this.skipRect.y = logicalH - this.skipRect.h - 32;
+  // Skip button drawn in same logical coordinate space
+  this.drawSkipButton(ctx, canvas);
+  this.skipRect.y = logicalH - this.skipRect.h - 32; // keep rect aligned with button
     ctx.restore();
   }
 
   /** External click handler for reliable skip (coordinates already relative to canvas client box). */
   public handleClick(x:number, y:number, canvas:HTMLCanvasElement): boolean {
     if (!this.active) return false;
-    // Drawing code scales the context so that coordinates used are already in CSS pixels.
-    // The previous implementation incorrectly multiplied by scale, shrinking hit area.
-    const lx = x; // already CSS / logical space
-    const ly = y;
+    // x,y are in CSS pixels (logical space) because getBoundingClientRect() was used upstream.
     const r = this.skipRect;
-    if (lx >= r.x && lx <= r.x + r.w && ly >= r.y && ly <= r.y + r.h) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
       this.skip();
       return true;
     }
