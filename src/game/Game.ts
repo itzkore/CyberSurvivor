@@ -17,6 +17,7 @@ import { Logger } from '../core/Logger';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
+import { EnvironmentManager } from './EnvironmentManager';
 
 export class Game {
   /**
@@ -122,6 +123,7 @@ export class Game {
   private gameLoop: GameLoop;
   private enemySpatialGrid: SpatialGrid<any>; // Spatial grid for enemies
   private bulletSpatialGrid: SpatialGrid<any>; // Spatial grid for bullets
+  private environment: EnvironmentManager; // biome + ambient background
   // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
@@ -187,7 +189,8 @@ export class Game {
     if (!this.explosionManager) {
       this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
     }
-    this.hud = new HUD(this.player, this.assetLoader);
+  this.hud = new HUD(this.player, this.assetLoader);
+  this.environment = new EnvironmentManager();
     // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // Will be set via setter
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
     this.player.setGameContext(this as any); // Cast to any to allow setting game context
@@ -687,6 +690,8 @@ async init() {
       });
     }
   this.particleManager.update(deltaTime);
+  // Update environment (biome cycle)
+  this.environment.update(this.gameTime);
   this.damageTextManager.update();
 
     // Clear and re-populate spatial grids
@@ -886,7 +891,9 @@ async init() {
       case 'UPGRADE_MENU':
       case 'GAME_OVER':
   // Optimized background: cached gradient + grid/noise pattern composited with camera offset.
-  this.drawBackground();
+  // Draw dynamic environment (biome aware)
+  this.environment.setLowFX(this.lowFX);
+  this.environment.draw(this.ctx, this.camX, this.camY, this.canvas.width, this.canvas.height);
         // Now apply camera transform and draw entities
         this.ctx.save();
         this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);

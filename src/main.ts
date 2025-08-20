@@ -187,10 +187,10 @@ window.onload = async () => {
     Logger.info('[main.ts] UpgradePanel instantiated and set.');
   });
 
-  // Start background music immediately after game initialization
+  // Preload background music (no autoplay to avoid policy block)
   import('./game/SoundManager').then(({ SoundManager }) => {
     const musicPathInit = (location.protocol === 'file:' ? './assets/music/bg-music.mp3' : '/assets/music/bg-music.mp3');
-    SoundManager.playMusic(musicPathInit);
+    SoundManager.preloadMusic(musicPathInit);
   });
 
   game.start();
@@ -214,12 +214,12 @@ window.onload = async () => {
   // Sound settings now only accessible via Pause -> Options; no auto panel on gameplay start
   // Hudba se spustí až po startu hry (po interakci uživatele)
   let musicStarted = false;
-  function startMusic() {
-    if (musicStarted) return;
+  function startMusic(forceReload = false) {
+    if (musicStarted && !forceReload) return;
     import('./game/SoundManager').then(({ SoundManager }) => {
       const musicPath = (location.protocol === 'file:' ? './assets/music/bg-music.mp3' : '/assets/music/bg-music.mp3');
-      SoundManager.playMusic(musicPath);
-      Logger.info('[main.ts] Background music started');
+      SoundManager.playMusic(musicPath, forceReload);
+      Logger.info('[main.ts] Background music playMusic invoked (forceReload=' + forceReload + ')');
       musicStarted = true;
     });
   }
@@ -228,7 +228,7 @@ window.onload = async () => {
   // Hide legacy floating sound panel if it exists (now only inside pause overlay)
   const legacySound = document.getElementById('sound-settings-panel');
   if (legacySound) legacySound.style.display = 'none';
-  startMusic(); // Spustit hudbu po startu hry
+  startMusic(false); // play after user interaction
     const customEvent = event as CustomEvent;
     const selectedCharData = customEvent.detail;
     Logger.info('[main.ts] startGame event received, selectedCharData:', selectedCharData);

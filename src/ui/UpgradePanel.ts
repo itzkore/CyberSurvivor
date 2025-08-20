@@ -63,11 +63,11 @@ export class UpgradePanel {
       <div class="upgrade-panel ui-panel">
         <div class="upgrade-header">
           <h2 class="panel-title">Choose Upgrade</h2>
-          <div class="upgrade-hint">Hotkeys: 1 · 2 · 3 (R = reroll · ESC = skip)</div>
+          <div class="upgrade-hint">1·2·3 = Select &nbsp; R = Reroll &nbsp; ESC = Skip</div>
         </div>
         <div class="upgrade-options-grid" data-upgrade-options></div>
         <div class="upgrade-footer compact-text">
-          <span class="legend"><span class="badge badge-weapon">W</span> Weapon <span class="badge badge-passive">P</span> Passive <span class="badge badge-class">C</span> Class Weapon</span>
+          <div class="footer-hints">Type colors: Weapon ▸ teal, Passive ▸ green-blue, Class ▸ bright cyan</div>
           <button type="button" class="btn-reroll" data-reroll title="Reroll upgrade options (testing)">Reroll</button>
         </div>
       </div>

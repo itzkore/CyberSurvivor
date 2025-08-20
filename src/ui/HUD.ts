@@ -32,12 +32,14 @@ export class HUD {
     const FONT_SECTION = 'bold 18px Orbitron, sans-serif';
     const FONT_STAT = '14px Orbitron, sans-serif';
     const FONT_BODY = '12px Orbitron, sans-serif';
-    const COLOR_CYAN = '#00ffff';
-    const COLOR_MAGENTA = '#ff00ff';
-    const COLOR_BG_PANEL = 'rgba(8,14,24,0.55)';
-    const COLOR_BG_PANEL_DEEP = 'rgba(12,18,32,0.80)';
-    const COLOR_TEXT = '#e9f9ff';
-    const COLOR_TEXT_DIM = 'rgba(200,230,240,0.65)';
+  // Updated theme palette (teal/cyan unified)
+  const COLOR_CYAN = '#26ffe9'; // primary accent
+  const COLOR_ACCENT_ALT = '#00b3a3'; // secondary accent
+  const COLOR_ACCENT_DEEP = '#008b7d';
+  const COLOR_BG_PANEL = 'rgba(6,14,18,0.55)';
+  const COLOR_BG_PANEL_DEEP = 'rgba(10,20,26,0.82)';
+  const COLOR_TEXT = '#e3fefb';
+  const COLOR_TEXT_DIM = 'rgba(185,225,220,0.68)';
     ctx.imageSmoothingEnabled = true;
 
     // --- TIMER (center top) ---
@@ -61,7 +63,7 @@ export class HUD {
       ctx.save();
       ctx.textAlign = 'left';
       ctx.font = FONT_SECTION;
-      this.drawGlowText(ctx, `LEVEL ${this.player.level}`, panelX + 12, panelY + 32, COLOR_TEXT, COLOR_MAGENTA, 8);
+  this.drawGlowText(ctx, `LEVEL ${this.player.level}`, panelX + 12, panelY + 32, COLOR_TEXT, COLOR_ACCENT_ALT, 8);
 
       // Derive extended stats
       const critChance = this.computeCritChance();
@@ -105,12 +107,12 @@ export class HUD {
     // HP Bar
     const hpBarY = height - 64;
     const hpBarWidth = Math.min(480, width - 320);
-    this.drawThemedBar(ctx, 20, hpBarY, hpBarWidth, 22, this.player.hp / this.player.maxHp, '#fe2740', '#4a0910', COLOR_CYAN, `HP ${this.player.hp}/${this.player.maxHp}`);
+  this.drawThemedBar(ctx, 20, hpBarY, hpBarWidth, 22, this.player.hp / this.player.maxHp, '#fe2740', '#4a0910', COLOR_ACCENT_ALT, `HP ${this.player.hp}/${this.player.maxHp}`);
 
     // XP Bar
     const xpBarY = height - 34;
     const nextExp = this.player.getNextExp();
-    this.drawThemedBar(ctx, 20, xpBarY, width - 40, 14, this.player.exp / nextExp, '#00b7ff', '#022e33', COLOR_MAGENTA, `XP ${this.player.exp}/${nextExp}`);
+  this.drawThemedBar(ctx, 20, xpBarY, width - 40, 14, this.player.exp / nextExp, '#0099c8', '#022e33', COLOR_CYAN, `XP ${this.player.exp}/${nextExp}`);
 
   // Minimap (always on)
   const minimapPositionSize = minimapSize; // ensure consistent reference
@@ -277,17 +279,20 @@ export class HUD {
       displayUpgrades = ['…'] .concat(displayUpgrades.slice(displayUpgrades.length - maxVisibleLines));
     }
     ctx.restore();
-    this.drawPanel(ctx, panelX, panelY, panelWidth, panelHeight, () => {
+  const accentPrimary = '#26ffe9';
+  const accentSecondary = '#00b3a3';
+  const panelBase = 'rgba(6,14,18,0.55)';
+  this.drawPanel(ctx, panelX, panelY, panelWidth, panelHeight, () => {
       ctx.save();
       // Title bar background inside panel
       const titleBarH = 34;
       const gradTitle = ctx.createLinearGradient(panelX, panelY, panelX + panelWidth, panelY);
-      gradTitle.addColorStop(0, 'rgba(255,0,255,0.20)');
-      gradTitle.addColorStop(1, 'rgba(0,255,255,0.15)');
+  gradTitle.addColorStop(0, 'rgba(0,179,163,0.25)');
+  gradTitle.addColorStop(1, 'rgba(38,255,233,0.18)');
       ctx.fillStyle = gradTitle;
       ctx.fillRect(panelX + 1, panelY + 1, panelWidth - 2, titleBarH);
       // Divider line
-      ctx.strokeStyle = '#00ffff55';
+  ctx.strokeStyle = '#26ffe955';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(panelX + 4, panelY + titleBarH + 0.5);
@@ -296,7 +301,7 @@ export class HUD {
       // Header text (reduced glow to avoid bleeding outside)
   ctx.font = 'bold 20px Orbitron, sans-serif';
   ctx.textAlign = 'center';
-  this.drawGlowText(ctx, 'UPGRADES', panelX + panelWidth / 2, panelY + 24, '#e9f9ff', '#ff00ff', 4);
+  this.drawGlowText(ctx, 'UPGRADES', panelX + panelWidth / 2, panelY + 24, '#e3fefb', accentSecondary, 4);
   ctx.textAlign = 'left';
       // Content list
   ctx.font = `${contentFontSize}px Orbitron, sans-serif`;
@@ -315,24 +320,24 @@ export class HUD {
   private drawPanel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, body: () => void) {
     ctx.save();
     // Outer glow
-    ctx.shadowColor = '#00ffff55';
+  ctx.shadowColor = 'rgba(38,255,233,0.35)';
     ctx.shadowBlur = 18;
-    ctx.fillStyle = 'rgba(8,14,24,0.55)';
+  ctx.fillStyle = 'rgba(6,14,18,0.55)';
     ctx.fillRect(x, y, w, h);
     // Inner gradient overlay
     const grad = ctx.createLinearGradient(x, y, x + w, y + h);
-    grad.addColorStop(0, 'rgba(0,255,255,0.08)');
-    grad.addColorStop(0.55, 'rgba(255,0,255,0.05)');
-    grad.addColorStop(1, 'rgba(0,255,255,0.06)');
+  grad.addColorStop(0, 'rgba(0,179,163,0.10)');
+  grad.addColorStop(0.55, 'rgba(38,255,233,0.05)');
+  grad.addColorStop(1, 'rgba(0,179,163,0.08)');
     ctx.fillStyle = grad;
     ctx.fillRect(x, y, w, h);
     // Border
     ctx.shadowBlur = 0;
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = '#00ffffaa';
+  ctx.strokeStyle = 'rgba(38,255,233,0.72)';
     ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
     // Corner accents
-    ctx.strokeStyle = '#ff00ffbb';
+  ctx.strokeStyle = '#00b3a3cc';
     const c = 18;
     ctx.beginPath();
     ctx.moveTo(x, y + c);
