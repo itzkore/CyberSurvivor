@@ -29,28 +29,17 @@ function applyCanvasSizeGlobal(canvas: HTMLCanvasElement) {
 }
 
 window.onload = async () => {
-  // Preload integrity check
+  // Single preload integrity check (duplicate removed)
   try {
-    const preloadOk = (window as any).cs && (window as any).cs.meta && (window as any).cs.meta.version === '1.0.0';
-    if (!preloadOk) {
-      Logger.error('[main.ts] Preload API integrity failed: missing or incorrect version');
-    } else {
-      Logger.info('[main.ts] Preload API version ' + (window as any).cs.meta.version + ' verified');
-    }
-  } catch (e) {
-    Logger.error('[main.ts] Preload integrity exception', e);
-  }
-  // --- Preload integrity check ---
-  try {
-    const preloadOk = (window as any).cs && (window as any).cs.meta && (window as any).cs.meta.version === '1.0.0';
-    if (!preloadOk) {
-      Logger.error('[main.ts] Preload API integrity failed (missing or wrong version)');
-    } else {
-      Logger.info('[main.ts] Preload API version ' + (window as any).cs.meta.version + ' verified');
-    }
-  } catch (e) {
-    Logger.error('[main.ts] Preload API integrity exception', e);
-  }
+    const api = (window as any).cs;
+    if (api?.meta?.version) {
+      if (api.meta.version === '1.0.0') {
+        Logger.info('[main.ts] Preload API version ' + api.meta.version + ' verified');
+      } else {
+        Logger.warn('[main.ts] Preload API version mismatch (expected 1.0.0 got ' + api.meta.version + ')');
+      }
+    } // Silent if preload absent (non-Electron web build)
+  } catch (e) { Logger.warn('[main.ts] Preload integrity check skipped due to exception', e); }
   // --- Cinematic skip button click handler ---
   // Move click handler after canvas is assigned
   setTimeout(() => {
@@ -71,14 +60,7 @@ window.onload = async () => {
     return;
   }
 
-  canvas.style.position = 'fixed';
-  canvas.style.inset = '0';
-  canvas.style.margin = '0';
-  canvas.style.padding = '0';
-  canvas.style.width = '100vw';
-  canvas.style.height = '100vh';
-  canvas.style.zIndex = '-1';
-  canvas.style.display = 'block';
+  canvas.classList.add('game-canvas-root');
   applyCanvasSizeGlobal(canvas);
 
   const game = new Game(canvas); // Instantiate Game first
@@ -189,7 +171,7 @@ window.onload = async () => {
 
   // Preload background music (no autoplay to avoid policy block)
   import('./game/SoundManager').then(({ SoundManager }) => {
-    const musicPathInit = (location.protocol === 'file:' ? './assets/music/bg-music.mp3' : '/assets/music/bg-music.mp3');
+  const musicPathInit = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/music/bg-music.mp3') : (location.protocol==='file:'?'./assets/music/bg-music.mp3':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/music/bg-music.mp3':'/assets/music/bg-music.mp3'));
     SoundManager.preloadMusic(musicPathInit);
     // Also arm early start: first user gesture (click / key) in main menu triggers playback.
     // This keeps autoplay policy compliant while giving ambience before gameplay.
@@ -226,7 +208,7 @@ window.onload = async () => {
   function startMusic(forceReload = false) {
     if (musicStarted && !forceReload) return;
     import('./game/SoundManager').then(({ SoundManager }) => {
-      const musicPath = (location.protocol === 'file:' ? './assets/music/bg-music.mp3' : '/assets/music/bg-music.mp3');
+  const musicPath = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/music/bg-music.mp3') : (location.protocol==='file:'?'./assets/music/bg-music.mp3':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/music/bg-music.mp3':'/assets/music/bg-music.mp3'));
       SoundManager.playMusic(musicPath, forceReload);
       Logger.info('[main.ts] Background music playMusic invoked (forceReload=' + forceReload + ')');
       musicStarted = true;

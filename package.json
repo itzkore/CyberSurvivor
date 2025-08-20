@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "backend": "node ./backend/server.js",
     "electron:dev": "cross-env NODE_ENV=development concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "npm run package:full",
     "electron:builder": "npm run build && electron-builder",
@@ -85,6 +86,9 @@
     "wait-on": "^7.2.0"
   },
   "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "google-auth-library": "^9.15.1",
     "howler": "^2.2.4"
   }
 }

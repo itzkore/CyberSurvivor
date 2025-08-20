@@ -5,6 +5,26 @@ export type Manifest = any;
 export class AssetLoader {
   private cache: Record<string, HTMLImageElement> = {};
   private manifest: Manifest | null = null;
+  // NOTE: Manifest pruned to only include existing enemy_default + boss_phase1 assets.
+  // If future phases/enemy sizes are restored, re-add expected names here and in manifest.json.
+  /**
+   * Base prefix for hosted deployment (e.g. /cs when site is https://domain.tld/cs/).
+   * "" when served from root over http(s). "./" (represented as '.') when using file: protocol.
+   * Heuristic: take first pathname segment if present and not index.html. This supports
+   * hosting behind a single folder *without* needing to hardcode it in code.
+   */
+  public static basePrefix: string = (() => {
+    if (typeof location === 'undefined') return '';
+    if (location.protocol === 'file:') return '.'; // relative root
+    // Meta override (authoritative if present)
+    const meta = document.querySelector('meta[name="asset-base"]') as HTMLMetaElement | null;
+    if (meta?.content) return meta.content.replace(/\/$/, '');
+    const seg = location.pathname.split('/').filter(Boolean)[0];
+    if (seg && seg !== 'index.html') {
+      return '/' + seg; // e.g. '/cs'
+    }
+    return '';
+  })();
 
   public getImage(path: string): HTMLImageElement | undefined {
     return this.cache[path];
@@ -18,12 +38,8 @@ export class AssetLoader {
   private getDimsForPath(path: string): { w: number; h: number } {
     const name = this.getName(path);
     switch (name) {
-      case 'enemy_small': return { w: 48, h: 48 };
-      case 'enemy_medium': return { w: 64, h: 64 };
-      case 'enemy_large': return { w: 96, h: 96 };
-      case 'boss_phase1':
-      case 'boss_phase2':
-      case 'boss_phase3': return { w: 256, h: 256 };
+  case 'enemy_default': return { w: 64, h: 64 }; // unified enemy placeholder
+  case 'boss_phase1': return { w: 256, h: 256 }; // only phase currently shipped
       case 'bullet_cyan': return { w: 16, h: 16 };
   case 'bullet_deagle': return { w: 16, h: 16 };
   case 'bullet_shotgun': return { w: 16, h: 16 };
@@ -31,7 +47,6 @@ export class AssetLoader {
   case 'bullet_smart': return { w: 16, h: 16 }; // smart rifle dart sprite
   case 'bullet_laserblaster': return { w: 16, h: 16 }; // laser blaster bolt sprite
   case 'bullet_drone': return { w: 48, h: 48 }; // kamikaze drone sprite
-      case 'boss_shot_set': return { w: 24, h: 24 };
       case 'particles_sheet': return { w: 64, h: 64 };
       case 'hp_bar_bg': return { w: 128, h: 16 };
       case 'hp_bar_fill': return { w: 128, h: 16 };
@@ -100,13 +115,54 @@ export class AssetLoader {
     return img;
   }
 
-  public async loadManifest(url = (location.protocol === 'file:' ? './assets/manifest.json' : '/assets/manifest.json')) {
-    const resp = await fetch(url);
-    this.manifest = await resp.json();
+  public async loadManifest(url?: string) {
+    const tried: string[] = [];
+    const attempts: string[] = [];
+    if (url) attempts.push(url);
+    else {
+      if (location.protocol === 'file:') attempts.push('./assets/manifest.json');
+      else {
+        // Primary attempt using detected basePrefix ('' or '/cs')
+        attempts.push(AssetLoader.basePrefix + '/assets/manifest.json');
+        // If basePrefix empty, enqueue known fallback subfolders (user reported '/cs')
+        if (!AssetLoader.basePrefix) attempts.push('/cs/assets/manifest.json');
+      }
+    }
+    for (const attempt of attempts) {
+      if (tried.includes(attempt)) continue;
+      tried.push(attempt);
+      try {
+        const resp = await fetch(attempt);
+        if (!resp.ok) throw new Error('Manifest HTTP ' + resp.status);
+        const text = await resp.text();
+        try {
+          this.manifest = JSON.parse(text);
+          // Successful fetch: adjust basePrefix if we used a fallback like /cs
+          const m = attempt.match(/^(.*)\/assets\/manifest\.json$/);
+          if (m && location.protocol !== 'file:') {
+            const prefix = m[1];
+            // Avoid setting '.' (file) or '' incorrectly
+            if (prefix !== '' && prefix !== '.' && prefix !== AssetLoader.basePrefix) {
+              AssetLoader.basePrefix = prefix; // future normalizePath calls include discovered prefix
+              Logger.info('[AssetLoader] Using discovered asset base prefix ' + AssetLoader.basePrefix);
+            }
+          }
+          return this.manifest;
+        } catch (pe) {
+          Logger.error('[AssetLoader] Manifest parse failed (non-JSON) for ' + attempt);
+        }
+      } catch (err) {
+        Logger.warn('[AssetLoader] Manifest attempt failed ' + attempt);
+      }
+    }
+    Logger.error('[AssetLoader] All manifest fetch attempts failed. Using placeholders. Attempts=' + attempts.join(','));
+    this.manifest = null;
     return this.manifest;
   }
 
   public async loadImage(path: string) {
+    // Normalize path across hosting modes
+    path = AssetLoader.normalizePath(path);
     if (this.cache[path]) return this.cache[path];
     const img = new Image();
     try {
@@ -117,22 +173,40 @@ export class AssetLoader {
       });
       this.cache[path] = img;
       return img;
-    } catch {
+    } catch (err) {
+      Logger.warn('[AssetLoader] 404 or load fail for', path, err);
       const { w, h } = this.getDimsForPath(path);
       const label = this.getName(path);
-      // Get asset info from manifest if available
-      const assetInfo = this.getAssetInfo(label); // Use label as key for getAssetInfo
-      const placeholder = this.createPlaceholderImage(w, h, label, assetInfo); // Pass assetInfo
+      const assetInfo = this.getAssetInfo(label);
+      const placeholder = this.createPlaceholderImage(w, h, label, assetInfo);
       this.cache[path] = placeholder;
       return placeholder;
     }
   }
 
-  public async loadAllFromManifest(base = (location.protocol === 'file:' ? './assets' : '/assets')) {
+  /** Normalize a raw asset path to work under both http(s) and file protocols */
+  public static normalizePath(p: string): string {
+    if (typeof location === 'undefined') return p;
+    if (location.protocol === 'file:') {
+      if (p.startsWith('/assets/')) return '.' + p; // '/assets/x.png' -> './assets/x.png'
+      if (p.startsWith('assets/')) return './' + p; // 'assets/x.png' -> './assets/x.png'
+      return p;
+    }
+    // http(s) hosting – inject basePrefix if path starts at root /assets
+    if (p.startsWith('/assets/')) return AssetLoader.basePrefix + p; // '' or '/cs' prefix
+    if (p.startsWith('assets/')) return AssetLoader.basePrefix + '/' + p; // relative form
+    return p;
+  }
+
+  public async loadAllFromManifest(base?: string) {
+    if (!base) {
+      if (location.protocol === 'file:') base = './assets';
+      else base = AssetLoader.basePrefix + '/assets';
+    }
     if (!this.manifest) await this.loadManifest(base + '/manifest.json');
     // Collect file paths (single pass recursion). Preallocate using rough upper bound if available.
     const files: string[] = [];
-    const prefix = (location.protocol === 'file:' ? './' : '/');
+    const prefix = (location.protocol === 'file:' ? './' : (AssetLoader.basePrefix || '') + '/');
     const walk = (obj: any): void => {
       for (const k in obj) {
         const v = obj[k];
@@ -192,10 +266,26 @@ export class AssetLoader {
 
   public getAsset(key: string): string {
     if (!this.manifest) {
-      Logger.warn('Manifest not loaded.');
+      Logger.warn('[AssetLoader] getAsset called before manifest loaded');
       return '';
     }
-    const asset = this.manifest.assets.find((a: any) => a.key === key);
-    return asset ? asset.path : '';
+    // Recursive search through manifest object for property with matching key
+    const search = (obj: any): string => {
+      if (!obj || typeof obj !== 'object') return '';
+      for (const k in obj) {
+        if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+        const v = obj[k];
+        if (k === key && v && typeof v === 'object' && v.file) return v.file;
+        if (typeof v === 'object') {
+          const found = search(v);
+          if (found) return found;
+        }
+      }
+      return '';
+    };
+  let path = search(this.manifest);
+  if (!path) return '';
+  path = AssetLoader.normalizePath(path);
+  return path;
   }
 }

@@ -1,5 +1,9 @@
 import { Game } from '../game/Game';
 import { matrixBackground } from './MatrixBackground';
+import { HighScoreService } from '../auth/HighScoreService';
+import { googleAuthService } from '../auth/AuthService';
+import { RemoteLeaderboardService } from '../auth/RemoteLeaderboardService';
+import { ScoreLogService } from '../auth/ScoreLogService';
 
 /** Cinematic themed Game Over overlay */
 export class GameOverOverlay {
@@ -29,6 +33,14 @@ export class GameOverOverlay {
           <div class="go-hint">Enter = Restart · Esc = Main Menu</div>
         </div>`;
       document.body.appendChild(existing);
+  const style = document.createElement('style');
+  style.textContent = `.go-highscores{margin-top:14px}.go-highscores .hs-title{font-size:14px;opacity:.8;margin-bottom:4px}
+  .hs-row{display:flex;justify-content:space-between;font-size:12px;padding:2px 6px;border:1px solid rgba(0,255,255,0.15);border-radius:4px;margin-bottom:2px}
+  .hs-row.first{background:linear-gradient(90deg,#8a6 0,#444 100%);color:#fff}
+  .hs-row.me{outline:1px solid #0ff}
+  .hs-empty{font-size:12px;opacity:.6;padding:4px 2px}
+  `;
+  document.head.appendChild(style);
     }
     this.el = existing;
     this.statsEl = existing.querySelector('#go-stats') as HTMLDivElement;
@@ -72,13 +84,66 @@ export class GameOverOverlay {
       ['Kill Count', `${this.game.getKillCount()}`],
       ['Max DPS', `${maxDps}`]
     ];
-    this.statsEl.innerHTML = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
+    // Record high score (using kill count as score baseline for now)
+    (async () => {
+      try {
+  const characterId = (this.game as any).selectedCharacterData?.id || 'unknown';
+  const mode = (this.game as any).currentMode || 'SHOWDOWN';
+  const score = this.game.getKillCount();
+        let wasHigh = false;
+        let top: any[] = [];
+        const remote = RemoteLeaderboardService.isAvailable();
+        try {
+          await RemoteLeaderboardService.submit(score, { mode, characterId, level, durationSec: duration });
+          top = await RemoteLeaderboardService.getTop(mode, characterId, 20);
+          // Determine if our score is present and top
+          const user = googleAuthService.getCurrentUser();
+          const myIdx = top.findIndex(e=> user && e.userId === user.id && e.score === score);
+          if (myIdx === 0) wasHigh = true; // top spot
+        } catch {
+          // Remote path failed; fall back to local record
+          top = [];
+        }
+        if (!top.length) {
+          // Remote unavailable or failed -> use local service (ensures one entry only)
+          wasHigh = HighScoreService.record(score, { mode, characterId, level, durationSec: duration });
+          top = HighScoreService.getTop(mode, characterId, 20);
+        }
+        const user = googleAuthService.getCurrentUser();
+  // Removed LOCAL/GLOBAL labeling per requirement
+        // Final defensive dedup (user+score) in case backend or local layer produced duplicates
+        const seen = new Set<string>();
+        const final: any[] = [];
+        for (const e of top) {
+          const k = (e.userId || e.nickname) + ':' + e.score;
+            if (seen.has(k)) continue;
+            seen.add(k);
+            final.push(e);
+        }
+  // Log (always, remote or local path)
+  ScoreLogService.log({ score, mode, characterId, level, durationSec: duration, source: remote ? 'remote' : 'local-fallback' });
+  const topHtml = `<div class='go-highscores'><div class='hs-title'>Top 20 ${mode} / ${characterId}</div>` +
+          (final.length ? final.map((e,i)=> `<div class='hs-row ${i===0?'first':''} ${user && e.userId===user.id?'me':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span></div>`).join('') : '<div class="hs-empty">No remote scores yet.</div>') +
+          '</div>';
+        const baseStats = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
+        this.statsEl.innerHTML = baseStats + topHtml + (wasHigh ? "<div class='new-hs-banner'>NEW HIGH SCORE</div>" : '');
+      } catch {
+        this.statsEl.innerHTML = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
+      }
+    })();
   }
 
   public show() {
     if (this.visible) return;
     this.visible = true;
     this.buildStats();
+    // Auto-refresh leaderboard every 5 seconds while visible
+    const refreshLoop = () => {
+      if (!this.visible) return;
+      try { this.buildStats(); } catch {/* ignore */}
+      if (this.visible) setTimeout(refreshLoop, 5000);
+    };
+    setTimeout(refreshLoop, 5000);
     this.el.classList.add('visible');
     matrixBackground.start();
     this.ensureButtons();

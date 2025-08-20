@@ -456,10 +456,15 @@ export class HUD {
   }
 
   private computeCritChance(): number {
-    // Mirror formula used in character data derivation
+    // Base chance from attributes
     const agility = this.player.agility || 0;
     const luck = this.player.luck || 0;
-    return Math.min(60, (agility * 0.8 + luck * 1.2) * 0.5);
+    let basePct = Math.min(60, (agility * 0.8 + luck * 1.2) * 0.5); // percent (0..60)
+    const bonus = (this.player as any).critBonus;
+    if (typeof bonus === 'number') {
+      basePct += bonus * 100; // convert 0..0.5 to 0..50%
+    }
+    return Math.min(100, basePct);
   }
 
   private computePowerScore(): number {

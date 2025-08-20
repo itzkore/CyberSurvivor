@@ -179,13 +179,12 @@ async function initGame() {
         }
         
         // Draw enemies
-        const smallEnemyImg = assetLoader.getImage('enemy_small');
+    const smallEnemyImg = assetLoader.getImage('enemy_default');
         if (smallEnemyImg) {
             ctx.drawImage(smallEnemyImg, 200, 150);
         }
         
         // Draw animated boss projectiles
-        assetLoader.renderAnimatedSprite(ctx, 'boss_shot', timestamp, 300, 200, 1);
         
         // Draw UI elements
         const hpBarBg = assetLoader.getImage('hp_bar_bg');
@@ -215,18 +214,15 @@ your-game/
 │   ├── assets/
 │   │   ├── manifest.json
 │   │   ├── enemies/
-│   │   │   ├── enemy_small.png
-│   │   │   ├── enemy_medium.png
-│   │   │   └── enemy_large.png
+│   │   │   └── enemy_default.png
 │   │   ├── player/
 │   │   │   └── player_base.png
 │   │   ├── boss/
 │   │   │   ├── boss_phase1.png
-│   │   │   ├── boss_phase2.png
-│   │   │   └── boss_phase3.png
+│   │   │   └── (future phases removed)
 │   │   ├── projectiles/
 │   │   │   ├── bullet_cyan.png
-│   │   │   └── boss_shot_set.png
+│   │   │   └── (boss projectile set deferred)
 │   │   ├── particles/
 │   │   │   └── particles_sheet.png
 │   │   └── ui/

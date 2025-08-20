@@ -37,6 +37,8 @@ export class Player {
   private baseMoveSpeed: number = 4.0;
   public hp: number = 100;
   public maxHp: number = 100;
+  /** Innate baseline max HP captured on character load (for additive passives) */
+  private baseMaxHp: number = 100;
   public strength: number = 5;
   public intelligence: number = 5;
   public agility: number = 5;
@@ -59,6 +61,10 @@ export class Player {
   // passive modifiers (may be set by passive upgrades)
   public fireRateModifier: number = 1;
   public bulletDamage: number = 10;
+  /** Innate baseline bullet damage captured on character load */
+  private baseBulletDamage: number = 10;
+  /** Global multiplicative damage bonus from passives (1 = base) */
+  public globalDamageMultiplier: number = 1;
   public magnetRadius: number = 50; // Radius for gem collection
   public attackSpeed: number = 1; // Attack speed multiplier (1 = base)
 
@@ -119,14 +125,16 @@ export class Player {
      * else fallback to first WeaponType enum value (PISTOL).
      */
     if (this.activeWeapons.size === 0) {
+      // Attempt class weapon fallback only once
+      const isTest = typeof process !== 'undefined' && process.env && (process.env.VITEST || process.env.NODE_ENV === 'test');
       if (this.characterData && Array.isArray(this.characterData.weaponTypes) && this.characterData.weaponTypes.length > 0) {
-        this.activeWeapons.set(this.characterData.weaponTypes[0], 1); // Set to level 1
-        Logger.warn('[Player] No defaultWeapon found, fallback to first class weapon.');
+        this.activeWeapons.set(this.characterData.weaponTypes[0], 1);
+        if (!isTest) Logger.warn('[Player] Initialized using first class weapon as fallback.');
       } else {
-        const weaponTypes = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
-        if (weaponTypes.length > 0) {
-          this.activeWeapons.set(weaponTypes[0], 1); // Set to level 1
-          Logger.warn('[Player] No defaultWeapon or class weapon found, fallback to first WeaponType.');
+        const enumValues = Object.values(WeaponType).filter(v => typeof v === 'number') as WeaponType[];
+        if (enumValues.length > 0) {
+          this.activeWeapons.set(enumValues[0], 1);
+          if (!isTest) Logger.warn('[Player] Initialized using first WeaponType enum value as fallback.');
         }
       }
     }
@@ -470,7 +478,10 @@ export class Player {
     if (weaponType === WeaponType.RUNNER_GUN || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
       const tdx = target.x - originX; const tdy = target.y - originY; finalAngle = Math.atan2(tdy, tdx);
     }
-    if (weaponType === WeaponType.RAPID) {
+  // Apply global damage multiplier (percent-based passive)
+  const gdm = (this as any).globalDamageMultiplier || 1;
+  bulletDamage *= gdm;
+  if (weaponType === WeaponType.RAPID) {
       const arcSpread = 0.35; const arcIndex = (index - (total - 1) / 2); const arcAngle = finalAngle + arcIndex * (arcSpread / Math.max(1,(total-1)||1));
       bm.spawnBullet(originX, originY, originX + Math.cos(arcAngle) * 100, originY + Math.sin(arcAngle) * 100, weaponType, bulletDamage, weaponLevel);
     } else {
@@ -736,6 +747,14 @@ export class Player {
   const last = (this as any)._lastDamageTime || 0;
   const iframeMs = 800; // 0.8s of invulnerability
   if (now - last < iframeMs) return; // ignore if still invulnerable
+  // Shield passive: chance to fully block
+  const shieldChance = (this as any).shieldChance as number | undefined;
+  if (shieldChance && Math.random() < shieldChance) {
+    (this as any)._lastDamageTime = now; // still start i-frames to prevent burst hits
+    (this as any)._shieldBlockFlashTime = now;
+    window.dispatchEvent(new CustomEvent('shieldBlock', { detail: { x: this.x, y: this.y } }));
+    return;
+  }
   (this as any)._lastDamageTime = now;
   this.hp -= amount;
   if (this.hp < 0) this.hp = 0;
@@ -755,6 +774,7 @@ export class Player {
     if (data.stats) {
       if (data.stats.hp !== undefined) this.hp = data.stats.hp;
       if (data.stats.maxHp !== undefined) this.maxHp = data.stats.maxHp;
+  this.baseMaxHp = this.maxHp; // snapshot innate baseline
   if (data.stats.speed !== undefined) {
       // Apply scaling using shared constant and clamp
       const scaled = data.stats.speed * SPEED_SCALE;
@@ -762,6 +782,7 @@ export class Player {
       this.baseMoveSpeed = this.speed;
   }
       if (data.stats.damage !== undefined) this.bulletDamage = data.stats.damage;
+  this.baseBulletDamage = this.bulletDamage; // snapshot innate baseline
       if (data.stats.strength !== undefined) this.strength = data.stats.strength;
       if (data.stats.intelligence !== undefined) this.intelligence = data.stats.intelligence;
       if (data.stats.agility !== undefined) this.agility = data.stats.agility;
@@ -779,8 +800,14 @@ export class Player {
   this.baseSpeed = this.speed;
   }
 
-  /** Returns the innate (pre-passive) movement speed for additive passives */
+  /** Returns innate (pre-passive) movement speed */
   public getBaseMoveSpeed(): number { return this.baseMoveSpeed; }
+  /** Returns innate (pre-passive) max HP */
+  public getBaseMaxHp(): number { return this.baseMaxHp; }
+  /** Returns innate (pre-passive) bullet damage */
+  public getBaseBulletDamage(): number { return this.baseBulletDamage; }
+  /** Returns global damage multiplier */
+  public getGlobalDamageMultiplier(): number { return this.globalDamageMultiplier; }
 
   /**
    * Draws the player character using a PNG sprite from /assets/player/{characterId}.png.
@@ -815,6 +842,29 @@ export class Player {
         ctx.fillStyle = '#FFFFFF';
         ctx.beginPath();
         ctx.arc(0, 0, this.size/2, 0, Math.PI*2);
+        ctx.fill();
+      }
+      // Shield block flash: cyan ring pulse (150ms)
+      const shieldTime = (this as any)._shieldBlockFlashTime || 0;
+      const shieldSince = performance.now() - shieldTime;
+      if (shieldSince < 150) {
+        const t = shieldSince / 150; // 0..1
+        const ringAlpha = 0.7 * (1 - t);
+        const ringRadius = (this.size/2) + 6 + 4 * (1 - t);
+        ctx.globalAlpha = ringAlpha;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.lineWidth = 3 + 2 * (1 - t);
+        const grad = ctx.createRadialGradient(0,0, ringRadius*0.2, 0,0, ringRadius);
+        grad.addColorStop(0, '#00FFFF');
+        grad.addColorStop(1, 'rgba(0,255,255,0)');
+        ctx.strokeStyle = '#00FFFF';
+        ctx.beginPath();
+        ctx.arc(0,0, ringRadius, 0, Math.PI*2);
+        ctx.stroke();
+        ctx.fillStyle = grad;
+        ctx.globalAlpha = ringAlpha * 0.35;
+        ctx.beginPath();
+        ctx.arc(0,0, ringRadius, 0, Math.PI*2);
         ctx.fill();
       }
       ctx.restore();

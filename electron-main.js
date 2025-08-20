@@ -1,4 +1,8 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
+const crypto = require('crypto');
+const http = require('http');
+const { URL } = require('url');
+const fetch = (...args) => import('node-fetch').then(m => m.default(...args)).catch(() => Promise.reject(new Error('node-fetch missing')));
 const path = require('path');
 
 function createWindow() {
@@ -48,6 +52,93 @@ function createWindow() {
     }
   }
 }
+
+
+// ---- Google OAuth (PKCE) Support ----
+let currentUser = null; // in-memory user profile (email, name, picture)
+let oauthTokens = null; // access / refresh tokens (memory only)
+
+function base64UrlEncode(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/,'');
+}
+
+function createCodeVerifier() { return base64UrlEncode(crypto.randomBytes(32)); }
+function createCodeChallenge(verifier) { return base64UrlEncode(crypto.createHash('sha256').update(verifier).digest()); }
+
+async function startGoogleAuth() {
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID; // MUST be set by user (Desktop application credential)
+  if (!clientId) throw new Error('Missing GOOGLE_OAUTH_CLIENT_ID environment variable');
+  const codeVerifier = createCodeVerifier();
+  const codeChallenge = createCodeChallenge(codeVerifier);
+  // Start ephemeral local redirect server
+  const server = await new Promise((resolve, reject) => {
+    const s = http.createServer();
+    s.on('error', reject);
+    s.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  const port = server.address().port;
+  const redirectUri = `http://127.0.0.1:${port}/callback`;
+  const scope = encodeURIComponent('openid email profile');
+  const state = base64UrlEncode(crypto.randomBytes(16));
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${scope}&access_type=offline&prompt=consent&code_challenge=${codeChallenge}&code_challenge_method=S256&state=${state}`;
+
+  const authWindow = new BrowserWindow({
+    width: 480, height: 640, modal: true, show: true, parent: BrowserWindow.getAllWindows()[0],
+    webPreferences: { sandbox: true, contextIsolation: true }
+  });
+  authWindow.loadURL(authUrl);
+
+  const result = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => { try { server.close(); } catch{}; authWindow.close(); reject(new Error('OAuth timeout')); }, 180000);
+    server.on('request', async (req, res) => {
+      const url = new URL(req.url, `http://127.0.0.1:${port}`);
+      if (url.pathname !== '/callback') { res.writeHead(404).end(); return; }
+      const code = url.searchParams.get('code');
+      const returnedState = url.searchParams.get('state');
+      if (!code || returnedState !== state) { res.writeHead(400).end('Invalid response'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<html><body style="background:#000;color:#0f0;font-family:monospace;">Login successful. You can close this window.</body></html>');
+      clearTimeout(timeout);
+      authWindow.close();
+      try { server.close(); } catch {}
+      resolve(code);
+    });
+  });
+
+  // Exchange code for tokens
+  const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      code: result,
+      code_verifier: codeVerifier,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code'
+    })
+  });
+  if (!tokenResp.ok) throw new Error('Token exchange failed');
+  const tokenJson = await tokenResp.json();
+  oauthTokens = tokenJson; // access_token, refresh_token (if provided)
+  // Fetch userinfo (OpenID Connect)
+  const userResp = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
+    headers: { Authorization: `Bearer ${tokenJson.access_token}` }
+  });
+  if (userResp.ok) {
+    currentUser = await userResp.json();
+  } else {
+    currentUser = null;
+  }
+  return currentUser;
+}
+
+ipcMain.handle('auth:google', async () => {
+  try { return { ok: true, user: await startGoogleAuth() }; }
+  catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('auth:getUser', async () => ({ user: currentUser }));
+ipcMain.handle('auth:logout', async () => { currentUser = null; oauthTokens = null; return { ok: true }; });
+// -------------------------------------
 
 // GPU flag profiles to experiment with jitter; choose via env GFX=aggressive|baseline|minimal
 function applyGpuFlags(profile) {

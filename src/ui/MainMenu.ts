@@ -1,6 +1,10 @@
 import { Logger } from '../core/Logger';
 import { matrixBackground } from './MatrixBackground';
 import { CHARACTERS } from '../data/characters';
+// Static imports for auth/score services to avoid mixed dynamic+static warnings in Vite
+import { googleAuthService } from '../auth/AuthService';
+import { RemoteLeaderboardService } from '../auth/RemoteLeaderboardService';
+import { HighScoreService } from '../auth/HighScoreService';
 
 interface PlayerProfile {
   currency: number;
@@ -21,6 +25,8 @@ export class MainMenu {
   private _matrixChars?: string[];
   private playerProfile: PlayerProfile;
   private selectedMode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN';
+  private authUnsub?: () => void;
+  private authUser: import('../auth/AuthService').GoogleUserProfile | null = null;
 
   constructor(game: any) {
     this.gameInstance = game;
@@ -85,86 +91,71 @@ export class MainMenu {
     this.mainMenuElement = document.createElement('div');
     this.mainMenuElement.id = 'main-menu';
     this.mainMenuElement.className = 'cyberpunk-main-menu';
-
     this.mainMenuElement.innerHTML = `
       <div class="matrix-bg-overlay"></div>
-      <div class="main-menu-adaptive" id="main-menu-adaptive">
-      
-      <div class="main-menu-header">
-        <div class="game-logo">
-          <div class="logo-text">CYBER</div>
-          <div class="logo-subtext">SURVIVOR</div>
-        </div>
-        <div class="player-stats">
-          <div class="currency-display">
-            <span class="currency-icon">⚡</span>
-            <span id="currency-amount">${this.playerProfile.currency}</span>
+      <div class="main-menu-shell" id="main-menu-adaptive">
+        <header class="mm-header">
+          <div class="logo-block">
+            <div class="logo-main">CYBER<span>SURVIVOR</span></div>
+            <div class="version-tag">ALPHA v1.0.0</div>
           </div>
-        </div>
-      </div>
-
-      <div class="main-menu-content">
-        <div class="menu-navigation">
-          <button class="cyberpunk-btn primary-btn" id="start-mission-btn">
-            <span class="btn-text">START MISSION</span>
-            <span class="btn-glow"></span>
-          </button>
-          <div class="mode-select-wrapper">
-            <label class="mode-label">GAME MODE</label>
-            <select id="game-mode-select" class="mode-select">
-              <option value="SHOWDOWN" selected>Showdown (Open)</option>
-              <option value="DUNGEON">Dungeon (Rooms)</option>
-            </select>
-            <div id="mode-desc" class="mode-desc"></div>
+          <div class="profile-block">
+            <div class="currency-display compact">
+              <span class="currency-icon">⚡</span>
+              <span id="currency-amount">${this.playerProfile.currency}</span>
+            </div>
+            <div class="auth-container" id="auth-container">
+              <button class="cyberpunk-btn tertiary-btn tight hidden-init" id="login-btn">
+                <span class="btn-text">SIGN IN</span>
+                <span class="btn-glow"></span>
+              </button>
+              <div class="auth-profile hidden-init" id="auth-profile">
+                <img id="auth-avatar" class="auth-avatar" alt="User" />
+                <div class="auth-meta">
+                  <div class="auth-nick" id="auth-name"></div>
+                  <div class="auth-email" id="auth-email"></div>
+                </div>
+                <button id="logout-btn" class="mini-logout" title="Sign Out">✕</button>
+              </div>
+            </div>
           </div>
-          
-          <button class="cyberpunk-btn secondary-btn" id="character-select-btn">
-            <span class="btn-text">SELECT OPERATIVE</span>
-            <span class="btn-glow"></span>
-          </button>
-          
-          <button class="cyberpunk-btn secondary-btn" id="upgrades-btn">
-            <span class="btn-text">UPGRADES</span>
-            <span class="btn-glow"></span>
-            ${this.playerProfile.currency > 0 ? '<span class="notification-dot"></span>' : ''}
-          </button>
-          
-          <button class="cyberpunk-btn secondary-btn" id="statistics-btn">
-            <span class="btn-text">STATISTICS</span>
-            <span class="btn-glow"></span>
-          </button>
-        </div>
-
-        <div class="menu-preview">
-          <div class="selected-character-preview" id="character-preview">
-            <div class="preview-title">SELECTED OPERATIVE</div>
+        </header>
+        <main class="mm-main">
+          <section class="panel left nav-panel">
+            <button class="main-cta" id="start-mission-btn">START RUN</button>
+            <div class="mode-select-block">
+              <label for="game-mode-select">MODE</label>
+              <select id="game-mode-select" class="mode-select">
+                <option value="SHOWDOWN" selected>Showdown (Open)</option>
+                <option value="DUNGEON">Dungeon (Rooms)</option>
+              </select>
+              <div id="mode-desc" class="mode-desc"></div>
+            </div>
+            <div class="nav-buttons">
+              <button class="nav-btn" id="character-select-btn">Operatives</button>
+              <button class="nav-btn" id="upgrades-btn">Upgrades ${this.playerProfile.currency > 0 ? '<span class="notification-dot"></span>' : ''}</button>
+              <button class="nav-btn" id="statistics-btn">Statistics</button>
+            </div>
+          </section>
+          <section class="panel center preview-panel" id="character-preview">
             <div class="preview-portrait" id="preview-portrait">
-              <img src="${location.protocol === 'file:' ? './assets/player/wasteland_scavenger.png' : '/assets/player/wasteland_scavenger.png'}" alt="Character" />
+              <img src="${(window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : (location.protocol==='file:'?'./assets/player/wasteland_scavenger.png':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/player/wasteland_scavenger.png':'/assets/player/wasteland_scavenger.png'))}" alt="Character" />
             </div>
-            <div class="preview-name" id="preview-name">Select Character</div>
-            <div class="preview-stats" id="preview-stats">
-              <div class="stat-item">
-                <span class="stat-label">Health:</span>
-                <span class="stat-value">100</span>
-              </div>
-              <div class="stat-item">
-                <span class="stat-label">Damage:</span>
-                <span class="stat-value">25</span>
-              </div>
+            <div class="preview-meta">
+              <div class="preview-name" id="preview-name">Select Character</div>
+              <div class="preview-stats" id="preview-stats"></div>
             </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="main-menu-footer">
-        <div class="version-info">v1.0.0 ALPHA</div>
-        <div class="connection-status">
-          <span class="status-dot"></span>
-          NEURAL LINK ACTIVE
-        </div>
-      </div>
-      </div><!-- /main-menu-adaptive -->
-    `;
+          </section>
+          <section class="panel right highscores-panel" id="highscores-panel">
+            <div class="hs-header">REMOTE LEADERBOARD</div>
+            <div class="hs-panel" id="hs-remote-board">Loading…</div>
+          </section>
+        </main>
+        <footer class="mm-footer">
+          <div class="status-line"><span class="status-dot"></span>NEURAL LINK STABLE</div>
+          <div class="hint-line">ESC = Pause · ENTER = Confirm</div>
+        </footer>
+      </div>`;
 
     document.body.appendChild(this.mainMenuElement);
     // Adaptive scaling
@@ -185,6 +176,102 @@ export class MainMenu {
     // Show sound panel (if exists) while in main menu
     const soundPanel = document.getElementById('sound-settings-panel');
     if (soundPanel) soundPanel.style.display = 'block';
+    // Auth init (static import to avoid chunk duplication warnings)
+    const loginBtn = document.getElementById('login-btn');
+    const authProfile = document.getElementById('auth-profile');
+    if (loginBtn) {
+      // Always keep button enabled so we can capture clicks for diagnostics; attempt lazy config refresh.
+      if (!googleAuthService.isConfigured()) {
+        const refreshed = googleAuthService.refreshClientIdFromMeta?.();
+        if (!refreshed) {
+          loginBtn.title = 'Google Sign-In not yet configured (meta missing)';
+        } else {
+          loginBtn.title = 'Sign in with Google';
+        }
+      } else {
+        loginBtn.title = 'Sign in with Google';
+      }
+      loginBtn.removeAttribute('disabled');
+      loginBtn.style.display = 'inline-flex';
+      loginBtn.classList.remove('hidden-init');
+      loginBtn.addEventListener('click', () => {
+        Logger.info('[AuthUI] SIGN IN raw click handler entered (configured=' + googleAuthService.isConfigured() + ', ready=' + googleAuthService.isReady() + ')');
+        if (!googleAuthService.isConfigured()) {
+          const refreshed = googleAuthService.refreshClientIdFromMeta?.();
+          Logger.warn('[AuthUI] Not configured on click; refresh attempt result=', refreshed);
+          if (!refreshed) return; // still not configured
+        }
+        Logger.info('[AuthUI] SIGN IN clicked');
+        // If GIS not ready yet, immediately attempt new-tab flow (synchronous window.open) to avoid popup blocking.
+        if (!googleAuthService.isReady()) {
+          Logger.info('[AuthUI] GIS not ready – launching new-tab id_token flow and preloading script');
+          googleAuthService.openNewTabSignIn().catch(e=>Logger.warn('[AuthUI] new-tab flow error', e));
+          // Kick off preload (no await so gesture remains for window.open already executed)
+          googleAuthService.preload().catch(()=>{});
+          return;
+        }
+        // Try popup access token flow first (non-blocking); don't await before potential fallbacks.
+        googleAuthService.popupAccessSignIn().then(user => {
+          if (user) { Logger.info('[AuthUI] popup access flow succeeded'); return; }
+          Logger.info('[AuthUI] popup access flow returned null, trying new-tab');
+          return googleAuthService.openNewTabSignIn();
+        }).then(user => {
+          if (user) { Logger.info('[AuthUI] new-tab flow succeeded'); return; }
+          Logger.info('[AuthUI] new-tab flow returned null, opening fallback modal');
+          return googleAuthService.openLogin();
+        }).catch(e => {
+          Logger.warn('[AuthUI] sign-in sequence error', e);
+          googleAuthService.openLogin().catch(()=>{});
+        });
+      });
+    }
+    if (authProfile) {
+      authProfile.addEventListener('click', () => {
+        const dd = document.getElementById('auth-dropdown');
+        if (dd) dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
+      });
+    }
+    // Proactively preload GIS script in background after slight delay to mitigate first-click latency.
+    if (googleAuthService.isConfigured()) {
+      setTimeout(()=>{ googleAuthService.preload().catch(()=>{}); }, 200);
+    }
+
+    // --- Instrumentation for diagnosing missing click events ---
+    // Global capture listener to log any click events hitting or bubbling from the login button.
+    if (!(window as any).__loginBtnDebugInstalled) {
+      (window as any).__loginBtnDebugInstalled = true;
+      window.addEventListener('click', (ev) => {
+        const t = ev.target as HTMLElement | null;
+        if (!t) return;
+        if (t.id === 'login-btn' || t.closest('#login-btn')) {
+          Logger.info('[AuthUI][Debug] Global click observed on #login-btn (target=' + t.tagName + ')');
+        }
+      }, true);
+    }
+    // Force pointer-events + z-index for safety (some cascading styles may interfere in certain layouts/resolutions).
+    const lb = document.getElementById('login-btn') as HTMLElement | null;
+    if (lb) { lb.style.pointerEvents = 'auto'; lb.style.zIndex = '1000'; }
+    const logoutBtn = document.getElementById('logout-btn');
+    logoutBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      googleAuthService.signOut();
+      const dd = document.getElementById('auth-dropdown');
+      if (dd) dd.style.display = 'none';
+    });
+    this.authUnsub = googleAuthService.subscribe(user => {
+      this.authUser = user;
+      this.updateAuthUI();
+      this.refreshHighScores();
+    });
+    // Periodic refresh every 5s for remote board only
+    const loop = () => { this.refreshHighScores(); setTimeout(loop, 5000); }; setTimeout(loop, 5000);
+    if (!document.getElementById('mm-hs-styles')) {
+      const style = document.createElement('style');
+      style.id = 'mm-hs-styles';
+      style.textContent = `.highscores-panel .hs-row{display:flex;justify-content:space-between;padding:2px 4px;margin-bottom:2px;border:1px solid rgba(0,255,255,0.15);border-radius:3px;font-size:12px}.highscores-panel .hs-row.first{background:linear-gradient(90deg,#8a6 0,#333 100%);color:#fff}.highscores-panel .hs-empty{opacity:.6;font-size:11px}`;
+      document.head.appendChild(style);
+    }
+    this.refreshHighScores();
   }
 
   private setupEventListeners(): void {
@@ -384,6 +471,92 @@ export class MainMenu {
   private updateCurrencyDisplay(): void {
     const currencyEl = document.getElementById('currency-amount');
     if (currencyEl) currencyEl.textContent = this.playerProfile.currency.toString();
+  }
+
+  private updateAuthUI(): void {
+    const loginBtn = document.getElementById('login-btn');
+    const authProfile = document.getElementById('auth-profile');
+    const avatar = document.getElementById('auth-avatar') as HTMLImageElement | null;
+    const nameEl = document.getElementById('auth-name');
+    const emailEl = document.getElementById('auth-email');
+    if (!loginBtn || !authProfile) return;
+    if (this.authUser) {
+      loginBtn.classList.add('hidden-init');
+      authProfile.classList.remove('hidden-init');
+      if (avatar) avatar.src = this.authUser.picture || 'https://www.gravatar.com/avatar/?d=mp';
+      if (nameEl) nameEl.textContent = this.authUser.nickname || this.authUser.name;
+      if (emailEl) emailEl.textContent = this.authUser.email;
+      // If profile incomplete prompt for nickname
+      if (!this.authUser.profileComplete) {
+        this.showNicknameModal();
+      }
+    } else {
+  authProfile.classList.add('hidden-init');
+  loginBtn.classList.remove('hidden-init');
+    }
+  }
+  private refreshHighScores(): void {
+  const remotePanel = document.getElementById('hs-remote-board');
+  if (!remotePanel) return;
+    const characterId = (this.gameInstance as any).selectedCharacterData?.id || 'wasteland_scavenger';
+    const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
+    const mode = modeSelect?.value || 'SHOWDOWN';
+  // Remote board (fallback to local high score service)
+    if (RemoteLeaderboardService.isAvailable()) {
+      RemoteLeaderboardService.getTop(mode, characterId, 20).then(top => {
+        remotePanel.innerHTML = top.length ? top.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${e.level}</span></div>`).join('') : '<div class="hs-empty">No remote scores.</div>';
+      }).catch(()=>{
+        const top = HighScoreService.getTop(mode, characterId, 20);
+        remotePanel.innerHTML = top.length ? top.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${e.level}</span></div>`).join('') : '<div class="hs-empty">No scores.</div>';
+      });
+    } else {
+      const top = HighScoreService.getTop(mode, characterId, 20);
+      remotePanel.innerHTML = top.length ? top.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${e.level}</span></div>`).join('') : '<div class="hs-empty">No scores.</div>';
+    }
+  }
+
+  private showNicknameModal(): void {
+    // Avoid duplicates
+    if (document.getElementById('nickname-modal')) return;
+    const modal = document.createElement('div');
+    modal.id = 'nickname-modal';
+    modal.className = 'cyberpunk-modal';
+    const suggested = this.authUser?.nickname || 'CyberOperative';
+    modal.innerHTML = `
+      <div class="modal-content nickname-panel">
+        <div class="modal-header">
+          <h2>CREATE HANDLE</h2>
+          <button class="close-btn" id="close-nick">×</button>
+        </div>
+        <div class="nickname-body">
+          <p>Select a unique cyber handle. This will identify you on leaderboards later.</p>
+          <input id="nickname-input" class="nickname-input" maxlength="24" value="${suggested}" />
+          <div class="nickname-actions">
+            <button id="nickname-reroll" class="cyberpunk-btn secondary-btn small-btn">REROLL</button>
+            <button id="nickname-save" class="cyberpunk-btn primary-btn small-btn">SAVE</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    import('../auth/NicknameGenerator').then(mod => {
+      const input = document.getElementById('nickname-input') as HTMLInputElement | null;
+      document.getElementById('nickname-reroll')?.addEventListener('click', () => {
+        if (input) input.value = mod.generateNickname();
+      });
+    }).catch(()=>{});
+    document.getElementById('nickname-save')?.addEventListener('click', () => this.saveNickname());
+    document.getElementById('close-nick')?.addEventListener('click', () => modal.remove());
+  }
+
+  private saveNickname(): void {
+    const input = document.getElementById('nickname-input') as HTMLInputElement | null;
+    if (!input || !this.authUser) return;
+    const val = input.value.trim();
+    if (!val) return;
+  // Use statically imported googleAuthService (avoid dynamic import causing Vite warning)
+  googleAuthService.setNickname(val);
+  const modal = document.getElementById('nickname-modal');
+  if (modal) modal.remove();
   }
 
   private initializeMatrix(): void {

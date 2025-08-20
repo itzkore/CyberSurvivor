@@ -259,7 +259,7 @@ export class CharacterSelectPanel {
             <div class="stat-box"><div class="stat-label">Survive</div><div class="stat-value">${s.survivability ?? '—'}</div></div>
             <div class="stat-box"><div class="stat-label">Power</div><div class="stat-value">${s.powerScore ?? '—'}</div></div>
           </div>
-          <p class="compact-text" style="color: rgba(255,255,255,0.8); margin-top: 12px; width: 100%; text-align: left;">${character.description}</p>
+          <p class="compact-text character-desc">${character.description}</p>
           <div class="tab-spacer"></div>
         `;
         break; }
@@ -284,7 +284,7 @@ export class CharacterSelectPanel {
             ${traits.length ? `<ul class="weapon-traits">${traits.map(t=>`<li>${t}</li>`).join('')}</ul>`:''}
             <div class="weapon-lore">${loreTag}</div>
           </div>
-          ${character.specialAbility ? `<p class="compact-text" style="width: 100%; text-align: left;"><strong>Special Ability:</strong> ${character.specialAbility}</p>` : ''}
+          ${character.specialAbility ? `<p class="compact-text character-special"><strong>Special Ability:</strong> ${character.specialAbility}</p>` : ''}
           <div class="tab-spacer"></div>
         `;
         break; }

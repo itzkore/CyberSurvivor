@@ -185,8 +185,10 @@ export class Game {
     // Initialize player and managers in correct dependency order
     this.player = new Player(this.worldW / 2, this.worldH / 2);
     this.player.radius = 18;
+  // Expose player globally for loosely-coupled systems (crit, piercing, AoE passives)
+  try { (window as any).player = this.player; } catch {}
     this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1);
-    this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager);
+  this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager, this.player);
   this.bossManager = new BossManager(this.player, this.particleManager, 1, this.assetLoader);
     this.cinematic = new Cinematic();
     
@@ -213,6 +215,8 @@ export class Game {
     // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // Will be set via setter
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
     this.player.setGameContext(this as any); // Cast to any to allow setting game context
+  // Provide global game instance reference (used by EnemyManager passive AoE)
+  try { (window as any).__gameInstance = this; } catch {}
     this.initInput();
     // Auto-enable lowFX when running inside Electron packaged app to mitigate compositor stutter
     try {
@@ -467,7 +471,8 @@ export class Game {
    */
   // Only create a new player if one doesn't exist or if new character data is provided
   if (!this.player || selectedCharacterData) {
-    this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData);
+    // Ensure we always pass a character dataset when available; prevents Player constructor fallback warnings
+    this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData || this.player?.characterData);
     this.player.radius = 18;
   } else {
     // If player already exists and no new character data, just reset existing player state
@@ -483,6 +488,8 @@ export class Game {
     this.bulletSpatialGrid.clear(); // Clear grid on reset
   this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
   this.bossManager = new BossManager(this.player, this.particleManager, 1, this.assetLoader);
+  // Recreate bullet manager with updated player reference
+  this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager, this.player);
     // Ensure player uses the new enemyManager for enemyProvider
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
     // Ensure player uses the correct game context for bulletManager

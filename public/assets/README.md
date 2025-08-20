@@ -44,10 +44,8 @@ ctx.drawImage(playerImage, x, y);
 ### 3. Animate Sprites
 ```javascript
 // Render animated boss projectiles
-assets.renderAnimatedSprite(ctx, 'boss_shot', timestamp, x, y, scale);
 
 // Access animation metadata
-const bossShot = assets.getSprite('boss_shot');
 console.log(bossShot.animation.fps); // 12 FPS
 ```
 
@@ -57,18 +55,15 @@ console.log(bossShot.animation.fps); // 12 FPS
 assets/
 ├── manifest.json           # Asset metadata & configuration
 ├── enemies/
-│   ├── enemy_small.png     # 48x48, magenta glow
-│   ├── enemy_medium.png    # 64x64, magenta glow  
-│   └── enemy_large.png     # 96x96, magenta + core
+│   └── enemy_default.png   # 64x64, current unified enemy sprite
 ├── player/
 │   └── player_base.png     # 64x64, cyan glow
 ├── boss/
 │   ├── boss_phase1.png     # 256x256, magenta ring
-│   ├── boss_phase2.png     # 256x256, cyan+magenta
-│   └── boss_phase3.png     # 256x256, full spectrum
+│   └── (future phases removed for now)
 ├── projectiles/
 │   ├── bullet_cyan.png     # 16x16, cyan core
-│   └── boss_shot_set.png   # 6 frames, 24x24 each
+│   └── (boss projectile set deferred)
 ├── particles/
 │   └── particles_sheet.png # 8x8 grid, 8px tiles
 └── ui/
@@ -107,7 +102,7 @@ All assets feature strong outer glow effects:
 ### Canvas 2D Context
 ```javascript
 // Basic enemy rendering
-const enemy = assets.getImage('enemy_small');
+const enemy = assets.getImage('enemy_default');
 const metadata = assets.getMetadata('enemies', 'small');
 
 ctx.drawImage(
@@ -126,10 +121,8 @@ if (distance < metadata.hitbox_radius) {
 ### Sprite Sheet Animation
 ```javascript
 // Boss projectile animation
-const bossShot = assets.getSprite('boss_shot');
 const frameIndex = Math.floor(time / (1000/12)) % 6; // 12 FPS
 
-assets.renderSpriteFrame(ctx, 'boss_shot', frameIndex, x, y);
 ```
 
 ### UI Health Bar
@@ -173,7 +166,7 @@ ctx.drawImage(
 await assets.loadManifest();
 await Promise.all([
     assets.loadImage('player', manifest.player.base.file),
-    assets.loadImage('enemy_small', manifest.enemies.small.file)
+    assets.loadImage('enemy_default', manifest.enemies.default.file)
 ]);
 
 // Load remaining assets during gameplay

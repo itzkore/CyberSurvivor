@@ -37,7 +37,7 @@ export const CHARACTERS: CharacterData[] = [
     name: 'Wasteland Scavenger',
     description: 'Resourceful and adaptable, thrives in harsh environments.',
     lore: 'Born in the irradiated wastelands beyond the city walls, this survivor has learned to make the most of scarce resources. Their keen eye for salvage and ability to improvise weapons from scrap makes them a formidable opponent in the cyberpunk apocalypse.',
-    icon: '/assets/player/wasteland_scavenger.png',
+  icon: (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : '/assets/player/wasteland_scavenger.png',
     defaultWeapon: WeaponType.SCAVENGER_SLING,
     stats: {
       hp: 100,
@@ -61,7 +61,7 @@ export const CHARACTERS: CharacterData[] = [
     name: 'Tech Warrior',
     description: 'A cybernetic fighter, excels at rapid fire and advanced weaponry.',
     lore: 'Enhanced with cutting-edge military cybernetics, this warrior represents the pinnacle of human-machine integration. Their neural implants allow for superhuman reaction times and weapon coordination.',
-    icon: '/assets/player/tech_warrior.png',
+  icon: (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/tech_warrior.png') : '/assets/player/tech_warrior.png',
   defaultWeapon: WeaponType.WARRIOR_CANNON,
     stats: {
       hp: 125,
@@ -85,7 +85,7 @@ export const CHARACTERS: CharacterData[] = [
     name: 'Heavy Gunner',
     description: 'Unloads a barrage of sustained fire.',
     lore: 'A former military specialist who survived the cyber wars by embracing brute force. Their heavy weapons training and cybernetic enhancements allow them to wield devastating firepower that would crush ordinary humans.',
-    icon: '/assets/player/heavy_gunner.png',
+  icon: (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/heavy_gunner.png') : '/assets/player/heavy_gunner.png',
     defaultWeapon: WeaponType.GUNNER_MINIGUN,
     stats: {
       hp: 150,
@@ -109,7 +109,7 @@ export const CHARACTERS: CharacterData[] = [
     name: 'Cyber Runner',
     description: 'Lightning-fast mobility specialist with enhanced reflexes.',
     lore: 'Street-smart and cybernetically enhanced for speed, this operative excels at hit-and-run tactics. Neural boost implants provide superhuman agility and reaction time.',
-    icon: '/assets/player/cyber_runner.png',
+  icon: (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/cyber_runner.png') : '/assets/player/cyber_runner.png',
   defaultWeapon: WeaponType.RUNNER_GUN,
     stats: {
       hp: 90,
@@ -133,7 +133,7 @@ export const CHARACTERS: CharacterData[] = [
     name: 'Bio Engineer',
     description: 'Scientific specialist with biological weapon mastery.',
     lore: 'A former corporate scientist who turned mercenary after the bio-wars. Uses advanced biotechnology and viral weapons to devastate enemies from within.',
-    icon: '/assets/player/bio_engineer.png',
+  icon: (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/bio_engineer.png') : '/assets/player/bio_engineer.png',
   defaultWeapon: WeaponType.BIO_TOXIN,
     stats: {
       hp: 110,

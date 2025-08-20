@@ -3,10 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <!-- WHAT: CSP tightened (self-hosted fonts/styles only). -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; media-src 'self'; frame-ancestors 'none';">
+    <!-- CSP (runtime header will append frame-ancestors). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://lh3.googleusercontent.com; media-src 'self'; frame-src 'self' https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests;">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Fallback injection of Google Client ID for auth service (used if .env not picked up) -->
+    <meta name="google-client-id" content="156752381672-vidmkis66cs201c39ps9vac3230bv6rl.apps.googleusercontent.com">
+    <meta name="backend-api-base" content="https://itzkore.cz/">
     <title>CyberSurvivor</title>
-    <link rel="icon" type="image/svg+xml" href="/public/favicon.svg">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="./src/assets/cyberpunk-styles.css">
 </head>
 <body>

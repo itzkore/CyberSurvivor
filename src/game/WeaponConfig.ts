@@ -1,4 +1,5 @@
 import { WeaponType } from './WeaponType';
+import { AssetLoader } from './AssetLoader';
 
 export interface ProjectileVisual {
   /**
@@ -89,7 +90,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.PISTOL]:   {
     id: WeaponType.PISTOL,
     name: 'Desert Eagle',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
   cooldown: 70, // adjusted to align L1 DPS target (50 DPS)
     salvo: 1,
     spread: 0,
@@ -128,7 +129,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     projectileVisual: {
       type: 'bullet',
       // Dedicated sprite for Desert Eagle bullet (size doubled again)
-      sprite: '/assets/projectiles/bullet_deagle.png',
+  sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_deagle.png'),
       color: '#E6C200',
   size: 72, // 300% increase (24 * 3) -> render diameter = 144px
       glowColor: '#FFC933',
@@ -146,7 +147,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.SHOTGUN]:  {
     id: WeaponType.SHOTGUN,
     name: 'Shotgun',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 95,
     salvo: 5,
     spread: 0.22,
@@ -158,7 +159,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     projectileVisual: {
       type: 'bullet',
   // Unique pellet sprite (fallback color + glow if not loaded yet)
-  sprite: '/assets/projectiles/bullet_shotgun.png',
+  sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_shotgun.png'),
   color: '#FF7A00',
   size: 8, // slightly smaller visual; multiple pellets read clearer
   glowColor: '#FFB066',
@@ -198,7 +199,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.TRI_SHOT]: {
     id: WeaponType.TRI_SHOT,
     name: 'Triple Crossbow',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 100, // slightly faster base to smooth early feel
     salvo: 3,      // three bolts per volley (central + two angled)
     spread: 0.155, // modest fan; tight enough to double-hit large enemies
@@ -210,7 +211,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     projectileVisual: {
       // Use 'bullet' so BulletManager sprite branch loads visual.sprite (type 'arrow' was falling through to circle fallback)
       type: 'bullet',
-      sprite: '/assets/projectiles/bullet_crossbow.png', // unique crossbow bolt sprite
+  sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_crossbow.png'), // unique crossbow bolt sprite
       color: '#CFA94A',
       size: 22,
       glowColor: '#FFE07A',
@@ -267,7 +268,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.RAPID]:    {
     id: WeaponType.RAPID,
     name: 'Smart Rifle',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     // Bee-like micro-missiles: slower base fire rate, very high reliability hitting priority target
     cooldown: 42, // frames; improved by level scaling
     salvo: 1,
@@ -321,7 +322,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     projectileVisual: {
       // Use bullet sprite for Laser Blaster while retaining short beam vibe via glow + size
       type: 'bullet',
-      sprite: '/assets/projectiles/bullet_laserblaster.png',
+  sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'),
       color: '#FF3020',
       size: 10,
       glowColor: '#FF6A50',
@@ -351,7 +352,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.BEAM]: {
     id: WeaponType.BEAM,
     name: 'Beam',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 50,
     salvo: 1,
     spread: 0,
@@ -377,7 +378,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.RICOCHET]: {
     id: WeaponType.RICOCHET,
     name: 'Ricochet',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 70,
     salvo: 1,
     spread: 0.05,
@@ -394,7 +395,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.HOMING]: {
     id: WeaponType.HOMING,
     name: 'Kamikaze Drone',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 120,
     salvo: 1,
     spread: 0,
@@ -432,7 +433,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.RAILGUN]: {
     id: WeaponType.RAILGUN,
     name: 'Railgun',
-    icon: '/assets/ui/icons/upgrade_speed.png',
+  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 120,
     salvo: 1,
     spread: 0,
@@ -463,13 +464,13 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
      },
      isClassWeapon: false
   },
-  [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma',  icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60,  salvo: 4, spread: 0.25, projectile: 'bullet_cyan', speed: 11.2, range: 350, maxLevel: 5, damage: 10, projectileVisual: { type: 'plasma', color: '#00FFFF', size: 12, glowColor: '#00FFFF', glowRadius: 10, trailColor: 'rgba(0,255,255,0.3)', trailLength: 5 }, isClassWeapon: false },
+  [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma',  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 60,  salvo: 4, spread: 0.25, projectile: 'bullet_cyan', speed: 11.2, range: 350, maxLevel: 5, damage: 10, projectileVisual: { type: 'plasma', color: '#00FFFF', size: 12, glowColor: '#00FFFF', glowRadius: 10, trailColor: 'rgba(0,255,255,0.3)', trailLength: 5 }, isClassWeapon: false },
   // Rebalanced Runner Gun: base damage set for ~60 DPS (damage * salvo * 60 / cooldown)
-  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 6, projectileVisual: { type: 'bullet', sprite: '/assets/projectiles/bullet_cyan.png', size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12, glowColor: '#66F2FF', glowRadius: 10 }, traits: ['Spray', 'Fast', 'Scaling'], isClassWeapon: true, knockback: 5, getLevelStats(level: number) { const baseDamage=6, baseCooldown=12, mult=5.833333; const dmg=Math.round(baseDamage*(1+ (level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1- (level-1)*0.30/4)); return { damage:dmg, cooldown:cd }; } },
-  [WeaponType.WARRIOR_CANNON]: { id: WeaponType.WARRIOR_CANNON, name: 'Warrior Cannon', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 60, salvo: 1, spread: 0, projectile: 'bullet_red', speed: 5.6, range: 250, maxLevel: 5, damage: 60, projectileVisual: { type: 'explosive', color: '#FF0000', size: 14, glowColor: '#FF0000', glowRadius: 12 }, traits: ['Explosive', 'Burst', 'Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=60, baseCooldown=60, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
-  [WeaponType.SORCERER_ORB]: { id: WeaponType.SORCERER_ORB, name: 'Arcane Orb', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 144, salvo: 1, spread: 0, projectile: 'orb_yellow', speed: 3.2, range: 1200, maxLevel: 5, damage: 144, projectileVisual: { type: 'bullet', color: '#FFD700', size: 10, glowColor: '#FFD700', glowRadius: 18 }, traits: ['Piercing','Homing','Returns','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=144, baseCooldown=144, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
-  [WeaponType.SHADOW_DAGGER]: { id: WeaponType.SHADOW_DAGGER, name: 'Shadow Dagger', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 18, salvo: 1, spread: 0, projectile: 'dagger_purple', speed: 12.6, range: 420, maxLevel: 5, damage: 18, projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 }, traits: ['Ricochet','Critical','Scaling'], isClassWeapon: true, knockback: 20, getLevelStats(level:number){ const baseDamage=18, baseCooldown=18, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
-  [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 5, damage: 88, projectileVisual: { type: 'slime', color: '#00FF00', size: 13, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison','Area','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=88, baseCooldown=88, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 300, maxLevel: 5, damage: 6, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12, glowColor: '#66F2FF', glowRadius: 10 }, traits: ['Spray', 'Fast', 'Scaling'], isClassWeapon: true, knockback: 5, getLevelStats(level: number) { const baseDamage=6, baseCooldown=12, mult=5.833333; const dmg=Math.round(baseDamage*(1+ (level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1- (level-1)*0.30/4)); return { damage:dmg, cooldown:cd }; } },
+  [WeaponType.WARRIOR_CANNON]: { id: WeaponType.WARRIOR_CANNON, name: 'Warrior Cannon', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 60, salvo: 1, spread: 0, projectile: 'bullet_red', speed: 5.6, range: 250, maxLevel: 5, damage: 60, projectileVisual: { type: 'explosive', color: '#FF0000', size: 14, glowColor: '#FF0000', glowRadius: 12 }, traits: ['Explosive', 'Burst', 'Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=60, baseCooldown=60, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.SORCERER_ORB]: { id: WeaponType.SORCERER_ORB, name: 'Arcane Orb', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 144, salvo: 1, spread: 0, projectile: 'orb_yellow', speed: 3.2, range: 1200, maxLevel: 5, damage: 144, projectileVisual: { type: 'bullet', color: '#FFD700', size: 10, glowColor: '#FFD700', glowRadius: 18 }, traits: ['Piercing','Homing','Returns','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=144, baseCooldown=144, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.SHADOW_DAGGER]: { id: WeaponType.SHADOW_DAGGER, name: 'Shadow Dagger', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 18, salvo: 1, spread: 0, projectile: 'dagger_purple', speed: 12.6, range: 420, maxLevel: 5, damage: 18, projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 }, traits: ['Ricochet','Critical','Scaling'], isClassWeapon: true, knockback: 20, getLevelStats(level:number){ const baseDamage=18, baseCooldown=18, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 5, damage: 88, projectileVisual: { type: 'slime', color: '#00FF00', size: 13, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison','Area','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=88, baseCooldown=88, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
   [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 5, damage: 32, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP','Disrupt','Pierces','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=32, baseCooldown=32, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
   [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 10, salvo: 1, spread: 0.28, projectile: 'bullet_cyan', speed: 7.7, range: 320, maxLevel: 5, damage: 10, projectileVisual: { type: 'bullet', color: '#B8860B', size: 6, glowColor: '#DAA520', glowRadius: 9, trailColor: 'rgba(184,134,11,0.55)', trailLength: 10 }, traits: ['Spray','Rapid','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=10, baseCooldown=10, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
   [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 28, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.1, range: 500, maxLevel: 5, damage: 28, projectileVisual: { type: 'beam', color: '#FFC0CB', thickness: 14, length: 120, glowColor: '#FF00FF', glowRadius: 40, trailColor: '#FFD700', trailLength: 40 }, traits: ['Pierces','Area','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=28, baseCooldown=28, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
@@ -480,21 +481,4 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   
 };
 
-// Normalize asset paths (icons & projectile sprites) for file:// protocol so absolute /assets paths work in packaged Electron
-if (typeof location !== 'undefined' && location.protocol === 'file:') {
-  for (const key in WEAPON_SPECS) {
-    const spec = WEAPON_SPECS[key as unknown as WeaponType];
-    if (!spec) continue;
-    if (spec.icon && spec.icon.startsWith('/assets/')) spec.icon = '.' + spec.icon;
-    if (spec.projectileVisual && spec.projectileVisual.sprite && spec.projectileVisual.sprite.startsWith('/assets/')) {
-      spec.projectileVisual.sprite = '.' + spec.projectileVisual.sprite;
-    }
-    // Normalize Triple Crossbow projectile key path if using sprite without leading slash
-    if (spec.id === WeaponType.TRI_SHOT && spec.projectileVisual?.sprite && !spec.projectileVisual.sprite.includes('bullet_crossbow.png')) {
-      // leave as-is unless mismatch found; placeholder for future orientation fixes
-    }
-    if (spec.beamVisual && spec.beamVisual.sprite && spec.beamVisual.sprite.startsWith('/assets/')) {
-      spec.beamVisual.sprite = '.' + spec.beamVisual.sprite;
-    }
-  }
-}
+// (Path normalization now handled at declaration via AssetLoader.normalizePath)

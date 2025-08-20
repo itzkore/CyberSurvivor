@@ -606,6 +606,27 @@ export class EnemyManager {
         this.spawnGem(enemy.x, enemy.y, baseTier);
   // Removed on-kill explosion effect for Mech Mortar (Titan Mech)
   this.killCount++;
+        // Passive: AOE On Kill
+        const playerAny: any = this.player as any;
+        if (playerAny.hasAoeOnKill) {
+          const gdm = playerAny.globalDamageMultiplier || 1;
+          const dmg = (this.player.bulletDamage || 10) * gdm * 0.4; // 40% scaled
+          const radius = 70; // modest radius to avoid chain wipes
+          const game: any = (window as any).__gameInstance || (window as any).gameInstance;
+          if (game && game.explosionManager && typeof game.explosionManager.triggerExplosion === 'function') {
+            game.explosionManager.triggerExplosion(enemy.x, enemy.y, dmg, undefined, radius, '#FFAA33');
+          } else {
+            // Fallback: simple immediate radial damage without visuals
+            for (let i=0;i<this.enemies.length;i++) {
+              const e2 = this.enemies[i];
+              if (!e2.active || e2.hp <= 0) continue;
+              const dx = e2.x - enemy.x; const dy = e2.y - enemy.y;
+              if (dx*dx + dy*dy <= radius*radius) {
+                this.takeDamage(e2, dmg * 0.5, false, true); // reduced if fallback path
+              }
+            }
+          }
+        }
         this.enemyPool.push(enemy);
       }
     }

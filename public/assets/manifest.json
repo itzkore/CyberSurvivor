@@ -7,24 +7,11 @@
     "bg_dark": "#0b0b0b"
   },
   "enemies": {
-    "small": {
-      "file": "assets/enemies/enemy_small.png",
-      "w": 48,
-      "h": 48,
-      "frames": 1
-    },
-    "medium": {
-      "file": "assets/enemies/enemy_medium.png",
+    "default": {
+      "file": "assets/enemies/enemy_default.png",
       "w": 64,
       "h": 64,
       "frames": 1
-    },
-    "large": {
-      "file": "assets/enemies/enemy_large.png",
-      "w": 96,
-      "h": 96,
-      "frames": 1,
-      "innerCore": true
     }
   },
   "player": {
@@ -48,53 +35,9 @@
       "h": 256,
       "frames": 1,
       "telegraph": true
-    },
-    "phase2": {
-      "file": "assets/boss/boss_phase2.png",
-      "w": 256,
-      "h": 256,
-      "frames": 1,
-      "telegraph": true
-    },
-    "phase3": {
-      "file": "assets/boss/boss_phase3.png",
-      "w": 256,
-      "h": 256,
-      "frames": 1,
-      "telegraph": true
     }
   },
   "spritesheets": {
-    "boss_phase1_anim": {
-      "file": "assets/boss/boss_phase1_anim.png",
-      "frameW": 256,
-      "frameH": 256,
-      "frames": 3,
-      "fps": 6
-    },
-    "boss_phase2_anim": {
-      "file": "assets/boss/boss_phase2_anim.png",
-      "frameW": 256,
-      "frameH": 256,
-      "frames": 3,
-      "fps": 6
-    },
-    "boss_phase3_anim": {
-      "file": "assets/boss/boss_phase3_anim.png",
-      "frameW": 256,
-      "frameH": 256,
-      "frames": 3,
-      "fps": 6
-    },
-    "boss_shot": {
-      "file": "assets/projectiles/boss_shot_set.png",
-      "frameW": 24,
-      "frameH": 24,
-      "frames": 6,
-      "rows": 1,
-      "cols": 6,
-      "fps": 12
-    },
     "particles": {
       "file": "assets/particles/particles_sheet.png",
       "tileW": 8,

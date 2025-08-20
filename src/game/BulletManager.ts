@@ -1,4 +1,5 @@
 import type { Bullet } from './Bullet';
+import { Player } from './Player';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
@@ -21,13 +22,15 @@ export class BulletManager {
   private readonly initialPoolSize: number = 200; // Pre-allocate a reasonable number of bullets
   private particleManager: ParticleManager; // Injected ParticleManager
   private enemyManager: EnemyManager; // Injected EnemyManager
+  private player: Player; // direct player reference for stats (crit, piercing)
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid reference
 
-  constructor(assetLoader: AssetLoader, enemySpatialGrid: SpatialGrid<Enemy>, particleManager: ParticleManager, enemyManager: EnemyManager) {
+  constructor(assetLoader: AssetLoader, enemySpatialGrid: SpatialGrid<Enemy>, particleManager: ParticleManager, enemyManager: EnemyManager, player: Player) {
     this.assetLoader = assetLoader;
     this.enemySpatialGrid = enemySpatialGrid; // Assign spatial grid
     this.particleManager = particleManager; // Assign particle manager
     this.enemyManager = enemyManager; // Assign enemy manager
+    this.player = player;
     this.preallocateBullets();
   }
 
@@ -277,7 +280,7 @@ export class BulletManager {
         } else if (b.phase === 'DIVE') {
           if ((b as any)._pendingDiveAcquire) {
             delete (b as any)._pendingDiveAcquire;
-            const playerRef = (window as any).player;
+            const playerRef = this.player;
             const cx = playerRef ? playerRef.x : b.x;
             const cy = playerRef ? playerRef.y : b.y;
             const clusterId = (b as any)._pendingClusterEnemyId;
@@ -453,8 +456,19 @@ export class BulletManager {
             hitEnemy = enemy;
             if (enemyId && b.hitIds) b.hitIds.push(enemyId);
             const weaponLevel = (b as any).level ?? 1;
-            const isCritical = Math.random() < 0.15;
-            const damage = isCritical ? b.damage * 2.0 : b.damage;
+            // Crit calculation now derives from player passive values if present
+            const p: any = this.player;
+            let critChance = 0.15; // default baseline
+            if (p) {
+              const agi = p.agility || 0;
+              const luck = p.luck || 0;
+              const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5); // percent
+              const bonus = p.critBonus ? p.critBonus * 100 : 0; // convert 0..0.5 to percent
+              critChance = Math.min(100, basePct + bonus) / 100; // normalize
+            }
+            const critMult = p?.critMultiplier ?? 2.0;
+            const isCritical = Math.random() < critChance;
+            const damage = isCritical ? b.damage * critMult : b.damage;
             this.enemyManager.takeDamage(enemy, damage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
             if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
             // Piercing: if pierceRemaining > 0, decrement and continue; else deactivate
@@ -484,8 +498,18 @@ export class BulletManager {
             const rsB = (b.radius || 4) + (boss.radius || 160);
             if (dxB*dxB + dyB*dyB < rsB*rsB) {
               const weaponLevel = (b as any).level ?? 1;
-              const isCritical = Math.random() < 0.15;
-              const damage = isCritical ? b.damage * 2.0 : b.damage;
+              const p: any = this.player;
+              let critChance = 0.15;
+              if (p) {
+                const agi = p.agility || 0;
+                const luck = p.luck || 0;
+                const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+                const bonus = p.critBonus ? p.critBonus * 100 : 0;
+                critChance = Math.min(100, basePct + bonus) / 100;
+              }
+              const critMult = p?.critMultiplier ?? 2.0;
+              const isCritical = Math.random() < critChance;
+              const damage = isCritical ? b.damage * critMult : b.damage;
               // Reuse enemyManager damage pathway if compatible, else dispatch custom event
               if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
                 (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.x, b.y, weaponLevel);
@@ -924,6 +948,16 @@ export class BulletManager {
       if (!(b.projectileVisual as any).trailColor) {
         (b.projectileVisual as any).trailColor = 'rgba(255,210,110,0.35)';
         (b.projectileVisual as any).trailLength = 22;
+      }
+    }
+    // Passive-based piercing fallback: if player has generic piercing flag and no specific pierce set by weapon
+    {
+  const passivePierceLevel: number | undefined = (this.player as any)?.piercing;
+      if (passivePierceLevel && passivePierceLevel > 0) {
+        // Weapon-assigned pierceRemaining represents extra targets after FIRST
+        // We add passive extra targets (level) cumulatively.
+        const basePierce = b.pierceRemaining != null ? b.pierceRemaining : 0;
+        b.pierceRemaining = basePierce + passivePierceLevel; // each level adds one additional enemy after first
       }
     }
     // Smart Rifle initial target lock (toughest enemy: highest maxHp (fallback hp); tie -> lowest current hp)
