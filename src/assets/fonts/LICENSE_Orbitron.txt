@@ -1,0 +1,15 @@
+Orbitron Font License (SIL Open Font License 1.1)
+
+This project expects a local copy of the Orbitron variable font file:
+  Orbitron-VariableFont_wght.woff2
+
+Orbitron is licensed under the SIL Open Font License, Version 1.1.
+See: https://scripts.sil.org/OFL and Google Fonts repository.
+
+OFL 1.1 Summary (informative):
+ - Use, study, embed, modify and redistribute the font.
+ - Must include copyright and license.
+ - Reserved Font Names must be changed if font modified.
+ - Cannot sell the font by itself.
+
+Place the font file in this directory so the @font-face in cyberpunk-styles.css resolves.

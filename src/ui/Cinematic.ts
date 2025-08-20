@@ -74,86 +74,42 @@ export class Cinematic {
     ctx.save();
     const dpr = (window as any).devicePixelRatio || 1;
     const rs = (window as any).__renderScale || 1;
-    const logicalW = canvas.width / (dpr * rs);
-    const logicalH = canvas.height / (dpr * rs);
-    // Fade in/out effect
+    const scale = 1 / (dpr * rs);
+    ctx.scale(scale, scale);
+    const logicalW = canvas.width * scale;
+    const logicalH = canvas.height * scale;
+    const fadeFrames = 60;
     let alpha = 1;
-    if (this.progress < 60) {
-      alpha = this.progress / 60;
-    } else if (this.progress > this.duration - 60) {
-      alpha = 1 - (this.progress - (this.duration - 60)) / 60;
-    }
+    if (this.progress < fadeFrames) alpha = this.progress / fadeFrames; else if (this.progress > this.duration - fadeFrames) alpha = 1 - (this.progress - (this.duration - fadeFrames)) / fadeFrames;
     ctx.globalAlpha = alpha;
     ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, logicalW, logicalH);
     ctx.globalAlpha = 1;
     ctx.textAlign = 'center';
-
-    // Epic intro sequence
-    if (this.progress < 180) {
-      ctx.font = 'bold 54px Orbitron, sans-serif';
-      ctx.fillStyle = '#0ff';
-      ctx.shadowColor = '#00f6ff';
-      ctx.shadowBlur = 24;
-      ctx.fillText('CYBER SURVIVOR', logicalW / 2, logicalH / 2 - 40);
-      ctx.font = '28px Orbitron, sans-serif';
-      ctx.fillStyle = '#fff';
-      ctx.shadowBlur = 0;
-      ctx.fillText('A Neon Roguelike Experience', logicalW / 2, logicalH / 2 + 30);
-    } else if (this.progress < 420) {
-      ctx.font = 'bold 42px Orbitron, sans-serif';
-      ctx.fillStyle = '#ff00cc';
-      ctx.shadowColor = '#ff00cc';
-      ctx.shadowBlur = 18;
-      ctx.fillText('In the year 2088...', logicalW / 2, logicalH / 2 - 20);
-      ctx.font = '24px Orbitron, sans-serif';
-      ctx.fillStyle = '#fff';
-      ctx.shadowBlur = 0;
-      ctx.fillText('Mega-cities are ruled by rogue AIs.', logicalW / 2, logicalH / 2 + 30);
-    } else if (this.progress < 660) {
-      ctx.font = 'bold 42px Orbitron, sans-serif';
-      ctx.fillStyle = '#00ffea';
-      ctx.shadowColor = '#00ffea';
-      ctx.shadowBlur = 18;
-      ctx.fillText('You are the last survivor...', logicalW / 2, logicalH / 2 - 20);
-      ctx.font = '24px Orbitron, sans-serif';
-      ctx.fillStyle = '#fff';
-      ctx.shadowBlur = 0;
-      ctx.fillText('Fight through endless waves of enemies.', logicalW / 2, logicalH / 2 + 30);
-    } else {
-      ctx.font = 'bold 48px Orbitron, sans-serif';
-      ctx.fillStyle = '#0ff';
-      ctx.shadowColor = '#00f6ff';
-      ctx.shadowBlur = 24;
-      ctx.fillText('Survive the Neon Onslaught!', logicalW / 2, logicalH / 2);
-      ctx.font = '24px Orbitron, sans-serif';
-      ctx.fillStyle = '#fff';
-      ctx.shadowBlur = 0;
-      ctx.fillText('Good luck...', logicalW / 2, logicalH / 2 + 60);
-    }
-  // Draw skip button
-  this.drawSkipButton(ctx, canvas);
-  ctx.restore();
-  }
-
-  /**
-   * Handles click events for the skip button. Should be called from main game input handler.
-   * Returns true if skip was triggered.
-   */
-  public handleClick(x: number, y: number, canvas: HTMLCanvasElement): boolean {
-    if (!this.active) return false;
-    const btnWidth = 120;
-    const btnHeight = 44;
-    const dpr = (window as any).devicePixelRatio || 1;
-    const rs = (window as any).__renderScale || 1;
-    const logicalH = canvas.height / (dpr * rs);
-    const btnX = 32;
-    const btnY = logicalH - btnHeight - 32;
-    if (x >= btnX && x <= btnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
-      this.active = false;
-      if (this.onComplete) this.onComplete();
-      return true;
-    }
-    return false;
+    ctx.textBaseline = 'middle';
+    const minDim = Math.min(logicalW, logicalH);
+    const titleBase = Math.round(minDim * 0.08);
+    const subBase = Math.round(titleBase * 0.48);
+    const centerY = logicalH / 2;
+    const drawBlock = (title: string, subtitle: string | null, color: string, glow: string) => {
+      ctx.font = `bold ${titleBase}px Orbitron, sans-serif`;
+      ctx.fillStyle = color;
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = titleBase * 0.45;
+      const titleY = centerY - (subtitle ? subBase * 0.9 : 0);
+      ctx.fillText(title, logicalW / 2, titleY);
+      if (subtitle) {
+        ctx.font = `${subBase}px Orbitron, sans-serif`;
+        ctx.fillStyle = '#fff';
+        ctx.shadowBlur = 0;
+        ctx.fillText(subtitle, logicalW / 2, centerY + subBase * 0.4);
+      }
+    };
+    if (this.progress < 180) drawBlock('CYBER SURVIVOR', 'A Neon Roguelike Experience', '#0ff', '#00f6ff');
+    else if (this.progress < 420) drawBlock('In the year 2088...', 'Mega-cities are ruled by rogue AIs.', '#ff00cc', '#ff00cc');
+    else if (this.progress < 660) drawBlock('You are the last survivor...', 'Fight through endless waves of enemies.', '#00ffea', '#00ffea');
+    else drawBlock('Survive the Neon Onslaught!', 'Good luck...', '#0ff', '#00f6ff');
+    this.drawSkipButton(ctx, canvas);
+    ctx.restore();
   }
 }
