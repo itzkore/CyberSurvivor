@@ -51,6 +51,7 @@ function createWindow() {
 
 // GPU flag profiles to experiment with jitter; choose via env GFX=aggressive|baseline|minimal
 function applyGpuFlags(profile) {
+  const isDev = process.env.NODE_ENV === 'development';
   if (profile === 'minimal') {
     // No extra flags – pure default to see if overrides caused pacing issues
     return;
@@ -60,7 +61,11 @@ function applyGpuFlags(profile) {
     app.commandLine.appendSwitch('enable-zero-copy');
     return;
   }
-  // aggressive (current original set)
+  if (!isDev) {
+    app.commandLine.appendSwitch('enable-gpu-rasterization');
+    app.commandLine.appendSwitch('enable-zero-copy');
+    return;
+  }
   app.commandLine.appendSwitch('enable-gpu-rasterization');
   app.commandLine.appendSwitch('enable-zero-copy');
   app.commandLine.appendSwitch('ignore-gpu-blacklist');

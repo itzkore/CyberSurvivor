@@ -8,6 +8,7 @@ const { contextBridge } = require('electron');
 // Frozen empty object now; extend intentionally via explicit keys.
 // Pattern: keep surface tiny; add methods only when a renderer feature truly needs them.
 const api = Object.freeze({
+	meta: Object.freeze({ version: '1.0.0', features: [] }),
 	/**
 	 * Returns a small tuple with environment hints (safe – static strings only).
 	 * WHY: Example of exposing data without leaking process internals.

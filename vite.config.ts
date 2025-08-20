@@ -9,7 +9,8 @@ export default defineConfig(({ command }) => ({
     outDir: '../dist',
     emptyOutDir: true,
     target: 'es2020',
-    assetsInlineLimit: 0,
+  assetsInlineLimit: 0,
+  sourcemap: false,
   },
   server: {
     port: 5173,
