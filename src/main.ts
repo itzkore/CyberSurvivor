@@ -30,6 +30,28 @@ function applyCanvasSizeGlobal(canvas: HTMLCanvasElement) {
 }
 
 window.onload = async () => {
+  // Preload integrity check
+  try {
+    const preloadOk = (window as any).cs && (window as any).cs.meta && (window as any).cs.meta.version === '1.0.0';
+    if (!preloadOk) {
+      Logger.error('[main.ts] Preload API integrity failed: missing or incorrect version');
+    } else {
+      Logger.info('[main.ts] Preload API version ' + (window as any).cs.meta.version + ' verified');
+    }
+  } catch (e) {
+    Logger.error('[main.ts] Preload integrity exception', e);
+  }
+  // --- Preload integrity check ---
+  try {
+    const preloadOk = (window as any).cs && (window as any).cs.meta && (window as any).cs.meta.version === '1.0.0';
+    if (!preloadOk) {
+      Logger.error('[main.ts] Preload API integrity failed (missing or wrong version)');
+    } else {
+      Logger.info('[main.ts] Preload API version ' + (window as any).cs.meta.version + ' verified');
+    }
+  } catch (e) {
+    Logger.error('[main.ts] Preload API integrity exception', e);
+  }
   // --- Cinematic skip button click handler ---
   // Move click handler after canvas is assigned
   setTimeout(() => {
@@ -67,6 +89,28 @@ window.onload = async () => {
   // Attach FPS overlay (only in electron / production profiling). Could gate behind env later.
   const fps = new FPSCounter();
   (game as any).gameLoop?.setFrameHook?.((dt:number)=>fps.frame(dt));
+  // Performance drift monitor (avg delta over 180 frames)
+  const drift: number[] = [];
+  (game as any).gameLoop?.setFrameHook?.((dt:number)=>{
+    drift.push(dt);
+    if (drift.length >= 180) {
+      const avg = drift.reduce((a,b)=>a+b,0)/drift.length;
+      if (avg > 22) Logger.warn('[perf] avg frame delta ' + avg.toFixed(2) + 'ms (>22ms)');
+      drift.length = 0;
+    }
+  });
+  // Perf drift monitor: warn if avg dt over last 180 frames > 22ms ( <45 FPS )
+  const driftWindow: number[] = [];
+  (game as any).gameLoop?.setFrameHook?.((dt:number)=>{
+    driftWindow.push(dt);
+    if (driftWindow.length >= 180) {
+      const avg = driftWindow.reduce((a,b)=>a+b,0)/driftWindow.length;
+      if (avg > 22) {
+        Logger.warn('[perf] average frame delta ' + avg.toFixed(2) + 'ms (>22ms)');
+      }
+      driftWindow.length = 0;
+    }
+  });
 
   // --- Optional Offscreen worker renderer (enable via ?worker=1) ---
   const useWorker = /[?&]worker=1/.test(location.search) && (window as any).OffscreenCanvas;
