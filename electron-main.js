@@ -11,12 +11,17 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true, // WHAT: Run renderer in Chromium sandbox. WHY: Stronger process isolation.
+      enableRemoteModule: false, // WHAT: Disable deprecated remote module. WHY: Prevent remote-based RCE vectors.
       webgl: true,
       backgroundThrottling: false, // keep RAF cadence even if window not focused
       spellcheck: false,
       // Allow forcing devtools in a production (packaged) build when DEVTOOLS=1
       devTools: process.env.NODE_ENV === 'development' || process.env.DEVTOOLS === '1',
       enableBlinkFeatures: 'Accelerated2dCanvas',
+      // Additional guardrails (explicit even if defaults):
+      webSecurity: true, // Enforce same-origin & CSP.
+      allowRunningInsecureContent: false,
     },
   });
 
