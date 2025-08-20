@@ -23,8 +23,10 @@ export class SoundManager {
     if (SoundManager.bgMusic) return;
     const relSrc = src.startsWith('/') ? src.slice(1) : src;
     SoundManager.currentSrc = relSrc;
+    // Provide both root-absolute and relative variants to survive differing base paths
+    const sources = [relSrc.startsWith('assets/') ? '/' + relSrc : relSrc, relSrc];
     SoundManager.bgMusic = new Howl({
-      src: [relSrc],
+      src: sources,
       loop: true,
       volume: 0.5,
       html5: true,
@@ -33,6 +35,7 @@ export class SoundManager {
         Logger.error('Music preload error: ' + err);
       }
     });
+    Logger.debug('[SoundManager] preloadMusic sources=', sources);
   }
 
   /**
@@ -47,14 +50,16 @@ export class SoundManager {
         try { SoundManager.bgMusic.unload(); } catch { /* ignore */ }
       }
       SoundManager.currentSrc = relSrc;
+      const versioned = relSrc + (forceReload ? ('?v=' + Date.now()) : '');
+      const sources = [versioned.startsWith('assets/') ? '/' + versioned : versioned, versioned];
       SoundManager.bgMusic = new Howl({
-        src: [relSrc + (forceReload ? ('?v=' + Date.now()) : '')],
+        src: sources,
         loop: true,
         volume: 0.5,
         html5: true,
-        onplay: () => Logger.debug('Background music playing.'),
+        onplay: () => Logger.debug('[SoundManager] Background music playing src=', sources),
         onplayerror: (id, err) => {
-          Logger.warn('Music play blocked or error (' + err + '). Will retry on next user interaction.');
+          Logger.warn('[SoundManager] Music play blocked/error (' + err + '). Retrying on next user gesture.');
           // Attach one-time user gesture listeners to retry
           const retry = () => {
             document.removeEventListener('pointerdown', retry);
@@ -64,8 +69,9 @@ export class SoundManager {
           document.addEventListener('pointerdown', retry, { once: true });
           document.addEventListener('keydown', retry, { once: true });
         },
-        onloaderror: (id, err) => Logger.error('Music load error: ' + err)
+        onloaderror: (id, err) => Logger.error('[SoundManager] Music load error: ' + err)
       });
+      Logger.debug('[SoundManager] playMusic sources=', sources, 'forceReload=', forceReload);
     }
     try { if (SoundManager.bgMusic && !SoundManager.bgMusic.playing()) SoundManager.bgMusic.play(); } catch { /* ignore */ }
   }
@@ -77,5 +83,16 @@ export class SoundManager {
     if (SoundManager.bgMusic && SoundManager.bgMusic.playing()) {
       try { SoundManager.bgMusic.stop(); } catch { /* ignore */ }
     }
+  }
+
+  /** Quick status for console debugging */
+  public static debugStatus() {
+    const sm: any = SoundManager.bgMusic;
+    Logger.debug('[SoundManager] status', {
+      loaded: !!sm && sm.state && sm.state(),
+      playing: !!sm && sm.playing && sm.playing(),
+      src: SoundManager.currentSrc,
+      volume: !!sm && sm.volume && sm.volume()
+    });
   }
 }

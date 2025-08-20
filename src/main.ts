@@ -191,6 +191,15 @@ window.onload = async () => {
   import('./game/SoundManager').then(({ SoundManager }) => {
     const musicPathInit = (location.protocol === 'file:' ? './assets/music/bg-music.mp3' : '/assets/music/bg-music.mp3');
     SoundManager.preloadMusic(musicPathInit);
+    // Also arm early start: first user gesture (click / key) in main menu triggers playback.
+    // This keeps autoplay policy compliant while giving ambience before gameplay.
+    const earlyHandler = () => {
+      if (!musicStarted) startMusic(false);
+      window.removeEventListener('pointerdown', earlyHandler);
+      window.removeEventListener('keydown', earlyHandler);
+    };
+    window.addEventListener('pointerdown', earlyHandler, { once: true });
+    window.addEventListener('keydown', earlyHandler, { once: true });
   });
 
   game.start();
@@ -221,6 +230,24 @@ window.onload = async () => {
       SoundManager.playMusic(musicPath, forceReload);
       Logger.info('[main.ts] Background music playMusic invoked (forceReload=' + forceReload + ')');
       musicStarted = true;
+      // Fallback: if still not playing after 2s, attach one-shot gesture to force reload
+      setTimeout(()=>{
+        try {
+          const sm: any = (SoundManager as any);
+          // call debug
+          (SoundManager as any).debugStatus?.();
+          if ((SoundManager as any).bgMusic && !(SoundManager as any).bgMusic.playing()) {
+            const forceHandler = () => {
+              document.removeEventListener('pointerdown', forceHandler);
+              document.removeEventListener('keydown', forceHandler);
+              startMusic(true); // force reload with cache bust
+            };
+            document.addEventListener('pointerdown', forceHandler, { once:true });
+            document.addEventListener('keydown', forceHandler, { once:true });
+            Logger.warn('[main.ts] Music still not playing; waiting for user gesture to force reload.');
+          }
+        } catch {/* ignore */}
+      }, 2000);
     });
   }
 
