@@ -2,7 +2,7 @@ import { Player } from './Player';
 import { ParticleManager } from './ParticleManager';
 import { AssetLoader } from './AssetLoader';
 
-export type Boss = { x: number; y: number; hp: number; maxHp: number; radius: number; active: boolean; telegraph: number; state: 'TELEGRAPH' | 'ACTIVE' | 'DEAD'; attackTimer: number; _damageFlash?: number; specialCharge?: number; specialReady?: boolean } | null;
+export type Boss = { x: number; y: number; hp: number; maxHp: number; radius: number; active: boolean; telegraph: number; state: 'TELEGRAPH' | 'ACTIVE' | 'DEAD'; attackTimer: number; _damageFlash?: number; specialCharge?: number; specialReady?: boolean; lastContactHitTime?: number } | null;
 
 export class BossManager {
   private player: Player;
@@ -86,20 +86,27 @@ export class BossManager {
         this.launchAttackWave();
         this.boss.attackTimer = Math.max(30, 60 - (this.difficulty - 1) * 10);
       }
-      // Player-boss collision and damage
+      // Player-boss collision with 1s cooldown contact damage (30 fixed damage to player)
       if (dist < this.player.radius + this.boss.radius) {
-        this.player.hp -= 20; // Boss deals damage on contact
-        this.boss.hp -= 30; // Player deals damage to boss on contact
-        this.boss._damageFlash = 12; // Boss flash effect
-        // Knockback effect
-        this.player.x -= (dx / dist) * 32;
-        this.player.y -= (dy / dist) * 32;
-        this.boss.x += (dx / dist) * 16;
-        this.boss.y += (dy / dist) * 16;
-        // Visual feedback
-        if (this.particleManager) {
-          this.particleManager.spawn(this.player.x, this.player.y, 1, '#f00'); // Reduced particles
-          this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#FFD700'); // Reduced particles
+        const now = performance.now();
+        if (!this.boss.lastContactHitTime || now - this.boss.lastContactHitTime >= 1000) {
+          this.boss.lastContactHitTime = now;
+          this.player.hp -= 30; // fixed contact damage
+          this.boss._damageFlash = 12; // flash when successful hit
+          // Knockback only when damage actually applied
+          if (dist > 0) {
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const playerKb = 64; // stronger push to emphasize hit
+            const bossKb = 24;
+            this.player.x -= nx * playerKb;
+            this.player.y -= ny * playerKb;
+            this.boss.x += nx * bossKb;
+            this.boss.y += ny * bossKb;
+          }
+          if (this.particleManager) {
+            this.particleManager.spawn(this.player.x, this.player.y, 2, '#f00');
+          }
         }
       }
       if (this.boss._damageFlash && this.boss._damageFlash > 0) {

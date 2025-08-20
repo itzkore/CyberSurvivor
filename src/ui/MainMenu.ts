@@ -87,6 +87,7 @@ export class MainMenu {
 
     this.mainMenuElement.innerHTML = `
       <div class="matrix-bg-overlay"></div>
+      <div class="main-menu-adaptive" id="main-menu-adaptive">
       
       <div class="main-menu-header">
         <div class="game-logo">
@@ -153,12 +154,28 @@ export class MainMenu {
           NEURAL LINK ACTIVE
         </div>
       </div>
+      </div><!-- /main-menu-adaptive -->
     `;
 
     document.body.appendChild(this.mainMenuElement);
-  // Show sound panel (if exists) while in main menu
-  const soundPanel = document.getElementById('sound-settings-panel');
-  if (soundPanel) soundPanel.style.display = 'block';
+    // Adaptive scaling
+    import('./ViewportScaler').then(mod => {
+      const adaptive = document.getElementById('main-menu-adaptive');
+      if (adaptive) mod.attachAdaptiveScaler(adaptive as HTMLElement, {
+        baseWidth: 1920,
+        baseHeight: 1080,
+        // Stretch so the logical canvas fills viewport (no margins)
+        // Allow independent X/Y scaling; enable vertical expansion.
+        minScale: 0.5,
+        maxScale: 3,
+        allowUpscale: true,
+        mode: 'stretch',
+        adaptiveHeight: true
+      });
+    }).catch(()=>{});
+    // Show sound panel (if exists) while in main menu
+    const soundPanel = document.getElementById('sound-settings-panel');
+    if (soundPanel) soundPanel.style.display = 'block';
   }
 
   private setupEventListeners(): void {

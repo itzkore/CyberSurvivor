@@ -12,7 +12,7 @@ import { MainMenu } from '../ui/MainMenu';
 import { CharacterSelectPanel } from '../ui/CharacterSelectPanel';
 import { DamageTextManager } from './DamageTextManager';
 import { GameLoop } from '../core/GameLoop';
-import { PerformanceMonitor } from '../core/PerformanceMonitor';
+// PerformanceMonitor removed (debug overlay eliminated)
 import { Logger } from '../core/Logger';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
@@ -122,8 +122,9 @@ export class Game {
   private gameLoop: GameLoop;
   private enemySpatialGrid: SpatialGrid<any>; // Spatial grid for enemies
   private bulletSpatialGrid: SpatialGrid<any>; // Spatial grid for bullets
-  private perf?: PerformanceMonitor; // performance profiler
-  private framePulseEl?: HTMLDivElement; // visual render pulse
+  // Removed perf + frame pulse overlays; lightweight FPS sampling only
+  private fpsFrameCount: number = 0;
+  private fpsLastTs: number = performance.now();
   private autoPaused: boolean = false; // track alt-tab auto pause
   private initialUpgradeOffered: boolean = false; // one free upgrade flag
 
@@ -199,14 +200,8 @@ export class Game {
   (window as any).__electron = true;
       }
     } catch { /* ignore */ }
-  // Prepare frame pulse overlay (F9 toggle)
-  this.framePulseEl = document.createElement('div');
-  this.framePulseEl.id = 'frame-pulse';
-  this.framePulseEl.style.cssText = 'position:fixed;right:4px;top:4px;width:14px;height:14px;background:#0f0;border:1px solid #222;z-index:9999;opacity:0.8;font:10px monospace;display:none;align-items:center;justify-content:center;color:#000;';
-  this.framePulseEl.textContent = '0';
-  document.body.appendChild(this.framePulseEl);
+    // Removed frame pulse overlay (F9 toggle)
   this.gameLoop = new GameLoop(this.update.bind(this), this.render.bind(this));
-  this.perf = new PerformanceMonitor();
 
     // Initialize camera position to center on player
     // Use logical (design) dimensions so small window (low resolution) starts centered correctly.
@@ -387,7 +382,7 @@ export class Game {
         (window as any).__lowFX = this.lowFX;
   // Removed 'm' minimap toggle: minimap is now always visible
       } else if (e.key === 'F9' || e.key.toLowerCase() === 'p') {
-        if (this.framePulseEl) this.framePulseEl.style.display = this.framePulseEl.style.display === 'none' ? 'flex' : 'none';
+        // Frame pulse debug overlay removed
       } else if (e.key === 'F10') { // ultra simple render mode for pacing diagnostics
         (window as any).__simpleRender = !(window as any).__simpleRender;
       } else if (e.key === 'F11') { // toggle dynamic resolution scaling off/on
@@ -593,7 +588,7 @@ export class Game {
   }
 
   public showCharacterSelect() {
-    this.state = 'CHARACTER_SELECT';
+  if ((this.state === 'GAME' || this.state === 'PAUSE' || this.state === 'UPGRADE_MENU' || this.state === 'GAME_OVER') && !((window as any).__noAutoResize)) {
     Logger.debug('Entering CHARACTER_SELECT state');
     try {
       (this.mainMenu as any)?.hideMenuElement();
@@ -609,6 +604,7 @@ export class Game {
     } catch {
       // ignore if not available
     }
+  }
   }
 
   private worldToScreenX(x: number) {
@@ -673,16 +669,14 @@ async init() {
     this.worldH = 4000 * 100;
     this.worldExpanded = true;
   }
-  const p = this.perf;
   // Expose avg frame time for adaptive systems (particle manager) using rolling EMA
   (window as any).__avgFrameMs = ((window as any).__avgFrameMs ?? deltaTime) * 0.9 + deltaTime * 0.1;
-  let t:number=0;
   this.gameTime += deltaTime / 1000;
-  t=p?.begin('player')!; this.player.update(deltaTime); p?.end('player', t);
-  t=p?.begin('explosions')!; this.explosionManager?.update(deltaTime); p?.end('explosions', t);
-  t=p?.begin('enemies')!; this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets); p?.end('enemies', t);
-  t=p?.begin('boss')!; this.bossManager.update(deltaTime, this.gameTime); p?.end('boss', t);
-  t=p?.begin('bullets')!; this.bulletManager.update(deltaTime); p?.end('bullets', t);
+  this.player.update(deltaTime);
+  this.explosionManager?.update(deltaTime);
+  this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets);
+  this.bossManager.update(deltaTime, this.gameTime);
+  this.bulletManager.update(deltaTime);
     // Update active beams (damage + expiry)
     if (this._activeBeams.length) {
       const now = performance.now();
@@ -692,11 +686,10 @@ async init() {
         return true;
       });
     }
-  t=p?.begin('particles')!; this.particleManager.update(deltaTime); p?.end('particles', t);
-  t=p?.begin('damageTxt')!; this.damageTextManager.update(); p?.end('damageTxt', t);
+  this.particleManager.update(deltaTime);
+  this.damageTextManager.update();
 
     // Clear and re-populate spatial grids
-    t=p?.begin('spatial')!;
     this.enemySpatialGrid.clear();
     for (let i=0;i<this.enemyManager.enemies.length;i++) {
       const enemy = this.enemyManager.enemies[i];
@@ -707,7 +700,6 @@ async init() {
       const bullet = this.bulletManager.bullets[i];
       if (bullet.active) this.bulletSpatialGrid.insert(bullet);
     }
-    p?.end('spatial', t);
 
     // --- Boss bullet collision ---
     const boss = this.bossManager.getActiveBoss();
@@ -739,7 +731,6 @@ async init() {
     const currentDPS = (totalDamageInWindow / this.dpsWindow) * 1000;
     this.hud.currentDPS = currentDPS;
   if (currentDPS > (this.hud as any).maxDPS) (this.hud as any).maxDPS = currentDPS;
-  t=p?.begin('camera')!;
   // Follow player using logical viewport dimensions only (canvas.width includes DPR * renderScale which caused offset)
   const targetCamX = this.player.x - this.designWidth / 2;
   const targetCamY = this.player.y - this.designHeight / 2;
@@ -748,7 +739,6 @@ async init() {
     // Clamp within world using logical viewport
     this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.designWidth));
     this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.designHeight));
-  p?.end('camera', t);
   (window as any).__camX = this.camX;
   (window as any).__camY = this.camY;
     if (this.player.hp <= 0) {
@@ -765,10 +755,10 @@ async init() {
     }
   } else {
     // Skip heavy updates when not in active gameplay/cinematic
-    this.perf?.frame();
+  // (perf overlay removed)
     return;
   }
-  this.perf?.frame();
+  // (perf overlay removed)
   // Adapt internal resolution based on recent jitter (Electron only)
   this.adjustRenderScale();
   // Auto downgrade / upgrade FX based on sustained frame time
@@ -800,14 +790,20 @@ async init() {
       this.lastCssW = this.designWidth; this.lastCssH = this.designHeight;
     }
   }
-  const p = this.perf;
-  let tRender = p?.begin('render')!;
+  // FPS sampling (updated once per second)
+  this.fpsFrameCount++;
+  const fpsNow = performance.now();
+  if (fpsNow - this.fpsLastTs >= 1000) {
+    (window as any).__fpsSample = Math.round(this.fpsFrameCount * 1000 / (fpsNow - this.fpsLastTs));
+    this.fpsFrameCount = 0;
+    this.fpsLastTs = fpsNow;
+  }
   // Skip almost all work if we're in a non-game menu where canvas is hidden
-  if (this.state === 'MAIN_MENU') { p?.end('render', tRender); return; }
+  if (this.state === 'MAIN_MENU') { return; }
   // Optional half-rate rendering (set window.__halfRender=true in devtools to test) – game logic still 60Hz
   if ((window as any).__halfRender) {
     (window as any).__halfToggle = !(window as any).__halfToggle;
-    if ((window as any).__halfToggle) { p?.end('render', tRender); return; }
+  if ((window as any).__halfToggle) { return; }
   }
   this.ctx.setTransform(1,0,0,1,0,0);
   this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
@@ -828,8 +824,7 @@ async init() {
     const t = (performance.now()/250)%1;
     this.ctx.fillStyle = '#f0f';
     this.ctx.fillRect(10, 10, 80 * t, 6);
-      p?.end('render', tRender);
-      return; // skip full render path
+  return; // skip full render path (minimal)
     }
     // Simple diagnostic render path (skip almost everything to test compositor pacing)
     if ((window as any).__simpleRender) {
@@ -845,23 +840,14 @@ async init() {
       this.ctx.beginPath();
       this.ctx.arc(this.canvas.width/2, this.canvas.height/2, 10, 0, Math.PI*2);
       this.ctx.fill();
-      p?.end('render', tRender);
-      return;
+  return; // simple render path
   }
   // Apply logical coordinate scaling so game logic uses design space
   // Apply high-DPI transform so logical coordinates map to CSS pixels; background fill will cover full area.
   const dpr = (window as any).devicePixelRatio || 1;
   this.ctx.scale(dpr * this.renderScale, dpr * this.renderScale);
   // Frame pulse (visual actual repaint cadence)
-  if (this.framePulseEl) {
-    const c = ((window as any).__pulseCount = (((window as any).__pulseCount||0)+1));
-    if ((c & 1) === 0) {
-      this.framePulseEl.style.background = '#0f0';
-    } else {
-      this.framePulseEl.style.background = '#ff0';
-    }
-    this.framePulseEl.textContent = String(c % 10);
-  }
+  // Removed frame pulse debug box
 
   // (Removed global ctx.filter brightness which caused full-screen flicker on some drivers when combined with 'lighter' beam composites.)
   // Keep filter neutral; apply a lightweight additive overlay later instead (see below) when brightenMode is enabled.
@@ -968,7 +954,7 @@ async init() {
         this.cinematic.draw(this.ctx, this.canvas);
         break;
     }
-  p?.end('render', tRender);
+  // end render
   }
 
   private handleDamageDealt(event: CustomEvent): void {

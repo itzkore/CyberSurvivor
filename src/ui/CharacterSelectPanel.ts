@@ -66,6 +66,7 @@ export class CharacterSelectPanel {
     this.panelElement.style.display = 'none';
 
     this.panelElement.innerHTML = `
+      <div class="character-select-adaptive" id="character-select-adaptive">
       <div class="carousel-header">
         <h1 class="carousel-title">SELECT YOUR CHARACTER</h1>
         <div class="carousel-subtitle">Choose your operative for the mission</div>
@@ -107,10 +108,12 @@ export class CharacterSelectPanel {
         <button class="back-button" id="backBtn">BACK TO MENU</button>
         <button class="select-button" id="selectBtn">SELECT OPERATIVE</button>
       </div>
+      </div><!-- /character-select-adaptive -->
     `;
 
     document.body.appendChild(this.panelElement);
     this.populateCarousel();
+  // Removed adaptive scaler: panel now uses fluid 100% layout via CSS to always fill screen.
   }
 
   private populateCarousel(): void {

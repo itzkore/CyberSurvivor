@@ -3,7 +3,6 @@ import { Game } from './game/Game';
 import { MainMenu } from './ui/MainMenu';
 import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import CharacterSelectPanel
 import { Logger } from './core/Logger'; // Import Logger
-import { FPSCounter } from './core/FPSCounter';
 import { ensurePauseOverlay } from './ui/PauseOverlay';
 import { ensureGameOverOverlay } from './ui/GameOverOverlay';
 
@@ -87,31 +86,7 @@ window.onload = async () => {
   // Experimental Offscreen worker DISABLED for now (caused start-game stutter due to large postMessage payloads).
   // Leave scaffold for future refinement.
   // (window as any).__workerRender = false;
-  // Attach FPS overlay (only in electron / production profiling). Could gate behind env later.
-  const fps = new FPSCounter();
-  (game as any).gameLoop?.setFrameHook?.((dt:number)=>fps.frame(dt));
-  // Performance drift monitor (avg delta over 180 frames)
-  const drift: number[] = [];
-  (game as any).gameLoop?.setFrameHook?.((dt:number)=>{
-    drift.push(dt);
-    if (drift.length >= 180) {
-      const avg = drift.reduce((a,b)=>a+b,0)/drift.length;
-      if (avg > 22) Logger.warn('[perf] avg frame delta ' + avg.toFixed(2) + 'ms (>22ms)');
-      drift.length = 0;
-    }
-  });
-  // Perf drift monitor: warn if avg dt over last 180 frames > 22ms ( <45 FPS )
-  const driftWindow: number[] = [];
-  (game as any).gameLoop?.setFrameHook?.((dt:number)=>{
-    driftWindow.push(dt);
-    if (driftWindow.length >= 180) {
-      const avg = driftWindow.reduce((a,b)=>a+b,0)/driftWindow.length;
-      if (avg > 22) {
-        Logger.warn('[perf] average frame delta ' + avg.toFixed(2) + 'ms (>22ms)');
-      }
-      driftWindow.length = 0;
-    }
-  });
+  // FPS & performance overlays removed; HUD now renders in-canvas FPS.
 
   // --- Optional Offscreen worker renderer (enable via ?worker=1) ---
   const useWorker = /[?&]worker=1/.test(location.search) && (window as any).OffscreenCanvas;

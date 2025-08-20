@@ -47,6 +47,17 @@ export class HUD {
     ctx.textAlign = 'center';
     this.drawGlowText(ctx, `${minutes}:${seconds}`, width / 2, 46, COLOR_TEXT, COLOR_CYAN, 14);
 
+    // --- FPS (top right, unobtrusive) ---
+    try {
+      const fps = (window as any).__fpsSample | 0; // updated by Game.render
+      ctx.font = 'bold 14px Orbitron, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#00ffff';
+      ctx.shadowColor = '#00ffff';
+      ctx.shadowBlur = 8;
+      ctx.fillText(fps + ' FPS', width - 18, 30);
+    } catch { /* ignore */ }
+
   // --- LEFT PANEL (Stats + Level) ---
   const panelX = 14;
   const panelY = 14;
