@@ -48,6 +48,29 @@ export class ExplosionManager {
   }
 
   /**
+   * Titan Mech dedicated mortar explosion (stronger + larger; independent from generic toned-down explosion).
+   * Full damage, larger radius, brief lingering burn for extra ticks.
+   */
+  public triggerTitanMortarExplosion(x: number, y: number, damage: number, radius: number = 220, color: string = '#FFD700') {
+    // Immediate full damage application in large radius
+    if (this.enemyManager && this.enemyManager.getEnemies) {
+      const enemies = this.enemyManager.getEnemies();
+      const r2 = radius * radius;
+      for (let i=0;i<enemies.length;i++) {
+        const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
+        const dx = e.x - x; const dy = e.y - y; if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage);
+      }
+    }
+    // Add a short-lived high-damage AoE zone (25% of damage over 0.6s) for burn effect
+    const burnDamage = damage * 0.25;
+    this.aoeZones.push(new AoEZone(x, y, radius * 0.55, burnDamage, 600, color, this.enemyManager, this.player));
+    // Two shockwave rings for impactful feel
+    this.shockwaves.push({ x, y, startR: Math.max(22, radius * 0.35), endR: radius * 1.05, life: 260, maxLife: 260, color });
+    this.shockwaves.push({ x, y, startR: Math.max(12, radius * 0.15), endR: radius * 0.75, life: 210, maxLife: 210, color: '#FFF5C0' });
+    if (this.onShake) this.onShake(140, 5); // modest shake only for mech mortar
+  }
+
+  /**
    * Shockwave-only instant explosion (no lingering filled AoE zone). Applies damage immediately and spawns wave rings.
    */
   public triggerShockwave(x: number, y: number, damage: number, radius: number = 100, color: string = '#FFA07A') {

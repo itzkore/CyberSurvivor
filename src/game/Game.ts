@@ -1011,8 +1011,8 @@ export class Game {
    */
   private handleMortarExplosion(event: CustomEvent): void {
     const { x, y, damage, hitEnemy, radius } = event.detail;
-    // Route through centralized ExplosionManager for visuals and AoE damage
-    this.explosionManager?.triggerExplosion(x, y, damage, hitEnemy, radius ?? 100);
+  // Titan Mech uses dedicated high-impact mortar explosion (full damage, larger visuals)
+  this.explosionManager?.triggerTitanMortarExplosion(x, y, damage, radius ? Math.max(radius, 200) : 220);
   }
   /**
    * Handles a kamikaze drone explosion event (separate from mortar for balance & visuals).
