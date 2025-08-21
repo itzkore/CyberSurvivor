@@ -1,4 +1,9 @@
-// Unified leaderboard store (Redis + memory fallback) + nickname/profile helpers.
+// Stubbed leaderboard store (fully removed). Only nickname helpers kept minimal in-memory.
+const profiles = new Map();
+function randomNickname(){ return 'Runner'+((Math.random()*1000)|0); }
+export async function getOrCreateNickname(userId){ let p = profiles.get(userId); if(!p){ p={ nickname: randomNickname(), profileComplete:false }; profiles.set(userId,p);} return p; }
+export async function setNickname(userId,nickname){ if(!nickname) return { error:'invalid_nickname' }; let p = profiles.get(userId)||{ nickname, profileComplete:true }; p.nickname = nickname; p.profileComplete = true; profiles.set(userId,p); return { nickname }; }
+// No other exports.// Unified leaderboard store (Redis + memory fallback) + nickname/profile helpers.
 import { createClient } from 'redis';
 
 // ----------------- Nickname / Profile -----------------

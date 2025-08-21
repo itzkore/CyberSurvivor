@@ -42,12 +42,12 @@ export class AoEZone {
 
     ctx.save();
   const alpha = Math.max(0, this.life / this.maxLife); // Fade out based on remaining life (ms)
-    ctx.globalAlpha = alpha * 0.6; // Max 60% opacity for the zone
+  ctx.globalAlpha = alpha * 0.35; // Lower opacity for subtle effect
     ctx.beginPath();
     ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
     ctx.fillStyle = this.color;
     ctx.shadowColor = this.color;
-    ctx.shadowBlur = 20; // Stronger glow for the zone
+  ctx.shadowBlur = 8; // Softer glow
     ctx.fill();
     ctx.restore();
   }

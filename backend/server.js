@@ -2,7 +2,8 @@
 import express from 'express';
 import cors from 'cors';
 import { OAuth2Client } from 'google-auth-library';
-import { getOrCreateNickname, setNickname, submitScore, getTop, getRank, getAround, backendStatus } from './leaderboard/store.js';
+// Leaderboard functionality removed. Only auth/profile endpoints remain.
+import { getOrCreateNickname, setNickname } from './leaderboard/store.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -40,33 +41,8 @@ app.post('/profile', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'internal' }); }
 });
 
-// Minimal health endpoint (no leaderboard presence implied)
-// Leaderboard endpoints
-app.post('/api/leaderboard/submit', async (req,res) => {
-  try {
-    const { userId, nickname, score, mode='SHOWDOWN', characterId='runner', level=0, durationSec=0 } = req.body||{};
-    const r = await submitScore({ userId, nickname, score, mode, characterId, level, durationSec });
-    if (r.error) return res.status(400).json(r);
-    res.json(r);
-  } catch { res.status(500).json({ error:'internal' }); }
-});
-app.get('/api/leaderboard/top', async (req,res) => {
-  try {
-    const { mode='SHOWDOWN', characterId='runner' } = req.query;
-    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-    const start = Math.max(parseInt(req.query.start) || 0, 0);
-    const entries = await getTop(mode, characterId, limit, start);
-    res.json({ entries });
-  } catch { res.status(500).json({ error:'internal' }); }
-});
-app.get('/api/leaderboard/rank', async (req,res) => {
-  try { const { mode='SHOWDOWN', characterId='runner', userId } = req.query; if (!userId) return res.status(400).json({ error:'userId required' }); const rank = await getRank(mode, characterId, userId); res.json({ rank }); } catch { res.status(500).json({ error:'internal' }); }
-});
-app.get('/api/leaderboard/around', async (req,res) => {
-  try { const { mode='SHOWDOWN', characterId='runner', userId } = req.query; if (!userId) return res.status(400).json({ error:'userId required' }); const radius = Math.min(Math.max(parseInt(req.query.radius) || 2,1),10); const data = await getAround(mode, characterId, userId, radius); res.json(data); } catch { res.status(500).json({ error:'internal' }); }
-});
-app.get('/api/leaderboard/health', (req,res) => { res.json({ ok:true, ...backendStatus(), ts: Date.now() }); });
-app.get('/health', (req, res) => { res.json({ ok: true, msg: 'ok', ...backendStatus() }); });
+// Health endpoint (leaderboard removed)
+app.get('/health', (req, res) => { res.json({ ok: true, msg: 'ok', leaderboard: 'removed' }); });
 
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {

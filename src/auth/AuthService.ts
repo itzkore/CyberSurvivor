@@ -226,65 +226,19 @@ class GoogleAuthService {
     this.user = u;
     if (u) {
       const finalize = () => { localStorage.setItem(GoogleAuthService.LS_KEY, JSON.stringify(u)); this.emit(); };
-  const verifyEndpoint = this.verifyUrl || (this.apiBase ? this.apiBase.replace(/\/$/, '') + '/verify' : undefined);
+  // Backend removed: skip remote verify/profile endpoints
+  const verifyEndpoint = undefined;
       // If nickname missing try backend FIRST so same Gmail gets consistent handle across devices
       if (!u.nickname) {
-        if (verifyEndpoint && !this.verifying) {
-          this.verifying = true;
-          fetch(verifyEndpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ idToken: u.idToken })
-          }).then(async r => {
-            if (r.ok) {
-              const data = await r.json().catch(()=>null);
-              if (data && data.nickname) {
-                u.nickname = data.nickname;
-                u.profileComplete = !!data.profileComplete;
-                finalize();
-                return;
-              }
-            }
-            // Still no nickname – generate local fallback then finalize
-            return import('./NicknameGenerator').then(mod => {
-              try { u.nickname = mod.generateNickname(); u.profileComplete = false; } catch {/* ignore */}
-              finalize();
-            }).catch(()=> finalize());
-          }).catch(err => {
-            console.warn('[Auth] Verify (pre-nickname restore) failed', err);
-            import('./NicknameGenerator').then(mod => {
-              try { u.nickname = mod.generateNickname(); u.profileComplete = false; } catch {/* ignore */}
-              finalize();
-            }).catch(()=> finalize());
-          }).finally(()=> { this.verifying = false; });
-        } else {
-          // No verify endpoint -> local fallback
-          import('./NicknameGenerator').then(mod => {
-            try { u.nickname = mod.generateNickname(); u.profileComplete = false; } catch {/* ignore */}
-            finalize();
-          }).catch(()=> finalize());
-        }
+        // Remote verify disabled; always generate local nickname
+        import('./NicknameGenerator').then(mod => {
+          try { u.nickname = mod.generateNickname(); u.profileComplete = false; } catch {/* ignore */}
+          finalize();
+        }).catch(()=> finalize());
         return; // emit after async path
       }
       // If nickname present already, still run verification (non-blocking) to refresh profile completeness / backend canonical nickname.
-      if (verifyEndpoint && !this.verifying) {
-        this.verifying = true;
-        fetch(verifyEndpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken: u.idToken })
-        }).then(async r => {
-          if (!r.ok) throw new Error('verify failed ' + r.status);
-          const data = await r.json().catch(()=>null);
-          if (data && data.nickname) {
-            // If backend has authoritative nickname (e.g. uniqueness enforcement), update local
-            if (u.nickname !== data.nickname) { u.nickname = data.nickname; }
-            if (data.profileComplete != null) u.profileComplete = !!data.profileComplete;
-            finalize();
-          }
-        }).catch(err => { console.warn('[Auth] Backend verify failed', err); })
-          .finally(()=>{ this.verifying = false; });
-      }
+  // Backend verify skipped (removed)
       finalize();
     } else {
       localStorage.removeItem(GoogleAuthService.LS_KEY);
@@ -312,14 +266,7 @@ class GoogleAuthService {
     localStorage.setItem(GoogleAuthService.LS_KEY, JSON.stringify(this.user));
     this.emit();
     // Optionally push nickname update to backend
-  const profileEndpoint = this.verifyUrl ? this.verifyUrl.replace(/\/verify$/, '/profile') : (this.apiBase ? this.apiBase.replace(/\/$/, '') + '/profile' : undefined);
-    if (profileEndpoint) {
-      fetch(profileEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ idToken: this.user.idToken, nickname: this.user.nickname })
-      }).catch(()=>{});
-    }
+  // Backend profile update skipped.
   }
 
   /** Returns true if token is still valid; if near expiry attempts silent refresh (one-tap) */

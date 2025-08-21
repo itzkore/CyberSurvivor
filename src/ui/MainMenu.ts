@@ -3,8 +3,7 @@ import { matrixBackground } from './MatrixBackground';
 import { CHARACTERS } from '../data/characters';
 // Static imports for auth/score services to avoid mixed dynamic+static warnings in Vite
 import { googleAuthService } from '../auth/AuthService';
-import { HighScoreService } from '../auth/HighScoreService';
-import { RemoteLeaderboardService } from '../auth/RemoteLeaderboardService';
+import { fetchTop, getPlayerId, resolveBoard, sanitizeName, isLeaderboardConfigured, fetchPlayerEntry, loadSnapshot } from '../leaderboard';
 
 interface PlayerProfile {
   currency: number;
@@ -28,6 +27,8 @@ export class MainMenu {
   private authUnsub?: () => void;
   private authUser: import('../auth/AuthService').GoogleUserProfile | null = null;
   private incrementalEntries: any[] = [];
+  private playerId: string = getPlayerId();
+  private currentBoard: string = 'global';
 
   constructor(game: any) {
     this.gameInstance = game;
@@ -149,6 +150,12 @@ export class MainMenu {
           </section>
           <section class="panel right highscores-panel" id="highscores-panel">
             <div class="hs-header" id="hs-title">HIGHSCORES</div>
+            <div class="hs-board-select" style="margin:4px 0 6px;display:flex;gap:4px;flex-wrap:wrap">
+              <button class="nav-btn mini" data-board="global" style="padding:3px 6px;font-size:11px">Global</button>
+              <button class="nav-btn mini" data-board="daily:auto" style="padding:3px 6px;font-size:11px">Daily</button>
+              <button class="nav-btn mini" data-board="weekly:auto" style="padding:3px 6px;font-size:11px">Weekly</button>
+              <button class="nav-btn mini" data-board="monthly:auto" style="padding:3px 6px;font-size:11px">Monthly</button>
+            </div>
             <div class="hs-panel" id="hs-remote-board">No scores yet.</div>
             <button class="nav-btn" id="hs-load-more" style="margin-top:6px;font-size:11px;padding:4px 6px;">Load More</button>
           </section>
@@ -265,8 +272,8 @@ export class MainMenu {
       this.updateAuthUI();
       this.refreshHighScores();
     });
-    // Periodic refresh every 5s for remote board only
-    const loop = () => { this.refreshHighScores(); setTimeout(loop, 5000); }; setTimeout(loop, 5000);
+  // Periodic refresh (local only now) every 5s
+  const loop = () => { this.refreshHighScores(); setTimeout(loop, 5000); }; setTimeout(loop, 5000);
     if (!document.getElementById('mm-hs-styles')) {
       const style = document.createElement('style');
       style.id = 'mm-hs-styles';
@@ -284,6 +291,13 @@ export class MainMenu {
       });
     }
     this.refreshHighScores();
+    // Board selector events
+    this.mainMenuElement.querySelectorAll('.hs-board-select [data-board]')
+      .forEach(btn => btn.addEventListener('click', (e)=>{
+        const b = (e.currentTarget as HTMLElement).getAttribute('data-board') || 'global';
+        this.currentBoard = b;
+        this.refreshHighScores();
+      }));
   }
 
   private setupEventListeners(): void {
@@ -510,33 +524,78 @@ export class MainMenu {
   private async refreshHighScores(): Promise<void> {
     const remotePanel = document.getElementById('hs-remote-board');
     if (!remotePanel) return;
+      if (!isLeaderboardConfigured()) {
+        remotePanel.innerHTML = '<div class="hs-empty">Leaderboard not configured</div>';
+        return;
+      }
     const characterId = (this.gameInstance as any).selectedCharacterData?.id || 'wasteland_scavenger';
     const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
     const mode = modeSelect?.value || 'SHOWDOWN';
     const titleEl = document.getElementById('hs-title');
-    const user = googleAuthService.getCurrentUser();
-    if (RemoteLeaderboardService.isAvailable() && user) {
-      const remote = await RemoteLeaderboardService.getTop(mode, characterId, 20);
-      if (remote.length) {
-        this.incrementalEntries = remote;
-        if (titleEl) titleEl.textContent = 'GLOBAL HIGHSCORES';
-        this.renderHighScoreList(mode, characterId);
-        return;
+    if (titleEl) titleEl.textContent = 'HIGHSCORES';
+    remotePanel.innerHTML = '<div class="hs-empty">Loading…</div>';
+    try {
+      const target = this.currentBoard;
+      const { board } = resolveBoard(target);
+      // Try snapshot immediately for responsive feel
+      const snap = loadSnapshot(board, 10, 0);
+      if (snap) {
+        const fmtS = (t:number)=>`${Math.floor(t/60).toString().padStart(2,'0')}:${(t%60).toString().padStart(2,'0')}`;
+        remotePanel.innerHTML = `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>` + snap.map(e=>`<div class='hs-row'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='time'>${fmtS(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('');
       }
+  const top = await fetchTop(board, 10, 0);
+  // Enforce descending ordering by timeSec (defensive if backend ever returns unsorted)
+  const sorted = [...top].sort((a,b)=> (b.timeSec||0) - (a.timeSec||0));
+  this.incrementalEntries = sorted;
+      const me = this.playerId;
+      const fmt = (t:number)=>{
+        const m=Math.floor(t/60).toString().padStart(2,'0');
+        const s=(t%60).toString().padStart(2,'0');
+        return m+':'+s;
+      };
+      if (sorted.length) {
+        const header = `<div class='hs-row hs-head'>
+          <span class='rank'>#</span>
+          <span class='nick'>NAME</span>
+          <span class='time'>TIME</span>
+          <span class='kills'>K</span>
+          <span class='lvl'>Lv</span>
+        </div>`;
+        remotePanel.innerHTML = header + sorted.map((e,i) => `<div class='hs-row ${e.playerId===me?'me':''}'>
+          <span class='rank'>${i+1}</span>
+          <span class='nick'>${sanitizeName(e.name)}</span>
+          <span class='time'>${fmt(e.timeSec)}</span>
+          <span class='kills'>${e.kills ?? '-'}</span>
+          <span class='lvl'>${e.level ?? '-'}</span>
+        </div>`).join('');
+        // If I'm not in the visible list, append own real rank from backend (may be >10)
+    if (!sorted.some(e=>e.playerId===me)) {
+          try {
+      const meEntry = await fetchPlayerEntry(board, me); // uses backend rank ordering
+            if (meEntry && meEntry.rank > 10) {
+              remotePanel.innerHTML += `<div class='hs-row me' style='margin-top:4px;border-top:1px solid rgba(0,255,255,0.25)'>
+                <span class='rank'>${meEntry.rank}</span>
+                <span class='nick'>${sanitizeName(meEntry.name)}</span>
+                <span class='time'>${fmt(meEntry.timeSec)}</span>
+                <span class='kills'>${meEntry.kills ?? '-'}</span>
+                <span class='lvl'>${meEntry.level ?? '-'}</span>
+              </div>`;
+            }
+          } catch {/* ignore own-rank errors */}
+        }
+      } else {
+        remotePanel.innerHTML = '<div class=\"hs-empty\">No times.</div>';
+      }
+    } catch (err) {
+      remotePanel.innerHTML = '<div class="hs-empty">Error loading.</div>';
     }
-    this.incrementalEntries = HighScoreService.getTop(mode, characterId, 50);
-    if (titleEl) titleEl.textContent = 'LOCAL HIGHSCORES';
-    this.renderHighScoreList(mode, characterId);
   }
 
   private async renderHighScoreList(mode:string, characterId:string) {
     const remotePanel = document.getElementById('hs-remote-board');
     if (!remotePanel) return;
     let html = '';
-    const list = this.incrementalEntries;
-    if (list.length) {
-      html = list.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${(e as any).level||0}</span></div>`).join('');
-    } else html = '<div class="hs-empty">No scores.</div>';
+  html = '<div class="hs-empty">(No local storage scoreboard)</div>';
   // Remote rank/around removed
     remotePanel.innerHTML = html;
   }

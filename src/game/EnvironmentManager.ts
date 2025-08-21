@@ -86,12 +86,28 @@ export class EnvironmentManager {
     } else {
       this.biomeBlend = 1;
     }
-  // Day/Night factor (sinusoidal). 0 at start = sunrise.
+  // --- Day/Night brightness ---
+  // Base sinusoidal target (midday = 1, night minimum ~0.55)
   const tDay = (gameTimeSec % this.dayLengthSec) / this.dayLengthSec; // 0..1
-  // Map sin wave (-1..1) -> brightness 0.55..1
-  this.dayFactor = 0.55 + (Math.sin(tDay * Math.PI * 2 - Math.PI/2) * 0.5 + 0.5) * (1 - 0.55);
-  // Bucket for phase changes (8 slices) - reserved for events (not dispatched now)
-  this.lastPhaseBucket = Math.floor(tDay * 8);
+  const raw = 0.55 + (Math.sin(tDay * Math.PI * 2 - Math.PI/2) * 0.5 + 0.5) * (1 - 0.55);
+  // Low‑frequency subtle noise to avoid perfectly uniform curve (prevents perceptual banding) – deterministic from tDay
+  const noise = (() => {
+    // Simple hash noise (repeatable) based on fractional day position
+    const n = Math.sin(tDay * 123.4567) * 43758.5453;
+    return (n - Math.floor(n)) * 0.012 - 0.006; // +/-0.006 range
+  })();
+  const targetBrightness = Math.min(1, Math.max(0.52, raw + noise));
+  // Temporal smoothing (EMA) to remove visible stepping from variable frame delta fluctuations
+  // Smoothing factor adaptive: faster catch-up when far from target.
+  const diff = targetBrightness - this.dayFactor;
+  const baseAlpha = 0.06; // baseline smoothing per update (~16ms) -> ~275ms half-life
+  const adaptiveBoost = Math.min(0.25, Math.abs(diff) * 0.9); // bigger difference -> faster converge
+  const alpha = baseAlpha + adaptiveBoost;
+  this.dayFactor += diff * alpha;
+  // Clamp after smoothing
+  if (this.dayFactor < 0.52) this.dayFactor = 0.52; else if (this.dayFactor > 1) this.dayFactor = 1;
+  // Update phase bucket (fewer buckets = less chance of triggering rapid events)
+  this.lastPhaseBucket = Math.floor(tDay * 4); // reduce to 4 slices from 8 to avoid rapid transitions
   }
 
   private lerpColor(c1: string, c2: string, t: number): string {

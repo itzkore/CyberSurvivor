@@ -29,17 +29,7 @@ function applyCanvasSizeGlobal(canvas: HTMLCanvasElement) {
 }
 
 window.onload = async () => {
-  // Single preload integrity check (duplicate removed)
-  try {
-    const api = (window as any).cs;
-    if (api?.meta?.version) {
-      if (api.meta.version === '1.0.0') {
-        Logger.info('[main.ts] Preload API version ' + api.meta.version + ' verified');
-      } else {
-        Logger.warn('[main.ts] Preload API version mismatch (expected 1.0.0 got ' + api.meta.version + ')');
-      }
-    } // Silent if preload absent (non-Electron web build)
-  } catch (e) { Logger.warn('[main.ts] Preload integrity check skipped due to exception', e); }
+  // Electron preload integration removed – no runtime preload validation needed.
   // --- Cinematic skip button click handler ---
   // Move click handler after canvas is assigned
   setTimeout(() => {

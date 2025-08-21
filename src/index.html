@@ -4,18 +4,32 @@
   <meta charset="UTF-8" />
   <!-- CSP dev: attempt without 'unsafe-eval'; if HMR breaks, reintroduce conditionally. -->
   <!-- CSP: dev-friendly (HMR ws + self assets). frame-ancestors enforced via server header, not meta. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://lh3.googleusercontent.com; media-src 'self'; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com ws://localhost:5173 http://localhost:5173; frame-src 'self' https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests;">
+  <!-- Added https://*.upstash.io to connect-src for leaderboard REST calls -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://lh3.googleusercontent.com; media-src 'self'; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://*.upstash.io ws://localhost:5173 http://localhost:5173; frame-src 'self' https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- Fallback injection of Google Client ID (dev index). Needed so dev server has same meta as production root index -->
   <meta name="google-client-id" content="156752381672-vidmkis66cs201c39ps9vac3230bv6rl.apps.googleusercontent.com">
+  <!-- Optional runtime Upstash config (fallback if env not bundled). Remove in production if not needed. -->
+  <meta name="upstash-url" content="https://sacred-killdeer-11197.upstash.io">
+  <meta name="upstash-token" content="ASu9AAIncDEzYzBmZGQxODhlM2I0YTg2OGQ1Yzg5MTA5YTIxOTUyY3AxMTExOTc">
   <title>Cyber Survivor</title>
-  <link rel="icon" type="image/svg+xml" href="../public/favicon.svg">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <!-- Optional backend API base (was only in root index) -->
+  <meta name="backend-api-base" content="https://itzkore.cz/">
   <link rel="stylesheet" href="./assets/cyberpunk-styles.css" />
   <!-- Removed woff2 preload (no corresponding file); relying on TTF @font-face with swap. -->
   <!-- Google Fonts removed; using self-hosted font-face (placeholder). -->
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>
+  <!-- Unified loading overlay (migrated from removed root index.html to avoid duplication) -->
+  <div id="loading-overlay" class="loading-overlay" style="display:none">
+    <div class="loading-title">CYBER SURVIVOR</div>
+    <div id="loading-status" class="loading-status">Initializing...</div>
+    <div class="loading-bar-shell"><div id="loading-bar" class="loading-bar-fill"></div></div>
+    <div id="loading-tip" class="loading-tip">Loading assets...</div>
+  </div>
+  <script type="module" src="./lb-config.ts"></script>
   <script type="module" src="./main.ts"></script>
 </body>
 </html>

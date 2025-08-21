@@ -50,6 +50,13 @@ export class HUD {
     ctx.font = FONT_TITLE;
     ctx.textAlign = 'center';
     this.drawGlowText(ctx, `${minutes}:${seconds}`, width / 2, 46, COLOR_TEXT, COLOR_CYAN, 14);
+    // Kill count (compact) under main timer
+    try {
+      const gameRef: any = (window as any).__gameInstance;
+      const kills = gameRef?.getKillCount ? gameRef.getKillCount() : 0;
+      ctx.font = 'bold 14px Orbitron, sans-serif';
+      this.drawGlowText(ctx, `Kills ${kills}`, width / 2, 66, COLOR_TEXT_DIM, COLOR_ACCENT_ALT, 6);
+    } catch { /* ignore */ }
   // We'll draw FPS later once minimap position vars are defined so it sits in the gap above minimap.
 
   // --- LEFT PANEL (Stats + Level) ---
@@ -141,6 +148,30 @@ export class HUD {
   const minimapX = width - minimapPositionSize - 20; // replicate internal minimap X calc
   const upgradesPanelX = minimapX;
   const upgradesPanelY = minimapPanelTop + minimapPositionSize + 20; // gap below minimap
+  // Daytime indicator (tiny) directly below minimap top border, centered
+  try {
+    const env: any = (window as any).__environmentManager;
+    if (env) {
+      const dayLength = (env as any).dayLengthSec || 180;
+      const dayT = (gameTime % dayLength) / dayLength; // 0..1
+      const hours = Math.floor(dayT * 24);
+      const minutesDay = Math.floor((dayT * 24 - hours) * 60);
+      const label = `${hours.toString().padStart(2,'0')}:${minutesDay.toString().padStart(2,'0')}`;
+      ctx.save();
+      ctx.font = 'bold 11px Orbitron, sans-serif';
+      ctx.textAlign = 'center';
+      const midX = minimapX + minimapPositionSize/2;
+      // place slightly under minimap (above upgrades list) with subtle panel background
+      const dy = minimapPanelTop + minimapPositionSize + 10; // 10px below bottom border
+      ctx.fillStyle = 'rgba(6,14,18,0.55)';
+      ctx.fillRect(midX-28, dy-12, 56, 16);
+      ctx.strokeStyle = '#00b3a3';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(midX-28+0.5, dy-12+0.5, 56-1, 16-1);
+      this.drawGlowText(ctx, label, midX, dy, COLOR_TEXT, COLOR_CYAN, 6);
+      ctx.restore();
+    }
+  } catch { /* ignore */ }
   this.drawUpgradeHistory(ctx, upgrades, upgradesPanelX, upgradesPanelY, minimapPositionSize);
 
     ctx.restore();
@@ -156,15 +187,21 @@ export class HUD {
   }
 
   private drawMinimap(ctx: CanvasRenderingContext2D, playerX: number, playerY: number, enemies: Enemy[], worldW: number, worldH: number): void {
-    const minimapSize = 150;
-    const minimapX = ctx.canvas.width - minimapSize - 20;
-    const minimapY = 20;
+  const minimapSize = 150;
+  // Use logical (design) width/height instead of raw backing width so DPI scaling doesn't shift it off-screen.
+  const dprMM = (window as any).devicePixelRatio || 1;
+  const renderScaleMM = (window as any).__renderScale || 1;
+  const backingToLogical = dprMM * renderScaleMM;
+  const logicalW = ctx.canvas.width / backingToLogical;
+  const logicalH = ctx.canvas.height / backingToLogical; // (not currently used but kept for consistency)
+  const minimapX = logicalW - minimapSize - 20;
+  const minimapY = 20;
     // View window radius around player (world units). Tighter for clarity than whole world.
     const viewHalf = 900; // shows 1800x1800 area; tweak for zoom feel
     const viewLeft = playerX - viewHalf;
     const viewTop = playerY - viewHalf;
     const viewSize = viewHalf * 2;
-    const scale = minimapSize / viewSize; // uniform (square window)
+  const mapScale = minimapSize / viewSize; // uniform (square window)
 
     ctx.save();
     // Panel background
@@ -192,10 +229,10 @@ export class HUD {
           const r = rooms[i];
           // Cull outside view window (with small pad to keep edges visible when entering)
           if (r.x + r.w < viewLeft - 40 || r.x > viewLeft + viewSize + 40 || r.y + r.h < viewTop - 40 || r.y > viewTop + viewSize + 40) continue;
-          const sx = minimapX + (r.x - viewLeft) * scale;
-          const sy = minimapY + (r.y - viewTop) * scale;
-          const sw = r.w * scale;
-          const sh = r.h * scale;
+          const sx = minimapX + (r.x - viewLeft) * mapScale;
+          const sy = minimapY + (r.y - viewTop) * mapScale;
+          const sw = r.w * mapScale;
+          const sh = r.h * mapScale;
           ctx.fillStyle = r.visited ? 'rgba(38,255,233,0.18)' : 'rgba(0,140,200,0.10)';
           ctx.strokeStyle = r.biomeTag === 'neon' ? '#26ffe9' : '#008bff';
           ctx.fillRect(sx, sy, sw, sh);
@@ -206,7 +243,7 @@ export class HUD {
         for (let i=0;i<corrs.length;i++) {
           const c = corrs[i];
           if (c.x + c.w < viewLeft - 40 || c.x > viewLeft + viewSize + 40 || c.y + c.h < viewTop - 40 || c.y > viewTop + viewSize + 40) continue;
-          ctx.fillRect(minimapX + (c.x - viewLeft) * scale, minimapY + (c.y - viewTop) * scale, c.w * scale, c.h * scale);
+          ctx.fillRect(minimapX + (c.x - viewLeft) * mapScale, minimapY + (c.y - viewTop) * mapScale, c.w * mapScale, c.h * mapScale);
         }
       }
     } catch { /* ignore */ }
@@ -232,7 +269,7 @@ export class HUD {
       const alpha = enemyBaseAlpha * (1 - distNorm*0.55);
       ctx.fillStyle = `rgba(255,60,60,${alpha.toFixed(3)})`;
       ctx.beginPath();
-      ctx.arc(minimapX + dx * scale, minimapY + dy * scale, 1.7, 0, Math.PI*2);
+  ctx.arc(minimapX + dx * mapScale, minimapY + dy * mapScale, 1.7, 0, Math.PI*2);
       ctx.fill();
     }
 

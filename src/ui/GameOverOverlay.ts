@@ -1,9 +1,7 @@
 import { Game } from '../game/Game';
 import { matrixBackground } from './MatrixBackground';
-import { HighScoreService } from '../auth/HighScoreService';
-import { RemoteLeaderboardService } from '../auth/RemoteLeaderboardService';
 import { googleAuthService } from '../auth/AuthService';
-import { ScoreLogService } from '../auth/ScoreLogService';
+import { submitScore, submitScoreAllPeriods, getPlayerId, sanitizeName, isLeaderboardConfigured, fetchTop, fetchPlayerEntry, resolveBoard } from '../leaderboard';
 
 /** Cinematic themed Game Over overlay */
 export class GameOverOverlay {
@@ -78,48 +76,69 @@ export class GameOverOverlay {
     const secs = (duration % 60).toString().padStart(2,'0');
   const level = this.game.player.level;
   const maxDps = Math.round((this.game as any).hud?.maxDPS || this.game.getCurrentDPS());
-    const stats: [string,string][] = [
+  const stats: [string,string][] = [
       ['Time', `${mins}:${secs}`],
       ['Level', `${level}`],
       ['Kill Count', `${this.game.getKillCount()}`],
       ['Max DPS', `${maxDps}`]
     ];
     // Record high score (using kill count as score baseline for now)
-    (async () => {
+  (async () => {
       try {
-  const characterId = (this.game as any).selectedCharacterData?.id || 'unknown';
-  const mode = (this.game as any).currentMode || 'SHOWDOWN';
-  const score = this.game.getKillCount();
-        let wasHigh = false;
-        let top: any[] = [];
-        const user = googleAuthService.getCurrentUser();
-        if (user) {
-          try { await RemoteLeaderboardService.submit(score, { mode, characterId, level, durationSec: duration, userId: user.id, nickname: user.nickname || user.name }); } catch {}
-          const remote = await RemoteLeaderboardService.getTop(mode, characterId, 20);
-          if (remote.length) top = remote;
+    const characterId = (this.game as any).selectedCharacterData?.id || 'unknown';
+    const mode = (this.game as any).currentMode || 'SHOWDOWN';
+  const kills = this.game.getKillCount();
+  const timeSec = duration; // survival time in seconds
+  const score = timeSec; // primary metric
+  // Submit to global board (extend later)
+  const pid = getPlayerId();
+  const user = googleAuthService.getCurrentUser();
+  const name = sanitizeName(user?.nickname || user?.name || 'Guest');
+  const maxDpsVal = Math.round((this.game as any).hud?.maxDPS || this.game.getCurrentDPS());
+  let topHtml = '';
+  if (isLeaderboardConfigured()) {
+    // Always submit even if guest (guest runs can still appear)
+  // Unified multi-board submission
+  try { await submitScoreAllPeriods({ playerId: pid, name, timeSec, kills, level, maxDps: maxDpsVal }); } catch {}
+    try {
+      const top = await fetchTop('global', 10, 0);
+      const me = pid;
+      const fmt = (t:number)=>{
+        const m=Math.floor(t/60).toString().padStart(2,'0');
+        const s=(t%60).toString().padStart(2,'0');
+        return m+':'+s;
+      };
+      if (top.length) {
+        let hint = '';
+        if (!user) hint = "<div class='hs-empty'>Guest run saved. Login to reserve a nickname.</div>";
+        // If player not in top list, fetch their rank separately
+        let myRow = '';
+        if (!top.some(e=>e.playerId===me)) {
+          const entry = await fetchPlayerEntry('global', me);
+            if (entry) {
+              myRow = `<div class='hs-row me'><span class='rank'>${entry.rank}</span><span class='nick'>${sanitizeName(entry.name)}</span><span class='time'>${fmt(entry.timeSec)}</span><span class='kills'>${entry.kills??'-'}</span><span class='lvl'>${entry.level??'-'}</span></div>`;
+            }
         }
-        if (!top.length) {
-          wasHigh = HighScoreService.record(score, { mode, characterId, level, durationSec: duration });
-          top = HighScoreService.getTop(mode, characterId, 20);
-        }
-  // Removed LOCAL/GLOBAL labeling per requirement
-        // Final defensive dedup (user+score) in case backend or local layer produced duplicates
-        const seen = new Set<string>();
-        const final: any[] = [];
-        for (const e of top) {
-          const k = (e.userId || e.nickname) + ':' + e.score;
-            if (seen.has(k)) continue;
-            seen.add(k);
-            final.push(e);
-        }
-  // Log (always, remote or local path)
-  ScoreLogService.log({ score, mode, characterId, level, durationSec: duration, source: top.length ? 'remote' : 'local-fallback' });
-          const rankBadge = '';
-          const topHtml = `<div class='go-highscores'><div class='hs-title'>Top 20 ${mode} / ${characterId}</div>` + rankBadge +
-          (final.length ? final.map((e,i)=> `<div class='hs-row ${i===0?'first':''} ${user && e.userId===user.id?'me':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span></div>`).join('') : '<div class="hs-empty">No scores yet.</div>') +
-          '</div>';
-        const baseStats = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
-        this.statsEl.innerHTML = baseStats + topHtml + (wasHigh ? "<div class='new-hs-banner'>NEW HIGH SCORE</div>" : '');
+        topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div>`+hint+
+          `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>`+
+          top.map(e=>`<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='time'>${fmt(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('')+myRow+
+          `</div>`;
+      } else {
+        const hint = user ? 'No scores yet.' : 'No scores yet. First guest run will appear.';
+        topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div><div class='hs-empty'>${hint}</div></div>`;
+      }
+    } catch {
+      const mm = Math.floor(timeSec/60).toString().padStart(2,'0');
+      const ss = (timeSec%60).toString().padStart(2,'0');
+      topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${mm}:${ss} · Kills ${kills}</div><div class='hs-empty'>Error loading leaderboard.</div></div>`;
+    }
+  } else {
+    const mm = Math.floor(timeSec/60).toString().padStart(2,'0');
+    const ss = (timeSec%60).toString().padStart(2,'0');
+    topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${mm}:${ss} · Kills ${kills}</div><div class='hs-empty'>Leaderboard not configured.</div></div>`;
+  }
+  const baseStats = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
+  this.statsEl.innerHTML = baseStats + topHtml;
       } catch {
         this.statsEl.innerHTML = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
       }

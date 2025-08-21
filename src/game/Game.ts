@@ -106,8 +106,8 @@ export class Game {
   private camY = 0;
   private camLerp = 0.12;
   private brightenMode: boolean = true;
-  private lowFX: boolean = false; // runtime quality downgrade for Electron stutter
-  // Dynamic resolution scaling (Electron only) to reduce GPU/compositor pressure
+  private lowFX: boolean = false; // legacy low FX toggle (was auto-set in Electron; now manual)
+  // Dynamic resolution scaling removed with Electron support
   private designWidth: number; // logical width baseline
   private designHeight: number; // logical height baseline
   private renderScale: number = 1; // current internal resolution scale (0.5 .. 1)
@@ -218,14 +218,7 @@ export class Game {
   // Provide global game instance reference (used by EnemyManager passive AoE)
   try { (window as any).__gameInstance = this; } catch {}
     this.initInput();
-    // Auto-enable lowFX when running inside Electron packaged app to mitigate compositor stutter
-    try {
-      if ((window as any).process?.versions?.electron) {
-        this.lowFX = true;
-        (window as any).__lowFX = true;
-  (window as any).__electron = true;
-      }
-    } catch { /* ignore */ }
+  // (Electron auto lowFX removed)
     // Removed frame pulse overlay (F9 toggle)
   this.gameLoop = new GameLoop(this.update.bind(this), this.render.bind(this));
 
@@ -324,13 +317,40 @@ export class Game {
   // Removed old interval-based initial upgrade watcher; now handled explicitly on reset/cinematic end.
   }
 
+  /**
+   * Asynchronously initializes deferred game resources (asset manifest + image preloads).
+   * Idempotent: safe to call multiple times; concurrent callers will await the same promise.
+   * Keeps constructor lean so Game can be created synchronously, while allowing main.ts
+   * to await heavy I/O (manifest + image loads) before showing character select / menus.
+   */
+  public async init(): Promise<void> {
+    // Reuse in-flight promise to avoid duplicate network work under race conditions.
+    const self: any = this as any;
+    if (self._initDone) return; // fast path
+    if (self._initPromise) return self._initPromise;
+    self._initPromise = (async () => {
+      try {
+        await this.assetLoader.loadAllFromManifest();
+        self._initDone = true;
+        Logger.info('[Game] init complete (assets preloaded)');
+      } catch (err) {
+        Logger.error('[Game] init failed: ' + (err as any)?.message);
+        // Continue – placeholders will render for any missing assets.
+        self._initDone = true; // prevent infinite retry loop
+      } finally {
+        self._initPromise = null;
+      }
+    })();
+    return self._initPromise;
+  }
+
   /** Accessor for EnemyManager (read-only external usage). */
   public getEnemyManager(){ return this.enemyManager; }
   /** Accessor for BulletManager */
   public getBulletManager(){ return this.bulletManager; }
 
   /**
-   * Resize logical & display dimensions (e.g. when user resizes Electron window). Supports bigger than FHD.
+  * Resize logical & display dimensions. Supports bigger than FHD.
    * Keeps dynamic resolution scaling logic: renderScale still applies to internal pixel size.
    */
   public resize(displayW: number, displayH: number) {
@@ -397,27 +417,13 @@ export class Game {
         // Activate character ability if available
         try {
           (this.player as any)?.activateAbility?.();
-        } catch {
-          // ignore if not implemented
-        }
-        e.preventDefault();
-      } else if (e.key.toLowerCase() === 'b') {
-        this.brightenMode = !this.brightenMode;
-      } else if (e.key.toLowerCase() === 'l') { // toggle low effects mode
-        this.lowFX = !this.lowFX;
-        (window as any).__lowFX = this.lowFX;
-  // Removed 'm' minimap toggle: minimap is now always visible
-      } else if (e.key === 'F9' || e.key.toLowerCase() === 'p') {
-        // Frame pulse debug overlay removed
-      } else if (e.key === 'F8') { // toggle room debug overlay
-        this.showRoomDebug = !this.showRoomDebug;
-      } else if (e.key === 'F10') { // ultra simple render mode for pacing diagnostics
-        (window as any).__simpleRender = !(window as any).__simpleRender;
-      } else if (e.key === 'F11') { // toggle dynamic resolution scaling off/on
-        (window as any).__noDynScale = !(window as any).__noDynScale;
+        } catch {}
+      } else if (e.key === 'k' || e.key === 'K') {
+        // Manual hero kill hotkey for rapid leaderboard submission testing
+        if (this.state === 'GAME') { this.player.hp = 0; }
       }
     });
-    // Fallback: if PauseOverlay fails to show within next tick after switching to PAUSE, force dispatch
+
     window.addEventListener('statechange', () => {
       if (this.state === 'PAUSE') {
         setTimeout(() => {
@@ -460,15 +466,9 @@ export class Game {
   }
 
   /**
-   * Resets the game state and player, optionally with selected character data.
-   * @param selectedCharacterData Data for the selected character (optional)
+   * Resets the game state and player for a new run (optionally switching character).
    */
   public resetGame(selectedCharacterData?: any) {
-  /**
-   * Resets the game state and player for a new run.
-   * Ensures player weapon state is initialized with character data.
-   * @param selectedCharacterData Data for the selected character (optional)
-   */
   // Only create a new player if one doesn't exist or if new character data is provided
   if (!this.player || selectedCharacterData) {
     // Ensure we always pass a character dataset when available; prevents Player constructor fallback warnings
@@ -641,68 +641,9 @@ export class Game {
   }
 
   public showCharacterSelect() {
-  if ((this.state === 'GAME' || this.state === 'PAUSE' || this.state === 'UPGRADE_MENU' || this.state === 'GAME_OVER') && !((window as any).__noAutoResize)) {
-    Logger.debug('Entering CHARACTER_SELECT state');
-    try {
-      (this.mainMenu as any)?.hideMenuElement();
-      const htmlCharPanel = document.getElementById('character-select-panel');
-      if (htmlCharPanel) htmlCharPanel.style.display = 'none';
-      const mainMenuPanel = document.getElementById('main-menu');
-      if (mainMenuPanel) mainMenuPanel.style.display = 'none';
-      const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
-      if (canvas) {
-        canvas.style.display = 'block';
-        canvas.style.zIndex = '100';
-      }
-    } catch {
-      // ignore if not available
-    }
+    // Minimal implementation: simply set state, UI panels are managed elsewhere.
+    this.setState('CHARACTER_SELECT');
   }
-  }
-
-  private worldToScreenX(x: number) {
-    return x - this.camX + this.designWidth / 2;
-  }
-  private worldToScreenY(y: number) {
-    return y - this.camY + this.designHeight / 2;
-  }
-
-async init() {
-  try {
-    // Use default internal logic (relative under file://, absolute under http) – avoid forcing '/assets'
-    await this.assetLoader.loadAllFromManifest();
-
-    // Explicit character image preloads (ensure paths match file vs http protocol)
-    const prefix = (location.protocol === 'file:' ? './assets/player/' : '/assets/player/');
-    const chars = [
-      'cyber_runner',
-      'psionic_weaver',
-      'bio_engineer',
-      'titan_mech',
-      'ghost_operative',
-      'data_sorcerer',
-      'neural_nomad',
-      'shadow_operative',
-      'tech_warrior',
-      'heavy_gunner',
-      'wasteland_scavenger',
-      'rogue_hacker'
-    ];
-    for (const c of chars) {
-      await this.assetLoader.loadImage(prefix + c + '.png');
-    }
-
-    const debugImg = this.assetLoader.getImage(prefix + 'cyber_runner.png');
-    if (debugImg) {
-      Logger.info(`[Game.init] cyber_runner.png loaded, src: ${debugImg.src}`);
-    } else {
-      Logger.warn('[Game.init] cyber_runner.png NOT loaded!');
-    }
-  } catch (error) {
-    Logger.error('Error loading assets:', error);
-    // ignore missing assets; placeholders will be used
-  }
-}
 
   // drawPause removed; handled by HTML PauseOverlay
 
@@ -818,8 +759,11 @@ async init() {
   // Follow player using logical viewport dimensions only (canvas.width includes DPR * renderScale which caused offset)
   const targetCamX = this.player.x - this.designWidth / 2;
   const targetCamY = this.player.y - this.designHeight / 2;
-  this.camX += (targetCamX - this.camX) * this.camLerp;
-  this.camY += (targetCamY - this.camY) * this.camLerp;
+  // Delta-aware smoothing so perceived damping constant independent of frame time.
+  const dtNorm = Math.max(0.1, Math.min(3, deltaTime / 16.6667)); // clamp extreme spikes
+  const lerpFactor = 1 - Math.pow(1 - this.camLerp, dtNorm); // exponential smoothing invariant to fps
+  this.camX += (targetCamX - this.camX) * lerpFactor;
+  this.camY += (targetCamY - this.camY) * lerpFactor;
     // Clamp within world using logical viewport
     this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.designWidth));
     this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.designHeight));
@@ -842,9 +786,7 @@ async init() {
   // (perf overlay removed)
     return;
   }
-  // (perf overlay removed)
-  // Adapt internal resolution based on recent jitter (Electron only)
-  this.adjustRenderScale();
+  // (dynamic Electron-specific internal resolution scaling removed)
   // Auto downgrade / upgrade FX based on sustained frame time
   const avg = (window as any).__avgFrameMs;
   if (avg !== undefined) {
@@ -1079,11 +1021,8 @@ async init() {
     const { x, y, damage, radius } = event.detail;
     // Use shockwave-only variant for cleaner visual (no old filled circle)
     const r = radius ?? 160;
-    if (this.explosionManager?.triggerShockwave) {
-      this.explosionManager.triggerShockwave(x, y, damage, r, '#00BFFF');
-    } else {
-      this.explosionManager?.triggerExplosion(x, y, damage, undefined, r, '#00BFFF');
-    }
+  // Use toned-down explosion (not full old shockwave) but keep original damage; radius already reduced at dispatch.
+  this.explosionManager?.triggerExplosion(x, y, damage, undefined, r, '#00BFFF');
   }
   /**
    * Handles an enemy death explosion event.

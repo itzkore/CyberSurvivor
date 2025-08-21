@@ -2,93 +2,36 @@
   "name": "cyber-survivor-ts",
   "version": "0.2.0",
   "private": true,
-  "main": "electron-main.js",
+  "description": "CyberSurvivor game (Web / Vite + TypeScript)",
+  "license": "UNLICENSED",
   "scripts": {
-    "dev": "vite",
+  "dev": "vite",
+    "build:renderer": "vite build",
     "build": "vite build",
     "preview": "vite preview",
-    "backend": "node ./backend/server.js",
-    "electron:dev": "cross-env NODE_ENV=development concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "npm run package:full",
-    "electron:builder": "npm run build && electron-builder",
-    "clean": "taskkill /F /IM CyberSurvivor.exe 2>nul || echo (exe not running) & rimraf dist release",
-    "release:clean": "npm run clean && npm run packager:win",
-    "repackage": "npm run clean && npm run electron:build",
-    "electron:zip": "npm run build && electron-builder --win zip",
-    "dir": "npm run build && electron-builder --dir",
-    "zip:manual": "npm run dir && powershell -Command Compress-Archive -Path dist/win-unpacked/* -DestinationPath dist/CyberSurvivor-win64.zip -Force",
-    "packager:win": "npm run build && npx @electron/packager . CyberSurvivor --platform=win32 --arch=x64 --out=release --overwrite --prune=false --ignore=\"(^/release$|^/tests)\"",
-    "zip:packager": "npm run packager:win && powershell -Command Compress-Archive -Path release/CyberSurvivor-win32-x64/* -DestinationPath release/CyberSurvivor-win32-x64.zip -Force",
-    "package:full": "npm run clean && npm run packager:win && node scripts/make-zip.js",
-    "release:devtools": "npm run clean && cross-env DEVTOOLS=1 npm run packager:win",
-    "release:baseline": "npm run clean && cross-env GFX=baseline npm run packager:win",
-    "release:minimal": "npm run clean && cross-env GFX=minimal npm run packager:win",
+  "backend": "echo backend removed",
+  "clean": "rimraf dist",
     "version:patch": "npm version patch -m 'chore(release): bump version to %s'",
-    "postinstall": "electron-builder install-app-deps",
+  "postinstall": "echo (no electron postinstall)",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "lint:security": "echo (placeholder for future security lint)"
   },
-  "build": {
-    "appId": "com.cybersurvivor.app",
-    "productName": "CyberSurvivor",
-    "files": [
-      "dist/**/*",
-      "electron-main.js",
-      "preload.js",
-      "package.json"
-    ],
-    "directories": {
-      "buildResources": "build"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "allowElevation": true,
-      "allowToChangeInstallationDirectory": false
-    }
+  "build": {},
+  "engines": {
+    "node": ">=18.0.0"
   },
   "devDependencies": {
-    "@electron/packager": "^18.3.0",
     "@types/howler": "^2.2.12",
     "@types/node": "^20.0.0",
-    "concurrently": "^8.2.2",
-    "cross-env": "^7.0.3",
-    "electron": "^30.0.0",
-    "electron-builder": "^24.9.1",
     "rimraf": "^5.0.5",
     "typescript": "^5.0.0",
     "vite": "^7.1.2",
     "vitest": "^3.2.4",
-    "wait-on": "^7.2.0"
+    "cross-env": "^7.0.3"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "google-auth-library": "^9.15.1",
-    "howler": "^2.2.4"
+  "howler": "^2.2.4"
   }
 }

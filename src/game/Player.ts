@@ -589,7 +589,7 @@ export class Player {
   public update(delta: number) {
     // WHAT: Guard against missing navigator in test (Node) environment.
     // WHY: Prevent TypeError when running logic tests without a browser-like window.
-    if (typeof window !== 'undefined' && window.navigator && window.navigator.userAgent && window.navigator.userAgent.includes('Mobile')) return; // Touch handled elsewhere
+  // Allow mobile devices to update; touch movement handled in separate input layer.
     // Movement (micro-optimized)
     let dx = 0, dy = 0;
     if (keyState['arrowup'] || keyState['w']) dy -= 1;
@@ -602,9 +602,15 @@ export class Player {
       const normX = dx / mag;
       const normY = dy / mag;
       // Scale movement by frame delta (delta is ms in current loop design)
-      const moveScale = (delta / 16.6667); // 1 at 60fps
-      this.x += normX * this.speed * moveScale;
-      this.y += normY * this.speed * moveScale;
+  let moveScale = (delta / 16.6667); // 1 at 60fps baseline
+  if (moveScale < 0.25) moveScale = 0.25; // clamp tiny delta bursts to avoid visible micro-stops
+  if (moveScale > 2.5) moveScale = 2.5;   // clamp huge hitch to prevent tunneling
+  const stepX = normX * this.speed * moveScale;
+  const stepY = normY * this.speed * moveScale;
+  this.x += stepX;
+  this.y += stepY;
+  this.vx = stepX; // expose last frame velocity (used by other systems / smoothing)
+  this.vy = stepY;
       // Animation frame only when moving (still relevant for other animations if any)
       this.frameTimer++;
       // Flip animation: toggle isFlipped every 0.2s (12 frames at 60fps)
@@ -672,6 +678,8 @@ export class Player {
           if (bm && bm.bullets && bm.bullets.some((b: any) => b.active && b.weaponType === WeaponType.HOMING)) {
             return; // keep counting down cooldown; next shot will occur right after explosion
           }
+          // Sync global player ref right before spawning drone to avoid stale reference
+          (window as any).player = { x: this.x, y: this.y };
         }
   // For Homing (Kamikaze Drone) we always want to spawn even with no enemies yet.
   const t = autoAimTarget || (weaponType === WeaponType.HOMING ? { x: this.x + 200, y: this.y } as any : null);

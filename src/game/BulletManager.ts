@@ -166,6 +166,10 @@ export class BulletManager {
           // Faster, smoother ascent (shortened duration) with analytic easing (no incremental overshoot)
           const ASCEND_DURATION = 1800; // ms (was 3000)
           const phaseElapsed = now - (b.phaseStartTime || now);
+          // Initial tether window ensures the drone appears exactly on top of the player for a brief moment
+          // so the spawn feels correctly centered instead of instantly offsetting into an orbit arc.
+          const TETHER_MS = 140; // ~8 frames @60fps – visually enough to read spawn origin
+          // Establish / update anchor (player position) so orbit stays around moving player even if reference lost later
           // Establish / update anchor (player position) so orbit stays around moving player even if reference lost later
           if ((b as any).anchorX === undefined) {
             (b as any).anchorX = player ? player.x : b.x;
@@ -176,33 +180,51 @@ export class BulletManager {
           }
           const anchorX = (b as any).anchorX;
           const anchorY = (b as any).anchorY;
-          const maxOrbit = 170; // reduced max orbit radius (tighter circle)
-          const ascendT = Math.min(1, phaseElapsed / ASCEND_DURATION);
-          // Smooth easeInOut for radius (accelerate then decelerate) -> easeInOutCubic
-          const easedRadius = ascendT < 0.5 ? 4 * ascendT * ascendT * ascendT : 1 - Math.pow(-2 * ascendT + 2, 3) / 2;
-          b.orbitRadius = maxOrbit * easedRadius;
-          // Angular speed smoothly decelerates (ease-out sine)
-          const easedAng = Math.sin((ascendT * Math.PI) / 2); // 0->1
-          const angStart = 2.6; // slightly faster initial spin
-          const angEnd = 0.9;   // slow near apex
-          const angSpeed = (angStart + (angEnd - angStart) * easedAng) * (deltaTime / 1000);
-          b.orbitAngle = (b.orbitAngle || 0) + angSpeed;
-          const orad = b.orbitRadius || 0;
-          const ox = Math.cos(b.orbitAngle) * orad;
-          const oy = Math.sin(b.orbitAngle) * orad * 0.55;
-          b.x = anchorX + ox;
-          b.y = anchorY + oy;
-          // Smooth altitude easing (easeOutSine) from 0.35 -> 1.0
-          const altEased = Math.sin((ascendT * Math.PI) / 2);
-          b.altitudeScale = 0.35 + 0.65 * altEased;
+          if (phaseElapsed < TETHER_MS) {
+            // Hard lock to player center; no lateral displacement yet
+            b.orbitRadius = 0;
+            // Prefer exact original spawn center if recorded to avoid micro jitter when player moves on same frame
+            const scx = (b as any).spawnCenterX;
+            const scy = (b as any).spawnCenterY;
+            b.x = (scx != null ? scx : anchorX);
+            b.y = (scy != null ? scy : anchorY);
+            // Gentle altitude ramp so it "pops" in smoothly
+            const tLock = phaseElapsed / TETHER_MS;
+            b.altitudeScale = 0.18 + 0.17 * tLock; // 0.18 -> 0.35
+            // Slight pre-spin so later easing picks up smoothly
+            b.orbitAngle = (b.orbitAngle || 0) + 1.2 * (deltaTime / 1000);
+          } else {
+            const maxOrbit = 170; // reduced max orbit radius (tighter circle)
+            // Rebase time so easing starts after tether (continuity at 0)
+            const ascendT = Math.min(1, (phaseElapsed - TETHER_MS) / (ASCEND_DURATION - TETHER_MS));
+            // Smooth easeInOut for radius (accelerate then decelerate) -> easeInOutCubic
+            const easedRadius = ascendT < 0.5 ? 4 * ascendT * ascendT * ascendT : 1 - Math.pow(-2 * ascendT + 2, 3) / 2;
+            b.orbitRadius = maxOrbit * easedRadius;
+            // Angular speed smoothly decelerates (ease-out sine)
+            const easedAng = Math.sin((ascendT * Math.PI) / 2); // 0->1
+            const angStart = 2.6; // slightly faster initial spin
+            const angEnd = 0.9;   // slow near apex
+            const angSpeed = (angStart + (angEnd - angStart) * easedAng) * (deltaTime / 1000);
+            b.orbitAngle = (b.orbitAngle || 0) + angSpeed;
+            const orad = b.orbitRadius || 0;
+            const ox = Math.cos(b.orbitAngle) * orad;
+            const oy = Math.sin(b.orbitAngle) * orad * 0.55;
+            b.x = anchorX + ox;
+            b.y = anchorY + oy;
+            // Smooth altitude easing (easeOutSine) from 0.35 -> 1.0 (shifted to start at 0.35 after tether)
+            const altEased = Math.sin((ascendT * Math.PI) / 2);
+            b.altitudeScale = 0.35 + 0.65 * altEased;
+          }
 
           // Subtle trail accumulation during ascent for visual feedback
           if (!b.trail) b.trail = [];
           b.trail.push({ x: b.x, y: b.y });
           if (b.trail.length > 22) b.trail.splice(0, b.trail.length - 22);
 
-          // Transition to HOVER at apex; defer targeting to HOVER phase
-      if (ascendT >= 1) {
+      // Transition to HOVER at apex; defer targeting to HOVER phase
+      // Use 1 when still in tether (ascendT undefined there) only when overall phaseElapsed exceeds ASCEND_DURATION
+      const ascendComplete = phaseElapsed >= ASCEND_DURATION;
+    if (ascendComplete) {
             b.phase = 'HOVER';
             b.phaseStartTime = performance.now();
             (b as any).hoverLastScan = 0;
@@ -379,7 +401,7 @@ export class BulletManager {
             }
           }
           if (impact || phaseElapsed > MAX_DURATION) {
-            window.dispatchEvent(new CustomEvent('droneExplosion', { detail: { x: b.x, y: b.y, damage: b.damage, radius: 160 } }));
+            window.dispatchEvent(new CustomEvent('droneExplosion', { detail: { x: b.x, y: b.y, damage: b.damage, radius: 110 } }));
             b.active = false;
             this.bulletPool.push(b);
             continue;
@@ -982,7 +1004,7 @@ export class BulletManager {
       b.searchCooldownMs = 250; // search cluster every 250ms
       // Center over player if available
       const pl = (window as any).player;
-      if (pl) { b.x = pl.x; b.y = pl.y; b.startX = pl.x; b.startY = pl.y; }
+  if (pl) { b.x = pl.x; b.y = pl.y; b.startX = pl.x; b.startY = pl.y; (b as any).spawnCenterX = pl.x; (b as any).spawnCenterY = pl.y; }
       // Neutralize initial velocity (we'll control manually)
       b.vx = 0; b.vy = 0;
       // Override lifetime/range so drone can finish full ascent & dive (at least 6s)
