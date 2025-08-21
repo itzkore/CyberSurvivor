@@ -48,6 +48,7 @@ class GoogleAuthService {
   private configHelpShown = false;
 
   private static LS_KEY = 'auth.googleUser';
+  private static LS_NICK_MAP = 'auth.nickMap'; // maps google sub -> nickname
 
   constructor() {
     this.restoreFromStorage();
@@ -230,9 +231,30 @@ class GoogleAuthService {
   const verifyEndpoint = undefined;
       // If nickname missing try backend FIRST so same Gmail gets consistent handle across devices
       if (!u.nickname) {
-        // Remote verify disabled; always generate local nickname
+        // Attempt to restore previously chosen nickname for this user id
+        try {
+          const mapRaw = localStorage.getItem(GoogleAuthService.LS_NICK_MAP);
+          const map = mapRaw ? JSON.parse(mapRaw) as Record<string,string> : {};
+          const existing = map[u.id];
+          if (existing) {
+            u.nickname = existing;
+            u.profileComplete = true;
+            finalize();
+            return;
+          }
+        } catch { /* ignore */ }
+        // Generate fresh nickname then persist mapping for future sessions
         import('./NicknameGenerator').then(mod => {
-          try { u.nickname = mod.generateNickname(); u.profileComplete = false; } catch {/* ignore */}
+          try {
+            u.nickname = mod.generateNickname();
+            u.profileComplete = false;
+            // Persist initial mapping
+            try {
+              const mapRaw = localStorage.getItem(GoogleAuthService.LS_NICK_MAP);
+              const map = mapRaw ? JSON.parse(mapRaw) as Record<string,string> : {};
+              if (!map[u.id]) { map[u.id] = u.nickname!; localStorage.setItem(GoogleAuthService.LS_NICK_MAP, JSON.stringify(map)); }
+            } catch { /* ignore */ }
+          } catch {/* ignore */}
           finalize();
         }).catch(()=> finalize());
         return; // emit after async path
@@ -264,6 +286,13 @@ class GoogleAuthService {
     this.user.nickname = nickname.trim().slice(0, 24);
     this.user.profileComplete = true;
     localStorage.setItem(GoogleAuthService.LS_KEY, JSON.stringify(this.user));
+    // Update nick map so subsequent logins reuse selected nickname
+    try {
+      const mapRaw = localStorage.getItem(GoogleAuthService.LS_NICK_MAP);
+      const map = mapRaw ? JSON.parse(mapRaw) as Record<string,string> : {};
+      map[this.user.id] = this.user.nickname!;
+      localStorage.setItem(GoogleAuthService.LS_NICK_MAP, JSON.stringify(map));
+    } catch { /* ignore */ }
     this.emit();
     // Optionally push nickname update to backend
   // Backend profile update skipped.
