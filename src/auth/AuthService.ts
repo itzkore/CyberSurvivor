@@ -226,7 +226,7 @@ class GoogleAuthService {
     this.user = u;
     if (u) {
       const finalize = () => { localStorage.setItem(GoogleAuthService.LS_KEY, JSON.stringify(u)); this.emit(); };
-      const verifyEndpoint = this.verifyUrl || (this.apiBase ? this.apiBase.replace(/\/$/, '') + '/verify' : undefined);
+  const verifyEndpoint = this.verifyUrl || (this.apiBase ? this.apiBase.replace(/\/$/, '') + '/verify' : undefined);
       // If nickname missing try backend FIRST so same Gmail gets consistent handle across devices
       if (!u.nickname) {
         if (verifyEndpoint && !this.verifying) {
@@ -312,7 +312,7 @@ class GoogleAuthService {
     localStorage.setItem(GoogleAuthService.LS_KEY, JSON.stringify(this.user));
     this.emit();
     // Optionally push nickname update to backend
-    const profileEndpoint = this.verifyUrl ? this.verifyUrl.replace(/\/verify$/, '/profile') : (this.apiBase ? this.apiBase.replace(/\/$/, '') + '/profile' : undefined);
+  const profileEndpoint = this.verifyUrl ? this.verifyUrl.replace(/\/verify$/, '/profile') : (this.apiBase ? this.apiBase.replace(/\/$/, '') + '/profile' : undefined);
     if (profileEndpoint) {
       fetch(profileEndpoint, {
         method: 'POST',

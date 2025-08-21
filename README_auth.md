@@ -1,18 +1,18 @@
-# Google Sign-In & Leaderboard Integration
+# Google Sign-In (Remote Leaderboard Removed)
 
-This project now supports a full Google Sign-In flow with optional backend verification & remote leaderboards.
+Project supports Google Sign-In for nickname/profile only. Remote leaderboard endpoints and related service were removed; the game now uses purely local high scores (`HighScoreService`).
 
 ## Components
 
 Front-end:
 
 1. `AuthService.ts` – wraps Google Identity Services (one-tap + fallback modal), nickname, token expiry refresh, backend verification.
-2. `RemoteLeaderboardService.ts` – submits scores & fetches leaderboard from backend (falls back to local `HighScoreService.ts`).
+2. `RemoteLeaderboardService.ts` – (removed/stub) previously handled remote leaderboard.
 3. `HighScoreService.ts` – local storage fallback for offline / no-backend mode.
 4. Updated UI (`MainMenu.ts`, `GameOverOverlay.ts`) shows profile, nickname modal, and high scores.
 
 Backend (sample):
-`backend/server.js` – Express server verifying ID tokens using `google-auth-library`; endpoints: `/verify`, `/profile`, `/score`, `/leaderboard`.
+`backend/server.js` – Minimal Express server exposing only `/verify` and `/profile`.
 
 ## Environment Variables
 
@@ -48,7 +48,7 @@ Navigate to `http://localhost:5173`.
 
 ## Score Submission Flow
 
-1. Game over triggers `RemoteLeaderboardService.submit()` with kill count.
+1. Game over records score locally via `HighScoreService.record()`.
 2. Service verifies token freshness via `AuthService.ensureValidToken()`.
 3. Backend verifies ID token signature & audience; updates in-memory board.
 4. Client refreshes top scores (remote first, local fallback).
@@ -72,8 +72,7 @@ Navigate to `http://localhost:5173`.
 
 | Goal | Change |
 | ---- | ------ |
-| Persistent leaderboard | Add DB layer (e.g., Postgres) & replace in-memory map. |
-| Global leaderboard | Add aggregate endpoint ignoring character bucket. |
+| Remote leaderboard | Re-introduce APIs and backend storage (feature removed). |
 | Anti-cheat | Obfuscate client, add server recompute, telemetry checks. |
 | Session API | Issue own session JWT after /verify to avoid sending Google token every call. |
 

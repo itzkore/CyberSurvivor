@@ -1,8 +1,8 @@
 import { Game } from '../game/Game';
 import { matrixBackground } from './MatrixBackground';
 import { HighScoreService } from '../auth/HighScoreService';
-import { googleAuthService } from '../auth/AuthService';
 import { RemoteLeaderboardService } from '../auth/RemoteLeaderboardService';
+import { googleAuthService } from '../auth/AuthService';
 import { ScoreLogService } from '../auth/ScoreLogService';
 
 /** Cinematic themed Game Over overlay */
@@ -92,24 +92,16 @@ export class GameOverOverlay {
   const score = this.game.getKillCount();
         let wasHigh = false;
         let top: any[] = [];
-        const remote = RemoteLeaderboardService.isAvailable();
-        try {
-          await RemoteLeaderboardService.submit(score, { mode, characterId, level, durationSec: duration });
-          top = await RemoteLeaderboardService.getTop(mode, characterId, 20);
-          // Determine if our score is present and top
-          const user = googleAuthService.getCurrentUser();
-          const myIdx = top.findIndex(e=> user && e.userId === user.id && e.score === score);
-          if (myIdx === 0) wasHigh = true; // top spot
-        } catch {
-          // Remote path failed; fall back to local record
-          top = [];
+        const user = googleAuthService.getCurrentUser();
+        if (user) {
+          try { await RemoteLeaderboardService.submit(score, { mode, characterId, level, durationSec: duration, userId: user.id, nickname: user.nickname || user.name }); } catch {}
+          const remote = await RemoteLeaderboardService.getTop(mode, characterId, 20);
+          if (remote.length) top = remote;
         }
         if (!top.length) {
-          // Remote unavailable or failed -> use local service (ensures one entry only)
           wasHigh = HighScoreService.record(score, { mode, characterId, level, durationSec: duration });
           top = HighScoreService.getTop(mode, characterId, 20);
         }
-        const user = googleAuthService.getCurrentUser();
   // Removed LOCAL/GLOBAL labeling per requirement
         // Final defensive dedup (user+score) in case backend or local layer produced duplicates
         const seen = new Set<string>();
@@ -121,9 +113,10 @@ export class GameOverOverlay {
             final.push(e);
         }
   // Log (always, remote or local path)
-  ScoreLogService.log({ score, mode, characterId, level, durationSec: duration, source: remote ? 'remote' : 'local-fallback' });
-  const topHtml = `<div class='go-highscores'><div class='hs-title'>Top 20 ${mode} / ${characterId}</div>` +
-          (final.length ? final.map((e,i)=> `<div class='hs-row ${i===0?'first':''} ${user && e.userId===user.id?'me':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span></div>`).join('') : '<div class="hs-empty">No remote scores yet.</div>') +
+  ScoreLogService.log({ score, mode, characterId, level, durationSec: duration, source: top.length ? 'remote' : 'local-fallback' });
+          const rankBadge = '';
+          const topHtml = `<div class='go-highscores'><div class='hs-title'>Top 20 ${mode} / ${characterId}</div>` + rankBadge +
+          (final.length ? final.map((e,i)=> `<div class='hs-row ${i===0?'first':''} ${user && e.userId===user.id?'me':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span></div>`).join('') : '<div class="hs-empty">No scores yet.</div>') +
           '</div>';
         const baseStats = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
         this.statsEl.innerHTML = baseStats + topHtml + (wasHigh ? "<div class='new-hs-banner'>NEW HIGH SCORE</div>" : '');

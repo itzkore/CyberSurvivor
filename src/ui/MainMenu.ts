@@ -3,8 +3,8 @@ import { matrixBackground } from './MatrixBackground';
 import { CHARACTERS } from '../data/characters';
 // Static imports for auth/score services to avoid mixed dynamic+static warnings in Vite
 import { googleAuthService } from '../auth/AuthService';
-import { RemoteLeaderboardService } from '../auth/RemoteLeaderboardService';
 import { HighScoreService } from '../auth/HighScoreService';
+import { RemoteLeaderboardService } from '../auth/RemoteLeaderboardService';
 
 interface PlayerProfile {
   currency: number;
@@ -27,6 +27,7 @@ export class MainMenu {
   private selectedMode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN';
   private authUnsub?: () => void;
   private authUser: import('../auth/AuthService').GoogleUserProfile | null = null;
+  private incrementalEntries: any[] = [];
 
   constructor(game: any) {
     this.gameInstance = game;
@@ -147,8 +148,9 @@ export class MainMenu {
             </div>
           </section>
           <section class="panel right highscores-panel" id="highscores-panel">
-            <div class="hs-header">REMOTE LEADERBOARD</div>
-            <div class="hs-panel" id="hs-remote-board">Loading…</div>
+            <div class="hs-header" id="hs-title">HIGHSCORES</div>
+            <div class="hs-panel" id="hs-remote-board">No scores yet.</div>
+            <button class="nav-btn" id="hs-load-more" style="margin-top:6px;font-size:11px;padding:4px 6px;">Load More</button>
           </section>
         </main>
         <footer class="mm-footer">
@@ -270,6 +272,16 @@ export class MainMenu {
       style.id = 'mm-hs-styles';
       style.textContent = `.highscores-panel .hs-row{display:flex;justify-content:space-between;padding:2px 4px;margin-bottom:2px;border:1px solid rgba(0,255,255,0.15);border-radius:3px;font-size:12px}.highscores-panel .hs-row.first{background:linear-gradient(90deg,#8a6 0,#333 100%);color:#fff}.highscores-panel .hs-empty{opacity:.6;font-size:11px}`;
       document.head.appendChild(style);
+    }
+    const loadMore = this.mainMenuElement.querySelector('#hs-load-more') as HTMLButtonElement | null;
+    if (loadMore) {
+      loadMore.addEventListener('click', () => {
+        // For local only we already hold all entries; simply re-render (could paginate if expanded later)
+        const characterId = (this.gameInstance as any).selectedCharacterData?.id || 'wasteland_scavenger';
+        const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
+        const mode = modeSelect?.value || 'SHOWDOWN';
+        this.renderHighScoreList(mode, characterId);
+      });
     }
     this.refreshHighScores();
   }
@@ -495,24 +507,38 @@ export class MainMenu {
   loginBtn.classList.remove('hidden-init');
     }
   }
-  private refreshHighScores(): void {
-  const remotePanel = document.getElementById('hs-remote-board');
-  if (!remotePanel) return;
+  private async refreshHighScores(): Promise<void> {
+    const remotePanel = document.getElementById('hs-remote-board');
+    if (!remotePanel) return;
     const characterId = (this.gameInstance as any).selectedCharacterData?.id || 'wasteland_scavenger';
     const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
     const mode = modeSelect?.value || 'SHOWDOWN';
-  // Remote board (fallback to local high score service)
-    if (RemoteLeaderboardService.isAvailable()) {
-      RemoteLeaderboardService.getTop(mode, characterId, 20).then(top => {
-        remotePanel.innerHTML = top.length ? top.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${e.level}</span></div>`).join('') : '<div class="hs-empty">No remote scores.</div>';
-      }).catch(()=>{
-        const top = HighScoreService.getTop(mode, characterId, 20);
-        remotePanel.innerHTML = top.length ? top.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${e.level}</span></div>`).join('') : '<div class="hs-empty">No scores.</div>';
-      });
-    } else {
-      const top = HighScoreService.getTop(mode, characterId, 20);
-      remotePanel.innerHTML = top.length ? top.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${e.level}</span></div>`).join('') : '<div class="hs-empty">No scores.</div>';
+    const titleEl = document.getElementById('hs-title');
+    const user = googleAuthService.getCurrentUser();
+    if (RemoteLeaderboardService.isAvailable() && user) {
+      const remote = await RemoteLeaderboardService.getTop(mode, characterId, 20);
+      if (remote.length) {
+        this.incrementalEntries = remote;
+        if (titleEl) titleEl.textContent = 'GLOBAL HIGHSCORES';
+        this.renderHighScoreList(mode, characterId);
+        return;
+      }
     }
+    this.incrementalEntries = HighScoreService.getTop(mode, characterId, 50);
+    if (titleEl) titleEl.textContent = 'LOCAL HIGHSCORES';
+    this.renderHighScoreList(mode, characterId);
+  }
+
+  private async renderHighScoreList(mode:string, characterId:string) {
+    const remotePanel = document.getElementById('hs-remote-board');
+    if (!remotePanel) return;
+    let html = '';
+    const list = this.incrementalEntries;
+    if (list.length) {
+      html = list.map((e,i)=> `<div class='hs-row ${i===0?'first':''}'><span class='rank'>${i+1}</span><span class='nick'>${e.nickname}</span><span class='score'>${e.score}</span><span class='lvl'>Lv${(e as any).level||0}</span></div>`).join('');
+    } else html = '<div class="hs-empty">No scores.</div>';
+  // Remote rank/around removed
+    remotePanel.innerHTML = html;
   }
 
   private showNicknameModal(): void {

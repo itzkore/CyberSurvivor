@@ -1,104 +1,77 @@
-// CyberSurvivor Backend: Minimal Leaderboard API
+// CyberSurvivor Backend (stripped): Only auth profile endpoints retained. All leaderboard APIs removed.
 import express from 'express';
 import cors from 'cors';
-import bodyParser from 'body-parser';
 import { OAuth2Client } from 'google-auth-library';
-import mysql from 'mysql2';
+import { getOrCreateNickname, setNickname, submitScore, getTop, getRank, getAround, backendStatus } from './leaderboard/store.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '156752381672-vidmkis66cs201c39ps9vac3230bv6rl.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-// Připojení k MySQL (forpsi.cz)
-const db = mysql.createConnection({
-  host: 'a066um.forpsi.com',
-  user: 'f190888',
-  password: 'fHaFme9W',
-  database: 'f190888',
-  port: 3306
-});
-
-db.connect(err => {
-  if (err) {
-    console.error('Chyba připojení k MySQL:', err);
-  } else {
-    console.log('Připojeno k MySQL!');
-  }
-});
-
 app.use(cors());
-app.use(bodyParser.json());
-
-// In-memory storage (replace with DB for production)
-let scores = [];
-let logs = [];
+app.use(express.json());
 
 async function verifyToken(idToken) {
   const ticket = await client.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
   return ticket.getPayload();
 }
 
-// Submit score (MySQL)
-app.post('/score', async (req, res) => {
+app.post('/verify', async (req, res) => {
   try {
-    const { score, nickname, mode, characterId, level, durationSec } = req.body;
-    // Zápis skóre do tabulky (přepíše staré skóre stejného hráče pro stejný mode/character)
-    const sql = `REPLACE INTO leaderboard (userId, nickname, score, mode, characterId, level, durationSec, timeISO) VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`;
-    // userId můžeš doplnit z Google auth nebo použít nickname jako identifikátor
-    db.query(sql, [nickname, nickname, score, mode, characterId, level, durationSec], (err) => {
-      if (err) return res.status(500).json({ error: err.message });
-      // Načti top skóre
-      const topSql = `SELECT * FROM leaderboard WHERE mode=? AND characterId=? ORDER BY score DESC LIMIT 20`;
-      db.query(topSql, [mode, characterId], (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ entries: results });
-      });
-    });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+    const { idToken } = req.body || {};
+    if (!idToken) return res.status(400).json({ error: 'idToken required' });
+    let payload; try { payload = await verifyToken(idToken); } catch { return res.status(401).json({ error: 'invalid token' }); }
+    const userId = payload.sub;
+    const prof = await getOrCreateNickname(userId);
+    res.json({ userId, nickname: prof.nickname, profileComplete: !!prof.profileComplete });
+  } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'internal' }); }
 });
 
-// Get leaderboard (MySQL)
-app.get('/leaderboard', (req, res) => {
-  const { mode = 'SHOWDOWN', characterId = '', limit = 20 } = req.query;
-  const sql = `SELECT * FROM leaderboard WHERE mode=? AND characterId=? ORDER BY score DESC LIMIT ?`;
-  db.query(sql, [mode, characterId, Number(limit)], (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ entries: results });
+app.post('/profile', async (req, res) => {
+  try {
+    const { idToken, nickname } = req.body || {};
+    if (!idToken || !nickname) return res.status(400).json({ error: 'idToken and nickname required' });
+    let payload; try { payload = await verifyToken(idToken); } catch { return res.status(401).json({ error: 'invalid token' }); }
+    const userId = payload.sub;
+    const r = await setNickname(userId, nickname);
+    if (r.error) return res.status(400).json({ error: r.error });
+    res.json({ ok: true, nickname: r.nickname });
+  } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'internal' }); }
+});
+
+// Minimal health endpoint (no leaderboard presence implied)
+// Leaderboard endpoints
+app.post('/api/leaderboard/submit', async (req,res) => {
+  try {
+    const { userId, nickname, score, mode='SHOWDOWN', characterId='runner', level=0, durationSec=0 } = req.body||{};
+    const r = await submitScore({ userId, nickname, score, mode, characterId, level, durationSec });
+    if (r.error) return res.status(400).json(r);
+    res.json(r);
+  } catch { res.status(500).json({ error:'internal' }); }
+});
+app.get('/api/leaderboard/top', async (req,res) => {
+  try {
+    const { mode='SHOWDOWN', characterId='runner' } = req.query;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const start = Math.max(parseInt(req.query.start) || 0, 0);
+    const entries = await getTop(mode, characterId, limit, start);
+    res.json({ entries });
+  } catch { res.status(500).json({ error:'internal' }); }
+});
+app.get('/api/leaderboard/rank', async (req,res) => {
+  try { const { mode='SHOWDOWN', characterId='runner', userId } = req.query; if (!userId) return res.status(400).json({ error:'userId required' }); const rank = await getRank(mode, characterId, userId); res.json({ rank }); } catch { res.status(500).json({ error:'internal' }); }
+});
+app.get('/api/leaderboard/around', async (req,res) => {
+  try { const { mode='SHOWDOWN', characterId='runner', userId } = req.query; if (!userId) return res.status(400).json({ error:'userId required' }); const radius = Math.min(Math.max(parseInt(req.query.radius) || 2,1),10); const data = await getAround(mode, characterId, userId, radius); res.json(data); } catch { res.status(500).json({ error:'internal' }); }
+});
+app.get('/api/leaderboard/health', (req,res) => { res.json({ ok:true, ...backendStatus(), ts: Date.now() }); });
+app.get('/health', (req, res) => { res.json({ ok: true, msg: 'ok', ...backendStatus() }); });
+
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`CyberSurvivor stripped backend running on port ${PORT}`);
   });
-});
-
-// Log every run
-app.post('/scorelog', async (req, res) => {
-  try {
-    const { idToken, nickname, userId, score, mode, characterId, level, durationSec, timeISO, source } = req.body;
-    const user = await verifyToken(idToken);
-    if (!user) return res.status(401).json({ error: 'Invalid token' });
-    logs.push({ nickname, userId: user.sub, score, mode, characterId, level, durationSec, timeISO, source });
-    if (logs.length > 1000) logs = logs.slice(-1000);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-// Get all logs (global)
-app.get('/scorelog', (req, res) => {
-  res.json({ entries: logs.slice(-500).reverse() });
-});
-
-function getTopScores(mode, characterId, limit = 20) {
-  // Filter and dedup by userId, keep highest score
-  const filtered = scores.filter(s => s.mode === mode && (characterId ? s.characterId === characterId : true));
-  const best = {};
-  for (const s of filtered) {
-    if (!best[s.userId] || s.score > best[s.userId].score) best[s.userId] = s;
-  }
-  return Object.values(best).sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
-app.listen(PORT, () => {
-  console.log(`CyberSurvivor backend running on port ${PORT}`);
-});
+export default app;
