@@ -266,7 +266,8 @@ export class CharacterSelectPanel {
 
       case 'weapon': {
         const spec = WEAPON_SPECS[character.defaultWeapon as keyof typeof WEAPON_SPECS];
-        const traits = spec?.traits?.slice(0,6) || [];
+    const traits = spec?.traits?.slice(0,6) || [];
+    const tips = ((spec as any)?.usageTips as string[] | undefined) ?? this.buildFallbackTips(spec);
         const loreTag = spec ? this.buildWeaponLore(spec) : 'Forged in the neon crucible.';
         tabContent.innerHTML = `
           <h3>Signature Armament</h3>
@@ -275,13 +276,14 @@ export class CharacterSelectPanel {
             <div class="weapon-description">${spec?.description || 'Primary weapon system optimized for this operative\'s combat style.'}</div>
             <div class="weapon-core-stats">
               <div class="weapon-core-stat"><span class="w-label">Dmg</span><span class="w-val">${spec?.damage ?? '?'}</span></div>
-              <div class="weapon-core-stat"><span class="w-label">CD</span><span class="w-val">${spec?.cooldown}</span></div>
+              <div class="weapon-core-stat"><span class="w-label">CD</span><span class="w-val">${(spec as any)?.cooldownMs ? (spec as any).cooldownMs + 'ms' : (spec?.cooldown + 'f')}</span></div>
               <div class="weapon-core-stat"><span class="w-label">Salvo</span><span class="w-val">${spec?.salvo}</span></div>
               <div class="weapon-core-stat"><span class="w-label">Range</span><span class="w-val">${spec?.range}</span></div>
               <div class="weapon-core-stat"><span class="w-label">Speed</span><span class="w-val">${spec?.speed}</span></div>
               <div class="weapon-core-stat"><span class="w-label">Spread</span><span class="w-val">${spec?.spread}</span></div>
             </div>
             ${traits.length ? `<ul class="weapon-traits">${traits.map(t=>`<li>${t}</li>`).join('')}</ul>`:''}
+      ${tips && tips.length ? `<div class="weapon-tips"><div class="tips-title">Tips</div><ul>${tips.map(t=>`<li>${this.escapeHtml(t)}</li>`).join('')}</ul></div>`:''}
             <div class="weapon-lore">${loreTag}</div>
           </div>
           ${character.specialAbility ? `<p class="compact-text character-special"><strong>Special Ability:</strong> ${character.specialAbility}</p>` : ''}
@@ -302,13 +304,37 @@ export class CharacterSelectPanel {
 
   private buildWeaponLore(spec: any): string {
     if (!spec) return 'Forged in forgotten foundries beyond the Grid.';
-    const parts: string[] = [];
-    if (spec.damage) parts.push(`base damage ${spec.damage}`);
-    if (spec.range) parts.push(`effective range ${spec.range}`);
-    if (spec.cooldown) parts.push(`cooldown ${spec.cooldown}f`);
-    const trait = spec.traits?.[0];
-    const core = trait ? `${trait.toLowerCase()}` : 'hybrid design';
-    return `Legendary ${core} platform engineered for ${parts.slice(0,2).join(' & ')}.`;
+    const bits: string[] = [];
+    if (typeof spec.damage === 'number') bits.push(`Dmg ${spec.damage}`);
+    if (typeof spec.cooldownMs === 'number') bits.push(`CD ${spec.cooldownMs}ms`);
+    else if (typeof spec.cooldown === 'number') bits.push(`CD ${spec.cooldown}f`);
+    if (typeof spec.range === 'number') bits.push(`Range ${spec.range}`);
+    if (typeof spec.salvo === 'number') bits.push(`Salvo ${spec.salvo}`);
+    const traits = Array.isArray(spec.traits) ? spec.traits.slice(0,2).join(' • ') : '';
+    return [traits, bits.join('  |  ')].filter(Boolean).join('  —  ');
+  }
+
+  private buildFallbackTips(spec: any): string[] {
+    if (!spec) return ['Move with the flow and fire into crowds.'];
+    const tips: string[] = [];
+    if (typeof spec.range === 'number') tips.push(`Fight near ${Math.round(spec.range)}px range—outside it damage uptime drops.`);
+    if (typeof spec.salvo === 'number' && spec.salvo > 1) tips.push('Land full salvo—closer spacing increases DPS.');
+    if (typeof spec.spread === 'number' && spec.spread > 0.15) tips.push('Feather movement; shorter bursts tighten spread.');
+    if (Array.isArray(spec.traits) && spec.traits.includes('Piercing')) tips.push('Line enemies—pierce rewards straight lanes.');
+    if (Array.isArray(spec.traits) && spec.traits.includes('Area')) tips.push('Hold chokepoints—area damage scales with density.');
+    if (Array.isArray(spec.traits) && spec.traits.includes('Homing')) tips.push('Keep targets nearby—homing stays locked at close range.');
+    if (!tips.length) tips.push('Stay mobile and shoot into dense packs to maximize hits.');
+    return tips.slice(0,3);
+  }
+
+  // Minimal HTML escape to keep UI safe for dynamic strings
+  private escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   private selectCharacter(): void {

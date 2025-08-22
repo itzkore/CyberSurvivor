@@ -1,5 +1,5 @@
 // src/leaderboard.ts
-export type LeaderEntry = { rank: number; playerId: string; name: string; timeSec: number; kills?: number; level?: number; maxDps?: number };
+export type LeaderEntry = { rank: number; playerId: string; name: string; timeSec: number; kills?: number; level?: number; maxDps?: number; characterId?: string };
 
 // Allow optional late injection via window.__UPSTASH__ (useful in Electron preload or tests)
 declare global { interface Window { __UPSTASH__?: { url?: string; token?: string }; } }
@@ -223,6 +223,7 @@ export async function submitScore(opts: {
   level: number;
   maxDps: number;
   ttlSeconds?: number;
+  characterId?: string;
 }) {
   if (!isLeaderboardConfigured()) return; // silent no-op when not configured
   lbLog('submitScore:start', { board: opts.board||'global', timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps });
@@ -231,12 +232,26 @@ export async function submitScore(opts: {
   const pid = opts.playerId;
   const name = sanitizeName(opts.name);
   const timeSec = Math.max(0, Math.floor(opts.timeSec));
-  const meta = { kills: opts.kills|0, level: opts.level|0, maxDps: Math.round(opts.maxDps), timeSec };
+  const meta: any = { kills: opts.kills|0, level: opts.level|0, maxDps: Math.round(opts.maxDps), timeSec };
+  if (opts.characterId) meta.char = opts.characterId;
 
-  // Uložit / aktualizovat jméno + meta (JSON) – jedno HSET (varargs)
+  // Zjistit současné nejlepší skóre a aktualizovat meta pouze při zlepšení
+  let currentBest = 0;
   try {
-    await redis(['HSET', `name:${pid}`, 'name', name, 'meta', JSON.stringify(meta)]);
-  } catch {/* ignore meta persist errors */}
+    const s = await redis(['ZSCORE', key, pid]).catch(()=>null);
+    if (s !== null && s !== undefined) currentBest = Number(s) || 0;
+  } catch {/* ignore */}
+
+  // Pokud je toto skóre lepší než dosavadní, aktualizujeme jméno + meta pro BEST RUN
+  if (timeSec > currentBest) {
+    try {
+      await redis(['HSET', `name:${pid}`, 'name', name, 'meta', JSON.stringify(meta)]);
+    } catch {/* ignore meta persist errors */}
+  } else {
+    // Pokud se nezlepšilo, jenom (idempotentně) zapiš skóre s GT (nebude přepsáno)
+    // Jméno můžeme aktualizovat samostatně bez meta, aby změna nicku byla vidět
+    try { await redis(['HSET', `name:${pid}`, 'name', name]); } catch {/* ignore */}
+  }
 
   // Zapsat survival time jen když je vyšší než aktuální (GT) => delší přežití
   await redis(['ZADD', key, 'GT', String(timeSec), pid]);
@@ -259,19 +274,30 @@ export async function submitScoreAllPeriods(opts: {
   kills: number;
   level: number;
   maxDps: number;
+  /** Optional: when provided, also submit to per‑operative boards (e.g., global:op:shadow_operative) */
+  characterId?: string;
 }) {
   if (!isLeaderboardConfigured()) return;
   const base = { playerId: opts.playerId, name: opts.name, timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps };
   const periods = [
-    { board: 'global' },
+    { board: 'global' as string, ttlSeconds: undefined as number | undefined },
     resolveBoard('daily:auto'),
     resolveBoard('weekly:auto'),
     resolveBoard('monthly:auto')
   ];
-  for (let i=0;i<periods.length;i++) {
+  // Build list of boards to submit to, including per‑operative variants when characterId provided
+  const boards: { board: string; ttlSeconds?: number }[] = [];
+  for (let i = 0; i < periods.length; i++) {
     const p = periods[i];
+    boards.push({ board: p.board, ttlSeconds: p.ttlSeconds });
+    if (opts.characterId) {
+      boards.push({ board: `${p.board}:op:${opts.characterId}`, ttlSeconds: p.ttlSeconds });
+    }
+  }
+  for (let i=0;i<boards.length;i++) {
+    const b = boards[i];
     try {
-      await submitScore({ ...base, board: p.board, ttlSeconds: p.ttlSeconds });
+      await submitScore({ ...base, board: b.board, ttlSeconds: b.ttlSeconds, characterId: opts.characterId });
     } catch {/* ignore individual board failure */}
   }
 }
@@ -304,22 +330,24 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
       tasks.push((async () => {
         let name = playerId;
         let kills: number | undefined;
-        let level: number | undefined;
+  let level: number | undefined;
         let maxDps: number | undefined;
-        let timeSec = timeSecRaw;
+  let characterId: string | undefined;
+  // ZSET score je autoritativní BEST RUN čas
+  const timeSec = timeSecRaw;
         try {
           const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
           if (fetchedName) name = fetchedName;
           const metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
           if (metaStr) {
             const meta = JSON.parse(metaStr);
-            if (typeof meta.timeSec === 'number') timeSec = meta.timeSec;
             if (typeof meta.kills === 'number') kills = meta.kills;
             if (typeof meta.level === 'number') level = meta.level;
             if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
+            if (typeof meta.char === 'string') characterId = meta.char;
           }
         } catch {/* ignore per-player meta errors */}
-        out[idx/2] = { rank: offset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps };
+        out[idx/2] = { rank: offset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId };
       })());
     })(i);
   }
@@ -346,22 +374,23 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
     const rankIdx = await redis(['ZREVRANK', key, playerId]).catch(()=>null);
     const rawScore = await redis(['ZSCORE', key, playerId]).catch(()=>null);
     if (rankIdx === null || rankIdx === undefined || rawScore === null || rawScore === undefined) return null;
-    let timeSec = Number(rawScore) || 0;
-    let name = playerId;
-    let kills: number | undefined; let level: number | undefined; let maxDps: number | undefined;
+  // ZSET score je autoritativní BEST RUN čas
+  const timeSec = Number(rawScore) || 0;
+  let name = playerId;
+  let kills: number | undefined; let level: number | undefined; let maxDps: number | undefined; let characterId: string | undefined;
     try {
       const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
       if (fetchedName) name = fetchedName;
       const metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
       if (metaStr) {
         const meta = JSON.parse(metaStr);
-        if (typeof meta.timeSec === 'number') timeSec = meta.timeSec;
         if (typeof meta.kills === 'number') kills = meta.kills;
         if (typeof meta.level === 'number') level = meta.level;
         if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
+        if (typeof meta.char === 'string') characterId = meta.char;
       }
     } catch {/* ignore meta errors */}
-    return { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps };
+    return { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId };
   } catch {
     return null;
   }

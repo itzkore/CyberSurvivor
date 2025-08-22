@@ -40,7 +40,7 @@ export type Bullet = {
   /** Timestamp (ms, performance.now) when spawned; used for visual time-based effects */
   _spawnTime?: number;
   /** Drone phased behavior */
-  phase?: 'ASCEND' | 'HOVER' | 'DIVE';
+  phase?: 'ASCEND' | 'HOVER' | 'DIVE' | 'CHARGING' | 'TRAVEL';
   phaseStartTime?: number;
   orbitAngle?: number;
   orbitRadius?: number;
@@ -48,4 +48,13 @@ export type Bullet = {
   targetY?: number;
   searchCooldownMs?: number;
   altitudeScale?: number;
+  // Orbiting (Quantum Halo) metadata
+  isOrbiting?: boolean;
+  orbitIndex?: number; // index among current orbit set
+  orbitCount?: number; // total orbits
+  orbitRadiusBase?: number; // base radius (scaled by level)
+  spinSpeed?: number; // radians per second
+  angleOffset?: number; // persistent starting offset
+  lastPulseAngle?: number; // track last full rotation for pulse
+  contactCooldownMap?: Record<string, number>; // enemyId -> ms timestamp next allowed hit
 };

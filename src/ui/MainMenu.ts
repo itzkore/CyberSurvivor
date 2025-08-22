@@ -1,6 +1,7 @@
 import { Logger } from '../core/Logger';
 import { matrixBackground } from './MatrixBackground';
 import { CHARACTERS } from '../data/characters';
+import { WEAPON_SPECS } from '../game/WeaponConfig';
 // Static imports for auth/score services to avoid mixed dynamic+static warnings in Vite
 import { googleAuthService } from '../auth/AuthService';
 import { fetchTop, getPlayerId, resolveBoard, sanitizeName, isLeaderboardConfigured, fetchPlayerEntry, loadSnapshot } from '../leaderboard';
@@ -29,6 +30,56 @@ export class MainMenu {
   private incrementalEntries: any[] = [];
   private playerId: string = getPlayerId();
   private currentBoard: string = 'global';
+  /** Patch notes for current day only (auto-dated). Newest entries first in array. */
+  private patchNotesHistory: { version: string; date: string; entries: { tag: 'NEW'|'UI'|'BAL'|'FX'|'QOL'|string; text: string }[] }[] = (() => {
+    const today = new Date().toISOString().slice(0,10);
+    return [
+      {
+        version: '0.2.0',
+        date: today,
+        entries: [
+          { tag: 'MILESTONE', text: 'OPERATIVES PATCH — Full class pass complete: every operative reworked with unique active abilities and refreshed kits.' },
+          { tag: 'OPS', text: 'Abilities: Phase Cloak (Ghost), Data Sigils (Sorcerer), Overdrive (Heavy), Surge Dash (Runner), Virus Zones (Hacker), Weaver Lattice (Psionic), Grinder Harness (Mech), Neural Threader (Nomad), and more.' },
+          { tag: 'NEW', text: 'New/updated class weapons across the roster with 7‑level progressions; distinct visuals and role per class.' },
+          { tag: 'BAL', text: 'Global tuning: standardized base HP/speed/damage curves; per‑class cooldowns, damage, and AoE retuned; XP economy adjusted for ~10m builds.' },
+          { tag: 'SYS', text: 'Ability framework integrated with HUD (unique bars), AI hooks, and explosion/particle routing.' },
+          { tag: 'UI', text: 'Character Select readability & tips overhaul; main menu patch notes upgraded (multi-version, scrollable) with larger typography.' },
+          { tag: 'PERF', text: 'EnemyManager micro-optimizations and background rendering tweaks to smooth frame pacing.' }
+        ]
+      },
+      {
+        version: '0.1.1',
+        date: today,
+        entries: [
+          { tag: 'NEW', text: 'Quantum Halo weapon: small orbiting orbs rotate clockwise, pass-through hits with 1s per‑enemy cooldown, stronger knockback, and orbit radius scales +10%/level.' },
+          { tag: 'BAL', text: 'Enemy chase speed capped to ≈120% of player speed to reduce runaway pressure while preserving difficulty.' },
+          { tag: 'FX', text: 'XP orbs now render as efficient 5‑point stars with a subtle glow (very low performance cost).' },
+          { tag: 'QOL', text: 'Stability: adjusted Speed passive scaling to match balance tests; minor backend test stub added.' }
+        ]
+      },
+      {
+        version: '0.1.0',
+        date: today,
+        entries: [
+          // Newest first (today only)
+          { tag: 'BAL', text: 'Infinite boss scaling added: HP / special & contact damage grow each spawn; spawn every 180s (≈3 per 10m run).' },
+          { tag: 'BAL', text: 'Extended weapon progression: most weapons +2 levels (to 7); Shotgun to 10; revised DPS + cooldown tables; smoother late taper.' },
+          { tag: 'BAL', text: 'Passive upgrades +2 levels (now up to 7) except Piercing (3) & AOE (1); adjusted per‑level bonuses to avoid runaway scaling.' },
+          { tag: 'BAL', text: 'Experience economy retuned: higher quadratic XP curve, reduced gem upgrade probability (60%), lowered medium/large gem tiers.' },
+          { tag: 'BAL', text: 'Ricochet & Homing reworks: Ricochet 7 levels (up to 9 bounces, stronger scaling); Homing Drone geometric damage curve to L7.' },
+          { tag: 'QOL', text: 'Boss defeat triggers gem vacuum + upgrade reward event; smoother late-run cleanup.' },
+          { tag: 'UI', text: 'Patch notes panel typography enlarged & filtered to today-only block (newest-first).' },
+          { tag: 'BAL', text: 'Player XP pacing targets max build ≈10 minutes; supports extended progression window.' },
+          { tag: 'NEW', text: 'Plasma Core implemented: charge → travel → detonate with fragments or overcharged ion field pulses.' },
+          { tag: 'BAL', text: 'Drone explosion: ~300% area, double damage, cyan ion visuals & residual zone.' },
+          { tag: 'BAL', text: 'Enemy death AoE: toned visuals, restored full damage, slight radius increase.' },
+          { tag: 'FX', text: 'Titan Mech mortar: multi-ring detonation & pre-implosion sequence.' },
+          { tag: 'UI', text: 'Highscores panel reworked to strict table with DPS column and silent diff refresh.' },
+          { tag: 'QOL', text: 'Removed statistics button; default operative auto-selected.' }
+        ]
+      }
+    ];
+  })();
 
   constructor(game: any) {
     this.gameInstance = game;
@@ -99,7 +150,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">ALPHA v1.0.0</div>
+            <div class="version-tag">v0.2.0 — OPERATIVES PATCH</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
@@ -122,7 +173,7 @@ export class MainMenu {
             </div>
           </div>
         </header>
-        <main class="mm-main">
+  <main class="mm-main">
           <section class="panel left nav-panel">
             <button class="main-cta" id="start-mission-btn">START RUN</button>
             <div class="mode-select-block">
@@ -136,28 +187,49 @@ export class MainMenu {
             <div class="nav-buttons">
               <button class="nav-btn" id="character-select-btn">Operatives</button>
               <button class="nav-btn" id="upgrades-btn">Upgrades ${this.playerProfile.currency > 0 ? '<span class="notification-dot"></span>' : ''}</button>
-              <button class="nav-btn" id="statistics-btn">Statistics</button>
+                 <!-- Statistics button removed -->
             </div>
+            <div class="patch-notes-container" id="patch-notes">
+              <div class="pn-header">PATCH NOTES</div>
+              <div class="pn-body" id="patch-notes-body"></div>
+            </div>
+            <!-- spacer removed; patch notes now stretch to bottom -->
           </section>
-          <section class="panel center preview-panel" id="character-preview">
-            <div class="preview-portrait" id="preview-portrait">
-              <img src="${(window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : (location.protocol==='file:'?'./assets/player/wasteland_scavenger.png':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/player/wasteland_scavenger.png':'/assets/player/wasteland_scavenger.png'))}" alt="Character" />
+          <section class="panel middle-column" id="middle-column">
+            <div class="preview-panel compact" id="character-preview">
+              <div class="preview-upper">
+                <div class="preview-portrait small" id="preview-portrait">
+                  <img src="${(window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : (location.protocol==='file:'?'./assets/player/wasteland_scavenger.png':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/player/wasteland_scavenger.png':'/assets/player/wasteland_scavenger.png'))}" alt="Character" />
+                </div>
+                <div class="preview-meta">
+                  <div class="preview-name" id="preview-name">Select Character</div>
+                  <div class="preview-stats" id="preview-stats"></div>
+                </div>
+              </div>
+              <div class="weapon-info-combined" id="weapon-info-section">
+                <div class="wic-header">CLASS WEAPON</div>
+                <div class="wic-body" id="weapon-info-body">Select an operative…</div>
+              </div>
             </div>
-            <div class="preview-meta">
-              <div class="preview-name" id="preview-name">Select Character</div>
-              <div class="preview-stats" id="preview-stats"></div>
+            <div class="mode-info-panel" id="mode-info-panel">
+              <div class="mode-info-header">MODE INFO</div>
+              <div class="mode-info-body" id="mode-info-body">Loading…</div>
             </div>
+            <!-- spacer removed; mode info now stretches to panel bottom -->
           </section>
-          <section class="panel right highscores-panel" id="highscores-panel">
+          <section class="panel right highscores-panel wide2" id="highscores-panel">
             <div class="hs-header" id="hs-title">HIGHSCORES</div>
             <div class="hs-board-select" style="margin:4px 0 6px;display:flex;gap:4px;flex-wrap:wrap">
               <button class="nav-btn mini" data-board="global" style="padding:3px 6px;font-size:11px">Global</button>
               <button class="nav-btn mini" data-board="daily:auto" style="padding:3px 6px;font-size:11px">Daily</button>
               <button class="nav-btn mini" data-board="weekly:auto" style="padding:3px 6px;font-size:11px">Weekly</button>
               <button class="nav-btn mini" data-board="monthly:auto" style="padding:3px 6px;font-size:11px">Monthly</button>
+              <select id="hs-op-select" class="nav-btn mini" style="padding:3px 6px;font-size:11px;min-width:160px">
+                <option value="">All Operatives</option>
+              </select>
             </div>
             <div class="hs-panel" id="hs-remote-board">No scores yet.</div>
-            <button class="nav-btn" id="hs-load-more" style="margin-top:6px;font-size:11px;padding:4px 6px;">Load More</button>
+            <button class="nav-btn" id="hs-load-more" style="margin-top:6px;font-size:11px;padding:4px 6px;">Refresh</button>
           </section>
         </main>
         <footer class="mm-footer">
@@ -272,39 +344,147 @@ export class MainMenu {
       this.updateAuthUI();
       this.refreshHighScores();
     });
-  // Periodic refresh (local only now) every 5s
-  const loop = () => { this.refreshHighScores(); setTimeout(loop, 5000); }; setTimeout(loop, 5000);
+  // Periodic refresh every 5 minutes
+  const loop = () => { this.refreshHighScores(true); setTimeout(loop, 300000); }; setTimeout(loop, 300000);
     if (!document.getElementById('mm-hs-styles')) {
-      const style = document.createElement('style');
+    const style = document.createElement('style');
       style.id = 'mm-hs-styles';
-      style.textContent = `.highscores-panel .hs-row{display:flex;justify-content:space-between;padding:2px 4px;margin-bottom:2px;border:1px solid rgba(0,255,255,0.15);border-radius:3px;font-size:12px}.highscores-panel .hs-row.first{background:linear-gradient(90deg,#8a6 0,#333 100%);color:#fff}.highscores-panel .hs-empty{opacity:.6;font-size:11px}`;
+  style.textContent = `/* Layout grid */
+  .mm-main{display:grid;grid-template-columns:18% 34% 1fr;grid-template-rows:1fr;grid-template-areas:'nav middle hs';gap:28px;align-items:stretch;padding:0 8px 24px 0}
+  .nav-panel{grid-area:nav;display:flex;flex-direction:column;height:calc(100vh - 140px);}  
+  .nav-panel .nav-buttons{display:flex;flex-direction:column;gap:10px;margin-top:14px}
+  .nav-panel .main-cta{font-size:18px}
+  .nav-panel .nav-btn{font-size:14px}
+  .patch-notes-container{margin-top:16px;flex:1 1 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.28);background:rgba(0,25,38,0.28);backdrop-filter:blur(4px);padding:10px 10px 8px;min-height:160px;overflow:hidden;position:relative}
+  .patch-notes-container:before{content:'';position:absolute;inset:0;pointer-events:none;box-shadow:0 0 12px rgba(0,255,255,0.12) inset}
+  .pn-header{font-size:18px;letter-spacing:1.2px;font-weight:700;margin-bottom:8px;color:#5EEBFF;text-shadow:0 0 6px #0ff}
+  .pn-body{flex:1 1 auto;overflow:auto;font-size:13.5px;line-height:1.5;padding-right:4px}
+  .pn-body::-webkit-scrollbar{width:6px}
+  .pn-body::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:3px}
+  .pn-entry{margin-bottom:6px}
+  .pn-entry.dim{opacity:0.55;font-style:italic;margin-top:4px}
+  .pn-tag{display:inline-block;font-size:10px;padding:3px 6px;margin-right:6px;border:1px solid #0ff;border-radius:4px;background:rgba(0,255,255,0.12);letter-spacing:.6px}
+  .pn-tag.new{border-color:#4CFF7A;color:#4CFF7A}
+  .pn-tag.ui{border-color:#00C8FF;color:#00C8FF}
+  .pn-tag.bal{border-color:#FFC400;color:#FFC400}
+  .pn-tag.fx{border-color:#FF7A40;color:#FF7A40}
+  .pn-tag.qol{border-color:#C38BFF;color:#C38BFF}
+  .pn-tag.milestone{border-color:#7DFFDA;color:#7DFFDA}
+  .pn-tag.ops{border-color:#9AE6FF;color:#9AE6FF}
+  .pn-tag.sys{border-color:#94F7A7;color:#94F7A7}
+  .pn-tag.perf{border-color:#FF8FB3;color:#FF8FB3}
+  .pn-version{margin:12px 0 6px;font-weight:700;color:#5EEBFF;letter-spacing:1px;font-size:14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,255,255,0.25);padding-bottom:3px}
+  .pn-version .date{font-weight:500;font-size:12px;color:#9adfff;opacity:0.9}
+  #highscores-panel{grid-area:hs;display:flex;flex-direction:column;height:calc(100vh - 140px);overflow:hidden;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:10px 12px}
+    #highscores-panel .hs-header{font-size:22px;margin-bottom:6px;letter-spacing:1px}
+  .middle-column{grid-area:middle;display:flex;flex-direction:column;height:calc(100vh - 140px);gap:14px;overflow:hidden;}
+  #character-preview.compact{display:flex;flex-direction:column;gap:10px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.28);padding:14px 16px 12px;backdrop-filter:blur(4px);flex:0 0 auto;overflow:hidden}
+  #character-preview .preview-upper{display:flex;flex-direction:column;align-items:center;gap:10px}
+  #character-preview .preview-portrait.small{display:flex;align-items:center;justify-content:center;border:2px solid rgba(0,255,255,0.55);border-radius:50%;padding:8px;width:180px;height:180px;box-shadow:0 0 14px rgba(0,255,255,0.35) inset,0 0 12px rgba(0,255,255,0.25)}
+  #character-preview .preview-portrait.small img{max-width:150px;image-rendering:pixelated;filter:drop-shadow(0 0 6px #0ff)}
+  #character-preview .preview-name{font-size:32px;font-weight:600;color:#5EEBFF;text-shadow:0 0 8px #0ff,0 0 15px rgba(0,255,255,0.6);letter-spacing:1px;margin-top:6px}
+  #character-preview .preview-stats{display:flex;justify-content:center;gap:48px;margin-top:10px;font-size:11px;letter-spacing:1px;color:#b8faff}
+  #character-preview .preview-stats .stat-item{text-align:center}
+  #character-preview .preview-stats .stat-label{display:block;font-size:10px;opacity:.7;margin-bottom:2px}
+  .weapon-info-combined{flex:0 0 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.22);background:rgba(0,45,60,0.28);padding:8px 10px;min-height:110px;max-height:150px;position:relative}
+  .weapon-info-combined:before{content:'';position:absolute;inset:0;pointer-events:none;box-shadow:0 0 10px rgba(0,255,255,0.12) inset}
+  .wic-header{font-size:16px;font-weight:700;color:#5EEBFF;letter-spacing:.8px;margin-bottom:6px;text-shadow:0 0 6px #0ff}
+  .wic-body{flex:1;overflow:auto;font-size:12px;line-height:1.55;color:#b8faff;padding-right:4px}
+  .wic-body::-webkit-scrollbar{width:6px}
+  .wic-body::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:3px}
+  .weapon-block{margin-bottom:2px}
+  .weapon-block .w-name{font-weight:600;color:#5EEBFF;letter-spacing:.5px;font-size:12px;margin-bottom:2px}
+  .weapon-block .w-desc{font-size:10px;opacity:.75;margin:2px 0 6px}
+  .weapon-block .w-stats{font-size:9.5px;display:flex;flex-wrap:wrap;gap:4px;color:#9adfff}
+  .weapon-block .w-stats span{background:rgba(0,255,255,0.08);padding:2px 5px;border:1px solid rgba(0,255,255,0.25);border-radius:4px}
+  .mode-info-panel{flex:1 1 0;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:14px 16px;min-height:0}
+  .column-spacer{display:none}
+  .mode-info-header{font-size:20px;font-weight:700;color:#5EEBFF;text-shadow:0 0 8px #0ff;letter-spacing:1.2px;margin-bottom:8px}
+    .mode-info-body{flex:1;overflow:auto;font-size:14px;line-height:1.6;color:#b8faff;padding-right:4px;white-space:pre-line}
+      /* Responsive height adjustments */
+  @media (max-height:860px){
+        #character-preview .preview-portrait.small{width:160px;height:160px;padding:6px}
+        #character-preview .preview-portrait.small img{max-width:135px}
+    #character-preview .preview-name{font-size:26px}
+    .weapon-info-combined{max-height:140px}
+    .mode-info-body{font-size:12px}
+      }
+  @media (max-height:740px){
+        #character-preview .preview-portrait.small{width:140px;height:140px;padding:4px}
+        #character-preview .preview-portrait.small img{max-width:118px}
+    #character-preview .preview-name{font-size:22px}
+        .weapon-info-combined{max-height:130px}
+      }
+  .mode-info-body::-webkit-scrollbar{width:6px}
+  .mode-info-body::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:3px}
+  .mode-tags{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}
+  .mode-tag{font-size:9.5px;padding:3px 6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,255,255,0.08);border-radius:4px;letter-spacing:.5px;color:#9adfff}
+    /* Highscores strict table */
+  .highscores-panel .hs-table{display:grid;grid-template-columns:50px 1fr 120px 90px 110px 54px 80px;align-items:center;gap:0;font-size:14px;border-top:1px solid rgba(0,255,255,0.25);border-left:1px solid rgba(0,255,255,0.15)}
+      .highscores-panel .hs-row{display:contents}
+    .highscores-panel .hs-head span{font-weight:700;color:#5EEBFF;text-shadow:0 0 5px #0ff;font-size:13px;background:rgba(0,255,255,0.08);backdrop-filter:blur(2px)}
+      .highscores-panel .hs-cell{padding:6px 8px;border-right:1px solid rgba(0,255,255,0.15);border-bottom:1px solid rgba(0,255,255,0.15);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .highscores-panel .hs-row.data:hover .hs-cell{background:rgba(0,255,255,0.08)}
+      .highscores-panel .hs-row.me .hs-cell{background:rgba(0,160,255,0.28);box-shadow:0 0 6px #00cfff inset}
+    .highscores-panel .hs-empty{opacity:.65;font-size:13px;margin-top:6px;text-align:center}
+    /* Operative select readable theme */
+    #hs-op-select{background:rgba(0,25,38,0.8);color:#b8faff;border:1px solid rgba(0,255,255,0.35);border-radius:4px}
+    #hs-op-select option{background:#06212a;color:#b8faff}
+      #hs-remote-board{flex:1 1 auto;overflow:auto;padding-right:4px}
+      #hs-load-more{align-self:center;margin-top:8px;width:180px}
+      /* Scrollbar styling */
+      #hs-remote-board::-webkit-scrollbar{width:8px}#hs-remote-board::-webkit-scrollbar-track{background:rgba(0,0,0,0.2)}#hs-remote-board::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:4px}
+      `;
       document.head.appendChild(style);
     }
     const loadMore = this.mainMenuElement.querySelector('#hs-load-more') as HTMLButtonElement | null;
     if (loadMore) {
       loadMore.addEventListener('click', () => {
-        // For local only we already hold all entries; simply re-render (could paginate if expanded later)
-        const characterId = (this.gameInstance as any).selectedCharacterData?.id || 'wasteland_scavenger';
-        const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
-        const mode = modeSelect?.value || 'SHOWDOWN';
-        this.renderHighScoreList(mode, characterId);
+        // Silent refresh to avoid wiping table and causing blur flicker
+        loadMore.textContent = 'Refreshing…';
+        loadMore.disabled = true;
+        this.refreshHighScores(true).finally(()=>{
+          loadMore.disabled = false;
+          loadMore.textContent = 'Refresh';
+        });
       });
     }
-    this.refreshHighScores();
+    // Initial load should be non-silent so user gets feedback if empty/error
+    this.refreshHighScores(false);
     // Board selector events
     this.mainMenuElement.querySelectorAll('.hs-board-select [data-board]')
       .forEach(btn => btn.addEventListener('click', (e)=>{
         const b = (e.currentTarget as HTMLElement).getAttribute('data-board') || 'global';
         this.currentBoard = b;
-        this.refreshHighScores();
+        this.refreshHighScores(true); // silent to preserve current table until new data arrives
       }));
+    // Populate operative select
+    const opSel = this.mainMenuElement.querySelector('#hs-op-select') as HTMLSelectElement | null;
+    if (opSel) {
+      // Unique list from CHARACTERS
+      const seen = new Set<string>();
+      for (let i=0;i<CHARACTERS.length;i++) {
+        const c = CHARACTERS[i];
+        if (!c?.id || seen.has(c.id)) continue;
+        seen.add(c.id);
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name || c.id;
+        opSel.appendChild(opt);
+      }
+      opSel.addEventListener('change', () => {
+        this.refreshHighScores(true);
+      });
+    }
+  // Render structured patch notes
+  this.renderPatchNotes();
   }
 
   private setupEventListeners(): void {
     const startBtn = document.getElementById('start-mission-btn');
     const characterBtn = document.getElementById('character-select-btn');
     const upgradesBtn = document.getElementById('upgrades-btn');
-    const statisticsBtn = document.getElementById('statistics-btn');
+    // statistics button removed
 
     startBtn?.addEventListener('click', () => {
       if (this.gameInstance.selectedCharacterData) {
@@ -325,15 +505,14 @@ export class MainMenu {
       this.showUpgrades();
     });
 
-    statisticsBtn?.addEventListener('click', () => {
-      this.showStatistics();
-    });
+    // statistics listener removed
 
     // Listen for character selection
     window.addEventListener('characterSelected', (event: Event) => {
       const customEvent = event as CustomEvent;
       this.gameInstance.selectedCharacterData = customEvent.detail;
       this.updateCharacterPreview(customEvent.detail);
+  this.renderWeaponInfo();
     });
 
     // Listen for currency updates
@@ -353,19 +532,66 @@ export class MainMenu {
       this.selectedMode = v;
       if (v === 'SHOWDOWN') {
         modeDesc.textContent = 'Showdown: Vast open cyber expanse. No walls, enemies can surround from any direction.';
+  this.updateModeInfoPanel('SHOWDOWN');
       } else {
         modeDesc.textContent = 'Dungeon: Procedurally linked rooms & corridors. Funnel enemies, explore branches.';
+  this.updateModeInfoPanel('DUNGEON');
       }
     };
     if (modeSelect) {
       modeSelect.addEventListener('change', updateDesc);
       updateDesc();
     }
+  // Initial weapon panel population after main menu created
+  setTimeout(()=>this.renderWeaponInfo(),50);
   }
 
   private showCharacterSelect(): void {
     this.hide();
     window.dispatchEvent(new CustomEvent('showCharacterSelect'));
+  }
+
+  /**
+   * Updates the MODE INFO panel with richer details about the selected game mode.
+   */
+  private updateModeInfoPanel(mode: 'SHOWDOWN' | 'DUNGEON'): void {
+    const panel = document.getElementById('mode-info-body');
+    if (!panel) return;
+    if (mode === 'SHOWDOWN') {
+      panel.innerHTML = `
+<div class='mode-tags'>
+  <span class='mode-tag'>OPEN</span>
+  <span class='mode-tag'>SURROUND</span>
+  <span class='mode-tag'>SCALING INTENSITY</span>
+</div>
+<div style='font-size:12px;font-weight:600;letter-spacing:.5px;margin-bottom:4px;color:#5EEBFF'>SHOWDOWN (OPEN)</div>
+Large seamless arena with unconstrained spawn angles. Expect radial pressure and flanking.
+
+STRATEGY:
+• Maintain circular or figure-8 paths to layer projectile coverage.
+• Prioritize mobility & wide-area damage early to avoid encirclement.
+• Use mortar / AoE detonations to carve escape lanes when density spikes.
+
+TIP: Diagonal drift (slight strafe + forward) continually reorients enemy approach vectors, reducing direct stacking.
+`;
+    } else {
+      panel.innerHTML = `
+<div class='mode-tags'>
+  <span class='mode-tag'>ROOMS</span>
+  <span class='mode-tag'>FUNNELS</span>
+  <span class='mode-tag'>ROUTE CONTROL</span>
+</div>
+<div style='font-size:12px;font-weight:600;letter-spacing:.5px;margin-bottom:4px;color:#5EEBFF'>DUNGEON (ROOMS)</div>
+Modular chambers connected by corridors. Manage engagement width to neutralize swarm advantages.
+
+STRATEGY:
+• Scout adjacent doors before aggro stacking.
+• Fight near choke entrances to maximize multi-hit & DoT uptime.
+• Reset pressure by kiting into cleared rooms.
+
+TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them to trap trailing mobs in damage zones.
+`;
+    }
   }
 
 
@@ -494,9 +720,70 @@ export class MainMenu {
     }
   }
 
+  /** Render weapon info blocks for current operative (weaponTypes list) */
+  private renderWeaponInfo(): void {
+    const container = document.getElementById('weapon-info-body');
+    if (!container) return;
+    const char = this.gameInstance.selectedCharacterData;
+    if (!char) { container.innerHTML = '<div style="opacity:.6">Select an operative to view weapon loadout.</div>'; return; }
+    const defaultType = char.defaultWeapon;
+    const spec = WEAPON_SPECS[defaultType as keyof typeof WEAPON_SPECS];
+    if (!spec) { container.innerHTML = '<div style="opacity:.6">No class weapon spec found.</div>'; return; }
+    const lifetime = spec.lifetime ?? (spec.range && spec.speed ? (spec.range / spec.speed / 60).toFixed(2)+'s' : '—');
+    const traits = spec.traits?.length ? `<div style='margin-top:4px;font-size:10px;opacity:.75'>Traits: ${spec.traits.map(t=>`<span style="margin-right:4px">${this.escapeHtml(t)}</span>`).join('')}</div>` : '';
+    container.innerHTML = `<div class='weapon-block'>
+      <div class='w-name'>${spec.name} <span style='font-weight:400;opacity:.55;font-size:10px'>&#x2022; class</span></div>
+      <div class='w-desc'>${this.escapeHtml(spec.description||'No description')}</div>
+      <div class='w-stats'>
+        <span>DMG ${spec.damage}</span>
+        <span>CD ${spec.cooldown}f</span>
+        <span>SPD ${spec.speed}</span>
+        <span>RANGE ${spec.range}</span>
+        <span>LVL ${spec.maxLevel}</span>
+        <span>LIFE ${lifetime}</span>
+        ${spec.explosionRadius?`<span>AOE ${spec.explosionRadius}</span>`:''}
+        ${spec.knockback?`<span>KB ${spec.knockback}</span>`:''}
+      </div>
+      ${traits}
+    </div>`;
+  }
+
   private updateCurrencyDisplay(): void {
     const currencyEl = document.getElementById('currency-amount');
     if (currencyEl) currencyEl.textContent = this.playerProfile.currency.toString();
+  }
+
+  /** Renders the structured patch notes history into the patch notes panel. */
+  private renderPatchNotes(): void {
+    const body = document.getElementById('patch-notes-body');
+    if (!body) return;
+    // Render all versions newest-first; keep panel scrollable
+    const htmlParts: string[] = [];
+    for (let i = 0; i < this.patchNotesHistory.length; i++) {
+      const v = this.patchNotesHistory[i];
+      htmlParts.push(`<div class="pn-version"><span>${v.version}</span><span class="date">${v.date}</span></div>`);
+      for (const e of v.entries) {
+        const tagClass = e.tag.toLowerCase();
+        htmlParts.push(`<div class="pn-entry"><span class="pn-tag ${tagClass}">${e.tag}</span>${this.escapeHtml(e.text)}</div>`);
+      }
+    }
+    body.innerHTML = htmlParts.join('');
+  }
+
+  /** Compare two semantic version strings a vs b returning positive if a>b */
+  private semanticCompare(a:string,b:string): number {
+    const pa = a.split('.').map(n=>parseInt(n,10));
+    const pb = b.split('.').map(n=>parseInt(n,10));
+    for (let i=0;i<Math.max(pa.length,pb.length);i++) {
+      const da = pa[i]||0, db = pb[i]||0;
+      if (da!==db) return da-db;
+    }
+    return 0;
+  }
+
+  /** Basic HTML escape for user-visible patch note text safety */
+  private escapeHtml(s:string): string {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'} as any)[c]||c);
   }
 
   private updateAuthUI(): void {
@@ -521,29 +808,50 @@ export class MainMenu {
   loginBtn.classList.remove('hidden-init');
     }
   }
-  private async refreshHighScores(): Promise<void> {
+  private async refreshHighScores(silent:boolean=false): Promise<void> {
     const remotePanel = document.getElementById('hs-remote-board');
     if (!remotePanel) return;
-      if (!isLeaderboardConfigured()) {
-        remotePanel.innerHTML = '<div class="hs-empty">Leaderboard not configured</div>';
-        return;
-      }
-    const characterId = (this.gameInstance as any).selectedCharacterData?.id || 'wasteland_scavenger';
+    if (!isLeaderboardConfigured()) {
+      if (!silent) remotePanel.innerHTML = '<div class="hs-empty">Leaderboard not configured</div>';
+      return;
+    }
+  const selectedOp = (document.getElementById('hs-op-select') as HTMLSelectElement | null)?.value || '';
     const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
     const mode = modeSelect?.value || 'SHOWDOWN';
     const titleEl = document.getElementById('hs-title');
     if (titleEl) titleEl.textContent = 'HIGHSCORES';
-    remotePanel.innerHTML = '<div class="hs-empty">Loading…</div>';
+  if (!silent && !remotePanel.hasAttribute('data-hash')) remotePanel.innerHTML = '<div class="hs-empty">Loading…</div>';
     try {
-      const target = this.currentBoard;
-      const { board } = resolveBoard(target);
+  const target = this.currentBoard;
+  const { board } = resolveBoard(target);
+  const finalBoard = selectedOp ? `${board}:op:${selectedOp}` : board;
       // Try snapshot immediately for responsive feel
-      const snap = loadSnapshot(board, 10, 0);
-      if (snap) {
-        const fmtS = (t:number)=>`${Math.floor(t/60).toString().padStart(2,'0')}:${(t%60).toString().padStart(2,'0')}`;
-        remotePanel.innerHTML = `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>` + snap.map(e=>`<div class='hs-row'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='time'>${fmtS(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('');
+      if (!silent && !remotePanel.hasAttribute('data-hash')) {
+  const snap = loadSnapshot(finalBoard, 10, 0) || loadSnapshot(board, 10, 0);
+        if (snap) {
+          const fmtS = (t:number)=>`${Math.floor(t/60).toString().padStart(2,'0')}:${(t%60).toString().padStart(2,'0')}`;
+      const snapHtml = `<div class='hs-table'>
+            <div class='hs-row hs-head'>
+              <span class='hs-cell rank'>#</span>
+              <span class='hs-cell nick'>NAME</span>
+        <span class='hs-cell op'>OPERATIVE</span>
+              <span class='hs-cell time'>TIME</span>
+              <span class='hs-cell kills'>Kills</span>
+              <span class='hs-cell lvl'>Lv</span>
+              <span class='hs-cell dps'>DPS</span>
+            </div>` + snap.map((e,i)=>`<div class='hs-row data'>
+              <span class='hs-cell rank'>${i+1}</span>
+              <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
+        <span class='hs-cell op'>${(e as any).characterId || '-'}</span>
+              <span class='hs-cell time'>${fmtS(e.timeSec)}</span>
+              <span class='hs-cell kills'>${e.kills??'-'}</span>
+              <span class='hs-cell lvl'>${e.level??'-'}</span>
+              <span class='hs-cell dps'>-</span>
+            </div>`).join('') + '</div>';
+          remotePanel.innerHTML = snapHtml;
+        }
       }
-  const top = await fetchTop(board, 10, 0);
+  const top = await fetchTop(finalBoard, 10, 0).catch(()=>fetchTop(board,10,0));
   // Enforce descending ordering by timeSec (defensive if backend ever returns unsorted)
   const sorted = [...top].sort((a,b)=> (b.timeSec||0) - (a.timeSec||0));
   this.incrementalEntries = sorted;
@@ -554,40 +862,69 @@ export class MainMenu {
         return m+':'+s;
       };
       if (sorted.length) {
-        const header = `<div class='hs-row hs-head'>
-          <span class='rank'>#</span>
-          <span class='nick'>NAME</span>
-          <span class='time'>TIME</span>
-          <span class='kills'>K</span>
-          <span class='lvl'>Lv</span>
-        </div>`;
-        remotePanel.innerHTML = header + sorted.map((e,i) => `<div class='hs-row ${e.playerId===me?'me':''}'>
-          <span class='rank'>${i+1}</span>
-          <span class='nick'>${sanitizeName(e.name)}</span>
-          <span class='time'>${fmt(e.timeSec)}</span>
-          <span class='kills'>${e.kills ?? '-'}</span>
-          <span class='lvl'>${e.level ?? '-'}</span>
-        </div>`).join('');
+    const header = `<div class='hs-table'>
+          <div class='hs-row hs-head'>
+            <span class='hs-cell rank'>#</span>
+            <span class='hs-cell nick'>NAME</span>
+      <span class='hs-cell op'>OPERATIVE</span>
+            <span class='hs-cell time'>TIME</span>
+            <span class='hs-cell kills'>Kills</span>
+            <span class='hs-cell lvl'>Lv</span>
+            <span class='hs-cell dps'>DPS</span>
+          </div>`;
+  const bodyHtml = sorted.map((e,i) => {
+          const timeSec = e.timeSec || 1;
+          const kills = e.kills ?? 0;
+          // Approx DPS estimation: (kills * avgDamagePerKill) / time; assume 50 dmg per kill fallback
+          const estDps = Math.round((kills * 50) / timeSec);
+          return `<div class='hs-row data ${e.playerId===me?'me':''}'>
+            <span class='hs-cell rank'>${i+1}</span>
+            <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
+      <span class='hs-cell op'>${e.characterId || '-'}</span>
+            <span class='hs-cell time'>${fmt(e.timeSec)}</span>
+            <span class='hs-cell kills'>${kills}</span>
+            <span class='hs-cell lvl'>${e.level ?? '-'}</span>
+            <span class='hs-cell dps'>${isFinite(estDps)?estDps:'-'}</span>
+          </div>`;}).join('');
+        let tableHtml = header + bodyHtml + '</div>';
+        // If I'm not in visible list, append my row (will be appended again later if not careful)
+        // We'll defer own-rank fetch below to preserve accuracy, not here.
+        const newHtml = tableHtml; // already closed
+  const hash = `${selectedOp||'all'}|` + sorted.map(e=>`${e.playerId}:${e.timeSec}:${e.kills}:${e.level}`).join('|');
+        const prevHash = (remotePanel as HTMLElement).getAttribute('data-hash');
+        if (prevHash !== hash) {
+          remotePanel.innerHTML = newHtml;
+          remotePanel.setAttribute('data-hash', hash);
+        }
         // If I'm not in the visible list, append own real rank from backend (may be >10)
     if (!sorted.some(e=>e.playerId===me)) {
           try {
-      const meEntry = await fetchPlayerEntry(board, me); // uses backend rank ordering
+      const meEntry = await fetchPlayerEntry(finalBoard, me) || await fetchPlayerEntry(board, me); // uses backend rank ordering
             if (meEntry && meEntry.rank > 10) {
-              remotePanel.innerHTML += `<div class='hs-row me' style='margin-top:4px;border-top:1px solid rgba(0,255,255,0.25)'>
-                <span class='rank'>${meEntry.rank}</span>
-                <span class='nick'>${sanitizeName(meEntry.name)}</span>
-                <span class='time'>${fmt(meEntry.timeSec)}</span>
-                <span class='kills'>${meEntry.kills ?? '-'}</span>
-                <span class='lvl'>${meEntry.level ?? '-'}</span>
-              </div>`;
+              const timeSec = meEntry.timeSec || 1;
+              const kills = meEntry.kills ?? 0;
+              const estDps = Math.round((kills * 50) / timeSec);
+              // Append inside existing table just before closing tag
+              const table = remotePanel.querySelector('.hs-table');
+              if (table) {
+                (table as HTMLElement).insertAdjacentHTML('beforeend', `<div class='hs-row data me'>
+                <span class='hs-cell rank'>${meEntry.rank}</span>
+                <span class='hs-cell nick'>${sanitizeName(meEntry.name)}</span>
+                <span class='hs-cell op'>${meEntry.characterId || '-'}</span>
+                <span class='hs-cell time'>${fmt(meEntry.timeSec)}</span>
+                <span class='hs-cell kills'>${kills}</span>
+                <span class='hs-cell lvl'>${meEntry.level ?? '-'}</span>
+                <span class='hs-cell dps'>${isFinite(estDps)?estDps:'-'}</span>
+              </div>`);
+              }
             }
           } catch {/* ignore own-rank errors */}
         }
       } else {
-        remotePanel.innerHTML = '<div class=\"hs-empty\">No times.</div>';
+        if (!silent) remotePanel.innerHTML = '<div class="hs-empty">No times.</div>';
       }
     } catch (err) {
-      remotePanel.innerHTML = '<div class="hs-empty">Error loading.</div>';
+      if (!silent) remotePanel.innerHTML = '<div class="hs-empty">Error loading.</div>';
     }
   }
 
@@ -699,6 +1036,8 @@ export class MainMenu {
     if (this.mainMenuElement) {
       this.mainMenuElement.style.display = 'flex';
       this.updateCurrencyDisplay();
+  // Refresh highscores on each menu show
+  this.refreshHighScores();
     }
   matrixBackground.start();
   const soundPanel = document.getElementById('sound-settings-panel');

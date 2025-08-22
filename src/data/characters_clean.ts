@@ -29,8 +29,8 @@ export const CHARACTERS: CharacterData[] = [
   {
     id: 'wasteland_scavenger',
     name: 'Wasteland Scavenger',
-    description: 'Resourceful and adaptable, thrives in harsh environments.',
-    lore: 'Born in the irradiated wastelands beyond the city walls, this survivor has learned to make the most of scarce resources. Their keen eye for salvage and ability to improvise weapons from scrap makes them a formidable opponent in the cyberpunk apocalypse.',
+  description: 'Turns ruin into salvation. Tethers a Scrap‑Saw and detonates scrap surges to endure.',
+  lore: 'They were raised where the wind howls through hollowed towers and the ground cuts like glass. A length of cable, a motor, a blade—call it a weapon, call it a promise. The Scrap‑Saw hums like a heartbeat, tethered to a survivor who refuses to break. When the world closes in, they kindle a blast from the wreckage and patch their wounds with the memory of those who didn’t make it.',
     icon: '/assets/player/wasteland_scavenger.png',
     defaultWeapon: WeaponType.SCAVENGER_SLING,
     stats: {
@@ -47,14 +47,14 @@ export const CHARACTERS: CharacterData[] = [
     shape: 'square',
     color: '#808080',
     weaponTypes: [WeaponType.SCAVENGER_SLING, WeaponType.RICOCHET, WeaponType.SHOTGUN],
-    specialAbility: 'Scrap Master - Increased weapon effectiveness with improvised weapons',
+  specialAbility: 'Scrap Surge — Build scrap, unleash a protective blast, and self‑repair +5 HP',
     playstyle: 'Balanced',
   },
   {
     id: 'heavy_gunner',
     name: 'Heavy Gunner',
-    description: 'Unloads a barrage of sustained fire.',
-    lore: 'A former military specialist who survived the cyber wars by embracing brute force. Their heavy weapons training and cybernetic enhancements allow them to wield devastating firepower that would crush ordinary humans.',
+  description: 'A moving bastion who drowns the field in suppressive storms of lead.',
+  lore: 'They were the last to retreat and the first to return. Carbon wrists, tungsten spine, barrels etched with the names they couldn’t save. When the minigun spins up, the world slows under the weight of it—every step a shield for those behind, every burst a promise that nobody else falls today.',
     icon: '/assets/player/heavy_gunner.png',
     defaultWeapon: WeaponType.GUNNER_MINIGUN,
     stats: {
@@ -71,14 +71,14 @@ export const CHARACTERS: CharacterData[] = [
     shape: 'square',
     color: '#8B4513',
     weaponTypes: [WeaponType.GUNNER_MINIGUN, WeaponType.SHOTGUN, WeaponType.MECH_MORTAR],
-    specialAbility: 'Suppression Fire - Sustained fire that slows enemy movement',
+  specialAbility: 'Suppression Matrix — Sustained fire that slows enemy movement',
     playstyle: 'Aggressive',
   },
   {
     id: 'tech_warrior',
     name: 'Tech Warrior',
-    description: 'A cybernetic fighter, excels at rapid fire and advanced weaponry.',
-    lore: 'Enhanced with cutting-edge military cybernetics, this warrior represents the pinnacle of human-machine integration. Their neural implants allow for superhuman reaction times and weapon coordination.',
+  description: 'Spearheads battles with tachyon lances and collapses threats with singularity tech.',
+  lore: 'The last prototype to walk out of a black‑site lab, wired with reflex lattices that taste the future half a second early. Tachyon spears stitch the air with blue fire; singularities blossom like iron flowers. They fight with a scientist’s precision and a soldier’s heart—measured, decisive, unstoppable.',
     icon: '/assets/player/tech_warrior.png',
     defaultWeapon: WeaponType.TRI_SHOT,
     stats: {
@@ -95,7 +95,7 @@ export const CHARACTERS: CharacterData[] = [
     shape: 'square',
     color: '#4169E1',
     weaponTypes: [WeaponType.TRI_SHOT, WeaponType.PLASMA, WeaponType.BEAM],
-    specialAbility: 'Tech Sync - Faster reload and firing rates with advanced weapons',
+  specialAbility: 'Tech Sync - Faster reload and firing rates with advanced weapons',
     playstyle: 'Aggressive',
   },
 ];

@@ -27,7 +27,9 @@ export class AssetLoader {
   })();
 
   public getImage(path: string): HTMLImageElement | undefined {
-    return this.cache[path];
+  // Normalize to ensure consistent cache key regardless of base prefix or leading slash variations
+  const key = AssetLoader.normalizePath(path);
+  return this.cache[key];
   }
 
   private getName(path: string): string {
@@ -47,6 +49,9 @@ export class AssetLoader {
   case 'bullet_smart': return { w: 16, h: 16 }; // smart rifle dart sprite
   case 'bullet_laserblaster': return { w: 16, h: 16 }; // laser blaster bolt sprite
   case 'bullet_drone': return { w: 48, h: 48 }; // kamikaze drone sprite
+  case 'bullet_saw':
+  case 'bullet_sawblade': return { w: 32, h: 32 }; // scrap-saw blade
+  case 'bullet_grinder': return { w: 40, h: 40 }; // grinder head
       case 'particles_sheet': return { w: 64, h: 64 };
       case 'hp_bar_bg': return { w: 128, h: 16 };
       case 'hp_bar_fill': return { w: 128, h: 16 };
@@ -161,25 +166,64 @@ export class AssetLoader {
   }
 
   public async loadImage(path: string) {
-    // Normalize path across hosting modes
-    path = AssetLoader.normalizePath(path);
-    if (this.cache[path]) return this.cache[path];
-    const img = new Image();
-    try {
-      await new Promise((resolve, reject) => {
-        img.onload = () => resolve(true);
-        img.onerror = () => reject(new Error('Image load failed: ' + path));
-        img.src = path;
+    // Normalize path across hosting modes and attempt multiple variants to survive basePrefix changes
+    const normalized = AssetLoader.normalizePath(path);
+    const candidates: string[] = [];
+    const pushUnique = (p: string) => { if (p && !candidates.includes(p)) candidates.push(p); };
+    pushUnique(normalized);
+    // Variant: ensure single leading slash (for dev server publicDir)
+    pushUnique('/' + normalized.replace(/^\.*\//, '').replace(/^\/+/, ''));
+    // Variant: without leading slash (relative)
+    pushUnique(normalized.replace(/^\/+/, ''));
+    // Variant: remove basePrefix if present
+    if (AssetLoader.basePrefix) {
+      pushUnique(normalized.replace(AssetLoader.basePrefix, ''));
+    }
+    // Variant: add basePrefix if missing and path starts with assets
+    if (!normalized.startsWith(AssetLoader.basePrefix) && /^(\.?\/)?assets\//.test(normalized)) {
+      pushUnique((AssetLoader.basePrefix || '') + '/' + normalized.replace(/^\.?\//, ''));
+    }
+    // File protocol special-case: prefer './assets/...'
+    if (typeof location !== 'undefined' && location.protocol === 'file:') {
+      const rel = normalized.replace(/^\/?assets\//, './assets/');
+      pushUnique(rel);
+    }
+
+    // If cached under any candidate, return immediately
+    for (const c of candidates) {
+      const key = AssetLoader.normalizePath(c);
+      if (this.cache[key]) return this.cache[key];
+    }
+
+    // Attempt sequential load of candidates
+    const tryLoad = (idx: number): Promise<HTMLImageElement> => {
+      if (idx >= candidates.length) return Promise.reject(new Error('All image paths failed for ' + path));
+      const p = candidates[idx];
+      const img = new Image();
+      return new Promise((resolve, reject) => {
+        img.onload = () => {
+          const key = AssetLoader.normalizePath(p);
+          this.cache[key] = img;
+          resolve(img);
+        };
+        img.onerror = () => {
+          Logger.warn('[AssetLoader] Image load failed, trying next variant', p);
+          tryLoad(idx + 1).then(resolve).catch(reject);
+        };
+        img.src = p;
       });
-      this.cache[path] = img;
-      return img;
+    };
+
+    try {
+      return await tryLoad(0);
     } catch (err) {
-      Logger.warn('[AssetLoader] 404 or load fail for', path, err);
+      const key = AssetLoader.normalizePath(normalized);
+      Logger.warn('[AssetLoader] All variants failed for', path, err);
       const { w, h } = this.getDimsForPath(path);
       const label = this.getName(path);
       const assetInfo = this.getAssetInfo(label);
       const placeholder = this.createPlaceholderImage(w, h, label, assetInfo);
-      this.cache[path] = placeholder;
+      this.cache[key] = placeholder;
       return placeholder;
     }
   }
@@ -225,13 +269,23 @@ export class AssetLoader {
   }
 
   public drawFrame(ctx: CanvasRenderingContext2D, path: string, frameX: number, frameY: number, w: number, h: number, dx: number, dy: number) {
-    const img = this.cache[path];
+    // Try direct, then normalized key
+    let img = this.getImage(path);
+    if (!img) {
+      const norm = AssetLoader.normalizePath(path);
+      img = this.getImage(norm);
+    }
     if (!img) return;
     ctx.drawImage(img, frameX, frameY, w, h, dx - w / 2, dy - h / 2, w, h);
   }
 
   public renderAnimatedSprite(ctx: CanvasRenderingContext2D, path: string, frameIndex: number, dx: number, dy: number, frameW?: number, frameH?: number) {
-    const img = this.cache[path];
+    // Try direct, then normalized key
+    let img = this.getImage(path);
+    if (!img) {
+      const norm = AssetLoader.normalizePath(path);
+      img = this.getImage(norm);
+    }
     if (!img) return;
     const w = frameW ?? 64;
     const h = frameH ?? 64;

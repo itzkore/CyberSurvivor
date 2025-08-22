@@ -118,6 +118,90 @@ export class HUD {
     const hpBarWidth = Math.min(480, width - 320);
   this.drawThemedBar(ctx, 20, hpBarY, hpBarWidth, 22, this.player.hp / this.player.maxHp, '#fe2740', '#4a0910', COLOR_ACCENT_ALT, `HP ${this.player.hp}/${this.player.maxHp}`);
 
+    // Class-specific bar(s): Scrap only for Scavenger, Tech only for Tech Warrior
+    try {
+      const id = (this.player as any)?.characterData?.id;
+      const classX = 20 + hpBarWidth + 16;
+      const maxW = Math.min(280, Math.max(120, width - (classX + 40)));
+      if (id === 'wasteland_scavenger' && (this.player as any).getScrapMeter) {
+        const meter: any = (this.player as any).getScrapMeter();
+        const ratio = meter.max > 0 ? meter.value / meter.max : 0;
+        const label = `SCRAP ${meter.value}/${meter.max}`;
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#f0b400', '#3a2a00', '#ffaa00', label);
+      } else if (id === 'tech_warrior' && (this.player as any).getTechMeter) {
+        const meter: any = (this.player as any).getTechMeter();
+        const ratio = meter.max > 0 ? meter.value / meter.max : 0;
+        const label = `TACHYON ${meter.value}/${meter.max}`;
+        // Red theme for Tech Warrior meter
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff3b3b', '#3a0000', '#e60012', label);
+      } else if (id === 'heavy_gunner' && (this.player as any).getGunnerHeat) {
+  const g: any = (this.player as any).getGunnerHeat();
+  const ratio = g.max > 0 ? g.value / g.max : 0;
+  const label = 'OVERHEAT (Spacebar)';
+        // Orange heat theme
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff9300', '#3a1a00', '#ffb347', label);
+      } else if (id === 'cyber_runner' && (this.player as any).getRunnerDash) {
+        // Dash cooldown: show time until ready (fills up as it recharges)
+        const d: any = (this.player as any).getRunnerDash();
+        const ratio = d.max > 0 ? d.value / d.max : 0; // value counts up toward max
+        const label = d.ready ? 'DASH READY (Shift)' : `DASH ${Math.ceil((d.max - d.value)/1000)}s`;
+        // Cyan theme for Runner
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#26ffe9', '#07333a', '#00b3a3', label);
+      } else if (id === 'data_sorcerer' && (this.player as any).getSorcererSigilMeter) {
+        const m: any = (this.player as any).getSorcererSigilMeter();
+        const ratio = m.max > 0 ? m.value / m.max : 0;
+        const label = m.ready ? 'SIGIL READY (Spacebar)' : `SIGIL ${Math.ceil((m.max - m.value)/1000)}s`;
+        // Magenta theme for Sorcerer
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff00ff', '#300033', '#ff66ff', label);
+      } else if (id === 'ghost_operative' && (this.player as any).getGhostSniperCharge) {
+        const s: any = (this.player as any).getGhostSniperCharge();
+        let ratio = 0;
+        let label = 'GHOST SNIPER READY';
+        if (s.state === 'charging') {
+          ratio = s.max > 0 ? s.value / s.max : 0;
+          label = `GHOST CHARGING ${Math.ceil((s.max - s.value)/1000)}s`;
+        } else if (s.moving) {
+          ratio = 0;
+          label = 'HOLD STILL';
+        }
+        // Steel/ice theme for Ghost (cool cyan/ice)
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#c9ecff', '#13212b', '#e0f7ff', label);
+  // Second bar: Phase Cloak cooldown/active state (15s CD, 5s duration)
+        if ((this.player as any).getGhostCloakMeter) {
+          const cm: any = (this.player as any).getGhostCloakMeter();
+          const ratio2 = cm.max > 0 ? cm.value / cm.max : 0;
+          const label2 = cm.active ? 'CLOAK ACTIVE' : (cm.ready ? 'CLOAK READY (Spacebar)' : `CLOAK ${Math.ceil((cm.max - cm.value)/1000)}s`);
+          // Place directly above the sniper bar with same width
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#8cf6ff', '#0e2a33', '#00d2ff', label2);
+        }
+      } else if (id === 'shadow_operative' && (this.player as any).getVoidSniperCharge) {
+        const s: any = (this.player as any).getVoidSniperCharge();
+        let ratio = 0;
+        let label = 'VOID SNIPER READY';
+        if (s.state === 'charging') {
+          ratio = s.max > 0 ? s.value / s.max : 0;
+          label = `VOID CHARGING ${Math.ceil((s.max - s.value)/1000)}s`;
+        } else if (s.moving) {
+          ratio = 0;
+          label = 'HOLD STILL';
+        }
+        // Void theme for Shadow (deep purple with neon glow)
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#b266ff', '#220a33', '#d5a6ff', label);
+      } else if (id === 'neural_nomad' && (this.player as any).getOvermindMeter) {
+        const m: any = (this.player as any).getOvermindMeter();
+        const ratio = m.max > 0 ? m.value / m.max : 0;
+        const label = m.active ? 'OVERMIND ACTIVE' : (m.ready ? 'OVERMIND READY (Spacebar)' : `OVERMIND ${Math.ceil((m.max - m.value)/1000)}s`);
+        // Teal theme for Nomad
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#26ffe9', '#07333a', '#00b3a3', label);
+      } else if (id === 'psionic_weaver' && (this.player as any).getWeaverLatticeMeter) {
+        const m: any = (this.player as any).getWeaverLatticeMeter();
+        const ratio = m.max > 0 ? m.value / m.max : 0;
+        const label = m.active ? 'LATTICE ACTIVE' : (m.ready ? 'LATTICE READY (Spacebar)' : `LATTICE ${Math.ceil((m.max - m.value)/1000)}s`);
+        // Magenta/violet theme for Weaver
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff4de3', '#2a0b28', '#ff94f0', label);
+      }
+    } catch { /* ignore */ }
+
     // XP Bar
     const xpBarY = height - 34;
     const nextExp = this.player.getNextExp();

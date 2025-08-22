@@ -42,6 +42,9 @@ export class UpgradePanel {
   public visible: boolean = false;
   public options: UpgradeOption[] = [];
   private panelElement: HTMLElement | null = null;
+  // Reroll limit per game session
+  private rerollLimit: number = 3;
+  private rerollsUsed: number = 0;
 
   constructor(player: Player, game: any) {
     this.player = player;
@@ -93,8 +96,8 @@ export class UpgradePanel {
           return;
         }
       }
-      if (key === 'r') { // Reroll hotkey
-        this.reroll();
+      if (key === 'r') { // Reroll hotkey (limited per game)
+        if (this.rerollsUsed < this.rerollLimit) this.reroll();
         e.preventDefault();
         return;
       }
@@ -114,8 +117,14 @@ export class UpgradePanel {
       const target = ev.target as HTMLElement;
       if (!target) return;
       if (target.matches('[data-reroll]')) {
-        if (this.visible) this.reroll();
+        if (this.visible && this.rerollsUsed < this.rerollLimit) this.reroll();
       }
+    });
+
+    // Reset reroll counter on new game run
+    window.addEventListener('startGame', () => {
+      this.rerollsUsed = 0;
+      this.updateRerollUI();
     });
   }
 
@@ -138,6 +147,8 @@ export class UpgradePanel {
   const grid = this.panelElement.querySelector('.upgrade-options-grid');
   if (grid) grid.classList.add('fixed-three');
     }
+  // Update hint/button with remaining rerolls
+  this.updateRerollUI();
   }
 
   /**
@@ -147,12 +158,18 @@ export class UpgradePanel {
    */
   private reroll(): void {
     if (!this.visible) return;
+    // Enforce reroll cap
+    if (this.rerollsUsed >= this.rerollLimit) {
+      return;
+    }
+    this.rerollsUsed++;
     this.options = this.generateOptions();
     this.renderOptions();
     // Optional: emit event for external listeners / analytics
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('upgradeRerolled'));
     }
+    this.updateRerollUI();
   }
 
   /**
@@ -249,6 +266,23 @@ export class UpgradePanel {
       const pct = (el as HTMLElement).getAttribute('data-progress');
       if (pct) (el as HTMLElement).style.width = pct + '%';
     });
+  }
+
+  /** Update reroll hint and button state */
+  private updateRerollUI(): void {
+    if (!this.panelElement) return;
+    const left = Math.max(0, this.rerollLimit - this.rerollsUsed);
+    const hint = this.panelElement.querySelector('.upgrade-hint') as HTMLElement | null;
+    if (hint) {
+      hint.textContent = `1·2·3 = Select   R = Reroll (${left} left)   ESC = Skip`;
+    }
+    const btn = this.panelElement.querySelector('.btn-reroll') as HTMLButtonElement | null;
+    if (btn) {
+      btn.disabled = left <= 0;
+      btn.title = left > 0 ? `Reroll upgrade options (${left} left)` : 'Reroll limit reached';
+      if (left <= 0) btn.classList.add('disabled'); else btn.classList.remove('disabled');
+      btn.textContent = left > 0 ? `Reroll (${left} left)` : 'Reroll (0 left)';
+    }
   }
 
   /**

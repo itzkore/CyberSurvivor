@@ -21,11 +21,11 @@ export interface GemTierSpec {
 
 // Ordered ascending by tier
 export const GEM_TIERS: GemTierSpec[] = [
-  { tier: 1, value: 1,  color: '#FFD700', merge: 5 }, // Small Shard
-  { tier: 2, value: 3,  color: '#00FFA8', merge: 5 }, // Core Fragment
-  { tier: 3, value: 8,  color: '#7F5BFF', merge: 4 }, // Data Crystal
-  { tier: 4, value: 20, color: '#C400FF', merge: 3 }, // Quantum Matrix
-  { tier: 5, value: 50, color: '#FF5E2E', merge: Infinity } // Singularity Core
+  { tier: 1, value: 1,  color: '#FFD700', merge: 8 }, // Small Shard (require more to merge)
+  { tier: 2, value: 3,  color: '#00FFA8', merge: 7 }, // Core Fragment
+  { tier: 3, value: 8,  color: '#7F5BFF', merge: 6 }, // Data Crystal (rarely reached)
+  { tier: 4, value: 20, color: '#C400FF', merge: Infinity }, // Disable auto-merge into Tier 5
+  { tier: 5, value: 50, color: '#FF5E2E', merge: Infinity } // No further merges
 ];
 
 export function getGemTierSpec(tier: number): GemTierSpec {

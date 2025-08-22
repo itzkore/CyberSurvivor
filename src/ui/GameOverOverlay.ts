@@ -99,7 +99,7 @@ export class GameOverOverlay {
   if (isLeaderboardConfigured()) {
     // Always submit even if guest (guest runs can still appear)
   // Unified multi-board submission
-  try { await submitScoreAllPeriods({ playerId: pid, name, timeSec, kills, level, maxDps: maxDpsVal }); } catch {}
+  try { await submitScoreAllPeriods({ playerId: pid, name, timeSec, kills, level, maxDps: maxDpsVal, characterId }); } catch {}
     try {
       const top = await fetchTop('global', 10, 0);
       const me = pid;
@@ -119,9 +119,9 @@ export class GameOverOverlay {
               myRow = `<div class='hs-row me'><span class='rank'>${entry.rank}</span><span class='nick'>${sanitizeName(entry.name)}</span><span class='time'>${fmt(entry.timeSec)}</span><span class='kills'>${entry.kills??'-'}</span><span class='lvl'>${entry.level??'-'}</span></div>`;
             }
         }
-        topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div>`+hint+
-          `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>`+
-          top.map(e=>`<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='time'>${fmt(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('')+myRow+
+          topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div>`+hint+
+          `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='op'>OP</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>`+
+          top.map(e=>`<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='op'>${(e as any).characterId||'-'}</span><span class='time'>${fmt(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('')+myRow+
           `</div>`;
       } else {
         const hint = user ? 'No scores yet.' : 'No scores yet. First guest run will appear.';

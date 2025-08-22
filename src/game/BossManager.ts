@@ -1,6 +1,7 @@
 import { Player } from './Player';
 import { ParticleManager } from './ParticleManager';
 import { AssetLoader } from './AssetLoader';
+import { BOSS_SPAWN_INTERVAL_SEC } from './Balance';
 
 export type Boss = { x: number; y: number; hp: number; maxHp: number; radius: number; active: boolean; telegraph: number; state: 'TELEGRAPH' | 'ACTIVE' | 'DEAD'; attackTimer: number; _damageFlash?: number; specialCharge?: number; specialReady?: boolean; lastContactHitTime?: number } | null;
 
@@ -13,6 +14,11 @@ export class BossManager {
   private bossImage: HTMLImageElement | null = null;
   private difficulty: number = 1;
   private lastBossSpawnTime: number = 0; // Track last spawn time
+  private bossSpawnCount: number = 0; // Infinite scaling counter
+  // Visual walk-cycle for boss: 1s flip interval
+  private bossWalkFlip: boolean = false;
+  private bossWalkFlipTimerMs: number = 0;
+  private readonly bossWalkIntervalMs: number = 1000;
 
   constructor(player: Player, particleManager?: ParticleManager, difficulty = 1, assetLoader?: AssetLoader) {
     this.player = player;
@@ -33,8 +39,8 @@ export class BossManager {
 
   public update(deltaTime: number, gameTime: number) { // Added gameTime parameter
     if (!this.boss) {
-      // Spawn boss every 60 seconds of game time
-      if (gameTime - this.lastBossSpawnTime >= 60) {
+      // Spawn boss on paced interval (default 180s) to stretch run length
+      if (gameTime - this.lastBossSpawnTime >= BOSS_SPAWN_INTERVAL_SEC) {
         this.spawnBoss();
         this.lastBossSpawnTime = gameTime;
       }
@@ -44,7 +50,8 @@ export class BossManager {
       if (this.particleManager && this.boss.telegraph % 3 === 0) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#f55');
       if (this.boss.telegraph <= 0) {
         this.boss.state = 'ACTIVE';
-        this.boss.attackTimer = 60;
+  const haste = Math.min(12, (this.bossSpawnCount - 1) * 2);
+  this.boss.attackTimer = 60 - haste;
       }
     } else if (this.boss && this.boss.state === 'ACTIVE') {
       const dx = this.player.x - this.boss.x;
@@ -56,8 +63,22 @@ export class BossManager {
       if (!this.boss.specialReady) {
         // Move slower
         if (dist > 0) {
-          this.boss.x += (dx / dist) * 0.7;
-          this.boss.y += (dy / dist) * 0.7;
+          const stepX = (dx / dist) * 0.7;
+          const stepY = (dy / dist) * 0.7;
+          this.boss.x += stepX;
+          this.boss.y += stepY;
+          // Track last non-zero horizontal direction for facing
+          const bAny: any = this.boss as any;
+          if (Math.abs(stepX) > 0.0001) bAny._facingX = stepX < 0 ? -1 : 1;
+          // Walk-cycle flip at fixed interval while moving
+          const mvMag = Math.hypot(stepX, stepY);
+          if (mvMag > 0.01) {
+            this.bossWalkFlipTimerMs += deltaTime;
+            while (this.bossWalkFlipTimerMs >= this.bossWalkIntervalMs) {
+              this.bossWalkFlip = !this.bossWalkFlip;
+              this.bossWalkFlipTimerMs -= this.bossWalkIntervalMs;
+            }
+          }
         }
         this.boss.specialCharge++;
         if (this.boss.specialCharge > 360) { // Charge for 6 seconds
@@ -73,7 +94,8 @@ export class BossManager {
         } else {
           // Unleash special attack (e.g., massive area damage)
           if (dist < this.boss.radius + 120) {
-            this.player.hp -= 80; // Massive damage if close
+            const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
+            this.player.hp -= Math.round(80 * specialScale); // Scaled special damage
             if (this.particleManager) this.particleManager.spawn(this.player.x, this.player.y, 2, '#FF0000'); // Reduced particles
             window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 300, intensity: 10 } })); // Screen shake on special attack
           }
@@ -90,7 +112,8 @@ export class BossManager {
       this.boss.attackTimer--;
       if (this.boss.attackTimer <= 0) {
         this.launchAttackWave();
-        this.boss.attackTimer = Math.max(30, 60 - (this.difficulty - 1) * 10);
+  const spawnHaste = Math.min(15, (this.bossSpawnCount - 1) * 1.5);
+  this.boss.attackTimer = Math.max(30, 60 - (this.difficulty - 1) * 10 - spawnHaste);
       }
       // Player-boss collision with 1s cooldown contact damage (30 fixed damage to player)
       if (dist < this.player.radius + this.boss.radius) {
@@ -98,6 +121,7 @@ export class BossManager {
         if (!this.boss.lastContactHitTime || now - this.boss.lastContactHitTime >= 1000) {
           this.boss.lastContactHitTime = now;
           this.player.hp -= 30; // fixed contact damage
+          this.player.hp -= Math.round(30 * (1 + 0.18 * (this.bossSpawnCount - 1))) - 30; // apply additional scaled damage over base
           this.boss._damageFlash = 12; // flash when successful hit
           // Knockback only when damage actually applied
           if (dist > 0) {
@@ -154,18 +178,25 @@ export class BossManager {
       window.dispatchEvent(new CustomEvent('bossSpawn', { detail: { x: bx, y: by, cinematic: true } }));
       window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 200, intensity: 8 } })); // Initial shake on boss spawn
     }
-  const bossHp = 1500; // Fixed boss HP per request
+  const bossHp = 1500; // Base boss HP (scaled per spawn)
     let spawnX = bx, spawnY = by;
     const rm = (window as any).__roomManager;
     if (rm && typeof rm.clampToWalkable === 'function') {
       const c = rm.clampToWalkable(bx, by, 80);
       spawnX = c.x; spawnY = c.y;
     }
+  this.bossSpawnCount++;
+  // Reset boss walk-cycle state on new spawn
+  this.bossWalkFlip = false;
+  this.bossWalkFlipTimerMs = 0;
+    const n = this.bossSpawnCount;
+    const hpScale = Math.pow(1 + 0.40 * (n - 1), 1.12);
+    const scaledHp = Math.round(bossHp * hpScale);
     this.boss = {
       x: spawnX,
       y: spawnY,
-      hp: bossHp,
-  maxHp: bossHp, // Set maxHp for HP bar drawing
+      hp: scaledHp,
+  maxHp: scaledHp, // Set maxHp for HP bar drawing
       radius: 80, // half previous size
       active: true,
       telegraph: 180,
@@ -266,8 +297,16 @@ export class BossManager {
         ctx.shadowBlur = 48;
       }
       if (this.bossImage) {
-        const size = this.boss.radius*2;
-        ctx.drawImage(this.bossImage, this.boss.x - size/2, this.boss.y - size/2, size, size);
+  const size = this.boss.radius*2;
+  const bAny: any = this.boss as any;
+  const faceLeft = (bAny._facingX ?? ((this.player.x < this.boss.x) ? -1 : 1)) < 0;
+        ctx.save();
+        ctx.translate(this.boss.x, this.boss.y);
+  // Compose movement-facing flip with walk-cycle flip
+  const flipX = (faceLeft ? -1 : 1) * (this.bossWalkFlip ? -1 : 1);
+  if (flipX < 0) ctx.scale(-1, 1);
+        ctx.drawImage(this.bossImage, -size/2, -size/2, size, size);
+        ctx.restore();
       } else {
         ctx.beginPath();
         ctx.arc(this.boss.x, this.boss.y, this.boss.radius, 0, Math.PI * 2);

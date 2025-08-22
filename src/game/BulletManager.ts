@@ -24,6 +24,22 @@ export class BulletManager {
   private enemyManager: EnemyManager; // Injected EnemyManager
   private player: Player; // direct player reference for stats (crit, piercing)
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid reference
+  // Guard to prevent recursive lattice secondary spawns from re-entering spawnBullet
+  private suppressWeaverSecondary: boolean = false;
+  // Neural Threader threads (Nomad): lightweight state objects managed here
+  private neuralThreads: Array<{
+    anchors: Enemy[]; // ordered enemies forming the polyline
+    createdAt: number;
+    expireAt: number;
+    nextPulseAt: number;
+    pulseMs: number;
+    baseDamage: number; // damage of bullet at spawn (per level)
+    pulsePct: number; // percent of baseDamage applied per pulse to anchors
+    maxAnchors: number; // base anchors from level
+    active: boolean;
+    color: string;
+    beadPhase: number; // for bead animation between pulses (0..1)
+  }> = [];
 
   constructor(assetLoader: AssetLoader, enemySpatialGrid: SpatialGrid<Enemy>, particleManager: ParticleManager, enemyManager: EnemyManager, player: Player) {
     this.assetLoader = assetLoader;
@@ -32,6 +48,100 @@ export class BulletManager {
     this.enemyManager = enemyManager; // Assign enemy manager
     this.player = player;
     this.preallocateBullets();
+  }
+  /** Spawn a radial shrapnel burst for Scrap-Saw. Uses simple small bullets with short/medium range.
+   *  Optional range/speed let callers align with the triggering explosion/sweep radius.
+   */
+  private spawnShrapnelBurst(cx: number, cy: number, count: number, damage: number, range: number = 220, speed: number = 9.5) {
+    for (let i = 0; i < count; i++) {
+      const ang = (Math.PI * 2 * i) / count + Math.random() * 0.2 - 0.1;
+      const tx = cx + Math.cos(ang) * 40;
+      const ty = cy + Math.sin(ang) * 40;
+      const b: Bullet = this.bulletPool.pop() || { x: cx, y: cy, vx: 0, vy: 0, radius: 4, life: 0, active: false, damage, weaponType: WeaponType.SCRAP_SAW } as Bullet;
+      b.x = cx; b.y = cy;
+      const dx = tx - cx, dy = ty - cy; const d = Math.hypot(dx, dy) || 1; b.vx = (dx/d) * speed; b.vy = (dy/d) * speed;
+      b.radius = 4; b.active = true; b.weaponType = WeaponType.SCRAP_SAW; b.damage = damage;
+      b.life = Math.ceil((range / speed)); // frames approximation, converted later
+      b.lifeMs = (range / (speed * 60)) * 1000; // ms life for consistency
+      b.projectileVisual = { type: 'bullet', color: '#C0C0C0', size: 4, glowColor: '#FFE28A', glowRadius: 6 } as any;
+      this.bullets.push(b);
+    }
+  }
+
+  /** Public: spawn Scrap shrapnel with explicit radius/speed tuning. */
+  public spawnScrapShrapnel(cx: number, cy: number, count: number, damage: number, range: number, speed: number = 9.5) {
+    this.spawnShrapnelBurst(cx, cy, count, damage, range, speed);
+  }
+
+  /** Ensure Quantum Halo orbit bullets exist & reflect current player weapon level. */
+  private ensureQuantumHaloOrbs(deltaTime:number){
+    const player: any = this.player; if (!player || !player.activeWeapons) return;
+    const level = player.activeWeapons.get(WeaponType.QUANTUM_HALO); if (!level) return;
+    const spec: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO]; if (!spec) return;
+    const scaled = spec.getLevelStats ? spec.getLevelStats(level) : {};
+                const needed = scaled.orbCount || 1; // Ensure we have the correct number of orbs
+    const current = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO);
+    if (current.length !== needed) {
+      // Deactivate extras
+      if (current.length > needed) {
+        let removed = 0; 
+        for (let i = 0; i < current.length && removed < current.length - needed; i++) { 
+          current[i].active = false; 
+          removed++; 
+        }
+      } else {
+        // Spawn missing
+        for (let i = current.length; i < needed; i++) {
+          const b: Bullet = this.bulletPool.pop() || { 
+            x: player.x, 
+            y: player.y, 
+            vx: 0, 
+            vy: 0, 
+            radius: spec?.projectileVisual?.size || 18, 
+            life: 0, 
+            active: false, 
+            damage: scaled.damage || 22, 
+            weaponType: WeaponType.QUANTUM_HALO 
+          } as Bullet;
+          b.x = player.x; 
+          b.y = player.y; 
+          b.vx = 0; 
+          b.vy = 0; 
+          b.damage = scaled.damage || 22; 
+          b.weaponType = WeaponType.QUANTUM_HALO; 
+          b.active = true; 
+          b.isOrbiting = true; 
+          (b as any).level = level;
+          b.orbitIndex = i; 
+          b.orbitCount = needed; 
+          b.orbitRadiusBase = scaled.orbitRadius || 90; 
+          b.spinSpeed = scaled.spinSpeed || 1; 
+          b.angleOffset = (Math.PI * 2 * i) / needed; 
+          b.orbitAngle = b.angleOffset; 
+          b.projectileVisual = { ...(spec.projectileVisual || {}), size: (spec?.projectileVisual?.size || 12) }; 
+          b.contactCooldownMap = {};
+          this.bullets.push(b);
+        }
+      }
+      // Reassign indices & offsets to all halo bullets for even distribution
+      const halos = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO);
+      halos.sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
+      for (let i = 0; i < halos.length; i++) { 
+        const hb = halos[i]; 
+        hb.orbitIndex = i; 
+        hb.orbitCount = halos.length; 
+        hb.angleOffset = (Math.PI * 2 * i) / halos.length; 
+        hb.orbitAngle = hb.angleOffset; 
+      }
+    } else {
+      // Update damage/spin if level changed (level kept in b.level)
+      for (const hb of current) { 
+        hb.damage = scaled.damage || hb.damage; 
+        hb.spinSpeed = scaled.spinSpeed || hb.spinSpeed; 
+        hb.orbitRadiusBase = scaled.orbitRadius || hb.orbitRadiusBase; 
+        (hb as any).level = level; 
+      }
+    }
   }
 
   /**
@@ -92,6 +202,10 @@ export class BulletManager {
   }
 
   public update(deltaTime: number) {
+  // Maintain Quantum Halo orbit bullets (persistent) before normal update advances
+  try { this.ensureQuantumHaloOrbs(deltaTime); } catch(e){ /* ignore to avoid breaking main loop */ }
+  // Update any active Grinder (evolved scavenger) orbit sessions: store as bullets with isOrbiting=true and a finite duration
+  // They reuse the Quantum Halo path but expire by endTime.
     const activeBullets: Bullet[] = [];
   const camX = (window as any).__camX || 0;
   const camY = (window as any).__camY || 0;
@@ -107,6 +221,172 @@ export class BulletManager {
         continue;
       }
 
+      // Quantum Halo / Grinder orbit handling: position bound to player each frame; no standard movement or life decay
+      if (b.isOrbiting && (b.weaponType === WeaponType.QUANTUM_HALO || b.weaponType === WeaponType.INDUSTRIAL_GRINDER)) {
+  const spec: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO];
+  const isGrinder = b.weaponType === WeaponType.INDUSTRIAL_GRINDER;
+  const grinderSpec: any = isGrinder ? (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER] : null;
+  const level = (b as any).level || 1;
+  const scaled = isGrinder ? (grinderSpec?.getLevelStats ? grinderSpec.getLevelStats(level) : {}) : (spec?.getLevelStats ? spec.getLevelStats(level) : {});
+  const playerRef = this.player;
+  // Unified clockwise rotation (canvas Y axis down -> positive angle is clockwise on screen)
+  const spinBase = isGrinder ? 4.2 : (b.spinSpeed || scaled.spinSpeed || 1);
+  const spin = spinBase * (deltaTime/1000);
+  b.orbitAngle = (b.orbitAngle || (b.angleOffset||0)) + spin;
+        // Expire grinder after duration
+        if (isGrinder) {
+          const nowT = performance.now();
+          if ((b as any).endTime && nowT >= (b as any).endTime) { b.active = false; this.bulletPool.push(b); continue; }
+        }
+        // Wrap angle and detect full rotation for pulse
+        if (b.orbitAngle > Math.PI*2) {
+          b.orbitAngle -= Math.PI*2;
+          // Pulse only once per full ring (index 0 triggers)
+          if (!isGrinder && b.orbitIndex === 0 && scaled.pulseDamage > 0) {
+            window.dispatchEvent(new CustomEvent('quantumHaloPulse', { detail: { x: playerRef.x, y: playerRef.y, damage: scaled.pulseDamage, radius: scaled.orbitRadius + 40 } }));
+          }
+        }
+  const radius = (isGrinder ? (scaled.orbitRadius || 140) : (scaled.orbitRadius || 90)); // uniform radius (no breathing)
+  const angleTotal = b.orbitAngle; // already includes offset
+  b.x = playerRef.x + Math.cos(angleTotal) * radius;
+  b.y = playerRef.y + Math.sin(angleTotal) * radius;
+  // Fixed size (no shimmer)
+  const sizeBase = isGrinder ? 14 : (spec?.projectileVisual?.size || 12);
+  b.radius = sizeBase;
+  // Dynamic hue (assign to projectileVisual for render gradient)
+  const hue = (performance.now()*0.05 + (b.orbitIndex||0)*70) % 360;
+  if (!b.projectileVisual) b.projectileVisual = { type:'plasma', size: b.radius } as any;
+  (b.projectileVisual as any)._dynamicHue = hue;
+  // Trail disabled for Quantum Halo (no accumulation)
+        b.lifeMs = isGrinder ? Math.max(1, (((b as any).endTime||0) - performance.now())) : 9999999; // keep alive or finite
+        // Collision pass (contact damage with per-enemy cooldown)
+  // Query small area (precise hit window)
+  const potential = this.enemySpatialGrid.query(b.x, b.y, Math.max(28, b.radius + 8));
+        if (!b.contactCooldownMap) b.contactCooldownMap = {};
+        const nowT = performance.now();
+        for (let ei=0; ei<potential.length; ei++){
+          const e = potential[ei]; if (!e.active || e.hp<=0) continue;
+          const dxE = e.x - b.x; const dyE = e.y - b.y; const rs = (e.radius||16) + (b.radius*0.55); // smaller effective area
+          if (dxE*dxE + dyE*dyE <= rs*rs){
+            const eid = (e as any).id || (e as any)._gid || 'e'+ei;
+            const nextOk = b.contactCooldownMap[eid] || 0;
+            if (nowT >= nextOk){
+              const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.10); }
+              const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
+              const baseDmg = isGrinder ? ((grinderSpec?.getLevelStats ? grinderSpec.getLevelStats(level).damage : (b.damage||20))) : (b.damage||scaled.damage||20);
+              const dmgBase = baseDmg * (isCrit?critMult:1);
+              // Apply damage; EnemyManager will derive knockback from weapon spec
+              this.enemyManager.takeDamage(e, dmgBase, isCrit, false, b.weaponType, b.x, b.y, level);
+              b.contactCooldownMap[eid] = nowT + (isGrinder ? 160 : 1000); // grinder multi-ticks fast; halo 1s per-enemy
+              if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#7DFFEA');
+            }
+          }
+        }
+        activeBullets.push(b);
+        continue; // skip generic processing
+      }
+
+      // Melee sweep (Scrap-Saw): ring-arc hitbox at blade distance + tether contact (half damage)
+  if ((b as any).isMeleeSweep && b.weaponType === WeaponType.SCRAP_SAW) {
+        const pl = this.player;
+        const start = (b as any).sweepStart || performance.now();
+        const dur = (b as any).sweepDurationMs || 200;
+        const t = Math.min(1, (performance.now() - start) / dur);
+        const arcRad = ((b as any).arcDegrees || 140) * Math.PI / 180;
+        // Sweep from -arc/2 to +arc/2 relative to facing
+        const baseAng = (b as any).baseAngle != null ? (b as any).baseAngle : Math.atan2(pl.vy || 0.0001, pl.vx || 1);
+        const dir = (b as any).sweepDir || 1; // 1 or -1 alternating
+        const curOffset = (t * arcRad - arcRad/2) * dir;
+  const centerAng = baseAng + curOffset;
+  (b as any).displayAngle = centerAng; // for sprite orientation
+        // Position blade tip at reach distance; use as visual center, collision uses sector test
+        const reach = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+        const bladeThickness = (b as any).thickness || Math.max(18, Math.min(36, reach * 0.22)); // radial thickness around blade ring
+        const angleBandScale = 0.5; // widen from 0.35 -> 0.5 for better feel
+        b.x = pl.x + Math.cos(centerAng) * reach;
+        b.y = pl.y + Math.sin(centerAng) * reach;
+        // Collision: query nearby and sector test
+        const potential = this.enemySpatialGrid.query(pl.x, pl.y, reach + 40);
+        const nowT = performance.now();
+        if (!b.contactCooldownMap) b.contactCooldownMap = {};
+        if (!(b as any).tetherCooldownMap) (b as any).tetherCooldownMap = {};
+        const halfArc = arcRad/2;
+        for (let i2=0;i2<potential.length;i2++){
+          const e = potential[i2]; if (!e.active || e.hp<=0) continue;
+          const dx = e.x - pl.x; const dy = e.y - pl.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > reach + (e.radius||16) + bladeThickness) continue;
+          let ang = Math.atan2(dy, dx) - baseAng; // relative to facing
+          // wrap to [-PI, PI]
+          ang = (ang + Math.PI) % (Math.PI*2) - Math.PI;
+          const withinAngle = Math.abs(ang - curOffset) <= halfArc * angleBandScale;
+          const withinRing = Math.abs(dist - reach) <= (bladeThickness + (e.radius||16));
+          // Primary blade contact: ring-arc at blade distance
+          if (withinAngle && withinRing) {
+            const eid = (e as any).id || (e as any)._gid || 'e'+i2;
+            const nextOk = b.contactCooldownMap[eid] || 0;
+            if (nowT >= nextOk) {
+              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
+              const dmg = (b.damage||32) * (isCrit ? critMult : 1);
+              this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
+              // Increment scrap meter per enemy hit; trigger secondary explosion at 10
+              const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+              if (triggered) {
+                // Reworked Scrap ability: big explosion around player and heal 5 HP
+                const reach = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+                const radius = Math.max(200, Math.round(reach * 1.5));
+                const dmg = b.damage || 20;
+                try {
+                  window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmg*1.0), radius, color: '#FFAA33' } }));
+                } catch {}
+                // Heal player by 5 HP (clamped to max)
+                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
+              }
+              b.contactCooldownMap[eid] = nowT + 120; // can hit same target again within sweep a bit later
+            }
+          }
+          // Tether contact: segment from player to blade, half damage, separate cooldown
+          // Compute shortest distance from enemy center to segment (pl -> blade)
+          const ex = e.x, ey = e.y;
+          const x1 = pl.x, y1 = pl.y, x2 = b.x, y2 = b.y;
+          const vx = x2 - x1, vy = y2 - y1;
+          const segLen2 = vx*vx + vy*vy || 1;
+          const tSeg = Math.max(0, Math.min(1, ((ex - x1)*vx + (ey - y1)*vy) / segLen2));
+          const cx = x1 + vx * tSeg, cy = y1 + vy * tSeg;
+          const dSeg = Math.hypot(ex - cx, ey - cy);
+          const tetherWidth = 10; // collision thickness for tether line
+          if (dSeg <= tetherWidth + (e.radius||16)) {
+            const eid = (e as any).id || (e as any)._gid || 'e'+i2;
+            const nextOkT = (b as any).tetherCooldownMap[eid] || 0;
+            // If blade already hit recently (within its cooldown), skip tether to avoid double-dipping
+            const bladeOnCd = (b.contactCooldownMap[eid] || 0) > nowT;
+            if (!bladeOnCd && nowT >= nextOkT) {
+              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
+              const base = (b.damage||32) * 0.5; // 50% damage on tether contact
+              const dmg = base * (isCrit ? critMult : 1);
+              this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
+              const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+              if (triggered) {
+                const reach = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+                const radius = Math.max(200, Math.round(reach * 1.5));
+                const dmgRef = b.damage || 20;
+                try {
+                  window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmgRef*1.0), radius, color: '#FFAA33' } }));
+                } catch {}
+                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
+              }
+              (b as any).tetherCooldownMap[eid] = nowT + 160; // slightly slower cadence than blade per target
+            }
+          }
+        }
+        // End sweep
+        if (t >= 1) {
+          // End sweep; no extra shrapnel burst on completion in rework
+          b.active = false; this.bulletPool.push(b);
+        }
+        activeBullets.push(b); continue;
+      }
+
   // Store previous position for swept-sphere collision
   const prevX = b.x;
   const prevY = b.y;
@@ -114,61 +394,173 @@ export class BulletManager {
   (b as any).lastX = prevX;
   (b as any).lastY = prevY;
 
-      // Smart Rifle homing logic (bee-like) executed before movement so velocity reflects latest steering
+      // Smart Rifle homing logic – stabilized (reduced "wild" steering, no piercing)
       if (b.weaponType === WeaponType.RAPID && b.active) {
+        // Boss priority: if a boss is active & alive, always (re)lock to boss, even mid-flight
+        const bossMgr: any = (window as any).__bossManager;
+        const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && b.targetId !== 'boss') {
+          b.targetId = 'boss';
+        }
         // Resolve current locked target if any
         let target: any = null;
         if (b.targetId) {
-          // Fast path: search small spatial bucket around bullet for matching id
-          const near = this.enemySpatialGrid.query(b.x, b.y, 400);
-            for (let i2=0;i2<near.length;i2++){ const e=near[i2]; if ((e as any).id===b.targetId){ if(e.active && e.hp>0){ target=e; break;} }}
+          if (b.targetId === 'boss' && boss && boss.active && boss.hp > 0) {
+            target = boss; // direct boss reference (not in spatial grid)
+          } else {
+            const near = this.enemySpatialGrid.query(b.x, b.y, 400);
+            for (let i2 = 0; i2 < near.length; i2++) {
+              const e = near[i2];
+              if (((e as any).id === b.targetId) && e.active && e.hp > 0) { target = e; break; }
+            }
+          }
         }
-        // Reacquire if no valid target (dead/out of range)
+        // Reacquire if no valid target
         if (!target) {
           b.targetId = undefined;
           const reacq = this.selectSmartRifleTarget(b.x, b.y, 900);
           if (reacq) { target = reacq; b.targetId = (reacq as any).id || (reacq as any)._gid || 'boss'; }
         }
         if (target) {
-          // Desired direction toward target with small predictive bias
+          // Angular steering clamp instead of direction lerp to avoid oscillation
           const dx = target.x - b.x;
           const dy = target.y - b.y;
-          const dist = Math.hypot(dx, dy) || 1;
-          const ndx = dx / dist;
-          const ndy = dy / dist;
-          // Turn rate hint stored on bullet (set at spawn). Fallback default.
-          const tr = (b as any).turnRate || 0.07;
-          // Interpolate current velocity direction toward desired
+          const desiredAng = Math.atan2(dy, dx);
+          const curAng = Math.atan2(b.vy, b.vx);
+          let diff = desiredAng - curAng;
+          // Wrap to [-PI, PI]
+          diff = (diff + Math.PI) % (Math.PI * 2) - Math.PI;
+          const turnRate = (b as any).turnRate || 0.09; // radians per 16.67ms frame baseline
+          const maxTurn = turnRate * (deltaTime / 16.6667);
+          if (diff > maxTurn) diff = maxTurn; else if (diff < -maxTurn) diff = -maxTurn;
+          const newAng = curAng + diff;
+          // Mild acceleration (tamed vs earlier) to keep path smooth
           const curSpeed = Math.hypot(b.vx, b.vy) || 0.0001;
-          const cvx = b.vx / curSpeed;
-          const cvy = b.vy / curSpeed;
-          const mix = Math.min(1, tr * (deltaTime / 16.6667));
-          let ndirx = cvx + (ndx - cvx) * mix;
-          let ndiry = cvy + (ndy - cvy) * mix;
-          const ndLen = Math.hypot(ndirx, ndiry) || 1;
-          ndirx /= ndLen; ndiry /= ndLen;
-          // Slight acceleration over flight to ensure distant reach
-          const accel = 1 + 0.12 * (deltaTime / 1000);
-          const baseSpeed = b.speed || curSpeed;
-          const targetSpeed = baseSpeed * accel;
-          b.vx = ndirx * targetSpeed;
-          b.vy = ndiry * targetSpeed;
-          // Store updated nominal speed back
-          b.speed = targetSpeed;
+          if ((b as any).baseSpeed == null) (b as any).baseSpeed = curSpeed;
+          const baseSpeed = (b as any).baseSpeed;
+          const accelFactor = 1 + 0.04 * (deltaTime / 1000); // gentle growth
+          let newSpeed = curSpeed * accelFactor;
+          const maxSpeed = baseSpeed * 1.5; // cap runaway acceleration
+          if (newSpeed > maxSpeed) newSpeed = maxSpeed;
+          b.vx = Math.cos(newAng) * newSpeed;
+          b.vy = Math.sin(newAng) * newSpeed;
+          b.speed = newSpeed; // cache
+        }
+      }
+      // Basic Pistol: subtle curving toward nearby forward targets (gentle seeking) with optional wobble
+      if (b.weaponType === WeaponType.PISTOL && b.active) {
+        const nowT = performance.now();
+        const seekEvery = 80; // ms
+        const nextAt = (b as any)._seekNextAt || 0;
+        // Ensure base turn rate cached
+        if ((b as any)._turnRate == null) (b as any)._turnRate = 0.06; // radians per 16.67ms baseline
+        if (nowT >= nextAt) {
+          (b as any)._seekNextAt = nowT + seekEvery;
+          // Acquire a forward target within short range
+          const searchRadius = 260;
+          const vx = b.vx, vy = b.vy; const sp = Math.hypot(vx, vy) || 0.0001;
+          const fx = vx / sp, fy = vy / sp;
+          const cand = this.enemySpatialGrid.query(b.x, b.y, searchRadius);
+          let best: any = null; let bestScore = -Infinity;
+          for (let ci = 0; ci < cand.length; ci++) {
+            const e = cand[ci]; if (!e.active || e.hp <= 0) continue;
+            const dx = e.x - b.x; const dy = e.y - b.y; const d2 = dx*dx + dy*dy; if (d2 < 12*12) continue; // skip self-collocated
+            const dist = Math.sqrt(d2);
+            const dot = (dx*fx + dy*fy) / (dist || 1);
+            if (dot <= 0.2) continue; // only consider mostly forward
+            // Score: forwardness weighted, closer is better
+            const score = dot * 1.2 + (1 / Math.max(24, dist));
+            if (score > bestScore) { bestScore = score; best = e; }
+          }
+          if (best) {
+            const dx = best.x - b.x; const dy = best.y - b.y;
+            const desired = Math.atan2(dy, dx);
+            const cur = Math.atan2(b.vy, b.vx);
+            let diff = desired - cur; diff = (diff + Math.PI) % (Math.PI*2) - Math.PI;
+            const maxTurn = (b as any)._turnRate * (deltaTime / 16.6667);
+            if (diff > maxTurn) diff = maxTurn; else if (diff < -maxTurn) diff = -maxTurn;
+            const ang = cur + diff;
+            const speed = Math.hypot(b.vx, b.vy) || 0.0001;
+            b.vx = Math.cos(ang) * speed;
+            b.vy = Math.sin(ang) * speed;
+          } else {
+            // Light wobble when no clear forward target, for more interesting flight
+            const phase = ((b as any)._curvePhase = (((b as any)._curvePhase||0) + 0.06 * (deltaTime/16.6667)));
+            const wobble = Math.sin(phase) * 0.01; // ~0.57°
+            const cur = Math.atan2(b.vy, b.vx);
+            const speed = Math.hypot(b.vx, b.vy) || 0.0001;
+            const ang = cur + wobble;
+            b.vx = Math.cos(ang) * speed;
+            b.vy = Math.sin(ang) * speed;
+          }
+        }
+      }
+      // Plasma phased logic (charge -> travel); fragment bullets skip charge
+      if (b.weaponType === WeaponType.PLASMA && b.active) {
+        if ((b as any).isPlasmaFragment) {
+          // Simple acceleration + faint wobble
+          const curSpd = Math.hypot(b.vx, b.vy) || 0.0001;
+          const target = 13.5;
+          const ns = curSpd + (target - curSpd) * 0.08 * (deltaTime/16.6667);
+          b.vx = b.vx / curSpd * ns;
+          b.vy = b.vy / curSpd * ns;
+        } else {
+          const spec: any = (WEAPON_SPECS as any)[WeaponType.PLASMA];
+          if (!b.phase) { b.phase = 'CHARGING'; (b as any)._spawnTime = (b as any)._spawnTime || performance.now(); }
+          if (b.phase === 'CHARGING') {
+            const chargeTime = spec?.chargeTimeMs || 450;
+            const spawnT = (b as any)._spawnTime || performance.now();
+            const elapsed = performance.now() - spawnT;
+            const t = Math.min(1, elapsed / chargeTime);
+            (b as any).chargeT = t;
+            // Latch to player + forward offset (live follow). Offset grows slightly with charge for visual feedback.
+            const pl: any = this.player;
+            if (pl) {
+              const ang = (b as any)._initialAngle || Math.atan2(b.vy||0.0001,b.vx||0.0001);
+              const baseOff = 34;
+              const extra = 10 * t;
+              b.x = pl.x + Math.cos(ang) * (baseOff + extra);
+              b.y = pl.y + Math.sin(ang) * (baseOff + extra);
+            }
+            // Visual growth encoded via projectileVisual size (read in draw)
+            if (t >= 1) {
+              b.phase = 'TRAVEL';
+              // Apply full-charge heat
+              try { const p:any = this.player; const add=spec?.heatPerFullCharge||0.42; p.plasmaHeat = Math.min(1,(p.plasmaHeat||0)+add); } catch {}
+              window.dispatchEvent(new CustomEvent('plasmaPulse',{ detail:{ x:b.x, y:b.y, radius:(b.projectileVisual as any)?.size*1.9 } }));
+              // Normalize velocity to base speed if minimal
+              const baseSpd = spec?.speed || 7.5;
+              const mv = Math.hypot(b.vx,b.vy)||1;
+              b.vx = b.vx/mv * baseSpd;
+              b.vy = b.vy/mv * baseSpd;
+            } else {
+              // Incremental heat (minor) only once at start
+              if (!(b as any)._heatAppliedInitial) { try { const p:any=this.player; const add=spec?.heatPerShot||0.25; p.plasmaHeat=Math.min(1,(p.plasmaHeat||0)+add*0.25); } catch {}; (b as any)._heatAppliedInitial=true; }
+              activeBullets.push(b); // hold in place
+              continue; // skip movement/collision while charging
+            }
+          } else if (b.phase === 'TRAVEL') {
+            // Mild acceleration curve to target speed
+            const cur = Math.hypot(b.vx,b.vy)||0.0001;
+            const target = (WEAPON_SPECS as any)[WeaponType.PLASMA]?.speed * 1.8 || 13.5;
+            const ns = cur + (target - cur) * 0.06 * (deltaTime/16.6667);
+            b.vx = b.vx/cur * ns;
+            b.vy = b.vy/cur * ns;
+          }
         }
       }
       // Kamikaze Drone phased logic
-      if (b.weaponType === WeaponType.HOMING && b.active) {
-        const now = performance.now();
+  if (b.weaponType === WeaponType.HOMING && b.active) {
+    const now = performance.now();
   if (!b.phase) b.phase = 'ASCEND';
-  const player = (window as any).player;
+  const player = this.player;
   if (b.phase === 'ASCEND') {
-          // Faster, smoother ascent (shortened duration) with analytic easing (no incremental overshoot)
-          const ASCEND_DURATION = 1800; // ms (was 3000)
+          // Slower, smoother ascent with analytic easing (no incremental overshoot)
+          const ASCEND_DURATION = 2600; // ms
           const phaseElapsed = now - (b.phaseStartTime || now);
           // Initial tether window ensures the drone appears exactly on top of the player for a brief moment
           // so the spawn feels correctly centered instead of instantly offsetting into an orbit arc.
-          const TETHER_MS = 140; // ~8 frames @60fps – visually enough to read spawn origin
+          const TETHER_MS = 180; // a touch longer for readability
           // Establish / update anchor (player position) so orbit stays around moving player even if reference lost later
           // Establish / update anchor (player position) so orbit stays around moving player even if reference lost later
           if ((b as any).anchorX === undefined) {
@@ -194,7 +586,7 @@ export class BulletManager {
             // Slight pre-spin so later easing picks up smoothly
             b.orbitAngle = (b.orbitAngle || 0) + 1.2 * (deltaTime / 1000);
           } else {
-            const maxOrbit = 170; // reduced max orbit radius (tighter circle)
+            const maxOrbit = 190; // slightly larger circle, reads better at slower pace
             // Rebase time so easing starts after tether (continuity at 0)
             const ascendT = Math.min(1, (phaseElapsed - TETHER_MS) / (ASCEND_DURATION - TETHER_MS));
             // Smooth easeInOut for radius (accelerate then decelerate) -> easeInOutCubic
@@ -202,8 +594,8 @@ export class BulletManager {
             b.orbitRadius = maxOrbit * easedRadius;
             // Angular speed smoothly decelerates (ease-out sine)
             const easedAng = Math.sin((ascendT * Math.PI) / 2); // 0->1
-            const angStart = 2.6; // slightly faster initial spin
-            const angEnd = 0.9;   // slow near apex
+            const angStart = 1.8; // calmer initial spin
+            const angEnd = 0.6;   // slower near apex
             const angSpeed = (angStart + (angEnd - angStart) * easedAng) * (deltaTime / 1000);
             b.orbitAngle = (b.orbitAngle || 0) + angSpeed;
             const orad = b.orbitRadius || 0;
@@ -216,10 +608,7 @@ export class BulletManager {
             b.altitudeScale = 0.35 + 0.65 * altEased;
           }
 
-          // Subtle trail accumulation during ascent for visual feedback
-          if (!b.trail) b.trail = [];
-          b.trail.push({ x: b.x, y: b.y });
-          if (b.trail.length > 22) b.trail.splice(0, b.trail.length - 22);
+          // Trail disabled for Quantum Halo (no accumulation)
 
       // Transition to HOVER at apex; defer targeting to HOVER phase
       // Use 1 when still in tether (ascendT undefined there) only when overall phaseElapsed exceeds ASCEND_DURATION
@@ -231,8 +620,8 @@ export class BulletManager {
             (b as any).hoverScanCount = 0;
           }
   } else if (b.phase === 'HOVER') {
-          const HOVER_DURATION = 800; // ms
-          const SCAN_INTERVAL = 160;  // ms
+          const HOVER_DURATION = 1200; // ms – linger a bit for anticipation
+          const SCAN_INTERVAL = 220;  // ms – slower, more deliberate scans
           const hoverElapsed = now - (b.phaseStartTime || now);
           // Update anchor to follow player while hovering so drone orbits moving player
           if (player) {
@@ -242,9 +631,10 @@ export class BulletManager {
           const anchorX = (b as any).anchorX;
           const anchorY = (b as any).anchorY;
           // Faster gentle spin + breathing radius to avoid static feel
-          b.orbitAngle = (b.orbitAngle || 0) + 1.05 * (deltaTime / 1000);
+          b.orbitAngle = (b.orbitAngle || 0) + 0.75 * (deltaTime / 1000);
           const baseRad = b.orbitRadius || 0;
-          const breathe = 1 + 0.05 * Math.sin(now * 0.004 + (b as any)._hoverSeed || 0);
+          const seed = (b as any)._hoverSeed || 0;
+          const breathe = 1 + 0.08 * Math.sin(now * 0.004 + seed);
           const oradH = baseRad * breathe;
           const ox = Math.cos(b.orbitAngle) * oradH;
           const oy = Math.sin(b.orbitAngle) * oradH * 0.55;
@@ -299,7 +689,7 @@ export class BulletManager {
               (b as any)._pendingDiveAcquire = true; // late lock on dive start
             }
           }
-        } else if (b.phase === 'DIVE') {
+  } else if (b.phase === 'DIVE') {
           if ((b as any)._pendingDiveAcquire) {
             delete (b as any)._pendingDiveAcquire;
             const playerRef = this.player;
@@ -341,7 +731,7 @@ export class BulletManager {
           }
           // Dive phase: slower, precise homing pursuit with adaptive speed toward locked/moving target.
           const phaseElapsed = now - (b.phaseStartTime || now);
-          const MAX_DURATION = 1400; // absolute safety cutoff
+          const MAX_DURATION = 1800; // absolute safety cutoff (slower pursuit)
           // If we have a locked enemy id, update targetX/Y to its current position (live tracking)
           const lockedId = (b as any).lockedTargetId;
           if (lockedId) {
@@ -357,21 +747,21 @@ export class BulletManager {
           let dxDive = tx - b.x;
           let dyDive = ty - b.y;
           const distDive = Math.hypot(dxDive, dyDive) || 1;
-          const tNorm = Math.min(1, phaseElapsed / 1400);
+          const tNorm = Math.min(1, phaseElapsed / 1600);
           // Desired direction normalized
           dxDive /= distDive; dyDive /= distDive;
           // Adaptive target speed: slower start, capped; gently ramps but also clamps by remaining distance to reduce overshoot
-          const baseSpeed = 4.0; // slower base
-          const maxSpeed = 11.0; // overall cap
-          const ramp = 0.35 + 1.1 * tNorm; // linear ramp
+          const baseSpeed = 3.2; // slower base
+          const maxSpeed = 9.5;  // overall cap
+          const ramp = 0.28 + 0.9 * tNorm; // gentler ramp
           let desiredSpeed = Math.min(maxSpeed, baseSpeed * ramp);
           // Clamp by remaining distance so last frames decelerate automatically
-          desiredSpeed = Math.min(desiredSpeed, Math.max(2.2, distDive / 14));
+          desiredSpeed = Math.min(desiredSpeed, Math.max(2.0, distDive / 16));
           // Smooth steering: blend current velocity direction toward desired direction
           const curSpeed = Math.hypot(b.vx || 0, b.vy || 0);
           let cvx = curSpeed > 0.001 ? b.vx / curSpeed : dxDive;
           let cvy = curSpeed > 0.001 ? b.vy / curSpeed : dyDive;
-          const turnRate = 0.22 * (deltaTime / 16.6667); // higher = snappier turns
+          const turnRate = 0.18 * (deltaTime / 16.6667); // lower = smoother turns
           cvx = cvx + (dxDive - cvx) * Math.min(1, turnRate);
           cvy = cvy + (dyDive - cvy) * Math.min(1, turnRate);
           const nrm = Math.hypot(cvx, cvy) || 1;
@@ -383,10 +773,7 @@ export class BulletManager {
           (b as any).facingAng = Math.atan2(b.vy, b.vx);
           // Shrink more gradually; reaches minimum only very near impact for precision feel
           b.altitudeScale = Math.max(0.10, 1 - 0.90 * tNorm * tNorm);
-          // Trail (denser while accelerating)
-          if (!b.trail) b.trail = [];
-          b.trail.push({ x: b.x, y: b.y });
-          if (b.trail.length > 36) b.trail.splice(0, b.trail.length - 36);
+          // Trail disabled for Quantum Halo (no accumulation)
           // Impact condition: near target OR elapsed > cutoff
           const remaining = Math.hypot((tx - b.x), (ty - b.y));
           // Collision check (explicit) – explode if near locked target or any enemy intersecting
@@ -401,6 +788,7 @@ export class BulletManager {
             }
           }
           if (impact || phaseElapsed > MAX_DURATION) {
+            // Dispatch base radius (110) – ExplosionManager will upscale to achieve ~300% area
             window.dispatchEvent(new CustomEvent('droneExplosion', { detail: { x: b.x, y: b.y, damage: b.damage, radius: 110 } }));
             b.active = false;
             this.bulletPool.push(b);
@@ -423,6 +811,20 @@ export class BulletManager {
       // Move projectile after steering update
       // Position advancement (skip for ascend orbit where we directly set x/y)
       if (!(b.weaponType === WeaponType.HOMING && b.phase === 'ASCEND')) {
+        // Gradual acceleration for Mech Mortar to feel heavier then ramp up
+        if (b.weaponType === WeaponType.MECH_MORTAR) {
+          const spawnT = (b as any)._spawnTime || 0;
+          const elapsed = performance.now() - spawnT;
+          // Acceleration phase first 700ms: scale speed from 70% -> 115%
+          const accelPhase = 700;
+          const t = Math.min(1, elapsed / accelPhase);
+          const speedScale = 0.7 + t * 0.45; // 0.7 -> 1.15
+          const baseSpeed = (WEAPON_SPECS as any)[WeaponType.MECH_MORTAR]?.speed || 7;
+          const curSpeed = baseSpeed * speedScale;
+          const ang = Math.atan2(b.vy, b.vx);
+          b.vx = Math.cos(ang) * curSpeed;
+          b.vy = Math.sin(ang) * curSpeed;
+        }
         b.x += b.vx;
         b.y += b.vy;
       }
@@ -434,9 +836,29 @@ export class BulletManager {
         const dxRange = b.x - b.startX;
         const dyRange = b.y - b.startY;
         if ((dxRange * dxRange + dyRange * dyRange) >= b.maxDistanceSq) {
-          b.active = false;
-          this.bulletPool.push(b);
-          continue;
+          // For Mech Mortar, trigger explosion on range expiration (same as collision / life expiry)
+          if (b.weaponType === WeaponType.MECH_MORTAR) {
+            b.active = false;
+            b.vx = 0; b.vy = 0;
+            (b as any)._exploded = true;
+            (b as any)._explosionStartTime = performance.now();
+            (b as any)._maxExplosionDuration = 1000;
+            b.lifeMs = 0;
+            let exRadius = (b as any).explosionRadius;
+            if (exRadius == null) {
+              try { const spec = (WEAPON_SPECS as any)[WeaponType.MECH_MORTAR]; if (spec?.explosionRadius) exRadius = spec.explosionRadius; } catch {}
+            }
+            if (exRadius == null) exRadius = 200;
+            // Pre-implosion then main explosion (delay keeps visual sequence consistent)
+            window.dispatchEvent(new CustomEvent('mortarImplosion', { detail: { x: b.x, y: b.y, radius: exRadius * 0.55, color: '#FFE66D', delay: 90 } }));
+            window.dispatchEvent(new CustomEvent('mortarExplosion', { detail: { x: b.x, y: b.y, damage: b.damage, hitEnemy: false, radius: exRadius, delay: 90 } }));
+            this.bulletPool.push(b);
+            continue;
+          } else {
+            b.active = false;
+            this.bulletPool.push(b);
+            continue;
+          }
         }
       }
 
@@ -444,6 +866,7 @@ export class BulletManager {
   let intersectionPoint: { x: number, y: number } | null = null;
 
       // Use spatial grid to find potential enemies near the bullet
+  // Query potential enemies near the bullet's current position
   const potentialEnemies = this.enemySpatialGrid.query(b.x, b.y, b.radius);
   for (const enemy of potentialEnemies) {
         if (!enemy.active || enemy.hp <= 0) continue; // Only check active, alive enemies
@@ -459,14 +882,29 @@ export class BulletManager {
         }
 
         // For Mech Mortar, use swept-sphere collision
-        if (b.weaponType === WeaponType.MECH_MORTAR) {
-          intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius);
+          if (b.weaponType === WeaponType.MECH_MORTAR) {
+            // Introduce arming distance/time so mortar can't explode immediately after firing (prevents early desync)
+            const ARM_TIME_MS = 160; // ~0.16s safety
+            const spawnT = (b as any)._spawnTime || 0;
+            const armed = performance.now() - spawnT >= ARM_TIME_MS;
+            if (armed) {
+              intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius);
+            } else {
+              intersectionPoint = null;
+            }
         } else {
-          // For other bullets, use simple circle-circle collision
-          const dx = b.x - enemy.x;
-          const dy = b.y - enemy.y;
-          const rs = b.radius + enemy.radius;
-          if (dx*dx + dy*dy < rs*rs) intersectionPoint = { x: b.x, y: b.y };
+          // For PSIONIC_WAVE, use a swept-segment vs circle test with effective beam thickness
+          if (b.weaponType === WeaponType.PSIONIC_WAVE) {
+            const thickness = Math.max(8, (((b.projectileVisual as any)?.thickness) || 12));
+            const effR = (enemy.radius || 16) + thickness * 0.5; // half-thickness as beam radius
+            intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, effR);
+          } else {
+            // Other bullets: simple circle-circle collision
+            const dx = b.x - enemy.x;
+            const dy = b.y - enemy.y;
+            const rs = b.radius + enemy.radius;
+            if (dx*dx + dy*dy < rs*rs) intersectionPoint = { x: b.x, y: b.y };
+          }
         }
 
         if (intersectionPoint) {
@@ -493,12 +931,119 @@ export class BulletManager {
             const damage = isCritical ? b.damage * critMult : b.damage;
             this.enemyManager.takeDamage(enemy, damage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
             if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
-            // Piercing: if pierceRemaining > 0, decrement and continue; else deactivate
+            // Virus: spawn a paralysis/DoT zone at impact point, except for Rogue Hacker (auto-casts zones separately)
+            if (b.weaponType === WeaponType.HACKER_VIRUS) {
+              const isRogue = (this.player as any)?.characterData?.id === 'rogue_hacker';
+              if (!isRogue) {
+                try {
+                  window.dispatchEvent(new CustomEvent('spawnHackerZone', { detail: { x: enemy.x, y: enemy.y, radius: 120, lifeMs: 2000 } }));
+                } catch {}
+              }
+            }
+            // Neural Threader: on impact, anchor enemy into a thread polyline (pierces through until anchor limit)
+            if (b.weaponType === WeaponType.NOMAD_NEURAL) {
+              try {
+                const spec: any = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
+                const stats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : { anchors: 2, threadLifeMs: 3000, pulseIntervalMs: 500, pulsePct: 0.6 };
+                // Find existing active thread for recent hits to append, else create a new one
+                let thread = this.neuralThreads.find(t => t.active && (t.expireAt - performance.now()) > 0);
+                const now = performance.now();
+                const overmindUntil = (window as any).__overmindActiveUntil || 0;
+                const color = '#26ffe9';
+                if (!thread) {
+                  thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 3000), nextPulseAt: now + (stats.pulseIntervalMs || 500), pulseMs: (stats.pulseIntervalMs || 500), baseDamage: b.damage || 20, pulsePct: (stats.pulsePct || 0.6), maxAnchors: (stats.anchors || 2), active: true, color, beadPhase: 0 };
+                  this.neuralThreads.push(thread);
+                }
+                // Append if not already in anchors
+                if (thread.anchors.indexOf(enemy) === -1) {
+                  thread.anchors.push(enemy);
+                }
+                // Maintain pierce budget: consume but keep bullet alive while we can add anchors
+                const hasRoom = thread.anchors.length < thread.maxAnchors + (overmindUntil > now ? 1 : 0);
+                b.pierceRemaining = hasRoom ? 999 : 0; // bypass normal pierce while capacity remains
+              } catch { /* ignore */ }
+            }
+            // Psionic Wave: apply brief psionic mark (slow + bonus damage window) to hit enemy only
+            if (b.weaponType === WeaponType.PSIONIC_WAVE) {
+              const nowMs = performance.now();
+              // Mark direct hit
+              const anyE: any = enemy as any;
+              anyE._psionicMarkUntil = Math.max(anyE._psionicMarkUntil||0, nowMs + 1400);
+            }
+            // Plasma detonation on first impact (no piercing). Determine over/charged multipliers here.
+            if (b.weaponType === WeaponType.PLASMA) {
+              const spec: any = (WEAPON_SPECS as any)[WeaponType.PLASMA];
+              const p:any = this.player;
+              const over = (p?.plasmaHeat||0) >= (spec?.overheatThreshold||0.85);
+              const chargeT = (b as any).chargeT || 0;
+              let dmgBase = b.damage;
+              if (chargeT >= 1) dmgBase *= (spec?.chargedMultiplier||1.8);
+              if (over) dmgBase *= (spec?.overchargedMultiplier||2.2);
+              if (over) {
+                p.plasmaHeat = Math.max(0, p.plasmaHeat * 0.6); // cooldown after overcharged
+                window.dispatchEvent(new CustomEvent('plasmaIonField', { detail: { x: b.x, y: b.y, damage: dmgBase, radius: 150 } }));
+              } else {
+                const frags = spec?.fragmentCount || 3;
+                window.dispatchEvent(new CustomEvent('plasmaDetonation', { detail: { x: b.x, y: b.y, damage: dmgBase, fragments: frags, radius: 120 } }));
+              }
+              b.active = false; this.bulletPool.push(b); break; // consume plasma core
+            }
+            // Piercing: Smart Rifle (RAPID) intentionally NEVER pierces; always expire on first hit
+            if (b.weaponType === WeaponType.RAPID) {
+              b.pierceRemaining = 0; // safety
+              b.active = false;
+              this.bulletPool.push(b);
+              break;
+            }
+            if (b.weaponType === WeaponType.RICOCHET && (b as any).bouncesRemaining && (b as any).bouncesRemaining > 0) {
+              // Attempt to find a new target different from already hit enemies
+              const searchRadius = 520; // generous search radius
+              const candidates = this.enemySpatialGrid.query(b.x, b.y, searchRadius);
+              let best: any = null; let bestD2 = Infinity;
+              for (let ci = 0; ci < candidates.length; ci++) {
+                const c = candidates[ci];
+                if (!c.active || c.hp <= 0) continue;
+                const cid = (c as any).id || (c as any)._gid;
+                if (b.hitIds && cid && b.hitIds.indexOf(cid) !== -1) continue; // already hit
+                const dxC = c.x - b.x; const dyC = c.y - b.y; const d2C = dxC*dxC + dyC*dyC;
+                if (d2C < bestD2) { best = c; bestD2 = d2C; }
+              }
+              if (best) {
+                // Redirect velocity toward new target; preserve speed magnitude
+                const curSpeed = Math.hypot(b.vx, b.vy) || ((WEAPON_SPECS as any)[WeaponType.RICOCHET]?.speed || 7);
+                const dxN = best.x - b.x; const dyN = best.y - b.y; const distN = Math.hypot(dxN, dyN) || 1;
+                b.vx = dxN / distN * curSpeed;
+                b.vy = dyN / distN * curSpeed;
+                (b as any).bouncesRemaining -= 1;
+                intersectionPoint = null; // allow subsequent collision detection
+                continue; // keep bullet alive for next enemy
+              }
+              // If no candidate found, fall through to normal expire
+            }
             if (b.pierceRemaining && b.pierceRemaining > 0) {
               b.pierceRemaining -= 1;
-              intersectionPoint = null; // reset so we can find next enemy
-              continue; // keep bullet alive
+              intersectionPoint = null;
+              continue;
             } else {
+              // On final hit (no pierce left), allow BIO_TOXIN to spawn a poison puddle at impact
+              if (b.weaponType === WeaponType.BIO_TOXIN) {
+                try {
+                  const lvl = (b as any).level || 1;
+                  const baseR = 28, baseMs = 2600;
+                  const radius = baseR + (lvl - 1) * 3;
+                  const lifeMs = baseMs + (lvl - 1) * 200;
+                  this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs);
+                } catch {}
+              }
+              // Plant Data Sigil on impact
+              if (b.weaponType === WeaponType.DATA_SIGIL) {
+                try {
+                  const lvl = (b as any).level || 1;
+                  const spec: any = (WEAPON_SPECS as any)[WeaponType.DATA_SIGIL];
+                  const stats = spec?.getLevelStats ? spec.getLevelStats(lvl) : {};
+                  window.dispatchEvent(new CustomEvent('plantDataSigil', { detail: { x: b.x, y: b.y, level: lvl, radius: stats?.sigilRadius || 120, pulseCount: stats?.pulseCount || 3, pulseDamage: stats?.pulseDamage || 90 } }));
+                } catch {}
+              }
               b.active = false;
               if (b.weaponType !== WeaponType.MECH_MORTAR) {
                 this.bulletPool.push(b);
@@ -548,7 +1093,7 @@ export class BulletManager {
         }
       }
 
-      // If Mech Mortar and collision detected OR life expires, trigger explosion event and deactivate projectile
+    // If Mech Mortar and collision detected OR life expires, trigger explosion sequence (with optional implosion) and deactivate projectile
   if (b.weaponType === WeaponType.MECH_MORTAR && (hitEnemy || (b.lifeMs !== undefined && b.lifeMs <= 0))) {
         b.active = false; // Immediately deactivate projectile
         b.vx = 0; // Stop movement
@@ -564,33 +1109,60 @@ export class BulletManager {
         const explosionX = intersectionPoint ? intersectionPoint.x : b.x;
         const explosionY = intersectionPoint ? intersectionPoint.y : b.y;
 
-        // Dispatch explosion event (damage and particles handled by Game.ts) with radius
-        window.dispatchEvent(new CustomEvent('mortarExplosion', {
-          detail: {
-            x: explosionX,
-            y: explosionY,
-            damage: b.damage,
-            hitEnemy: hitEnemy, // Pass hit enemy for direct damage
-            radius: b.explosionRadius ?? 100
-          }
-        }));
+        // Explosion radius: prefer spec.explosionRadius if present
+        let exRadius = b.explosionRadius;
+        if (exRadius == null) {
+          try { const spec = (WEAPON_SPECS as any)[WeaponType.MECH_MORTAR]; if (spec?.explosionRadius) exRadius = spec.explosionRadius; } catch { /* ignore */ }
+        }
+        if (exRadius == null) exRadius = 200;
+  // Optional brief implosion visual before main explosion: dispatch a pre-explosion event (purely visual)
+  window.dispatchEvent(new CustomEvent('mortarImplosion', { detail: { x: explosionX, y: explosionY, radius: exRadius * 0.55, color: '#FFE66D', delay: 90 } }));
+  // Main explosion (damage and particles handled by Game.ts) with radius
+  window.dispatchEvent(new CustomEvent('mortarExplosion', { detail: { x: explosionX, y: explosionY, damage: b.damage, hitEnemy: hitEnemy, radius: exRadius, delay: 90 } }));
         this.bulletPool.push(b); // Return to pool
         continue; // Skip adding to activeBullets for this frame, as it's now inactive and exploded
       }
 
-      // For BIO_TOXIN, spawn a poison puddle on expiry
-      if (b.life <= 0 && b.weaponType === WeaponType.BIO_TOXIN) {
-        this.enemyManager.spawnPoisonPuddle(b.x, b.y); // Use injected enemyManager
+  // For BIO_TOXIN, spawn a poison puddle on expiry (ms-based)
+      if (b.weaponType === WeaponType.BIO_TOXIN && b.lifeMs !== undefined && b.lifeMs <= 0) {
+        try {
+          const lvl = (b as any).level || 1;
+          const baseR = 28, baseMs = 2600;
+          const radius = baseR + (lvl - 1) * 3;
+          const lifeMs = baseMs + (lvl - 1) * 200;
+          this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs);
+        } catch { this.enemyManager.spawnPoisonPuddle(b.x, b.y); }
         b.active = false; // Mark as inactive to be returned to pool
         this.bulletPool.push(b);
         continue;
       }
+      // Plant Data Sigil on expiry if it didn't hit anything
+      if (b.weaponType === WeaponType.DATA_SIGIL && b.lifeMs !== undefined && b.lifeMs <= 0) {
+        try {
+          const lvl = (b as any).level || 1;
+          const spec: any = (WEAPON_SPECS as any)[WeaponType.DATA_SIGIL];
+          const stats = spec?.getLevelStats ? spec.getLevelStats(lvl) : {};
+          window.dispatchEvent(new CustomEvent('plantDataSigil', { detail: { x: b.x, y: b.y, level: lvl, radius: stats?.sigilRadius || 120, pulseCount: stats?.pulseCount || 3, pulseDamage: stats?.pulseDamage || 90 } }));
+        } catch {}
+        b.active = false; this.bulletPool.push(b); continue;
+      }
+      // Singularity Spear: on expiry, trigger a quick implosion then a shockwave explosion
+      if (b.lifeMs !== undefined && b.lifeMs <= 0 && b.weaponType === WeaponType.SINGULARITY_SPEAR) {
+        // Visual/audio via centralized Game listeners
+        const base = b.damage || 50;
+        try {
+          window.dispatchEvent(new CustomEvent('mortarImplosion', { detail: { x: b.x, y: b.y, radius: 90, color: '#DCC6FF', delay: 60 } }));
+          window.dispatchEvent(new CustomEvent('droneExplosion', { detail: { x: b.x, y: b.y, damage: Math.round(base * 1.25), radius: 140 } }));
+        } catch {}
+        b.active = false; this.bulletPool.push(b); continue;
+      }
 
   // Trail accumulation for weapons with trail visuals (added LASER for subtle trace)
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
+  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
         if (!b.trail) b.trail = [];
         b.trail.push({ x: b.x, y: b.y });
-        const maxTrail = Math.min(14, (b.projectileVisual as any).trailLength || 10); // keep short
+        const baseMax = (b.projectileVisual as any).trailLength || 10;
+        const maxTrail = b.weaponType === WeaponType.MECH_MORTAR ? Math.min(48, baseMax) : Math.min(14, baseMax); // mortar keeps longer plume
         if (b.trail.length > maxTrail) b.trail.splice(0, b.trail.length - maxTrail);
       }
 
@@ -605,7 +1177,9 @@ export class BulletManager {
         activeBullets.push(b);
       }
     }
-    this.bullets = activeBullets; // Update the active bullets list
+  this.bullets = activeBullets; // Update the active bullets list
+  // Update Neural Threader threads: pulses, autosnap, cleanup
+  this.updateNeuralThreads(deltaTime);
   }
 
   public draw(ctx: CanvasRenderingContext2D) {
@@ -616,25 +1190,30 @@ export class BulletManager {
     const pad = 64;
     const minX = camX - pad, maxX = camX + viewW + pad;
     const minY = camY - pad, maxY = camY + viewH + pad;
-    for (const b of this.bullets) {
+  // Draw Neural Threader threads beneath bullets for layering clarity
+  this.drawNeuralThreads(ctx);
+  for (const b of this.bullets) {
       if (!b.active) continue;
       if (b.x < minX || b.x > maxX || b.y < minY || b.y > maxY) continue;
       ctx.save();
   // Draw trail first (behind projectile) – Crossbow + Smart Rifle + Laser Blaster subtle trace
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
+  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
         const visual = b.projectileVisual as any;
         ctx.save();
-        ctx.lineWidth = 1.5; // subtle
-        const col = visual.trailColor as string;
+  // Thicker, softer trail for mortar vs others
+  ctx.lineWidth = (b.weaponType === WeaponType.MECH_MORTAR ? 3.2 : 1.5);
+  const col = visual.trailColor as string;
         for (let i = 1; i < b.trail.length; i++) {
           const p0 = b.trail[i - 1];
           const p1 = b.trail[i];
           const t = i / b.trail.length;
-          ctx.strokeStyle = col.replace(/rgba\(([^)]+)\)/, (m: string, inner: string) => {
+      ctx.strokeStyle = col.replace(/rgba\(([^)]+)\)/, (m: string, inner: string) => {
             const parts = inner.split(',').map((s: string) => s.trim());
             if (parts.length === 4) {
-              const alpha = parseFloat(parts[3]);
-              return `rgba(${parts[0]},${parts[1]},${parts[2]},${(alpha * t).toFixed(3)})`;
+        const alpha = parseFloat(parts[3]);
+        // Mortar trail lingers more (sqrt fade) for heavy shell feel
+        const fadeT = b.weaponType === WeaponType.MECH_MORTAR ? Math.sqrt(t) : t;
+        return `rgba(${parts[0]},${parts[1]},${parts[2]},${(alpha * fadeT).toFixed(3)})`;
             }
             return col;
           });
@@ -643,24 +1222,96 @@ export class BulletManager {
             ctx.lineTo(p1.x, p1.y);
           ctx.stroke();
         }
+        if (b.weaponType === WeaponType.MECH_MORTAR) {
+          // Add faint expanding smoke puffs along path (simple circles)
+          const every = 4;
+          for (let i = 0; i < b.trail.length; i += every) {
+            const pt = b.trail[i];
+            const age = (b.trail.length - i) / b.trail.length; // 0..1
+            const alpha = 0.18 * age;
+            const rad = 6 + 18 * age;
+            ctx.beginPath();
+            ctx.fillStyle = `rgba(120,100,60,${alpha.toFixed(3)})`;
+            ctx.arc(pt.x, pt.y, rad, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
         ctx.restore();
       }
       let visual: any = b.projectileVisual ?? { type: 'bullet', color: '#0ff', size: b.radius, glowColor: '#0ff', glowRadius: 8 };
+      if (b.weaponType === WeaponType.QUANTUM_HALO && visual) {
+        const hue = (visual._dynamicHue||0);
+        visual.color = `hsl(${hue},100%,82%)`;
+        visual.glowColor = `hsl(${(hue+45)%360},100%,65%)`;
+        visual.glowRadius = 55;
+      }
+
+      // Visual tether for Scavenger sawblade and evolved grinder: draw a glowing line from player to blade
+      if ((b.weaponType === WeaponType.SCRAP_SAW && (b as any).isMeleeSweep) || (b.weaponType === WeaponType.INDUSTRIAL_GRINDER && (b as any).isOrbiting)) {
+        const pl = this.player;
+        // Ensure player exists and keep within view bounds to avoid offscreen overdraw
+        if (pl && b.x >= minX && b.x <= maxX && b.y >= minY && b.y <= maxY) {
+          const dx = b.x - pl.x;
+          const dy = b.y - pl.y;
+          const d2 = dx*dx + dy*dy;
+          if (d2 > 1) {
+            const len = Math.sqrt(d2);
+            // Saw visual color from spec (warm amber), fallback to projectile glow
+            const col = (visual && (visual.glowColor || visual.color)) || '#FFD770';
+            ctx.save();
+            // Soft outer glow
+            ctx.shadowColor = col;
+            ctx.shadowBlur = Math.min(visual?.glowRadius ?? 14, 18);
+            // Slight width scaling with distance so long reaches look a bit thicker
+            const lw = Math.min(5, 1.5 + len * 0.004);
+            // Mid-bright gradient (fades at ends)
+            const grad = ctx.createLinearGradient(pl.x, pl.y, b.x, b.y);
+            grad.addColorStop(0.0, 'rgba(255,215,112,0.00)');
+            grad.addColorStop(0.2, 'rgba(255,215,112,0.65)');
+            grad.addColorStop(0.8, 'rgba(255,215,112,0.65)');
+            grad.addColorStop(1.0, 'rgba(255,215,112,0.00)');
+            ctx.strokeStyle = grad;
+            ctx.lineWidth = lw;
+            ctx.beginPath();
+            ctx.moveTo(pl.x, pl.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
 
       // General bullet drawing logic (including what was Mech Mortar)
   if (visual?.type === 'bullet') {
         ctx.save(); // Ensure save/restore for bullet drawing
         if (visual.sprite) {
           // Use PNG sprite for bullet, rotated to match direction; lazy-load if absent
-          let bulletImage = this.assetLoader.getImage(visual.sprite);
+          // Resolve manifest key to path if needed
+          let spritePath = visual.sprite as string;
+          if (!/\.(png|jpg|jpeg|gif|webp)$/i.test(spritePath)) {
+            const manifestPath = this.assetLoader.getAsset(spritePath);
+            if (manifestPath) spritePath = manifestPath;
+          }
+          let bulletImage = this.assetLoader.getImage(spritePath);
           if (!bulletImage) {
             // Kick off async load (fire and forget); will display from next frame
-            this.assetLoader.loadImage(visual.sprite);
+            this.assetLoader.loadImage(spritePath);
+            // Fallback for Industrial Grinder while asset is missing: reuse sawblade if available
+            if (b.weaponType === WeaponType.INDUSTRIAL_GRINDER) {
+              const fallbackPath = AssetLoader.normalizePath('/assets/projectiles/bullet_sawblade.png');
+              bulletImage = this.assetLoader.getImage(fallbackPath);
+              if (!bulletImage) this.assetLoader.loadImage(fallbackPath);
+            }
           } else {
             const size = (visual.size ?? b.radius) * 2;
             const drawX = b.x;
             const drawY = b.y;
             let angle = Math.atan2(b.vy, b.vx);
+            if ((!b.vx && !b.vy)) {
+              if (b.isOrbiting && (b.orbitAngle != null)) angle = b.orbitAngle;
+              // Melee sweep orientation
+              if ((b as any).displayAngle != null) angle = (b as any).displayAngle;
+            }
             if (typeof visual.rotationOffset === 'number') angle += visual.rotationOffset;
             ctx.save();
             ctx.translate(drawX, drawY);
@@ -670,7 +1321,15 @@ export class BulletManager {
               ctx.shadowColor = visual.glowColor || visual.color || '#FF6A50';
               ctx.shadowBlur = Math.min(visual.glowRadius ?? 14, 18);
             }
-            ctx.drawImage(bulletImage, -size / 2, -size / 2, size, size);
+            // If artwork contains a visible outer frame, crop 1px inset to avoid halo
+            if (spritePath && /bullet_sawblade\.png$/.test(spritePath)) {
+              // Draw using source rect inset by 1px
+              const sw = bulletImage.width - 2;
+              const sh = bulletImage.height - 2;
+              ctx.drawImage(bulletImage, 1, 1, sw, sh, -size/2, -size/2, size, size);
+            } else {
+              ctx.drawImage(bulletImage, -size / 2, -size / 2, size, size);
+            }
             ctx.restore();
           }
         }
@@ -847,6 +1506,119 @@ export class BulletManager {
     }
   }
 
+  /** Tick Neural Threader threads: apply periodic damage and manage lifecycle. */
+  private updateNeuralThreads(deltaMs: number) {
+    const now = performance.now();
+    if (!this.neuralThreads || this.neuralThreads.length === 0) return;
+    const overmindUntil = (window as any).__overmindActiveUntil || 0;
+    for (let i = 0; i < this.neuralThreads.length; i++) {
+      const t = this.neuralThreads[i];
+      if (!t.active) continue;
+      // Cull dead anchors and expired
+  t.anchors = t.anchors.filter(e => e && e.active && e.hp > 0);
+  // Keep threads alive with a single anchor so they can grow on subsequent hits or autosnap
+  if (t.anchors.length === 0 || now >= t.expireAt) {
+        t.active = false; continue;
+      }
+      // Autosnap: during Overmind, attempt to add one nearby enemy up to +1 capacity
+      if (overmindUntil > now && t.anchors.length < t.maxAnchors + 1) {
+        // Search around mid-point of last segment for a close enemy not already in anchors
+        const last = t.anchors[t.anchors.length - 1];
+        const sx = last.x, sy = last.y;
+        const candidates = this.enemySpatialGrid.query(sx, sy, 240);
+        let best: Enemy | null = null; let bestD2 = Infinity;
+        for (let ci = 0; ci < candidates.length; ci++) {
+          const e = candidates[ci]; if (!e.active || e.hp <= 0) continue;
+          if (t.anchors.indexOf(e) !== -1) continue;
+          const dx = e.x - sx, dy = e.y - sy; const d2 = dx*dx + dy*dy;
+          if (d2 < bestD2) { best = e; bestD2 = d2; }
+        }
+        if (best) t.anchors.push(best);
+      }
+      // Pulse damage on cadence
+      if (now >= t.nextPulseAt) {
+        t.nextPulseAt = now + t.pulseMs;
+        // Damage anchors
+        const perPulse = Math.max(1, Math.round(t.baseDamage * t.pulsePct));
+        for (let ai = 0; ai < t.anchors.length; ai++) {
+          const e = t.anchors[ai]; if (!e.active || e.hp <= 0) continue;
+          this.enemyManager.takeDamage(e, perPulse, false, false, WeaponType.NOMAD_NEURAL);
+          if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#26ffe9');
+        }
+        // Light arc zap to enemies near each segment for readability/aoe feel
+        for (let ai = 0; ai < t.anchors.length - 1; ai++) {
+          const a = t.anchors[ai], b = t.anchors[ai+1];
+          const mx = (a.x + b.x) * 0.5, my = (a.y + b.y) * 0.5;
+          const near = this.enemySpatialGrid.query(mx, my, 80);
+          for (let ni = 0; ni < near.length; ni++) {
+            const e = near[ni]; if (!e.active || e.hp <= 0) continue;
+            if (t.anchors.indexOf(e) !== -1) continue;
+            // tiny chip
+            this.enemyManager.takeDamage(e, Math.max(1, Math.round(perPulse * 0.18)), false, false, WeaponType.NOMAD_NEURAL);
+          }
+        }
+        // Reset bead animation
+        t.beadPhase = 0;
+      } else {
+        // progress beads
+        const remain = t.nextPulseAt - now;
+        t.beadPhase = 1 - Math.max(0, Math.min(1, remain / t.pulseMs));
+      }
+    }
+    // Optionally compact array occasionally (avoid frequent splices)
+    if (now % 5 < 1) {
+      for (let i = this.neuralThreads.length - 1; i >= 0; i--) if (!this.neuralThreads[i].active) this.neuralThreads.splice(i, 1);
+    }
+  }
+
+  /** Draw Neural Threader threads: glowing lines with traveling beads. */
+  private drawNeuralThreads(ctx: CanvasRenderingContext2D) {
+    if (!this.neuralThreads || this.neuralThreads.length === 0) return;
+    ctx.save();
+    for (let i = 0; i < this.neuralThreads.length; i++) {
+      const t = this.neuralThreads[i]; if (!t.active) continue;
+      // If we only have a single anchor, draw a small pulsing node to indicate the thread is waiting for another anchor
+      if (t.anchors.length === 1) {
+        const a = t.anchors[0];
+        ctx.save();
+        ctx.shadowColor = t.color;
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = t.color;
+        const r = 3 + Math.sin(performance.now()*0.008)*1.5;
+        ctx.beginPath();
+        ctx.arc(a.x, a.y, r, 0, Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+        continue;
+      }
+      if (t.anchors.length < 2) continue;
+      // Build polyline path
+      ctx.save();
+      ctx.shadowColor = t.color;
+      ctx.shadowBlur = 16;
+      ctx.strokeStyle = t.color;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(t.anchors[0].x, t.anchors[0].y);
+      for (let ai = 1; ai < t.anchors.length; ai++) ctx.lineTo(t.anchors[ai].x, t.anchors[ai].y);
+      ctx.stroke();
+      // Draw beads traveling along segments
+      const beadCount = Math.min(2, t.anchors.length - 1);
+      for (let bi = 0; bi < beadCount; bi++) {
+        const seg = Math.min(t.anchors.length - 2, bi);
+        const a = t.anchors[seg], b = t.anchors[seg+1];
+        const px = a.x + (b.x - a.x) * t.beadPhase;
+        const py = a.y + (b.y - a.y) * t.beadPhase;
+        ctx.beginPath();
+        ctx.fillStyle = '#9ffcf6';
+        ctx.arc(px, py, 4, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
   /**
    * Smart Rifle targeting rules (priority order):
    * 1. If a boss is active & alive, ALWAYS target the boss (ignores distance & other enemies).
@@ -884,15 +1656,15 @@ export class BulletManager {
     return best;
   }
 
-  public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1) {
+  public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1): Bullet | undefined {
     const spec = (WEAPON_SPECS as any)[weapon] ?? (WEAPON_SPECS as any)[WeaponType.PISTOL];
     const dx = targetX - x;
     const dy = targetY - y;
     const angle = Math.atan2(dy, dx);
   let speed = spec?.speed ?? 2; // Base projectile speed (can be overridden by per-level scaling)
     const projectileImageKey = spec?.projectile ?? 'bullet_cyan';
-  // Removed earlier size inflation; rely on spec-defined projectileVisual size
-  let projectileVisual = spec?.projectileVisual ?? { type: 'bullet', color: '#0ff', size: 6 };
+  // Clone visual spec per spawn to avoid mutating shared objects (prevents red tint leaking to later shots)
+  let projectileVisual = spec?.projectileVisual ? { ...(spec.projectileVisual as any) } : { type: 'bullet', color: '#0ff', size: 6 };
 
     let b: Bullet | undefined = this.bulletPool.pop(); // Try to get from pool
 
@@ -901,12 +1673,20 @@ export class BulletManager {
       b = { x: 0, y: 0, vx: 0, vy: 0, radius: 0, life: 0, active: false, damage: 0, weaponType: WeaponType.PISTOL } as Bullet;
     }
 
-    // Reset and initialize bullet properties
+  // Reset and initialize bullet properties
     b.x = x;
     b.y = y;
     b.vx = Math.cos(angle) * speed;
     b.vy = Math.sin(angle) * speed;
   (b as any)._spawnTime = performance.now(); // record spawn timestamp for time-based visuals
+  // Clear pooled explosion / lifetime state
+  (b as any)._exploded = false;
+  (b as any)._explosionStartTime = undefined;
+  (b as any)._maxExplosionDuration = undefined;
+  // Clear any prior volley flags or runtime speed boost carried from pool
+  (b as any)._isVolley = undefined;
+  (b as any).volleySpeedBoost = undefined;
+  b.lifeMs = undefined as any; // will be recalculated in update
     b.radius = projectileVisual.size ?? 6; // Ensure radius matches the new visual size
     // Derive life from weapon range if available: life (frames) = range / speed.
     // Clamp to avoid extremely long-lived projectiles; fallback to 60 if insufficient data.
@@ -923,6 +1703,13 @@ export class BulletManager {
         projectileVisual = { ...projectileVisual, size: scaled.projectileSize };
       }
       if ((scaled as any).turnRate != null) (b as any).turnRate = (scaled as any).turnRate;
+      // Propagate beam/laser length & thickness scaling into the visual if present
+      if ((scaled as any).length != null) {
+        projectileVisual = { ...projectileVisual, length: (scaled as any).length } as any;
+      }
+      if ((scaled as any).thickness != null) {
+        projectileVisual = { ...projectileVisual, thickness: (scaled as any).thickness } as any;
+      }
     }
 
     // Range & lifetime derivation (gentler compression of very large ranges)
@@ -950,13 +1737,56 @@ export class BulletManager {
     b.damage = appliedDamage; // leveled damage
     b.weaponType = weapon;
     b.projectileImageKey = projectileImageKey;
+    // If Heavy Gunner boost is active, tint bullets slightly more red
+    try {
+      const p: any = this.player as any;
+      if (p?.characterData?.id === 'heavy_gunner' && p.gunnerBoostActive && projectileVisual) {
+        const vis: any = { ...projectileVisual };
+        // shift toward red without losing bullet identity
+        if (!vis.color || typeof vis.color !== 'string') vis.color = '#ff9a66';
+        vis.color = '#ff6b4a';
+        vis.glowColor = '#ff3b2a';
+        vis.glowRadius = Math.max(vis.glowRadius || 6, 8);
+        vis.trailColor = 'rgba(255,80,50,0.20)';
+        vis.trailLength = Math.max(vis.trailLength || 6, 8);
+        projectileVisual = vis;
+      }
+    } catch { /* ignore */ }
+    // Ensure a very subtle trail on small bullets if none present (skip if pistol defines its own)
+    if (projectileVisual && !(projectileVisual as any).trailColor) {
+      const isPistol = weapon === WeaponType.PISTOL;
+      (projectileVisual as any).trailColor = isPistol ? 'rgba(180,255,255,0.18)' : 'rgba(255,255,255,0.10)';
+      (projectileVisual as any).trailLength = Math.max((projectileVisual as any).trailLength || 0, isPistol ? 12 : 6);
+    }
     b.projectileVisual = projectileVisual;
+  if ((spec as any).explosionRadius) (b as any).explosionRadius = (spec as any).explosionRadius;
     b.snakeTargets = undefined; // Clear previous snake targets    b.snakeBounceCount = undefined; // Clear previous bounce count
   // Reset pierce/trail state from any prior usage in pool
   b.pierceRemaining = undefined;
   b.trail = undefined;
   b.hitIds = b.hitIds ? (b.hitIds.length = 0, b.hitIds) : []; // clear or create hit list
   b.targetId = undefined;
+    if (weapon === WeaponType.PLASMA) {
+      b.phase = 'CHARGING';
+      (b as any).chargeT = 0;
+      // Zero velocity during charge; direction stored in vx/vy after travel begins
+      // Keep initial direction so we can offset orb along aim while charging
+      (b as any)._initialAngle = angle;
+      b.vx = Math.cos(angle) * 0.0001; // tiny epsilon to preserve angle
+      b.vy = Math.sin(angle) * 0.0001;
+  // Override position to player's current live position (anchor) ignoring provided x,y to prevent fixed remote spawn
+  if (this.player) { b.x = this.player.x; b.y = this.player.y; b.startX = this.player.x; b.startY = this.player.y; }
+      try { const spec:any = (WEAPON_SPECS as any)[WeaponType.PLASMA]; const p:any=this.player; const add=spec?.heatPerShot||0.25; p.plasmaHeat = Math.min(1,(p.plasmaHeat||0)+add); } catch {}
+    }
+    // Ricochet bounce initialization (level-scaled)
+    if (weapon === WeaponType.RICOCHET) {
+      let bounceCount = 3;
+      if (spec?.getLevelStats) {
+        const scaled = spec.getLevelStats(level);
+        if ((scaled as any).bounces != null) bounceCount = (scaled as any).bounces;
+      }
+      (b as any).bouncesRemaining = bounceCount;
+    }
     // Give Triple Crossbow a single pierce (hit 2 targets total)
     if (weapon === WeaponType.TRI_SHOT) {
       // Level-based pierce (scaled.pierce already represents remaining extra targets after first)
@@ -972,18 +1802,27 @@ export class BulletManager {
         (b.projectileVisual as any).trailLength = 22;
       }
     }
-    // Passive-based piercing fallback: if player has generic piercing flag and no specific pierce set by weapon
+    // Basic Pistol: set level-based pierce from spec
+    if (weapon === WeaponType.PISTOL) {
+      try {
+        const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {} as any;
+        const basePierce = (scaled as any).pierce ?? 0;
+        if (basePierce > 0) b.pierceRemaining = (b.pierceRemaining || 0) + basePierce;
+  } catch { /* ignore */ }
+  finally { this.suppressWeaverSecondary = false; }
+    }
+    // Passive-based piercing fallback (disabled for Smart Rifle)
     {
-  const passivePierceLevel: number | undefined = (this.player as any)?.piercing;
-      if (passivePierceLevel && passivePierceLevel > 0) {
-        // Weapon-assigned pierceRemaining represents extra targets after FIRST
-        // We add passive extra targets (level) cumulatively.
+      const passivePierceLevel: number | undefined = (this.player as any)?.piercing;
+      if (weapon !== WeaponType.RAPID && passivePierceLevel && passivePierceLevel > 0) {
         const basePierce = b.pierceRemaining != null ? b.pierceRemaining : 0;
-        b.pierceRemaining = basePierce + passivePierceLevel; // each level adds one additional enemy after first
+        b.pierceRemaining = basePierce + passivePierceLevel;
       }
     }
     // Smart Rifle initial target lock (toughest enemy: highest maxHp (fallback hp); tie -> lowest current hp)
     if (weapon === WeaponType.RAPID) {
+      // Ensure no piercing is ever applied
+      b.pierceRemaining = 0;
       const lock = this.selectSmartRifleTarget(targetX, targetY, 900);
       if (lock) {
         const bossMgr: any = (window as any).__bossManager;
@@ -992,6 +1831,118 @@ export class BulletManager {
         else b.targetId = (lock as any).id || (lock as any)._gid;
       }
       (b as any).turnRate = (b as any).turnRate || 0.07;
+    }
+    // Neural Threader: allow multiple pierces to gather anchors; no hard bounces
+    if (weapon === WeaponType.NOMAD_NEURAL) {
+      try {
+        const specNom: any = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
+        const scaled = specNom?.getLevelStats ? specNom.getLevelStats(level) : { anchors: 2 };
+        // Allow at least anchors hits; Overmind may add +1 temporarily during pulses
+        b.pierceRemaining = Math.max(0, (scaled.anchors || 2) - 1);
+        // Make sure the visual reads teal/cyan distinctly
+        if (b.projectileVisual) {
+          const vis: any = { ...b.projectileVisual };
+          vis.color = '#26ffe9';
+          vis.glowColor = '#26ffe9';
+          vis.glowRadius = Math.max(vis.glowRadius || 8, 10);
+          vis.trailColor = 'rgba(38,255,233,0.25)';
+          vis.trailLength = Math.max((vis.trailLength || 10), 14);
+          b.projectileVisual = vis;
+        }
+      } catch { /* ignore */ }
+    }
+    // Psionic Wave: during Weaver Lattice, emit symmetric faint secondary waves to form a fuller weave pattern
+  if (weapon === WeaponType.PSIONIC_WAVE && !this.suppressWeaverSecondary) {
+      try {
+        const until = (window as any).__weaverLatticeActiveUntil || 0;
+        if (until > performance.now()) {
+      this.suppressWeaverSecondary = true; // prevent nested secondary emissions
+          const baseAngle = Math.atan2(targetY - y, targetX - x);
+          const len = 320; // a bit longer for epic feel
+          const angleOffset = 0.18; // fixed gentle fan
+          const lateral = 30;       // inner lanes
+          // Left lane
+          {
+            const ox = x + Math.cos(baseAngle + Math.PI/2) * -lateral;
+            const oy = y + Math.sin(baseAngle + Math.PI/2) * -lateral;
+            const a2 = baseAngle - angleOffset;
+            const tx = ox + Math.cos(a2) * len;
+            const ty = oy + Math.sin(a2) * len;
+            const bL = this.spawnBullet(ox, oy, tx, ty, weapon, Math.round(damage * 0.6), level);
+            if (bL) {
+              const vis: any = bL.projectileVisual || {};
+              if (vis) {
+                if (vis.thickness != null) vis.thickness = Math.max(6, Math.round(vis.thickness * 0.8));
+                vis.glowRadius = Math.max(14, (vis.glowRadius || 24) * 0.8);
+                if (vis.thickness == null) vis.thickness = 10; // ensure non-zero thickness for collision
+                bL.projectileVisual = vis;
+              }
+              bL.weaponType = WeaponType.PSIONIC_WAVE; // keep type for collision rules
+            }
+          }
+          // Right lane
+          {
+            const ox = x + Math.cos(baseAngle + Math.PI/2) * lateral;
+            const oy = y + Math.sin(baseAngle + Math.PI/2) * lateral;
+            const a2 = baseAngle + angleOffset;
+            const tx = ox + Math.cos(a2) * len;
+            const ty = oy + Math.sin(a2) * len;
+            const bR = this.spawnBullet(ox, oy, tx, ty, weapon, Math.round(damage * 0.6), level);
+            if (bR) {
+              const vis: any = bR.projectileVisual || {};
+              if (vis) {
+                if (vis.thickness != null) vis.thickness = Math.max(6, Math.round(vis.thickness * 0.8));
+                vis.glowRadius = Math.max(14, (vis.glowRadius || 24) * 0.8);
+                if (vis.thickness == null) vis.thickness = 10;
+                bR.projectileVisual = vis;
+              }
+              bR.weaponType = WeaponType.PSIONIC_WAVE;
+            }
+          }
+          // Outer pair for more epic lattice
+          const lateralOuter = lateral + 38;
+          const angleOuter = angleOffset * 1.25;
+          // Left outer lane
+          {
+            const ox = x + Math.cos(baseAngle + Math.PI/2) * -lateralOuter;
+            const oy = y + Math.sin(baseAngle + Math.PI/2) * -lateralOuter;
+            const a2 = baseAngle - angleOuter;
+            const tx = ox + Math.cos(a2) * (len + 40);
+            const ty = oy + Math.sin(a2) * (len + 40);
+            const bL2 = this.spawnBullet(ox, oy, tx, ty, weapon, Math.round(damage * 0.45), level);
+            if (bL2) {
+              const vis: any = bL2.projectileVisual || {};
+              if (vis) {
+                if (vis.thickness != null) vis.thickness = Math.max(5, Math.round((vis.thickness) * 0.75));
+                vis.glowRadius = Math.max(12, (vis.glowRadius || 24) * 0.75);
+                if (vis.thickness == null) vis.thickness = 9;
+                bL2.projectileVisual = vis;
+              }
+              bL2.weaponType = WeaponType.PSIONIC_WAVE;
+            }
+          }
+          // Right outer lane
+          {
+            const ox = x + Math.cos(baseAngle + Math.PI/2) * lateralOuter;
+            const oy = y + Math.sin(baseAngle + Math.PI/2) * lateralOuter;
+            const a2 = baseAngle + angleOuter;
+            const tx = ox + Math.cos(a2) * (len + 40);
+            const ty = oy + Math.sin(a2) * (len + 40);
+            const bR2 = this.spawnBullet(ox, oy, tx, ty, weapon, Math.round(damage * 0.45), level);
+            if (bR2) {
+              const vis: any = bR2.projectileVisual || {};
+              if (vis) {
+                if (vis.thickness != null) vis.thickness = Math.max(5, Math.round((vis.thickness) * 0.75));
+                vis.glowRadius = Math.max(12, (vis.glowRadius || 24) * 0.75);
+                if (vis.thickness == null) vis.thickness = 9;
+                bR2.projectileVisual = vis;
+              }
+              bR2.weaponType = WeaponType.PSIONIC_WAVE;
+            }
+          }
+          this.suppressWeaverSecondary = false;
+        }
+      } catch { /* ignore */ }
     }
     // Kamikaze Drone special phased behavior
     if (weapon === WeaponType.HOMING) {
@@ -1002,8 +1953,9 @@ export class BulletManager {
       b.orbitRadius = 0; // start at player center then expand outward
       b.altitudeScale = 0.12; // start very small so growth is obvious
       b.searchCooldownMs = 250; // search cluster every 250ms
+  (b as any)._hoverSeed = Math.random() * Math.PI * 2; // personalize hover breathing
       // Center over player if available
-      const pl = (window as any).player;
+      const pl = this.player;
   if (pl) { b.x = pl.x; b.y = pl.y; b.startX = pl.x; b.startY = pl.y; (b as any).spawnCenterX = pl.x; (b as any).spawnCenterY = pl.y; }
       // Neutralize initial velocity (we'll control manually)
       b.vx = 0; b.vy = 0;
@@ -1012,7 +1964,56 @@ export class BulletManager {
       b.lifeMs = 9000; // ms lifetime explicit
       b.maxDistanceSq = 999999999; // effectively disable range cap for drone
     }
+    // Tachyon/Singularity Spear special setup: heavy pierce, laser trail visuals
+    if (weapon === WeaponType.TACHYON_SPEAR || weapon === WeaponType.SINGULARITY_SPEAR) {
+      // Generous pierce to feel like a dash-lance
+      b.pierceRemaining = 999;
+      // Ensure laser visuals have a visible wake
+      const vis: any = b.projectileVisual || {};
+      if (!vis.trailColor) vis.trailColor = (weapon === WeaponType.SINGULARITY_SPEAR) ? 'rgba(201,166,255,0.45)' : 'rgba(255,165,0,0.45)';
+      if (!vis.trailLength) vis.trailLength = 34;
+      // If this is a charged volley spear, tint to glowing dark red (per-bullet clone)
+      if ((b as any)._isVolley) {
+        vis.color = '#8B0000';
+        vis.glowColor = '#B22222';
+        vis.glowRadius = Math.max(vis.glowRadius || 18, 22);
+        vis.trailColor = 'rgba(139,0,0,0.50)';
+      }
+      b.projectileVisual = vis;
+      // Slightly increase collision radius to help fast spear connect
+      b.radius = Math.max(b.radius || 6, (vis.thickness || 4) * 0.75);
+    }
+    // Melee: Scrap-Saw sweep spawns a transient sweep bullet bound to player
+    if (weapon === WeaponType.SCRAP_SAW) {
+      const spec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
+      const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {};
+      (b as any).isMeleeSweep = true;
+      (b as any).sweepStart = performance.now();
+      (b as any).sweepDurationMs = scaled.sweepDurationMs || 200;
+      (b as any).arcDegrees = scaled.arcDegrees || 140;
+      (b as any).reach = spec.range || 120;
+      (b as any).baseAngle = Math.atan2(targetY - y, targetX - x);
+      (b as any).level = level;
+      (b as any).sweepDir = (((this as any)._lastScrapDir = -(((this as any)._lastScrapDir)||-1))) as number; // alternate -1/1
+      // At end of sweep, we may spawn shrapnel burst elsewhere (handled in Player cooldown or separate hook). Keep bullet minimal.
+    }
+
+    // Evolution: Industrial Grinder – spawn as orbiting bullet with finite duration
+    if (weapon === WeaponType.INDUSTRIAL_GRINDER) {
+      const spec: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];
+      const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {};
+      b.isOrbiting = true; (b as any).level = level; b.orbitIndex = 0; b.orbitCount = 1; b.orbitAngle = Math.random()*Math.PI*2; b.spinSpeed = 4.2;
+      (b as any).endTime = performance.now() + (scaled.durationMs || 1200);
+      b.contactCooldownMap = {};
+      // Position initially at radius
+      b.x = this.player.x + Math.cos(b.orbitAngle||0) * (scaled.orbitRadius || 140);
+      b.y = this.player.y + Math.sin(b.orbitAngle||0) * (scaled.orbitRadius || 140);
+      b.lifeMs = scaled.durationMs || 1200;
+      b.damage = scaled.damage || b.damage;
+    }
 
     this.bullets.push(b);
+  // Tech Warrior meter increment is handled in Player.shoot path to avoid double counting
+    return b;
   }
 }

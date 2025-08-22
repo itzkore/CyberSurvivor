@@ -4,6 +4,10 @@ export type Enemy = { x: number; y: number; hp: number; maxHp: number; radius: n
   knockbackVy?: number; // Knockback velocity Y (px/sec)
   knockbackTimer?: number; // Remaining knockback time in ms
   _lodCarryMs?: number; // accumulated skipped time for LOD far updates
+  _facingX?: number; // -1 left, +1 right
+  _walkFlip?: boolean; // toggled for visual walk cycle
+  _walkFlipTimerMs?: number; // timer accumulator
+  _walkFlipIntervalMs?: number; // dynamic per speed
 };
 
 export type Chest = { x: number; y: number; radius: number; active: boolean; }; // New Chest type
@@ -18,6 +22,7 @@ import { AssetLoader } from './AssetLoader';
 import { Logger } from '../core/Logger';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
+import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE } from './Balance';
 
 interface Wave {
   startTime: number; // in seconds
@@ -51,9 +56,15 @@ export class EnemyManager {
   private adaptiveGemBonus: number = 0; // multiplicative bonus for higher tier chance
   private bulletSpatialGrid: SpatialGrid<Bullet>; // Spatial grid for bullets
   private spawnBudgetCarry: number = 0; // carry fractional spawn budget between ticks so early game spawns occur
-  private enemySpeedScale: number = 0.62; // reduced global speed scaler (was 0.85) to slow overall chase velocity
+  private enemySpeedScale: number = 0.55; // further reduced global speed scaler to keep mobs slower overall
+  // Cap enemies' effective chase speed to a ratio of the player's current speed to avoid runaway scaling
+  private readonly enemyChaseCapRatio: number = 0.9; // cap enemy chase to ~90% of player speed to avoid runaway pursuit
   // Base XP gem tier awarded per enemy type (before random upgrade chances)
-  private enemyXpBaseTier: Record<Enemy['type'], number> = { small: 1, medium: 2, large: 3 };
+  private enemyXpBaseTier: Record<Enemy['type'], number> = {
+    small: XP_ENEMY_BASE_TIERS.small as number,
+    medium: XP_ENEMY_BASE_TIERS.medium as number,
+    large: XP_ENEMY_BASE_TIERS.large as number
+  };
   // Adaptive performance
   private avgFrameMs: number = 16; // exponential moving average of frame time (ms)
   private lastPerfSample: number = performance.now();
@@ -69,9 +80,25 @@ export class EnemyManager {
   private readonly lodFarDistSq: number = 1600*1600; // >1600px from player qualifies as far
   private readonly lodSkipRatio: number = 0.5; // skip every other frame for far enemies
   private killCount: number = 0; // total enemies killed this run
+  // Ghost cloak follow: locked target position while cloak is active
+  private _ghostCloakFollow: { active: boolean; x: number; y: number; until: number } = { active: false, x: 0, y: 0, until: 0 };
+  // Data Sigils: planted glyphs that pulse AoE damage
+  private dataSigils: { x:number; y:number; radius:number; pulsesLeft:number; pulseDamage:number; nextPulseAt:number; active:boolean; spin:number; created:number; follow?: boolean }[] = [];
+
+  // Rogue Hacker paralysis/DoT zones (spawned under enemies on virus impact)
+  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; hit:Set<string> }[] = [];
+  // Rogue Hacker auto-cast state: gate next cast until previous zone has expired and cooldown passed
+  private hackerAutoCooldownUntil: number = 0;
 
   // Poison puddle system
   private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean }[] = [];
+  // Poison (Bio Engineer) status: stacking DoT with movement slow and contagion
+  private readonly poisonTickIntervalMs: number = 500; // damage application cadence
+  private readonly poisonDurationMs: number = 4000; // duration refreshed per stack add
+  private readonly poisonDpsPerStack: number = 3.2; // increased DPS per stack to emphasize DoT over impact
+  private readonly poisonMaxStacks: number = 10; // hard cap to avoid runaway
+  private readonly poisonSlowPerStack: number = 0.01; // 1% slow per stack
+  private readonly poisonSlowCap: number = 0.20; // max 20% slow
   // Burn (Blaster) status: applied per enemy; stacking DoT (up to 3 stacks), 2s duration refreshed per stack add
   // We'll store transient fields directly on Enemy object via symbol-like keys to avoid changing type globally.
   private readonly burnTickIntervalMs: number = 500; // 4 ticks over 2s
@@ -116,19 +143,112 @@ export class EnemyManager {
       this.spawnChest(customEvent.detail.x, customEvent.detail.y);
     });
     window.addEventListener('bossGemVacuum', () => this.vacuumGemsToPlayer());
+    // Ghost Operative cloak: lock enemies to the player's position at start until cloak ends
+    window.addEventListener('ghostCloakStart', (e: Event) => {
+      try {
+        const d = (e as CustomEvent).detail || {};
+        this._ghostCloakFollow = { active: true, x: d.x ?? this.player.x, y: d.y ?? this.player.y, until: (performance.now() + (d.durationMs || 5000)) };
+      } catch { this._ghostCloakFollow = { active: true, x: this.player.x, y: this.player.y, until: performance.now() + 5000 }; }
+    });
+    window.addEventListener('ghostCloakEnd', () => { this._ghostCloakFollow = { active: false, x: 0, y: 0, until: 0 }; });
+    // Listen for Data Sigil planting
+    window.addEventListener('plantDataSigil', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      this.plantDataSigil(d.x, d.y, d.radius || 120, d.pulseCount || 3, d.pulseDamage || 90, !!d.follow);
+    });
     window.addEventListener('bossDefeated', () => { // trigger new timed vacuum logic
       this.startTimedVacuum();
     });
     window.addEventListener('bossXPSpray', (e: Event) => {
       const { x, y } = (e as CustomEvent).detail;
-      for (let i = 0; i < 6; i++) {
-        const angle = (Math.PI * 2 * i) / 6;
-        this.spawnGem(x + Math.cos(angle) * 40, y + Math.sin(angle) * 40, 3);
+      for (let i = 0; i < 3; i++) { // further reduced count
+        const angle = (Math.PI * 2 * i) / 3;
+        this.spawnGem(x + Math.cos(angle) * 56, y + Math.sin(angle) * 56, 2); // lower tier
       }
+    });
+    // Listen for Rogue Hacker zone spawns
+    window.addEventListener('spawnHackerZone', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      this.spawnHackerZone(d.x, d.y, d.radius || 120, d.lifeMs || 2000);
     });
     if (this.usePreRenderedSprites) this.preRenderEnemySprites();
   // Attempt to load shared enemy image and build size variants
   this.loadSharedEnemyImage();
+  }
+  /** Plant a Data Sigil at position with radius and a limited number of pulses. */
+  private plantDataSigil(x:number, y:number, radius:number, pulseCount:number, pulseDamage:number, follow:boolean=false){
+    let sig = this.dataSigils.find(s => !s.active);
+    const now = performance.now();
+    if (!sig) {
+      sig = { x, y, radius, pulsesLeft: pulseCount, pulseDamage, nextPulseAt: now + 220, active: true, spin: Math.random()*Math.PI*2, created: now, follow };
+      this.dataSigils.push(sig);
+    } else {
+      sig.x = x; sig.y = y; sig.radius = radius; sig.pulsesLeft = pulseCount; sig.pulseDamage = pulseDamage; sig.nextPulseAt = now + 220; sig.active = true; sig.spin = Math.random()*Math.PI*2; sig.created = now; sig.follow = follow;
+    }
+  }
+
+  /** Update Data Sigils: emit pulses on cadence and apply AoE damage. */
+  private updateDataSigils(deltaMs:number){
+    const now = performance.now();
+    for (let i=0;i<this.dataSigils.length;i++){
+      const s = this.dataSigils[i];
+      if (!s.active) continue;
+  s.spin += deltaMs * 0.006; // slow rotation
+  if (s.follow) { s.x = this.player.x; s.y = this.player.y; }
+      if (now >= s.nextPulseAt && s.pulsesLeft > 0){
+        s.pulsesLeft--;
+        s.nextPulseAt = now + 420; // pulse cadence
+        // Apply AoE damage to enemies inside radius
+        const r2 = s.radius * s.radius;
+        for (let j=0;j<this.enemies.length;j++){
+          const e = this.enemies[j];
+          if (!e.active || e.hp <= 0) continue;
+          const dx = e.x - s.x; const dy = e.y - s.y; if (dx*dx + dy*dy <= r2){
+            this.takeDamage(e, s.pulseDamage, false, false, WeaponType.DATA_SIGIL);
+            // Brief magenta flash/shake for impact
+            const anyE:any = e as any; anyE._poisonFlashUntil = now + 80; // reuse green flash channel but we’ll tint magenta in draw
+            anyE._shakeAmp = Math.max(anyE._shakeAmp||0, 1.2); anyE._shakeUntil = now + 90; if (!anyE._shakePhase) anyE._shakePhase = Math.random()*10;
+          }
+        }
+      }
+      if (s.pulsesLeft <= 0 && now > s.nextPulseAt + 200){ s.active = false; }
+    }
+  }
+
+  /** Spawn a Rogue Hacker zone at x,y with radius; lasts lifeMs. */
+  private spawnHackerZone(x:number, y:number, radius:number, lifeMs:number){
+    // Reuse inactive or push new
+    let z = this.hackerZones.find(z=>!z.active);
+    const now = performance.now();
+    if (!z){
+      z = { x, y, radius, created: now, lifeMs, active: true, hit: new Set<string>() };
+      this.hackerZones.push(z);
+    } else {
+      z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.hit.clear();
+    }
+  }
+
+  /** Returns true if any Rogue Hacker zone is currently active. */
+  private hasActiveHackerZone(): boolean {
+    for (let i = 0; i < this.hackerZones.length; i++) {
+      if (this.hackerZones[i].active) return true;
+    }
+    return false;
+  }
+
+  /** Compute effective movement speed considering temporary status effects. */
+  private getEffectiveEnemySpeed(e: Enemy, baseSpeed: number): number {
+    let slow = 0;
+    // Poison slow (existing)
+    const eAny: any = e as any;
+  // Rogue Hacker paralysis: hard stop while active
+  const nowPar = performance.now();
+  if (eAny._paralyzedUntil && eAny._paralyzedUntil > nowPar) return 0;
+    if (eAny._poisonStacks) slow = Math.max(slow, Math.min(this.poisonSlowCap, (eAny._poisonStacks | 0) * this.poisonSlowPerStack));
+    // Psionic mark slow: flat 25% while active
+  const now = performance.now();
+  if (eAny._psionicMarkUntil && eAny._psionicMarkUntil > now) slow = Math.max(slow, 0.25);
+    return baseSpeed * (1 - slow);
   }
 
   /** Pre-render circle enemies (normal + flash variant) to cut per-frame path & stroke cost. */
@@ -254,6 +374,12 @@ export class EnemyManager {
   public takeDamage(enemy: Enemy, amount: number, isCritical: boolean = false, ignoreActiveCheck: boolean = false, sourceWeaponType?: WeaponType, sourceX?: number, sourceY?: number, weaponLevel?: number): void {
     if (!ignoreActiveCheck && (!enemy.active || enemy.hp <= 0)) return; // Only damage active, alive enemies unless ignored
 
+    // Armor shred debuff reduces incoming damage slightly when active
+    const anyE: any = enemy as any;
+    if (anyE._armorShredExpire && performance.now() < anyE._armorShredExpire) {
+      // Shred reduces effective armor, so damage increases; apply 12% bonus while active
+      amount *= 1.12;
+    }
     enemy.hp -= amount;
     // Side-effect: apply burn on Blaster direct damage (initial hit only, not DoT ticks)
   if (sourceWeaponType === WeaponType.LASER && amount > 0) {
@@ -261,6 +387,15 @@ export class EnemyManager {
     }
     if (sourceWeaponType !== undefined) {
       enemy._lastHitByWeapon = sourceWeaponType;
+      // Apply extra poison stacks on Bio Toxin direct hits to bias damage into DoT
+      if (sourceWeaponType === WeaponType.BIO_TOXIN && amount > 0) {
+        this.applyPoison(enemy, 2);
+      }
+      // Apply armor shred on Scrap-Saw hits: short 0.6s window
+      if (sourceWeaponType === WeaponType.SCRAP_SAW && amount > 0) {
+        const now = performance.now();
+        anyE._armorShredExpire = now + 600;
+      }
       // --- Knockback logic ---
       /**
        * Compute direction from source to enemy if coordinates provided.
@@ -311,6 +446,46 @@ export class EnemyManager {
   window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount, isCritical, x: enemy.x, y: enemy.y } }));
   }
 
+  /** Apply or refresh poison on an enemy, increasing stacks up to cap and refreshing expiration. */
+  private applyPoison(enemy: Enemy, stacks: number = 1) {
+    if (!enemy.active || enemy.hp <= 0 || stacks <= 0) return;
+    const now = performance.now();
+    const e: any = enemy as any;
+    if (!e._poisonStacks) {
+      e._poisonStacks = 0;
+      e._poisonNextTick = now + this.poisonTickIntervalMs;
+      e._poisonExpire = now + this.poisonDurationMs;
+    }
+    e._poisonStacks = Math.min(this.poisonMaxStacks, (e._poisonStacks || 0) + stacks);
+    e._poisonExpire = now + this.poisonDurationMs; // refresh duration on application
+  }
+
+  /** Update poison damage and manage expiration; also applies movement slow via effective speed scale during update loop. */
+  private updatePoisons() {
+    const now = performance.now();
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const e: any = this.activeEnemies[i];
+      if (!e._poisonStacks) continue;
+      if (!e.active || e.hp <= 0) { e._poisonStacks = 0; continue; }
+      if (now >= e._poisonExpire) { e._poisonStacks = 0; continue; }
+      if (now >= e._poisonNextTick) {
+        e._poisonNextTick += this.poisonTickIntervalMs;
+        const stacks = e._poisonStacks | 0;
+        if (stacks > 0) {
+          // Convert per-second DPS into per-tick damage
+          const dps = this.poisonDpsPerStack * stacks;
+          const perTick = dps * (this.poisonTickIntervalMs / 1000);
+          this.takeDamage(e as Enemy, perTick, false, false, WeaponType.BIO_TOXIN);
+          // Visual feedback: brief green flash + micro-shake
+          e._poisonFlashUntil = now + 120;
+          if (!e._shakePhase) e._shakePhase = Math.random() * 10;
+          e._shakeAmp = Math.min(2.2, 0.12 * stacks + 0.6);
+          e._shakeUntil = now + 120;
+        }
+      }
+    }
+  }
+
   /** Apply or refresh a burn stack (max 3). Each stack deals storedTickDamage every burnTickIntervalMs for burnDurationMs. */
   private applyBurn(enemy: Enemy, tickDamage: number) {
     if (!enemy.active || enemy.hp <= 0) return;
@@ -354,17 +529,17 @@ export class EnemyManager {
     }
   }
 
-  public spawnPoisonPuddle(x: number, y: number) {
+  public spawnPoisonPuddle(x: number, y: number, radius: number = 32, lifeMs: number = 3000) {
     let puddle = this.poisonPuddles.find(p => !p.active);
   if (!puddle) {
-    puddle = { x, y, radius: 32, life: 3000, maxLife: 3000, active: true };
+    puddle = { x, y, radius: radius, life: lifeMs, maxLife: lifeMs, active: true };
       this.poisonPuddles.push(puddle);
     } else {
       puddle.x = x;
       puddle.y = y;
-      puddle.radius = 32;
-    puddle.life = 3000;
-    puddle.maxLife = 3000;
+      puddle.radius = radius;
+    puddle.life = lifeMs;
+    puddle.maxLife = lifeMs;
       puddle.active = true;
     }
   }
@@ -377,14 +552,15 @@ export class EnemyManager {
         puddle.active = false;
         continue;
       }
-      let didDamage = false;
+    let didDamage = false;
       for (const enemy of this.enemies) {
         if (!enemy.active || enemy.hp <= 0) continue;
         const dx = enemy.x - puddle.x;
         const dy = enemy.y - puddle.y;
         const dist = Math.hypot(dx, dy);
         if (dist < puddle.radius + enemy.radius) {
-          this.takeDamage(enemy, 2.5, false, false, WeaponType.BIO_TOXIN); // Apply poison damage via centralized method, respect active check
+      // Emphasize stacking over flat damage: no direct damage, apply stacks
+      this.applyPoison(enemy, 1);
           didDamage = true; // Still track if damage was dealt for visual feedback
         }
       }
@@ -393,6 +569,15 @@ export class EnemyManager {
         this.particleManager.spawn(puddle.x, puddle.y, 1, '#00FF00');
       }
     }
+  }
+
+  /** Returns walk flip interval in ms based on enemy speed (0.3–0.5s). Faster enemies flip more often. */
+  private getWalkInterval(speed: number): number {
+    // Normalize speed roughly in [0, 6] and map to interval [300, 500] ms
+    const s = Math.max(0, Math.min(6, speed || 0));
+    const t = s / 6; // 0..1
+    const minMs = 300, maxMs = 500;
+    return Math.round(maxMs - (maxMs - minMs) * t);
   }
 
   /**
@@ -411,23 +596,187 @@ export class EnemyManager {
   const maxX = camX + viewW + pad;
   const minY = camY - pad;
   const maxY = camY + viewH + pad;
+  const now = performance.now();
+  // Psionic Weaver Lattice: draw a large pulsing slow zone around the player while active (behind enemies)
+  try {
+    const until = (window as any).__weaverLatticeActiveUntil || 0;
+    if (until > now) {
+      const px = this.player.x, py = this.player.y;
+      // Cull if fully off-screen
+      if (!(px < minX - 400 || px > maxX + 400 || py < minY - 400 || py > maxY + 400)) {
+        const baseR = 320;
+        const pulse = 1 + Math.sin(now * 0.008) * 0.05; // subtle 5% radius pulse
+        const r = baseR * pulse;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        // Outer glow ring
+        ctx.globalAlpha = 0.20;
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.strokeStyle = '#cc66ff';
+        ctx.lineWidth = 6;
+        ctx.shadowColor = '#cc66ff';
+        ctx.shadowBlur = 28;
+        ctx.stroke();
+        // Inner faint fill for presence
+        ctx.globalAlpha = 0.08;
+        ctx.beginPath();
+        ctx.arc(px, py, r * 0.96, 0, Math.PI * 2);
+        ctx.fillStyle = '#8a2be2';
+        ctx.shadowColor = '#8a2be2';
+        ctx.shadowBlur = 16;
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  } catch { /* ignore */ }
+  // Draw Data Sigils below enemies
+  for (let i=0;i<this.dataSigils.length;i++){
+    const s = this.dataSigils[i]; if (!s.active) continue;
+    if (s.x < minX || s.x > maxX || s.y < minY || s.y > maxY) continue;
+    ctx.save();
+    const t = (performance.now() - s.created) / 1000;
+    // Base ring
+    ctx.globalAlpha = 0.15;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI*2); ctx.strokeStyle = '#FF00FF'; ctx.lineWidth = 2; ctx.stroke();
+    // Rotating glyph spokes
+    ctx.globalAlpha = 0.35;
+    const spokes = 6; const len = s.radius * 0.9;
+    for (let k=0;k<spokes;k++){
+      const ang = s.spin + (Math.PI*2*k/spokes);
+      ctx.beginPath();
+      ctx.moveTo(s.x + Math.cos(ang)* (s.radius*0.2), s.y + Math.sin(ang)*(s.radius*0.2));
+      ctx.lineTo(s.x + Math.cos(ang)* len, s.y + Math.sin(ang)* len);
+      ctx.strokeStyle = '#FF66FF'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    // Pulse wave (brief expanding ring)
+    const phase = Math.max(0, 1 - (s.nextPulseAt - performance.now())/420);
+    ctx.globalAlpha = 0.25 * phase;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius*phase, 0, Math.PI*2); ctx.strokeStyle = '#FFA3FF'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.restore();
+  }
+  // Draw Rogue Hacker zones (subtle techno ring under enemies)
+  for (let i=0;i<this.hackerZones.length;i++){
+    const z = this.hackerZones[i];
+    if (!z.active) continue;
+    const age = now - z.created;
+    if (age > z.lifeMs) continue; // will be culled in update
+    if (z.x < minX || z.x > maxX || z.y < minY || z.y > maxY) continue;
+    const t = age / z.lifeMs;
+    const pulse = 1 + Math.sin(now * 0.02 + i) * 0.06;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 0.18 * (1 - t);
+    ctx.beginPath();
+    ctx.arc(z.x, z.y, z.radius * pulse, 0, Math.PI * 2);
+    ctx.strokeStyle = '#FFA500'; // orange virus ring
+    ctx.lineWidth = 3;
+    ctx.shadowColor = '#FFA500';
+    ctx.shadowBlur = 12;
+    ctx.stroke();
+    // faint fill
+    ctx.globalAlpha = 0.06 * (1 - t);
+    ctx.beginPath(); ctx.arc(z.x, z.y, z.radius * 0.92, 0, Math.PI*2);
+    ctx.fillStyle = '#FF7700';
+    ctx.fill();
+    ctx.restore();
+  }
   // Draw enemies (cached sprite images if enabled)
     if (this.usePreRenderedSprites) {
-      for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
+  for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
         const enemy = this.activeEnemies[i];
     if (enemy.x < minX || enemy.x > maxX || enemy.y < minY || enemy.y > maxY) continue; // cull offscreen
-        const bundle = this.enemySprites[enemy.type];
-        if (!bundle) continue;
-  const faceLeft = this.player.x < enemy.x;
-  const baseImg = faceLeft ? (bundle.normalFlipped || bundle.normal) : bundle.normal;
+        // Small shake offset if flagged
+        const eAny: any = enemy as any;
+        let shakeX = 0, shakeY = 0;
+        if (eAny._shakeUntil && now < eAny._shakeUntil) {
+          const amp = eAny._shakeAmp || 0.8;
+          const phase = eAny._shakePhase || 0;
+          const t = now * 0.03 + phase;
+          shakeX = Math.sin(t) * amp;
+          shakeY = Math.cos(t * 1.3) * (amp * 0.6);
+        }
+    const bundle = this.enemySprites[enemy.type];
+    if (!bundle) continue;
+  // Movement-based facing + walk-cycle flip: compose both for visible stepping
+  const faceLeft = (eAny._facingX ?? ((this.player.x < enemy.x) ? -1 : 1)) < 0;
+  const walkFlip = !!eAny._walkFlip;
+  const flipLeft = ((faceLeft ? -1 : 1) * (walkFlip ? -1 : 1)) < 0;
+  const baseImg = flipLeft ? (bundle.normalFlipped || bundle.normal) : bundle.normal;
   const size = baseImg.width;
-  ctx.drawImage(baseImg, enemy.x - size/2, enemy.y - size/2, size, size);
+  // Tiny per-phase offsets make walking visible even for symmetric sprites
+  const stepOffsetX = (walkFlip ? -1 : 1) * Math.min(1.5, enemy.radius * 0.06);
+  const stepOffsetY = (walkFlip ? -0.5 : 0.5);
+  const drawX = enemy.x + shakeX + stepOffsetX - size/2;
+  const drawY = enemy.y + shakeY + stepOffsetY - size/2;
+  ctx.drawImage(baseImg, drawX, drawY, size, size);
+        // Psionic mark aura (visible slow indicator)
+        if ((eAny._psionicMarkUntil || 0) > now) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.globalAlpha = 0.35;
+          ctx.shadowColor = '#cc66ff';
+          ctx.shadowBlur = 18;
+          ctx.beginPath();
+          ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.25, 0, Math.PI*2);
+          ctx.strokeStyle = '#cc66ff';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.restore();
+        }
+        // Status flash overlay: poison (green), sigil (magenta), or void sniper tick (unique dark void purple)
+        if (eAny._poisonFlashUntil && now < eAny._poisonFlashUntil) {
+          const lastHit = (enemy as any)._lastHitByWeapon;
+          // Compute short-lived intensity 0..1
+          const flashLeft = Math.max(0, Math.min(1, (eAny._poisonFlashUntil - now) / 140));
+          if (lastHit === WeaponType.VOID_SNIPER) {
+            // Unique VOID tick: deep purple radial bloom + slender neon ring
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            const cx = enemy.x + shakeX, cy = enemy.y + shakeY;
+            const rOuter = enemy.radius * 1.18;
+            const grad = ctx.createRadialGradient(cx, cy, Math.max(1, rOuter * 0.12), cx, cy, rOuter);
+            grad.addColorStop(0, `rgba(26,0,42,${0.55 * flashLeft})`);     // very dark void core
+            grad.addColorStop(0.55, `rgba(106,13,173,${0.22 * flashLeft})`); // royal purple mid
+            grad.addColorStop(1, 'rgba(178,102,255,0)');                      // fade to transparent
+            ctx.globalAlpha = 1; // alpha encoded in gradient stops
+            ctx.fillStyle = grad;
+            ctx.shadowColor = '#B266FF';
+            ctx.shadowBlur = 14;
+            ctx.beginPath();
+            ctx.arc(cx, cy, rOuter, 0, Math.PI * 2);
+            ctx.fill();
+            // Neon ring accent
+            ctx.globalAlpha = 0.32 * flashLeft;
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#6A0DAD';
+            ctx.shadowColor = '#B266FF';
+            ctx.shadowBlur = 10;
+            ctx.beginPath();
+            ctx.arc(cx, cy, enemy.radius * 1.28, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+          } else {
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = 0.22;
+            ctx.beginPath();
+            ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
+            // If last hit was from Data Sigil pulse, tint magenta; else green for poison
+            const tint = lastHit === WeaponType.DATA_SIGIL ? '#FF00FF' : '#00FF00';
+            ctx.fillStyle = tint;
+            ctx.shadowColor = tint;
+            ctx.shadowBlur = 10;
+            ctx.fill();
+            ctx.restore();
+          }
+        }
         // HP bar (only if damaged and alive)
         if (enemy.hp < enemy.maxHp && enemy.hp > 0) {
           const hpBarWidth = enemy.radius * 2;
           const hpBarHeight = 4;
-          const hpBarX = enemy.x - enemy.radius;
-          const hpBarY = enemy.y - enemy.radius - 8;
+          const hpBarX = enemy.x + shakeX - enemy.radius;
+          const hpBarY = enemy.y + shakeY - enemy.radius - 8;
           ctx.fillStyle = '#222';
           ctx.fillRect(hpBarX, hpBarY, hpBarWidth, hpBarHeight);
           const w = (enemy.hp / enemy.maxHp) * hpBarWidth;
@@ -439,22 +788,91 @@ export class EnemyManager {
       // Fallback original vector draw
       for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
         const enemy = this.activeEnemies[i];
-        ctx.beginPath();
-        ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+        const eAny: any = enemy as any;
+        let shakeX = 0, shakeY = 0;
+        if (eAny._shakeUntil && now < eAny._shakeUntil) {
+          const amp = eAny._shakeAmp || 0.8;
+          const phase = eAny._shakePhase || 0;
+          const t = now * 0.03 + phase;
+          shakeX = Math.sin(t) * amp;
+          shakeY = Math.cos(t * 1.3) * (amp * 0.6);
+        }
+  ctx.beginPath();
+  ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius, 0, Math.PI * 2);
         ctx.fillStyle = enemy.hp > 0 ? '#f00' : '#222';
         ctx.fill();
         ctx.lineWidth = 2;
         ctx.strokeStyle = '#fff';
         ctx.stroke();
         ctx.closePath();
+        // Status flash overlay: poison (green), sigil (magenta), void sniper (void purple)
+        if (eAny._poisonFlashUntil && now < eAny._poisonFlashUntil) {
+          const lastHit = (enemy as any)._lastHitByWeapon;
+          const flashLeft = Math.max(0, Math.min(1, (eAny._poisonFlashUntil - now) / 140));
+          if (lastHit === WeaponType.VOID_SNIPER) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            const cx = enemy.x + shakeX, cy = enemy.y + shakeY;
+            const rOuter = enemy.radius * 1.18;
+            const grad = ctx.createRadialGradient(cx, cy, Math.max(1, rOuter * 0.12), cx, cy, rOuter);
+            grad.addColorStop(0, `rgba(26,0,42,${0.55 * flashLeft})`);
+            grad.addColorStop(0.55, `rgba(106,13,173,${0.22 * flashLeft})`);
+            grad.addColorStop(1, 'rgba(178,102,255,0)');
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = grad;
+            ctx.shadowColor = '#B266FF';
+            ctx.shadowBlur = 14;
+            ctx.beginPath(); ctx.arc(cx, cy, rOuter, 0, Math.PI*2); ctx.fill();
+            ctx.globalAlpha = 0.32 * flashLeft;
+            ctx.lineWidth = 2; ctx.strokeStyle = '#6A0DAD';
+            ctx.shadowColor = '#B266FF'; ctx.shadowBlur = 10;
+            ctx.beginPath(); ctx.arc(cx, cy, enemy.radius * 1.28, 0, Math.PI*2); ctx.stroke();
+            ctx.restore();
+          } else {
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = 0.22;
+            ctx.beginPath();
+            ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
+            const tint = lastHit === WeaponType.DATA_SIGIL ? '#FF00FF' : '#00FF00';
+            ctx.fillStyle = tint;
+            ctx.shadowColor = tint;
+            ctx.shadowBlur = 10;
+            ctx.fill();
+            ctx.restore();
+          }
+        }
       }
     }
-    for (let i = 0, len = this.gems.length; i < len; i++) {
-      const gem = this.gems[i]; if (!gem.active) continue; if (gem.x < minX || gem.x > maxX || gem.y < minY || gem.y > maxY) continue;
-      ctx.fillStyle = gem.color;
+    /**
+     * Draws a fast 5-pointed star at (x, y) with given radius and color.
+     * @param ctx CanvasRenderingContext2D
+     * @param x Center X
+     * @param y Center Y
+     * @param r Outer radius
+     * @param color Fill color
+     */
+    function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string) {
+      ctx.save();
       ctx.beginPath();
-      ctx.arc(gem.x, gem.y, gem.size, 0, Math.PI*2);
+      const spikes = 5, step = Math.PI / spikes;
+      for (let i = 0; i < spikes * 2; i++) {
+        const rad = i % 2 === 0 ? r : r * 0.45;
+        const angle = i * step - Math.PI / 2;
+        ctx.lineTo(x + Math.cos(angle) * rad, y + Math.sin(angle) * rad);
+      }
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
       ctx.fill();
+      ctx.restore();
+    }
+    for (let i = 0, len = this.gems.length; i < len; i++) {
+      const gem = this.gems[i];
+      if (!gem.active) continue;
+      if (gem.x < minX || gem.x > maxX || gem.y < minY || gem.y > maxY) continue;
+      drawStar(ctx, gem.x, gem.y, gem.size, gem.color);
     }
     for (let i = 0, len = this.chests.length; i < len; i++) {
       const chest = this.chests[i]; if (!chest.active) continue; if (chest.x < minX || chest.x > maxX || chest.y < minY || chest.y > maxY) continue;
@@ -490,6 +908,7 @@ export class EnemyManager {
    */
   public update(deltaTime: number, gameTime: number = 0, bullets: Bullet[] = []) {
   this.lodToggle = !this.lodToggle;
+  const nowFrame = performance.now(); // cache once per frame
   // --- Adaptive frame time tracking ---
   // Use a fast EMA to smooth deltaTime (weight 0.1 new value)
   this.avgFrameMs = this.avgFrameMs * 0.9 + deltaTime * 0.1;
@@ -507,13 +926,62 @@ export class EnemyManager {
       this.runDynamicSpawner(gameTime);
     }
 
-    // Update enemies
-    const playerX = this.player.x;
-    const playerY = this.player.y;
-    // Rebuild active enemy cache while updating (single pass)
+    // Rogue Hacker: auto-cast a paralysis/DoT zone every 1.5s, but only one active zone at a time.
+    try {
+      const isHacker = (this.player as any)?.characterData?.id === 'rogue_hacker';
+      if (isHacker) {
+        const cooldownReady = nowFrame >= this.hackerAutoCooldownUntil;
+        const anyActive = this.hasActiveHackerZone();
+        if (cooldownReady && !anyActive) {
+          // Choose a target: nearest active enemy; fallback to a point ahead of player; clamp to 600px
+          let tx = this.player.x, ty = this.player.y;
+          let bestD2 = Number.POSITIVE_INFINITY;
+          for (let i = 0; i < this.enemies.length; i++) {
+            const e = this.enemies[i];
+            if (!e.active || e.hp <= 0) continue;
+            const dx = e.x - this.player.x; const dy = e.y - this.player.y;
+            const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; tx = e.x; ty = e.y; }
+          }
+          // Enforce 600px max cast distance; only cast if a target exists within range
+          const maxRange = 600;
+          if (bestD2 <= maxRange * maxRange) {
+            // Spawn exactly one zone; lifetime 2s (existing behavior)
+            this.spawnHackerZone(tx, ty, 120, 2000);
+            // Set next eligible time 1.5s later; next will only trigger once current expires
+            this.hackerAutoCooldownUntil = nowFrame + 1500;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+
+  // Update enemies
+    // Determine chase target. During Ghost cloak, enemies follow the snapshot at cloak start.
+    let playerX = this.player.x;
+    let playerY = this.player.y;
+    if (this._ghostCloakFollow.active) {
+      const nowT = performance.now();
+      if (nowT <= this._ghostCloakFollow.until) {
+        playerX = this._ghostCloakFollow.x;
+        playerY = this._ghostCloakFollow.y;
+      } else {
+        // Safety: auto-clear if time elapsed without explicit end event
+        this._ghostCloakFollow.active = false;
+      }
+    }
+  // Psionic Weaver Lattice: compute slow zone radius if active
+  const nowMs = nowFrame;
+  const latticeUntil = (window as any).__weaverLatticeActiveUntil || 0;
+  const latticeActive = latticeUntil > nowMs;
+  const latticeR = latticeActive ? 320 : 0;
+  const latticeR2 = latticeR * latticeR;
+  // Rebuild active enemy cache while updating (single pass)
     this.activeEnemies.length = 0;
-    const deltaFactor = deltaTime / 16.6667; // 1 at 60fps, scales movement under variable timestep
-    for (let i = 0, len = this.enemies.length; i < len; i++) {
+  // Hoist globals used inside the loop
+  const rm = (window as any).__roomManager;
+  const chaseCap = (this.player?.speed ?? 4) * this.enemyChaseCapRatio;
+  // Update enemies
+  for (let i = 0, len = this.enemies.length; i < len; i++) {
       const enemy = this.enemies[i];
       if (!enemy.active) continue;
       this.activeEnemies.push(enemy);
@@ -524,13 +992,15 @@ export class EnemyManager {
       const dy = playerY - enemy.y;
       const distSq = dx*dx + dy*dy;
       const dist = distSq > 0 ? Math.sqrt(distSq) : 0;
+  // Note: Psionic slow marks are now applied only by direct PSIONIC_WAVE impacts (and their AoE)
+  // to avoid perceived "random" slow auras on nearby enemies during lattice.
       // LOD: if far, skip some frames but accumulate skipped time so motion stays consistent
       let effectiveDelta = deltaTime;
       if (distSq > this.lodFarDistSq) {
         if (this.lodToggle) {
           enemy._lodCarryMs = (enemy._lodCarryMs || 0) + deltaTime;
           // Still decay knockback timers minimally even if skipping movement (no heavy math)
-          if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
+      if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
             enemy.knockbackTimer -= deltaTime;
             if (enemy.knockbackTimer < 0) enemy.knockbackTimer = 0;
           }
@@ -539,8 +1009,38 @@ export class EnemyManager {
           effectiveDelta += enemy._lodCarryMs; enemy._lodCarryMs = 0;
         }
       }
+      // Rogue Hacker zones: apply one-time paralysis + schedule DoT on first contact per zone
+      if (this.hackerZones.length) {
+  const nowHz = nowFrame;
+        for (let zi = 0; zi < this.hackerZones.length; zi++) {
+          const z = this.hackerZones[zi];
+          if (!z.active) continue;
+          if (nowHz - z.created > z.lifeMs) continue; // expired; will be deactivated later
+          if (z.hit.has(enemy.id)) continue;
+          const dxz = enemy.x - z.x; const dyz = enemy.y - z.y;
+          if (dxz*dxz + dyz*dyz <= (z.radius + enemy.radius) * (z.radius + enemy.radius)) {
+            z.hit.add(enemy.id);
+            const eAny: any = enemy as any;
+            const until = nowHz + 1500; // 1.5s paralysis (fixed)
+            eAny._paralyzedUntil = Math.max(eAny._paralyzedUntil || 0, until);
+            // Scale DoT by HACKER_VIRUS level: nerfed at L1, ramps with level
+            let lvl = 1;
+            try {
+              const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+              if (aw && typeof aw.get === 'function') {
+                lvl = aw.get(WeaponType.HACKER_VIRUS) || 1;
+              }
+            } catch {}
+            // 3 ticks over ~1.5s; per-tick scales with level (L1 total ≈51, L7 total ≈177)
+            const perTick = Math.max(8, Math.round(10 + lvl * 7));
+            eAny._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick };
+            eAny._poisonFlashUntil = nowHz + 120; // reuse flash channel for quick feedback
+            (enemy as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
+          }
+        }
+      }
       // Apply knockback velocity if active
-      if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
+  if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
         const dtSec = effectiveDelta / 1000;
         // Recompute outward direction each frame so knockback always moves enemy further from hero
         let kdx = enemy.x - playerX;
@@ -550,8 +1050,23 @@ export class EnemyManager {
         const knx = kdx / kdist;
         const kny = kdy / kdist;
         const speed = Math.hypot(enemy.knockbackVx ?? 0, enemy.knockbackVy ?? 0);
-        enemy.x += knx * speed * dtSec;
-        enemy.y += kny * speed * dtSec;
+        const stepX = knx * speed * dtSec;
+        const stepY = kny * speed * dtSec;
+        enemy.x += stepX;
+        enemy.y += stepY;
+  // Update facing from knockback horizontal motion
+  const eAny: any = enemy as any;
+        if (Math.abs(knx) > 0.0001) eAny._facingX = knx < 0 ? -1 : 1;
+        // Walk cycle: toggle at interval while moving
+        const mvMag = Math.hypot(stepX, stepY);
+        if (mvMag > 0.01) {
+          if (eAny._walkFlipIntervalMs == null) eAny._walkFlipIntervalMs = this.getWalkInterval(enemy.speed);
+          eAny._walkFlipTimerMs = (eAny._walkFlipTimerMs || 0) + effectiveDelta;
+          while (eAny._walkFlipTimerMs >= eAny._walkFlipIntervalMs) {
+            eAny._walkFlip = !eAny._walkFlip;
+            eAny._walkFlipTimerMs -= eAny._walkFlipIntervalMs;
+          }
+        }
         // Decay speed
         let lin = 1 - (effectiveDelta / this.knockbackDecayTauMs);
         if (lin < 0) lin = 0;
@@ -564,16 +1079,33 @@ export class EnemyManager {
         enemy.knockbackVx = 0;
         enemy.knockbackVy = 0;
         enemy.knockbackTimer = 0;
-        // Move toward player
+        // Move toward player (with chase speed cap relative to player)
         if (dist > enemy.radius) { // Use radius to prevent jittering when close
           const inv = dist === 0 ? 0 : 1 / dist;
           const moveScale = (effectiveDelta / 16.6667); // scale like deltaFactor but using effective delta
-          enemy.x += dx * inv * enemy.speed * moveScale;
-          enemy.y += dy * inv * enemy.speed * moveScale;
+          // Clamp chase speed to ~90% of player speed to reduce exponential-feel scaling
+          const baseSpeed = enemy.speed > chaseCap ? chaseCap : enemy.speed;
+          const effSpeed = this.getEffectiveEnemySpeed(enemy, baseSpeed);
+          const mvx = dx * inv * effSpeed * moveScale;
+          const mvy = dy * inv * effSpeed * moveScale;
+          enemy.x += mvx;
+          enemy.y += mvy;
+          // Persist last horizontal movement direction for draw-time flip
+          const eAny2: any = enemy as any;
+          if (Math.abs(mvx) > 0.0001) eAny2._facingX = mvx < 0 ? -1 : 1;
+          // Walk cycle: toggle based on speed-derived interval while moving
+          const mvMag2 = Math.hypot(mvx, mvy);
+          if (mvMag2 > 0.01) {
+            if (eAny2._walkFlipIntervalMs == null) eAny2._walkFlipIntervalMs = this.getWalkInterval(enemy.speed);
+            eAny2._walkFlipTimerMs = (eAny2._walkFlipTimerMs || 0) + effectiveDelta;
+            while (eAny2._walkFlipTimerMs >= eAny2._walkFlipIntervalMs) {
+              eAny2._walkFlip = !eAny2._walkFlip;
+              eAny2._walkFlipTimerMs -= eAny2._walkFlipIntervalMs;
+            }
+          }
         }
       }
       // After position changes, clamp to walkable (prevents embedding in walls via knockback)
-      const rm = (window as any).__roomManager;
       if (rm && typeof rm.clampToWalkable === 'function') {
         const clamped = rm.clampToWalkable(enemy.x, enemy.y, enemy.radius || 20);
         enemy.x = clamped.x; enemy.y = clamped.y;
@@ -601,11 +1133,45 @@ export class EnemyManager {
       // Death handling
       if (enemy.hp <= 0 && enemy.active) {
         enemy.active = false;
-        // Bigger enemies drop higher base tier gems
-        const baseTier = this.enemyXpBaseTier[enemy.type] || 1;
-        this.spawnGem(enemy.x, enemy.y, baseTier);
+        // Poison contagion: on death with significant stacks, spread a portion to nearby enemies
+        const eAny: any = enemy as any;
+  const stacks = eAny._poisonStacks | 0;
+  if (stacks >= 3) {
+          const spreadRadius = 180;
+          const addStacks = Math.min(5, Math.ceil(stacks * 0.5));
+          for (let j = 0; j < this.enemies.length; j++) {
+            const o = this.enemies[j];
+            if (!o.active || o.hp <= 0 || o === enemy) continue;
+            const dxs = o.x - enemy.x; const dys = o.y - enemy.y;
+            if (dxs*dxs + dys*dys <= spreadRadius * spreadRadius) {
+              this.applyPoison(o, addStacks);
+            }
+          }
+        }
+        // XP orb drop chance per enemy type (fewer total orbs to smooth pacing)
+        let dropChance = 0.5;
+        switch (enemy.type) {
+          case 'small': dropChance = XP_DROP_CHANCE_SMALL; break;
+          case 'medium': dropChance = XP_DROP_CHANCE_MEDIUM; break;
+          case 'large': dropChance = XP_DROP_CHANCE_LARGE; break;
+        }
+        if (Math.random() < dropChance) {
+          const baseTier = this.enemyXpBaseTier[enemy.type] || 1;
+          // Gate high-tier upgrades: only elite ("large") enemies can reach tier 4; small/medium cap at tier 3
+          const maxTier = (enemy.type === 'large') ? 4 : 3;
+          this.spawnGem(enemy.x, enemy.y, baseTier, maxTier);
+        }
   // Removed on-kill explosion effect for Mech Mortar (Titan Mech)
   this.killCount++;
+        // Scavenger scrap stacks: increment when kill happened and last hit was Scrap-Saw
+        if (enemy._lastHitByWeapon === WeaponType.SCRAP_SAW) {
+          const pAny: any = this.player as any;
+          pAny._scrapStacks = (pAny._scrapStacks || 0) + 1;
+          // Cap at 3 stacks
+          if (pAny._scrapStacks > 3) pAny._scrapStacks = 3;
+          // Tiny UI ping (optional custom event)
+          window.dispatchEvent(new CustomEvent('scrapStacks', { detail: { stacks: pAny._scrapStacks } }));
+        }
         // Passive: AOE On Kill
         const playerAny: any = this.player as any;
         if (playerAny.hasAoeOnKill) {
@@ -628,6 +1194,57 @@ export class EnemyManager {
           }
         }
         this.enemyPool.push(enemy);
+      }
+    }
+
+    // Rogue Hacker DoT ticking (3x35 over 1.5s on affected enemies)
+    {
+  const now = nowFrame;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e: any = this.activeEnemies[i] as any;
+        const dot = e._hackerDot;
+        if (!dot || e.hp <= 0) continue;
+        let safety = 3;
+        while (dot.ticksLeft > 0 && now >= dot.nextTick && safety-- > 0) {
+          dot.ticksLeft--;
+          dot.nextTick += 500;
+          this.takeDamage(e as Enemy, dot.perTick, false, false, WeaponType.HACKER_VIRUS);
+          e._poisonFlashUntil = now + 100;
+        }
+        if (dot.ticksLeft <= 0) {
+          e._hackerDot = undefined;
+        }
+      }
+    }
+
+    // Void Sniper DoT ticking (applied by Shadow Operative beam): 3 ticks over 3s by default
+    {
+  const now = nowFrame;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e: any = this.activeEnemies[i] as any;
+        const vdot = e._voidSniperDot as { next: number; left: number; dmg: number } | undefined;
+        if (!vdot || e.hp <= 0) continue;
+        let guard = 4; // prevent spiraling
+        while (vdot.left > 0 && now >= vdot.next && guard-- > 0) {
+          vdot.left--;
+          vdot.next += 1000; // default 1s cadence
+          this.takeDamage(e as Enemy, vdot.dmg, false, false, WeaponType.VOID_SNIPER);
+          // Visual feedback: purple flash reuse channel
+          e._poisonFlashUntil = now + 120;
+        }
+        if (vdot.left <= 0) {
+          e._voidSniperDot = undefined;
+        }
+      }
+    }
+
+    // Deactivate expired hacker zones
+    {
+  const now = nowFrame;
+      for (let i = 0; i < this.hackerZones.length; i++) {
+        const z = this.hackerZones[i];
+        if (!z.active) continue;
+        if (now - z.created > z.lifeMs) z.active = false;
       }
     }
 
@@ -691,29 +1308,50 @@ export class EnemyManager {
       let w=0; for (let r=0; r<this.gems.length; r++){ const g=this.gems[r]; if (g.active) this.gems[w++]=g; } this.gems.length = w;
     }
     // update gems
-  for (let i = 0, len = this.gems.length; i < len; i++) {
-      const g = this.gems[i];
-      if (!g.active) continue;
+    {
+  const dtSec = deltaTime / 1000;
+  const px = this.player.x;
+  const py = this.player.y;
+  // Pickup radius should feel as big as the character sprite
+  const playerAny: any = this.player as any;
+  const pickupR = Math.max(24, playerAny.size ? (playerAny.size * 0.5) + 6 : (this.player.radius + 10));
+  const pickupR2 = pickupR * pickupR;
+  const magnetR = Math.max(0, this.player.magnetRadius || 0);
+  const magnetR2 = magnetR * magnetR;
+      for (let i = 0, len = this.gems.length; i < len; i++) {
+        const g = this.gems[i];
+        if (!g.active) continue;
+        // Apply light friction so any initial scatter settles quickly
+        g.vx *= 0.9;
+        g.vy *= 0.9;
+        if (Math.abs(g.vx) < 0.01) g.vx = 0;
+        if (Math.abs(g.vy) < 0.01) g.vy = 0;
+        g.x += g.vx * dtSec;
+        g.y += g.vy * dtSec;
 
-  // Magnet effect: gently float toward player everywhere
-  const ddx = this.player.x - g.x;
-  const ddy = this.player.y - g.y;
-  const distSq = ddx*ddx + ddy*ddy;
-  const dist = distSq > 0 ? Math.sqrt(distSq) : 0;
-      const pullStrength = 0.7; // Lower = slower
-      g.vx = (ddx / (dist || 1)) * pullStrength;
-      g.vy = (ddy / (dist || 1)) * pullStrength;
-      // Update position
-      g.x += g.vx * (deltaTime / 1000); // Use deltaTime
-      g.y += g.vy * (deltaTime / 1000); // Use deltaTime
-  // XP orbs should not expire anymore: removed lifetime countdown & recycling.
-  // (Keep lifeMs field untouched for potential future use; no decrement.)
-      // Pickup if near player
-  if (distSq < 18*18) {
-        this.player.gainExp(g.value);
-        g.active = false;
-        if (this.particleManager) this.particleManager.spawn(g.x, g.y, 1, '#0ff');
-        this.gemPool.push(g); // Return to pool
+        const dx = px - g.x;
+        const dy = py - g.y;
+        const d2 = dx*dx + dy*dy;
+
+        // Local magnet: gently pull gems when inside magnet radius
+        if (magnetR > 0 && d2 < magnetR2 && d2 > 0.0001) {
+          const d = Math.sqrt(d2);
+          // Ease-in style pull: stronger when closer; tuned for fixed 60fps but dt-aware
+          const t = 1 - Math.min(1, d / magnetR); // 0 far .. 1 near
+          const pull = (0.08 + t * 0.22); // fraction of distance per frame @60fps
+          // Convert fraction to dt-aware factor (game runs fixed-timestep ~16.67ms)
+          const frameFactor = pull * (deltaTime / 16.6667);
+          g.x += dx * frameFactor;
+          g.y += dy * frameFactor;
+        }
+
+        // Pickup when within generous player-sized radius
+        if (d2 < pickupR2) {
+          this.player.gainExp(g.value);
+          g.active = false;
+          if (this.particleManager) this.particleManager.spawn(g.x, g.y, 1, '#0ff');
+          this.gemPool.push(g);
+        }
       }
     }
     // In-place compact gems after update
@@ -734,8 +1372,11 @@ export class EnemyManager {
   this.updatePoisonPuddles(deltaTime);
   // Burn status updates
   this.updateBurns();
-  }
-
+  // Poison status updates
+  this.updatePoisons();
+  // Data Sigils updates
+  this.updateDataSigils(deltaTime);
+}
   /** Total enemies killed this run. */
   public getKillCount() { return this.killCount; }
 
@@ -749,33 +1390,38 @@ export class EnemyManager {
     enemy.id = `enemy-${Date.now()}-${Math.random().toFixed(4)}`; // Assign unique ID
   // (damage flash removed)
     switch (type) {
-      case 'small':
-  enemy.hp = 100; // Small baseline
-  enemy.maxHp = 100;
-  enemy.radius = 20;
-  // Further reduced base speed (was 1.25 * 0.4)
-  enemy.speed = 1.05 * 0.38 * this.enemySpeedScale; // ~0.247 at scale 0.62
-        enemy.damage = 4; // within 1-10
-        break;
-      case 'medium':
-  enemy.hp = 320; // Slight bump for medium
-  enemy.maxHp = 320;
-  enemy.radius = 28;
-  // Reduced base speed (was 0.85 * 0.4)
-  enemy.speed = 0.75 * 0.36 * this.enemySpeedScale; // ~0.167
-        enemy.damage = 7; // within 1-10
-        break;
-      case 'large':
-  enemy.hp = 900; // Tankier large enemy
-  enemy.maxHp = 900;
-  enemy.radius = 36;
-  // Further reduced (was 0.6 * 0.4)
-  enemy.speed = 0.5 * 0.34 * this.enemySpeedScale; // ~0.105
-        enemy.damage = 10; // cap at 10
-        break;
+        case 'small': {
+          const late = gameTime >= 180;
+          enemy.hp = late ? 160 : 100;
+          enemy.maxHp = enemy.hp;
+          enemy.radius = 20;
+          // Make smalls slower baseline; they should no longer outpace the player
+          enemy.speed = (late ? 0.90 : 1.05) * 0.30 * this.enemySpeedScale; // ~0.167 early, ~0.167 late too (capped later by chase cap)
+          enemy.damage = 4; // within 1-10
+          break;
+        }
+        case 'medium': {
+          const late = gameTime >= 180;
+          enemy.hp = late ? 380 : 220;
+          enemy.maxHp = enemy.hp;
+          enemy.radius = 30;
+          enemy.speed = 0.65 * 0.30 * this.enemySpeedScale; // ~0.121
+          enemy.damage = 7; // within 1-10
+          break;
+        }
+        case 'large': {
+          const late = gameTime >= 180;
+          enemy.hp = late ? 900 : 480;
+          enemy.maxHp = enemy.hp;
+          enemy.radius = 38;
+          enemy.speed = 0.42 * 0.28 * this.enemySpeedScale; // ~0.073
+          enemy.damage = 10; // cap at 10
+          break;
+        }
     }
-    // Restore original spawn distance and pattern logic
-    const spawnDistance = 800; // Base distance from player
+  // Spawn placement with safe distance logic
+  const minSafeDist = 520; // do not spawn closer than this to player
+  const spawnDistance = 900; // base desired distance
     let spawnX = this.player.x;
     let spawnY = this.player.y;
     switch (pattern) {
@@ -809,17 +1455,44 @@ export class EnemyManager {
     }
     // Constrain spawn to walkable (rooms / corridors) via global roomManager if available
     const rm = (window as any).__roomManager;
+    let finalX = spawnX, finalY = spawnY;
     if (rm && typeof rm.clampToWalkable === 'function') {
       const clamped = rm.clampToWalkable(spawnX, spawnY, enemy.radius || 20);
-      enemy.x = clamped.x; enemy.y = clamped.y;
-    } else {
-      enemy.x = spawnX;
-      enemy.y = spawnY;
+      finalX = clamped.x; finalY = clamped.y;
     }
+    // Enforce min distance safety; if too close after clamping, push further along ray away from player
+    const pdx = finalX - this.player.x;
+    const pdy = finalY - this.player.y;
+    const pdsq = pdx*pdx + pdy*pdy;
+    if (pdsq < minSafeDist * minSafeDist) {
+      const d = Math.sqrt(pdsq) || 1;
+      const nx = pdx / d;
+      const ny = pdy / d;
+      finalX = this.player.x + nx * minSafeDist;
+      finalY = this.player.y + ny * minSafeDist;
+      if (rm && typeof rm.clampToWalkable === 'function') {
+        const reclamped = rm.clampToWalkable(finalX, finalY, enemy.radius || 20);
+        finalX = reclamped.x; finalY = reclamped.y;
+      }
+    }
+    enemy.x = finalX;
+    enemy.y = finalY;
+  // Clear transient status on spawn
+  const eAny: any = enemy as any;
+  eAny._poisonStacks = 0; eAny._poisonExpire = 0; eAny._poisonNextTick = 0;
+  eAny._burnStacks = 0; eAny._burnExpire = 0; eAny._burnNextTick = 0; eAny._burnTickDamage = 0;
     this.enemies.push(enemy);
   }
 
-  private spawnGem(x: number, y: number, baseTier: number = 1) {
+  /**
+   * Spawn an XP gem at coordinates.
+   *
+   * Inputs:
+   * - x, y: world coordinates
+   * - baseTier: starting tier before random upgrades (1..5)
+   * - maxTier: optional cap on final tier after upgrades (e.g., non-elites cap at 3)
+   */
+  private spawnGem(x: number, y: number, baseTier: number = 1, maxTier?: number) {
     let gem = this.gemPool.pop();
     if (!gem) {
       gem = { x: 0, y: 0, vx: 0, vy: 0, life: 0, lifeMs: 0, size: 0, value: 0, active: false, tier: 1, color: '#FFD700' } as any;
@@ -828,11 +1501,14 @@ export class EnemyManager {
     let tier = baseTier;
     if (tier < 5) {
       const roll = Math.random();
-      // Simple progressive chance to upgrade tiers
-      if (roll < 0.12 + this.adaptiveGemBonus && tier < 2) tier = 2;
-      if (roll < 0.05 + this.adaptiveGemBonus*0.6 && tier < 3) tier = 3;
-      if (roll < 0.015 + this.adaptiveGemBonus*0.3 && tier < 4) tier = 4;
-      if (roll < 0.003 + this.adaptiveGemBonus*0.1 && tier < 5) tier = 5;
+      if (roll < (0.12 * GEM_UPGRADE_PROB_SCALE) + this.adaptiveGemBonus && tier < 2) tier = 2;
+      if (roll < (0.05 * GEM_UPGRADE_PROB_SCALE) + this.adaptiveGemBonus*0.6 && tier < 3) tier = 3;
+      if (roll < (0.015 * GEM_UPGRADE_PROB_SCALE) + this.adaptiveGemBonus*0.3 && tier < 4) tier = 4;
+      if (roll < (0.003 * GEM_UPGRADE_PROB_SCALE) + this.adaptiveGemBonus*0.1 && tier < 5) tier = 5;
+    }
+    // Apply optional cap (used for non-elite enemy drops)
+    if (typeof maxTier === 'number') {
+      tier = Math.min(tier, Math.max(1, maxTier|0));
     }
     const spec = getGemTierSpec(tier);
   const gg = gem as any; // assert non-null
@@ -869,17 +1545,17 @@ export class EnemyManager {
     const clusterRadius = 120; // px radius defining a "small area" for merging
     const clusterRadiusSq = clusterRadius * clusterRadius;
 
-    // Build per-tier lists (tiers 1-4 only) of active gems for quick iteration
-    const perTier: Record<number, Gem[]> = { 1: [], 2: [], 3: [], 4: [] } as any;
+  // Build per-tier lists (tiers 1-3 only) of active gems for quick iteration
+  const perTier: Record<number, Gem[]> = { 1: [], 2: [], 3: [] } as any;
     for (let i = 0; i < this.gems.length; i++) {
       const g = this.gems[i];
-      if (!g.active || g.tier > 4) continue;
+  if (!g.active || g.tier > 3) continue;
       const arr = perTier[g.tier];
       if (arr) arr.push(g);
     }
 
     // Iterate tiers; stop after performing at most one merge this frame
-    for (let t = 1; t <= 4; t++) {
+  for (let t = 1; t <= 3; t++) {
       const list = perTier[t];
       if (!list || !list.length) continue;
       const spec = getGemTierSpec(t);
@@ -921,7 +1597,7 @@ export class EnemyManager {
   private runDynamicSpawner(gameTime: number) {
     const minutes = gameTime / 60;
     // Increase baseline over time (soft exponential flavor)
-    this.pressureBaseline = 100 + minutes * 60 + minutes * minutes * 25;
+  this.pressureBaseline = ENEMY_PRESSURE_BASE + minutes * ENEMY_PRESSURE_LINEAR + minutes * minutes * ENEMY_PRESSURE_QUADRATIC;
     // Performance guard: if too many enemies active, reduce baseline
   const activeEnemies = this.activeEnemies.length;
     if (activeEnemies > 500) this.pressureBaseline *= 0.5;
@@ -938,10 +1614,18 @@ export class EnemyManager {
     while (this.spawnBudgetCarry >= 1 && safety-- > 0) {
       const roll = Math.random();
       let type: 'small' | 'medium' | 'large' = 'small';
-      if (roll > 0.85 + minutes * 0.005) type = 'large';
-      else if (roll > 0.55 + minutes * 0.01) type = 'medium';
+      if (minutes >= 3) {
+        // After 3 minutes, bias heavily toward medium/large and reduce smalls
+        if (roll > 0.65) type = 'large';
+        else if (roll > 0.30) type = 'medium';
+        else type = 'small';
+      } else {
+        if (roll > 0.85 + minutes * 0.005) type = 'large';
+        else if (roll > 0.55 + minutes * 0.01) type = 'medium';
+      }
 
-      const cost = type === 'small' ? 1 : type === 'medium' ? 3 : 6;
+  // Increase cost for large enemies to throttle spawn count; medium are mid-cost
+  const cost = type === 'small' ? 1 : type === 'medium' ? 4 : 8;
       if (cost > this.spawnBudgetCarry) break; // wait for more budget next tick
       this.spawnBudgetCarry -= cost;
       this.spawnEnemy(type, gameTime, this.pickPattern(gameTime));
@@ -987,8 +1671,8 @@ export class EnemyManager {
     {
       let write = 0;
       for (let read = 0; read < this.chests.length; read++) {
-        const c = this.chests[read];
-        if (c.active) this.chests[write++] = c;
+  const c = this.chests[read];
+  if (c.active) this.chests[write++] = c;
       }
       this.chests.length = write;
     }

@@ -40,16 +40,18 @@ export class AoEZone {
   draw(ctx: CanvasRenderingContext2D): void {
     if (!this.active) return;
 
-    ctx.save();
+  // If color is fully transparent, skip rendering (still applies damage ticks already applied on creation)
+  if (this.color === 'rgba(0,0,0,0)') return;
+  ctx.save();
   const alpha = Math.max(0, this.life / this.maxLife); // Fade out based on remaining life (ms)
   ctx.globalAlpha = alpha * 0.35; // Lower opacity for subtle effect
-    ctx.beginPath();
-    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-    ctx.fillStyle = this.color;
-    ctx.shadowColor = this.color;
+  ctx.beginPath();
+  ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+  ctx.fillStyle = this.color;
+  ctx.shadowColor = this.color;
   ctx.shadowBlur = 8; // Softer glow
-    ctx.fill();
-    ctx.restore();
+  ctx.fill();
+  ctx.restore();
   }
 
   private _applyDamage(): void {

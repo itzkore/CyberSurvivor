@@ -176,7 +176,9 @@ export class Game {
   this.designHeight = canvas.height;
     this.state = 'MAIN_MENU';
     this.gameTime = 0;
-    this.assetLoader = new AssetLoader(); // Initialization remains here
+  // Expose AssetLoader static helpers on window before any weapon visuals read them
+  try { (window as any).AssetLoader = AssetLoader; } catch {}
+  this.assetLoader = new AssetLoader(); // Initialization remains here
     this.particleManager = new ParticleManager(160);
     // Initialize spatial grids first
     this.enemySpatialGrid = new SpatialGrid<any>(200); // Cell size 200
@@ -193,7 +195,7 @@ export class Game {
     this.cinematic = new Cinematic();
     
     if (!this.explosionManager) {
-      this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
+      this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, this.bulletManager, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
     }
   this.hud = new HUD(this.player, this.assetLoader);
   this.environment = new EnvironmentManager();
@@ -240,12 +242,29 @@ export class Game {
     window.addEventListener('screenShake', (e: Event) => { // Listen for screen shake events
       this.startScreenShake((e as CustomEvent).detail.durationMs, (e as CustomEvent).detail.intensity);
     });
-    // Listen for mortarExplosion event
+    // Listen for mortarExplosion / implosion events
   window.addEventListener('mortarExplosion', (e: Event) => this.handleMortarExplosion(e as CustomEvent));
+  window.addEventListener('mortarImplosion', (e: Event) => this.handleMortarImplosion(e as CustomEvent));
   // Kamikaze Drone custom explosion (separate event so tuning/visuals can differ)
   window.addEventListener('droneExplosion', (e: Event) => this.handleDroneExplosion(e as CustomEvent));
+    // Scavenger Scrap-Saw 10-hit explosion
+    window.addEventListener('scrapExplosion', (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      // Stronger visual: immediate damage + an extra subtle second ring
+      try { this.explosionManager?.triggerShockwave(d.x, d.y, d.damage, d.radius, d.color || '#FFAA33'); } catch {}
+      // Add a quick faint second ring for readability
+      try { this.explosionManager?.triggerShockwave(d.x, d.y, Math.max(1, Math.round(d.damage*0.2)), Math.round(d.radius*0.65), '#FFD199'); } catch {}
+      this.startScreenShake(100, 4);
+    });
     // Listen for enemyDeathExplosion event
     window.addEventListener('enemyDeathExplosion', (e: Event) => this.handleEnemyDeathExplosion(e as CustomEvent));
+    // Plasma events
+    window.addEventListener('plasmaDetonation', (e: Event) => {
+      const d = (e as CustomEvent).detail; this.explosionManager?.triggerPlasmaDetonation(d.x, d.y, d.damage, d.fragments, d.radius);
+    });
+    window.addEventListener('plasmaIonField', (e: Event) => {
+      const d = (e as CustomEvent).detail; this.explosionManager?.triggerPlasmaIonField(d.x, d.y, d.damage, d.radius);
+    });
 
     // Listen for level up and chest upgrade events to show UpgradePanel
     window.addEventListener('levelup', () => {
@@ -331,6 +350,17 @@ export class Game {
     self._initPromise = (async () => {
       try {
         await this.assetLoader.loadAllFromManifest();
+        // Proactively load class weapon sprites via manifest to avoid placeholder text boxes
+        try {
+          const saw = this.assetLoader.getAsset('bullet_saw') || '/assets/projectiles/bullet_sawblade.png';
+          const grind = this.assetLoader.getAsset('bullet_grinder') || '/assets/projectiles/bullet_grinder.png';
+          const drone = this.assetLoader.getAsset('bullet_drone') || '/assets/projectiles/bullet_drone.png';
+          await Promise.all([
+            this.assetLoader.loadImage(saw),
+            this.assetLoader.loadImage(grind),
+            this.assetLoader.loadImage(drone)
+          ]);
+        } catch {}
         self._initDone = true;
         Logger.info('[Game] init complete (assets preloaded)');
       } catch (err) {
@@ -413,8 +443,9 @@ export class Game {
         window.dispatchEvent(new CustomEvent('resumeGame'));
       } else if (this.state === 'GAME_OVER' && e.key === 'Enter') {
         this.resetGame(this.selectedCharacterData); // Restart with selected character
-      } else if (this.state === 'GAME' && (e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar')) {
+      } else if (this.state === 'GAME' && (e.code === 'Space' || e.key === ' ' || e.key === 'Space' || e.key === 'Spacebar')) {
         // Activate character ability if available
+        e.preventDefault(); // avoid page scroll / focus issues on Space
         try {
           (this.player as any)?.activateAbility?.();
         } catch {}
@@ -495,7 +526,7 @@ export class Game {
     // Ensure player uses the correct game context for bulletManager
     this.player.setGameContext(this);
     // Re-initialize explosionManager with the new enemyManager instance
-    this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
+  this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, this.bulletManager, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
     this.hud = new HUD(this.player, this.assetLoader);
     // Recreate / regenerate rooms depending on mode.
     if (!this.roomManager) {
@@ -929,7 +960,7 @@ export class Game {
         this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);
   this.enemyManager.draw(this.ctx, this.camX, this.camY);
         this.bulletManager.draw(this.ctx);
-        // Active beams (railgun) under player for proper layering
+        // Active beams (railgun/sniper) under player for proper layering
         if (this._activeBeams && this._activeBeams.length) {
           for (const beam of this._activeBeams) {
             const elapsed = performance.now() - beam.start;
@@ -939,27 +970,111 @@ export class Game {
             this.ctx.save();
             this.ctx.translate(beam.x, beam.y);
             this.ctx.rotate(beam.angle);
-            const thickness = 16 * (0.9 + 0.1 * Math.sin(elapsed * 0.18)); // visually slimmer
             const len = beam.range;
-            if (!this.lowFX && !debugNoAdd) {
-              const grad = this.ctx.createLinearGradient(0, 0, len, 0);
-              grad.addColorStop(0, `rgba(255,255,255,${0.85 * fade})`);
-              grad.addColorStop(0.08, `rgba(0,255,255,${0.75 * fade})`);
-              grad.addColorStop(0.4, `rgba(0,128,255,${0.32 * fade})`);
-              grad.addColorStop(1, 'rgba(0,0,0,0)');
-              this.ctx.fillStyle = grad;
-              this.ctx.shadowColor = '#00FFFF';
-              this.ctx.shadowBlur = 22; // tighter glow
-              if (!debugNoAdd) this.ctx.globalCompositeOperation = 'lighter';
+            if (beam.type === 'sniper' || beam.type === 'voidsniper') {
+              // Sniper: ultra-tight bright white core with faint cyan rim
+              const fadeEase = fade * fade; // smoother tail
+              const thickness = (beam.thickness || 10) * (0.9 + 0.1 * Math.sin(elapsed * 0.24)) * (0.85 + 0.15 * fadeEase);
+              if (!this.lowFX && !debugNoAdd) {
+                const grad = this.ctx.createLinearGradient(0, 0, len, 0);
+                if (beam.type === 'voidsniper') {
+                  grad.addColorStop(0, `rgba(186,126,255,${0.95 * fadeEase})`);
+                  grad.addColorStop(0.08, `rgba(106,13,173,${0.75 * fadeEase})`);
+                  grad.addColorStop(0.4, `rgba(106,13,173,${0.22 * fadeEase})`);
+                  grad.addColorStop(1, 'rgba(0,0,0,0)');
+                  this.ctx.fillStyle = grad;
+                  this.ctx.shadowColor = `rgba(178,102,255,${0.9 * fadeEase})`;
+                  this.ctx.shadowBlur = 22 * (0.6 + 0.4 * fadeEase);
+                } else {
+                  grad.addColorStop(0, `rgba(255,255,255,${0.95 * fadeEase})`);
+                  grad.addColorStop(0.05, `rgba(200,240,255,${0.65 * fadeEase})`);
+                  grad.addColorStop(0.25, `rgba(150,220,255,${0.28 * fadeEase})`);
+                  grad.addColorStop(1, 'rgba(0,0,0,0)');
+                  this.ctx.fillStyle = grad;
+                  this.ctx.shadowColor = `rgba(224,247,255,${0.85 * fadeEase})`;
+                  this.ctx.shadowBlur = 18 * (0.6 + 0.4 * fadeEase);
+                }
+                if (!debugNoAdd) this.ctx.globalCompositeOperation = 'lighter';
+              } else {
+                if (beam.type === 'voidsniper') {
+                  this.ctx.fillStyle = `rgba(186,126,255,${0.55*fadeEase})`;
+                } else {
+                  this.ctx.fillStyle = `rgba(240,250,255,${0.55*fadeEase})`;
+                }
+                this.ctx.globalCompositeOperation = 'source-over';
+              }
+              this.ctx.beginPath();
+              this.ctx.rect(0, -thickness/2, len, thickness);
+              this.ctx.fill();
+              if (beam.type === 'voidsniper') {
+                this.ctx.strokeStyle = this.lowFX ? `rgba(178,102,255,${0.3 * fadeEase})` : `rgba(178,102,255,${0.7 * fadeEase})`;
+              } else {
+                this.ctx.strokeStyle = this.lowFX ? `rgba(255,255,255,${0.3 * fadeEase})` : `rgba(255,255,255,${0.7 * fadeEase})`;
+              }
             } else {
-              this.ctx.fillStyle = `rgba(0,200,255,${0.4*fade})`;
-              this.ctx.globalCompositeOperation = 'source-over';
+              // Railgun: twin parallel rails + animated crossbar rungs (distinct from sniper beams)
+              const fadeEase = fade * (0.7 + 0.3 * Math.min(1, fade));
+              // Rail layout
+              const railGap = 7;            // half-distance from center to each rail
+              const railThickness = 4;      // each rail thickness
+              const rungHeight = 10;        // crossbar height spanning both rails (ladder look)
+              const rungSpacing = 46;       // distance between rungs
+              const rungSpeed = 220;        // px/sec travel speed to the right
+              const offset = (elapsed * (rungSpeed / 1000)) % rungSpacing;
+
+              if (!this.lowFX && !debugNoAdd) {
+                this.ctx.globalCompositeOperation = 'lighter';
+                // Outer glow around rails (cyan/teal)
+                this.ctx.shadowColor = 'rgba(0,255,220,0.9)';
+                this.ctx.shadowBlur = 18 * (0.7 + 0.3 * fadeEase);
+              } else {
+                this.ctx.globalCompositeOperation = 'source-over';
+                this.ctx.shadowBlur = 0;
+              }
+
+              // Draw two rails with subtle gradient
+              const railGrad = this.ctx.createLinearGradient(0, 0, len, 0);
+              railGrad.addColorStop(0, `rgba(180,255,255,${0.85 * fadeEase})`);
+              railGrad.addColorStop(0.2, `rgba(0,240,255,${0.75 * fadeEase})`);
+              railGrad.addColorStop(0.7, `rgba(0,160,255,${0.35 * fadeEase})`);
+              railGrad.addColorStop(1, 'rgba(0,0,0,0)');
+              this.ctx.fillStyle = railGrad;
+
+              // Upper and lower rails
+              this.ctx.fillRect(0, -railGap - railThickness/2, len, railThickness);
+              this.ctx.fillRect(0,  railGap - railThickness/2, len, railThickness);
+
+              // Animated crossbar rungs bridging rails
+              const rungWidth = 12; // visual thickness along x
+              const maxRungs = Math.ceil((len + rungSpacing) / rungSpacing);
+              const alphaBase = this.lowFX ? 0.35 : 0.7;
+              for (let i = 0; i < maxRungs; i++) {
+                const rx = i * rungSpacing + (rungSpacing - offset);
+                if (rx < 0 || rx > len) continue;
+                const a = Math.max(0, Math.min(1, 1 - Math.abs(rx/len)));
+                this.ctx.fillStyle = `rgba(255,255,255,${alphaBase * a * fadeEase})`;
+                this.ctx.fillRect(rx - rungWidth/2, -rungHeight/2, rungWidth, rungHeight);
+              }
+
+              // Capacitor muzzle flash at origin for unique identity
+              if (!this.lowFX) {
+                const muzzle = this.ctx.createRadialGradient(0, 0, 0, 0, 0, 22);
+                muzzle.addColorStop(0, `rgba(255,255,255,${0.9 * fadeEase})`);
+                muzzle.addColorStop(0.35, `rgba(0,255,230,${0.65 * fadeEase})`);
+                muzzle.addColorStop(1, 'rgba(0,0,0,0)');
+                this.ctx.fillStyle = muzzle;
+                this.ctx.beginPath();
+                this.ctx.arc(0, 0, 22, 0, Math.PI * 2);
+                this.ctx.fill();
+              }
+
+              // Subtle central filament
+              const filamentAlpha = 0.35 * (this.lowFX ? 0.6 : 1) * fadeEase;
+              this.ctx.fillStyle = `rgba(180,255,255,${filamentAlpha})`;
+              this.ctx.fillRect(0, -1, len, 2);
+              // Outline hint
+              this.ctx.strokeStyle = this.lowFX ? `rgba(200,240,255,${0.25 * fadeEase})` : `rgba(200,255,255,${0.5 * fadeEase})`;
             }
-            this.ctx.beginPath();
-            this.ctx.rect(0, -thickness/2, len, thickness);
-            this.ctx.fill();
-            // Core line
-            this.ctx.strokeStyle = this.lowFX ? `rgba(255,255,255,${0.25 * fade})` : `rgba(255,255,255,${0.6 * fade})`;
             this.ctx.lineWidth = 2.5;
             this.ctx.beginPath();
             this.ctx.moveTo(0,0);
@@ -1015,14 +1130,20 @@ export class Game {
   this.explosionManager?.triggerTitanMortarExplosion(x, y, damage, radius ? Math.max(radius, 200) : 220);
   }
   /**
+   * Handles mortar implosion pre-effect.
+   */
+  private handleMortarImplosion(event: CustomEvent): void {
+    const { x, y, radius, color } = event.detail;
+    this.explosionManager?.triggerMortarImplosion(x, y, radius ?? 120, color ?? '#FFE66D');
+  }
+  /**
    * Handles a kamikaze drone explosion event (separate from mortar for balance & visuals).
    */
   private handleDroneExplosion(event: CustomEvent): void {
     const { x, y, damage, radius } = event.detail;
-    // Use shockwave-only variant for cleaner visual (no old filled circle)
-    const r = radius ?? 160;
-  // Use toned-down explosion (not full old shockwave) but keep original damage; radius already reduced at dispatch.
-  this.explosionManager?.triggerExplosion(x, y, damage, undefined, r, '#00BFFF');
+  // Route through dedicated enhanced drone explosion (triple area, double damage, richer visuals)
+  const r = radius ?? 110;
+  this.explosionManager?.triggerDroneExplosion(x, y, damage, r, '#00BFFF');
   }
   /**
    * Handles an enemy death explosion event.
@@ -1101,8 +1222,8 @@ export class Game {
       ctx.lineTo(size,y+0.5);
       ctx.stroke();
     }
-    // Deterministic sparse noise based on tile-local hashed coordinates
-    const noisePerTile = 140; // tune density (was dynamic per-cell before)
+  // Deterministic sparse noise based on tile-local hashed coordinates
+  const noisePerTile = 80; // reduce density for calmer look
     for (let i=0;i<noisePerTile;i++) {
       // LCG pseudo-random
       const seed = (i * 48271) & 0x7fffffff;
@@ -1112,7 +1233,7 @@ export class Game {
       const py = ry * size;
       // Skip points too near grid intersections for clarity
       if ((px % g) < 3 || (py % g) < 3) continue;
-      ctx.fillStyle = '#2d3558';
+  ctx.fillStyle = '#1f243a';
       ctx.fillRect(px, py, 2, 2);
     }
     this.bgPatternValid = true;
@@ -1127,10 +1248,10 @@ export class Game {
     this.ctx.save();
     if (!this.lowFX) {
       if (!this.bgGradient) {
-        const g = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
-        g.addColorStop(0, '#0a0a1a');
-        g.addColorStop(0.5, '#181825');
-        g.addColorStop(1, '#232347');
+  const g = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+  g.addColorStop(0, '#0b0b14');
+  g.addColorStop(0.5, '#121323');
+  g.addColorStop(1, '#171a2d');
         this.bgGradient = g;
       }
       this.ctx.fillStyle = this.bgGradient;

@@ -29,6 +29,45 @@ function applyCanvasSizeGlobal(canvas: HTMLCanvasElement) {
 }
 
 window.onload = async () => {
+  // Lightweight loading overlay for slow connections
+  const loadingDiv = document.createElement('div');
+  loadingDiv.id = 'loading-overlay';
+  loadingDiv.style.position = 'fixed';
+  loadingDiv.style.inset = '0';
+  loadingDiv.style.background = 'radial-gradient(circle at 50% 40%, #062025 0%, #020a0c 80%)';
+  loadingDiv.style.display = 'flex';
+  loadingDiv.style.flexDirection = 'column';
+  loadingDiv.style.alignItems = 'center';
+  loadingDiv.style.justifyContent = 'center';
+  loadingDiv.style.font = '600 18px Orbitron, sans-serif';
+  loadingDiv.style.color = '#26ffe9';
+  loadingDiv.style.letterSpacing = '1px';
+  loadingDiv.style.zIndex = '9999';
+  loadingDiv.innerHTML = `<div style="margin-bottom:18px;font-size:28px;text-shadow:0 0 12px #00ffc8">CYBERSURVIVOR</div>
+    <div id="load-bar" style="width:320px;height:14px;outline:1px solid #0aa;position:relative;background:rgba(0,40,48,0.5);overflow:hidden">
+      <div id="load-bar-fill" style="position:absolute;left:0;top:0;height:100%;width:0;background:linear-gradient(90deg,#26ffe9,#00b3a3);"></div>
+    </div>
+  <div id="load-status" style="margin-top:10px;font-size:12px;color:#9fe;opacity:0.85">Initializing...</div>`;
+  document.body.appendChild(loadingDiv);
+
+  function updateLoading(progress:number, label:string){
+    const fill = document.getElementById('load-bar-fill') as HTMLDivElement | null;
+    const status = document.getElementById('load-status');
+    if (fill) fill.style.width = Math.min(100, Math.round(progress*100)) + '%';
+    if (status) status.textContent = label;
+  }
+  function hideLoadingOverlay(immediate=false){
+    const ov = document.getElementById('loading-overlay');
+    if (!ov) return;
+    if (immediate){ ov.remove(); return; }
+    ov.setAttribute('data-hide','1');
+    ov.style.transition='opacity 0.55s';
+    ov.style.opacity='0';
+    setTimeout(()=>{ if (ov && ov.parentNode) ov.remove(); }, 650);
+  }
+  // Absolute safety fallback: force remove after 12s even if something broke earlier
+  setTimeout(()=> hideLoadingOverlay(false), 12000);
+
   // Electron preload integration removed – no runtime preload validation needed.
   // --- Cinematic skip button click handler ---
   // Move click handler after canvas is assigned
@@ -141,8 +180,49 @@ window.onload = async () => {
   game.setState('MAIN_MENU');
   Logger.info('[main.ts] Initial state set to MAIN_MENU');
 
-  await game.init();
-  Logger.info('[main.ts] Game assets loaded');
+  try {
+    // Progressive manifest load & image prefetch with updates
+  updateLoading(0.05, 'Loading manifest');
+    try {
+      await (game as any).assetLoader?.loadManifest();
+    } catch (e){ Logger.warn('[main.ts] Manifest load fail (continuing)', e); }
+  updateLoading(0.15, 'Preparing environment');
+    // Core init
+    await game.init();
+  updateLoading(0.32, 'Initializing systems');
+    try {
+      const loader: any = (game as any).assetLoader;
+      const manifest = loader?.manifest;
+      if (manifest) {
+        const files:string[] = [];
+        const walk=(o:any)=>{ for(const k in o){ const v=o[k]; if(!v) continue; if(v.file) files.push(v.file); else if(typeof v==='object') walk(v);} };
+        walk(manifest);
+        const total = files.length || 1;
+        const prefix = (window as any).AssetLoader?.basePrefix || '';
+        let loaded = 0;
+        for (let i=0;i<files.length;i+=4){
+          const batch = files.slice(i,i+4).map(f=> loader.loadImage(prefix + (f.startsWith('/')? f : '/'+f)).catch(()=>null));
+          await Promise.all(batch);
+          loaded = Math.min(files.length, i+4);
+          updateLoading(0.32 + 0.58*(loaded/total), 'Loading assets '+loaded+'/'+total);
+        }
+      }
+    } catch (e){ Logger.warn('[main.ts] Progressive asset load issue', e); }
+  updateLoading(0.94, 'Finalizing...');
+    Logger.info('[main.ts] Game assets loaded');
+  } catch (fatal) {
+  updateLoading(1, 'Loading error');
+    Logger.error('[main.ts] Fatální chyba během načítání', fatal);
+    // Provide basic retry button
+    const status = document.getElementById('load-status');
+    if (status){
+      const btn = document.createElement('button');
+      btn.textContent = 'Reload';
+      btn.style.marginTop='12px';
+      btn.onclick=()=> location.reload();
+      status.appendChild(btn);
+    }
+  }
   // Enable variable timestep mode (systems now scale by delta). Can disable via console: __game.gameLoop.setVariableTimestep(false)
   (game as any).gameLoop?.setVariableTimestep?.(true);
 
@@ -176,6 +256,10 @@ window.onload = async () => {
 
   game.start();
   Logger.info('[main.ts] Game loop started');
+  // Fade out loading overlay
+  setTimeout(()=>{ updateLoading(1,'Finalizing...'); hideLoadingOverlay(false); }, 150);
+  // Also hide immediately once first main menu frame is shown
+  requestAnimationFrame(()=> requestAnimationFrame(()=> hideLoadingOverlay(false)));
 
   // Responsive resize: adjust canvas + game logical size on window resize
   const handleResize = () => {
