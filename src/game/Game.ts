@@ -502,6 +502,10 @@ export class Game {
   public resetGame(selectedCharacterData?: any) {
   // Only create a new player if one doesn't exist or if new character data is provided
   if (!this.player || selectedCharacterData) {
+    // Persist selected character for overlays/leaderboards
+    if (selectedCharacterData) {
+      this.selectedCharacterData = selectedCharacterData;
+    }
     // Ensure we always pass a character dataset when available; prevents Player constructor fallback warnings
     this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData || this.player?.characterData);
     this.player.radius = 18;

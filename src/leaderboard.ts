@@ -319,6 +319,9 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
     return lastTopCache.data;
   }
   const key = boardKey(board);
+  // If this is a per‑operative board, capture operative id from board name (e.g., global:op:neural_nomad)
+  const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
+  const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
   const flat: string[] = await redis(['ZREVRANGE', key, String(offset), String(offset + limit - 1), 'WITHSCORES']);
   const out: LeaderEntry[] = new Array(Math.ceil(flat.length / 2));
   // Build promises for meta fetch in parallel to reduce sequential latency
@@ -347,7 +350,9 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
             if (typeof meta.char === 'string') characterId = meta.char;
           }
         } catch {/* ignore per-player meta errors */}
-        out[idx/2] = { rank: offset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId };
+  // Fallback: when meta is missing or stale, use board‑derived operative id if present
+  const opId = characterId || boardOpId;
+  out[idx/2] = { rank: offset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId: opId };
       })());
     })(i);
   }
@@ -370,6 +375,9 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
   if (!isLeaderboardConfigured()) return null;
   lbLog('fetchPlayerEntry:start', { board, playerId });
   const key = boardKey(board);
+  // If this is a per‑operative board, capture operative id from board name
+  const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
+  const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
   try {
     const rankIdx = await redis(['ZREVRANK', key, playerId]).catch(()=>null);
     const rawScore = await redis(['ZSCORE', key, playerId]).catch(()=>null);
@@ -390,7 +398,8 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
         if (typeof meta.char === 'string') characterId = meta.char;
       }
     } catch {/* ignore meta errors */}
-    return { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId };
+  const opId = characterId || boardOpId;
+  return { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId: opId };
   } catch {
     return null;
   }
