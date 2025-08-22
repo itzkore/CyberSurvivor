@@ -643,10 +643,12 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Stay within 320 range to maintain constant fire.',
     'Knockback and slows help hold targets in the stream.'
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=10, baseCooldown=10, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
-  [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 28, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.1, range: 500, maxLevel: 7, damage: 28, projectileVisual: { type: 'beam', color: '#FFC0CB', thickness: 14, length: 120, glowColor: '#FF00FF', glowRadius: 40, trailColor: '#FFD700', trailLength: 40 }, traits: ['Pierces','Area','Scaling'], usageTips: [
+  [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 28, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.1, range: 500, maxLevel: 7, damage: 28, 
+    description: 'Sweeping psionic beam that pierces and briefly marks foes, slowing them and boosting follow-up damage during the mark.',
+    projectileVisual: { type: 'beam', color: '#FFC0CB', thickness: 14, length: 120, glowColor: '#FF00FF', glowRadius: 40, trailColor: '#FFD700', trailLength: 40 }, traits: ['Pierces','Area','Slow','Scaling'], usageTips: [
     'Sweep perpendicular to enemy flow—pierce maximizes coverage.',
-    'Anchor at choke points; waves chunk tight lines.',
-    'Slows and pulls amplify uptime through the beam.'
+    'Tag elites/bosses, then pour damage while the psionic mark is active.',
+    'Slows, pulls, or chokepoints extend beam uptime and stack marks safely.'
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=28, baseCooldown=28, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   [WeaponType.SCAVENGER_SLING]: { id: WeaponType.SCAVENGER_SLING, name: 'Scavenger Sling', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 38, salvo: 1, spread: 0, projectile: 'rock_gray', speed: 7, range: 300, maxLevel: 7, damage: 38, projectileVisual: { type: 'bullet', color: '#808080', size: 10, glowColor: '#808080', glowRadius: 7 }, traits: ['Bounces','Scaling'], isClassWeapon: true, knockback: 24, getLevelStats(level:number){ const baseDamage=38, baseCooldown=38, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   /** Neural Nomad class weapon: Neural Threader — pierce to anchor enemies into a threaded link that pulses. */

@@ -2,6 +2,7 @@ import { Game } from '../game/Game';
 import { matrixBackground } from './MatrixBackground';
 import { googleAuthService } from '../auth/AuthService';
 import { submitScore, submitScoreAllPeriods, getPlayerId, sanitizeName, isLeaderboardConfigured, fetchTop, fetchPlayerEntry, resolveBoard } from '../leaderboard';
+import { CHARACTERS } from '../data/characters';
 
 /** Cinematic themed Game Over overlay */
 export class GameOverOverlay {
@@ -101,12 +102,17 @@ export class GameOverOverlay {
   // Unified multi-board submission
   try { await submitScoreAllPeriods({ playerId: pid, name, timeSec, kills, level, maxDps: maxDpsVal, characterId }); } catch {}
     try {
-      const top = await fetchTop('global', 10, 0);
+  const top = await fetchTop('global', 3, 0);
       const me = pid;
       const fmt = (t:number)=>{
         const m=Math.floor(t/60).toString().padStart(2,'0');
         const s=(t%60).toString().padStart(2,'0');
         return m+':'+s;
+      };
+      const opName = (id?: string) => {
+        if (!id) return '-';
+        const c = CHARACTERS.find(ch => ch.id === id);
+        return c?.name || id;
       };
       if (top.length) {
         let hint = '';
@@ -116,12 +122,14 @@ export class GameOverOverlay {
         if (!top.some(e=>e.playerId===me)) {
           const entry = await fetchPlayerEntry('global', me);
             if (entry) {
-              myRow = `<div class='hs-row me'><span class='rank'>${entry.rank}</span><span class='nick'>${sanitizeName(entry.name)}</span><span class='time'>${fmt(entry.timeSec)}</span><span class='kills'>${entry.kills??'-'}</span><span class='lvl'>${entry.level??'-'}</span></div>`;
+              const currentOpId = ((this.game as any).selectedCharacterData?.id) || entry.characterId;
+              const currentOpName = opName(currentOpId);
+              myRow = `<div class='hs-row me'><span class='rank'>${entry.rank}</span><span class='nick'>${sanitizeName(entry.name)}</span><span class='op'>${currentOpName}</span><span class='time'>${fmt(entry.timeSec)}</span><span class='kills'>${entry.kills??'-'}</span><span class='lvl'>${entry.level??'-'}</span></div>`;
             }
         }
           topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div>`+hint+
           `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='op'>OP</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>`+
-          top.map(e=>`<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='op'>${(e as any).characterId||'-'}</span><span class='time'>${fmt(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('')+myRow+
+          top.map(e=>`<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='op'>${opName((e as any).characterId)}</span><span class='time'>${fmt(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('')+myRow+
           `</div>`;
       } else {
         const hint = user ? 'No scores yet.' : 'No scores yet. First guest run will appear.';

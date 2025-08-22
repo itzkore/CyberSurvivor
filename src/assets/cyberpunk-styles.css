@@ -593,9 +593,10 @@ html, body { font-family: 'Orbitron', sans-serif; }
   left: 0;
   width: 100%;
   height: 100%;
-  background: 
-    radial-gradient(circle at 25% 25%, rgba(0, 255, 255, 0.05) 0%, transparent 50%),
-    radial-gradient(circle at 75% 75%, rgba(255, 0, 255, 0.05) 0%, transparent 50%);
+  /* Removed magenta wash to avoid any red-tinted background perception; keep subtle cyan glows only */
+  background:
+    radial-gradient(circle at 25% 25%, rgba(0, 255, 255, 0.06) 0%, transparent 52%),
+    radial-gradient(circle at 70% 70%, rgba(0, 180, 255, 0.05) 0%, transparent 54%);
   z-index: -1;
 }
 

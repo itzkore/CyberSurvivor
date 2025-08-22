@@ -332,13 +332,38 @@ export class MainMenu {
     // Force pointer-events + z-index for safety (some cascading styles may interfere in certain layouts/resolutions).
     const lb = document.getElementById('login-btn') as HTMLElement | null;
     if (lb) { lb.style.pointerEvents = 'auto'; lb.style.zIndex = '1000'; }
-    const logoutBtn = document.getElementById('logout-btn');
-    logoutBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      googleAuthService.signOut();
-      const dd = document.getElementById('auth-dropdown');
-      if (dd) dd.style.display = 'none';
-    });
+    const logoutBtn = document.getElementById('logout-btn') as HTMLElement | null;
+    if (logoutBtn) {
+      // Safety: ensure the logout button is interactable and above overlays
+      logoutBtn.style.pointerEvents = 'auto';
+      logoutBtn.style.zIndex = '1001';
+      logoutBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        googleAuthService.signOut();
+        // Immediately refresh UI even if an auth event gets delayed
+        this.authUser = null;
+        this.updateAuthUI();
+        this.refreshHighScores(true);
+        const dd = document.getElementById('auth-dropdown');
+        if (dd) dd.style.display = 'none';
+      });
+      // Global fallback in capture phase in case another element blocks bubbling
+      if (!(window as any).__logoutBtnDebugInstalled) {
+        (window as any).__logoutBtnDebugInstalled = true;
+        window.addEventListener('click', (ev) => {
+          const t = ev.target as HTMLElement | null;
+          if (!t) return;
+          if (t.id === 'logout-btn' || t.closest('#logout-btn')) {
+            try { ev.stopPropagation(); } catch {}
+            try { ev.preventDefault(); } catch {}
+            googleAuthService.signOut();
+            this.authUser = null; this.updateAuthUI(); this.refreshHighScores(true);
+            const dd = document.getElementById('auth-dropdown'); if (dd) dd.style.display = 'none';
+          }
+        }, true);
+      }
+    }
     this.authUnsub = googleAuthService.subscribe(user => {
       this.authUser = user;
       this.updateAuthUI();
@@ -770,6 +795,13 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
     body.innerHTML = htmlParts.join('');
   }
 
+  /** Resolve a human-friendly operative name from an id (fallback to id) */
+  private opName(id?: string): string {
+    if (!id) return '-';
+    const c = CHARACTERS.find(ch => ch.id === id);
+    return c?.name || id;
+  }
+
   /** Compare two semantic version strings a vs b returning positive if a>b */
   private semanticCompare(a:string,b:string): number {
     const pa = a.split('.').map(n=>parseInt(n,10));
@@ -861,7 +893,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
         const s=(t%60).toString().padStart(2,'0');
         return m+':'+s;
       };
-      if (sorted.length) {
+  if (sorted.length) {
     const header = `<div class='hs-table'>
           <div class='hs-row hs-head'>
             <span class='hs-cell rank'>#</span>
@@ -872,7 +904,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
             <span class='hs-cell lvl'>Lv</span>
             <span class='hs-cell dps'>DPS</span>
           </div>`;
-  const bodyHtml = sorted.map((e,i) => {
+          const bodyHtml = sorted.map((e,i) => {
           const timeSec = e.timeSec || 1;
           const kills = e.kills ?? 0;
           // Approx DPS estimation: (kills * avgDamagePerKill) / time; assume 50 dmg per kill fallback
@@ -880,7 +912,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
           return `<div class='hs-row data ${e.playerId===me?'me':''}'>
             <span class='hs-cell rank'>${i+1}</span>
             <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
-      <span class='hs-cell op'>${e.characterId || '-'}</span>
+            <span class='hs-cell op'>${this.opName((e as any).characterId)}</span>
             <span class='hs-cell time'>${fmt(e.timeSec)}</span>
             <span class='hs-cell kills'>${kills}</span>
             <span class='hs-cell lvl'>${e.level ?? '-'}</span>
@@ -910,7 +942,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
                 (table as HTMLElement).insertAdjacentHTML('beforeend', `<div class='hs-row data me'>
                 <span class='hs-cell rank'>${meEntry.rank}</span>
                 <span class='hs-cell nick'>${sanitizeName(meEntry.name)}</span>
-                <span class='hs-cell op'>${meEntry.characterId || '-'}</span>
+                <span class='hs-cell op'>${this.opName(meEntry.characterId)}</span>
                 <span class='hs-cell time'>${fmt(meEntry.timeSec)}</span>
                 <span class='hs-cell kills'>${kills}</span>
                 <span class='hs-cell lvl'>${meEntry.level ?? '-'}</span>

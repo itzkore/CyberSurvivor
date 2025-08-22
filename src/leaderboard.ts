@@ -351,8 +351,9 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
           }
         } catch {/* ignore per-player meta errors */}
   // Fallback: when meta is missing or stale, use board‑derived operative id if present
-  const opId = characterId || boardOpId;
-  out[idx/2] = { rank: offset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId: opId };
+  // For per-operative boards, prefer the operative derived from the board name to avoid stale meta mislabels.
+  const effectiveCharId = boardOpId || characterId;
+  out[idx/2] = { rank: offset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId };
       })());
     })(i);
   }
@@ -398,8 +399,9 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
         if (typeof meta.char === 'string') characterId = meta.char;
       }
     } catch {/* ignore meta errors */}
-  const opId = characterId || boardOpId;
-  return { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId: opId };
+  // Prefer board-derived operative id on per-operative boards to guarantee consistent labeling.
+  const effectiveCharId = boardOpId || characterId;
+  return { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId };
   } catch {
     return null;
   }
