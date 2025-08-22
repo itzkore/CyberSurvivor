@@ -108,6 +108,8 @@ export class Player {
   private gunnerHeatMsMax: number = 2000; // max boost duration = 2s
   private gunnerHeatCooldownMs: number = 10000; // full cool-down time = 10s
   private gunnerBoostActive: boolean = false; // true while boosting (Space held and not overheated)
+  private gunnerOverheated: boolean = false;  // lockout when heat hits max
+  private gunnerReengageT: number = 0.3;     // must cool below 30% to reengage after overheat
   // Boost multipliers
   private gunnerBoostFireRate: number = 1.6;  // 60% faster fire rate
   private gunnerBoostDamage: number = 2.0;    // double damage while boosting
@@ -116,7 +118,17 @@ export class Player {
   private gunnerBaseRatePenalty: number = 0.7; // 30% slower when not boosting
   private gunnerBoostJitter: number = 0.06;   // small random aim jitter (radians) for minigun while boosting
 
-  public getGunnerHeat() { return { value: this.gunnerHeatMs, max: this.gunnerHeatMsMax, active: this.gunnerBoostActive }; }
+  public getGunnerHeat() { return { value: this.gunnerHeatMs, max: this.gunnerHeatMsMax, active: this.gunnerBoostActive, overheated: this.gunnerOverheated }; }
+
+  /**
+   * Heavy Gunner boost strength 0..1 based on current heat and whether boost is engaged.
+   * Effects (dmg/fire rate/range/spread/jitter) scale linearly with this value.
+   */
+  private getGunnerBoostT(): number {
+    if (this.characterData?.id !== 'heavy_gunner') return 0;
+    if (!this.gunnerBoostActive) return 0;
+    return Math.max(0, Math.min(1, this.gunnerHeatMs / this.gunnerHeatMsMax));
+  }
 
   // Cyber Runner: Dash (Shift) — dodge distance scales with level (200px at Lv1 → 400px at Lv50), 5s cooldown
   private runnerDashCooldownMsMax: number = 5000;
@@ -364,16 +376,32 @@ export class Player {
         this.cloakCdMs = Math.max(0, this.cloakCdMs - dt);
       }
     }
-    // Heavy Gunner heat model: heats while boosting, cools over 10s when inactive
+    // Passive HP regeneration (applies continuously; supports fractional accumulation)
+    if ((this.regen || 0) > 0 && this.hp < this.maxHp) {
+      const heal = (this.regen || 0) * (dt / 1000);
+      this.hp = Math.min(this.maxHp, this.hp + heal);
+    }
+    // Heavy Gunner heat model (hold-to-boost):
+    // - While Space is held and not overheated, heat ramps up linearly to max (~2s)
+    // - At max heat, enter overheated lockout until cooled below reengage threshold
+    // - When not held (or overheated), heat cools toward 0 over gunnerHeatCooldownMs
     if (this.characterData?.id === 'heavy_gunner') {
-      if (this.gunnerBoostActive) {
+      const holdSpace = !!(keyState[' '] || (keyState as any)['space'] || (keyState as any)['spacebar']);
+      const coolPerMs = this.gunnerHeatMsMax / Math.max(1, this.gunnerHeatCooldownMs); // ms of heat removed per 1ms
+      if (this.gunnerOverheated) {
+        this.gunnerBoostActive = false;
+        if (this.gunnerHeatMs > 0) this.gunnerHeatMs = Math.max(0, this.gunnerHeatMs - dt * coolPerMs);
+        if (this.gunnerHeatMs <= this.gunnerHeatMsMax * this.gunnerReengageT) this.gunnerOverheated = false;
+      } else if (holdSpace) {
+        this.gunnerBoostActive = true;
         this.gunnerHeatMs = Math.min(this.gunnerHeatMsMax, this.gunnerHeatMs + dt);
         if (this.gunnerHeatMs >= this.gunnerHeatMsMax) {
-          this.gunnerBoostActive = false; // overheated
+          this.gunnerOverheated = true;
+          this.gunnerBoostActive = false;
         }
-      } else if (this.gunnerHeatMs > 0) {
-        const coolRate = this.gunnerHeatMsMax / Math.max(1, this.gunnerHeatCooldownMs); // ms cooled per ms
-        this.gunnerHeatMs = Math.max(0, this.gunnerHeatMs - dt * coolRate * this.gunnerHeatMsMax);
+      } else {
+        this.gunnerBoostActive = false;
+        if (this.gunnerHeatMs > 0) this.gunnerHeatMs = Math.max(0, this.gunnerHeatMs - dt * coolPerMs);
       }
     }
 
@@ -411,12 +439,14 @@ export class Player {
           // Apply attack speed modifiers; if in ms, adjust directly; if in frames, adjust frames then convert
           let effCd: number;
           const rateMul = Math.max(0.1, (this.attackSpeed || 1) * (this.fireRateModifier || 1));
-          if (typeof baseCdMs === 'number') {
-            effCd = baseCdMs / rateMul;
-          } else {
-            const effCdFrames = (baseCdFrames as number) / rateMul;
-            effCd = effCdFrames * FRAME_MS;
+          // Heavy Gunner: minigun spins up while boosting — increase fire rate with heat
+          let rateMulWithBoost = rateMul;
+          if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN) {
+            const t = this.getGunnerBoostT();
+            rateMulWithBoost *= (1 + (this.gunnerBoostFireRate - 1) * t);
           }
+          if (typeof baseCdMs === 'number') { effCd = baseCdMs / rateMulWithBoost; }
+          else { const effCdFrames = (baseCdFrames as number) / rateMulWithBoost; effCd = effCdFrames * FRAME_MS; }
           // Gate: only fire if target is within base range (no extra +10%). If a weapon has no range, allow.
           let canFire = true;
           if (spec && typeof spec.range === 'number' && spec.range > 0) {
@@ -425,8 +455,11 @@ export class Player {
             const dist = Math.hypot(dx, dy);
             // Consider temporary range multipliers (e.g., Heavy Gunner boost)
             const isGunner = this.characterData?.id === 'heavy_gunner';
-            const boostOn = isGunner && this.gunnerBoostActive;
-            const rangeMul = boostOn ? this.gunnerBoostRange : 1;
+            let rangeMul = 1;
+            if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
+              const t = this.getGunnerBoostT();
+              rangeMul = 1 + (this.gunnerBoostRange - 1) * t;
+            }
             const effectiveRange = spec.range * rangeMul; // no additive buffer
             canFire = dist <= effectiveRange;
           }
@@ -471,6 +504,20 @@ export class Player {
     this.activeWeapons.clear(); // Clear all weapons
     this.activePassives = []; // Clear all passives
     this.upgrades = []; // Clear upgrade history
+    // Reset passive-derived modifiers to innate baselines
+    this.speed = this.baseMoveSpeed;
+    this.fireRateModifier = 1;
+    this.globalDamageMultiplier = 1;
+    this.magnetRadius = 50;
+    this.regen = 0;
+    // Clear dynamic passive flags stored via indexer
+    try {
+      delete (this as any).shieldChance;
+      delete (this as any).critBonus;
+      delete (this as any).critMultiplier;
+      delete (this as any).piercing;
+      delete (this as any).hasAoeOnKill;
+    } catch {}
   this.shootCooldowns.clear(); // Clear weapon cooldowns (ms timers)
   // Reset class-specific meters
   this.scrapMeter = 0; this.lastScrapTriggerMs = 0;
@@ -716,10 +763,14 @@ export class Player {
         }
         // Heavy Gunner: apply damage/spread boost pre-fire
         const isGunner = this.characterData?.id === 'heavy_gunner';
-        const boostOn = isGunner && this.gunnerBoostActive;
-        if (boostOn) {
-          bulletDamage *= this.gunnerBoostDamage;
-          spread *= this.gunnerBoostSpread;
+        if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
+          const t = this.getGunnerBoostT();
+          if (t > 0) {
+            bulletDamage *= (1 + (this.gunnerBoostDamage - 1) * t);
+            // Interpolate spread factor: 1 -> gunnerBoostSpread
+            const spreadMul = 1 - (1 - this.gunnerBoostSpread) * t;
+            spread *= spreadMul;
+          }
         }
 
         // Staggered burst logic for Blaster (LASER): fire salvo shots sequentially with small gap instead of simultaneously
@@ -811,8 +862,9 @@ export class Player {
             finalAngle = Math.atan2(tdy, tdx);
           }
           // Heavy Gunner: add extra random jitter on minigun aim while boosting for a punchier spray feel
-          if (boostOn && weaponType === WeaponType.GUNNER_MINIGUN) {
-            const j = this.gunnerBoostJitter;
+          if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
+            const t = this.getGunnerBoostT();
+            const j = this.gunnerBoostJitter * t;
             // uniform in [-j, j]
             finalAngle += (Math.random() * 2 - 1) * j;
           }
@@ -823,11 +875,7 @@ export class Player {
             const arcAngle = finalAngle + arcIndex * (arcSpread / Math.max(1,(toShoot-1)||1));
             {
               const b = bm.spawnBullet(originX, originY, originX + Math.cos(arcAngle) * 100, originY + Math.sin(arcAngle) * 100, weaponType, bulletDamage, weaponLevel);
-              if (boostOn && b) {
-                const rMul = this.gunnerBoostRange;
-                if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul*rMul);
-                if (b.life != null) b.life = Math.round(b.life * rMul);
-              }
+              // Smart Rifle has no minigun-based range scaling; bullets are homing and short-range by design.
             }
           } else {
             // Tech Warrior: handle charged volley on the main fire path
@@ -866,14 +914,14 @@ export class Player {
             } else {
               {
                 const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
-                if (boostOn && b) {
-                  const rMul = this.gunnerBoostRange;
+                if (isGunner && b && weaponType === WeaponType.GUNNER_MINIGUN) {
+                  const t = this.getGunnerBoostT();
+                  const rMul = 1 + (this.gunnerBoostRange - 1) * t;
                   if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul*rMul);
                   if (b.life != null) b.life = Math.round(b.life * rMul);
                   // Safety: if minigun, reassert 2x damage on the spawned bullet to ensure doubling sticks
-                  if (weaponType === WeaponType.GUNNER_MINIGUN) {
-                    b.damage = (b.damage ?? bulletDamage) * this.gunnerBoostDamage;
-                  }
+                  const dmgMul = (1 + (this.gunnerBoostDamage - 1) * t);
+                  b.damage = (b.damage ?? bulletDamage) * dmgMul;
                 }
               }
               // Increment Tech meter per non-special spear shot (Tachyon or Singularity)
@@ -909,10 +957,13 @@ export class Player {
     if (weaponType === WeaponType.RUNNER_GUN || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
       const tdx = target.x - originX; const tdy = target.y - originY; finalAngle = Math.atan2(tdy, tdx);
     }
-    // Heavy Gunner: extra jitter on minigun while boosting
-    if (this.characterData?.id === 'heavy_gunner' && this.gunnerBoostActive && weaponType === WeaponType.GUNNER_MINIGUN) {
-      const j = this.gunnerBoostJitter;
-      finalAngle += (Math.random() * 2 - 1) * j;
+    // Heavy Gunner: extra jitter on minigun while boosting, scales with heat t
+    if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN) {
+      const t = this.getGunnerBoostT();
+      if (t > 0) {
+        const j = this.gunnerBoostJitter * t;
+        finalAngle += (Math.random() * 2 - 1) * j;
+      }
     }
   // Apply global damage multiplier (percent-based passive)
   const gdm = (this as any).globalDamageMultiplier || 1;
@@ -957,12 +1008,15 @@ export class Player {
       } else {
   {
     const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
-    if (this.characterData?.id === 'heavy_gunner' && this.gunnerBoostActive && b) {
-      const rMul = this.gunnerBoostRange;
-      if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul*rMul);
-      if (b.life != null) b.life = Math.round(b.life * rMul);
-      if (weaponType === WeaponType.GUNNER_MINIGUN) {
-        b.damage = (b.damage ?? bulletDamage) * this.gunnerBoostDamage;
+    // Scale Heavy Gunner minigun bullets with current heat t
+    if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN && b) {
+      const t = this.getGunnerBoostT();
+      if (t > 0) {
+        const rMul = 1 + (this.gunnerBoostRange - 1) * t;
+        if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul*rMul);
+        if (b.life != null) b.life = Math.round(b.life * rMul);
+        const dmgMul = 1 + (this.gunnerBoostDamage - 1) * t;
+        b.damage = (b.damage ?? bulletDamage) * dmgMul;
       }
     }
   }
@@ -999,7 +1053,8 @@ export class Player {
   const beamDurationMs = 160; // reverted to original duration
       const beamStart = performance.now();
       const range = spec.range || 900; // reverted to original range
-  const beamDamageTotal = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 1.25; // original burst multiplier
+  const gdmRG = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+  const beamDamageTotal = ((spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 1.25) * gdmRG; // apply global damage passive
       const dps = beamDamageTotal / (beamDurationMs / 1000);
       // Register beam effect object on game context for rendering & ticking
       const game: any = this.gameContext;
@@ -1103,9 +1158,10 @@ export class Player {
       if (!game) return;
       const beamAngle = Math.atan2(target.y - originY, target.x - originX);
       const range = spec.range || 1200;
-      const baseDamage = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
+  const baseDamage = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
+  const gdmSN = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
       const heavyMult = 1.6; // toned down for DPS balance
-      let remaining = baseDamage * heavyMult;
+  let remaining = baseDamage * heavyMult * gdmSN;
       const falloff = 0.5; // -50% per pierce for stronger falloff
       const thickness = 6;  // tight precision line
 
@@ -1149,7 +1205,7 @@ export class Player {
           const proj = relX * cosA + relY * sinA;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
           if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius||160))) {
-            const bossDmg = (baseDamage * heavyMult) * 0.7; // further reduced on boss for balance
+            const bossDmg = (baseDamage * heavyMult * gdmSN) * 0.7; // include global damage passive
             boss.hp -= bossDmg;
             window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: bossDmg, isCritical: proj > 600, x: boss.x, y: boss.y } }));
           }
@@ -1194,7 +1250,8 @@ export class Player {
     }
     (this as any)._sniperCharging = true;
     (this as any)._sniperState = 'charging';
-    const chargeTimeMs = 1500;
+  // Shorter steady-aim for Shadow Operative per request
+  const chargeTimeMs = 1000;
     (this as any)._sniperChargeStart = performance.now();
     (this as any)._sniperChargeMax = chargeTimeMs;
     const startTime = performance.now();
@@ -1265,6 +1322,8 @@ export class Player {
           dot.dmg = (dot.dmg || 0) + perTick;
           dot.next = nowBase + tickIntervalMs;
         }
+        // Brief paralysis on impact (0.5s)
+        e._paralyzedUntil = Math.max(e._paralyzedUntil || 0, nowBase + 500);
         e._lastHitByWeapon = WeaponType.VOID_SNIPER as any;
       }
       // Recoil & visuals
@@ -1511,13 +1570,18 @@ Player.prototype.activateAbility = function(this: Player & any) {
       break;
     }
     case 'neural_nomad': {
-      // Overmind Resonance: 5s buff; 15s cooldown
-      if (!this.overmindActive && (this.overmindCdMs <= 0)) {
-        this.overmindActive = true;
+      // Overmind Overload: fire a single, powerful thread overload burst; 15s cooldown
+      if (this.overmindCdMs <= 0) {
+        // Put ability on cooldown immediately (no sustained active window)
+        this.overmindActive = false;
         this.overmindActiveMs = 0;
-  try { (window as any).__overmindActiveUntil = now + 5000; } catch {}
-        // Optional: lightweight feedback
-        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 80, intensity: 2 } })); } catch {}
+        this.overmindCdMs = this.overmindCdMaxMs;
+        // Scale overload slightly by current Neural Threader level
+        const lvl = this.activeWeapons.get(WeaponType.NOMAD_NEURAL) ?? 1;
+  const multiplier = 1 + 0.50 * (Math.max(1, Math.min(7, lvl)) - 1); // 1.0 -> 4.0x (stronger one-shot)
+        try { window.dispatchEvent(new CustomEvent('nomadOverload', { detail: { multiplier } })); } catch {}
+        // Feedback
+        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } })); } catch {}
       }
       break;
     }

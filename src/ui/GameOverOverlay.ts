@@ -94,7 +94,25 @@ export class GameOverOverlay {
   // Submit to global board (extend later)
   const pid = getPlayerId();
   const user = googleAuthService.getCurrentUser();
-  const name = sanitizeName(user?.nickname || user?.name || 'Guest');
+  // Stable numbered guest handle: Guest #1..#99999
+  const getGuestNumber = (playerId: string): number => {
+    try {
+      const existing = localStorage.getItem('guest.number');
+      if (existing) {
+        const n = parseInt(existing, 10);
+        if (Number.isFinite(n) && n >= 1 && n <= 99999) return n;
+      }
+      // Deterministic hash of pid → 1..99999
+      let hash = 0;
+      for (let i = 0; i < playerId.length; i++) {
+        hash = ((hash << 5) - hash + playerId.charCodeAt(i)) | 0;
+      }
+      const num = (Math.abs(hash) % 99999) + 1;
+      localStorage.setItem('guest.number', String(num));
+      return num;
+    } catch { return ((Math.random() * 99999) | 0) + 1; }
+  };
+  const name = sanitizeName(user?.nickname || user?.name || `Guest #${getGuestNumber(pid)}`);
   const maxDpsVal = Math.round((this.game as any).hud?.maxDPS || this.game.getCurrentDPS());
   let topHtml = '';
   if (isLeaderboardConfigured()) {

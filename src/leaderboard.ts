@@ -229,6 +229,7 @@ export async function submitScore(opts: {
   lbLog('submitScore:start', { board: opts.board||'global', timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps });
   const board = opts.board ?? 'global';
   const key = boardKey(board);
+  const metaKey = `${key}:meta`;
   const pid = opts.playerId;
   const name = sanitizeName(opts.name);
   const timeSec = Math.max(0, Math.floor(opts.timeSec));
@@ -242,14 +243,16 @@ export async function submitScore(opts: {
     if (s !== null && s !== undefined) currentBest = Number(s) || 0;
   } catch {/* ignore */}
 
-  // Pokud je toto skóre lepší než dosavadní, aktualizujeme jméno + meta pro BEST RUN
+  // Pokud je toto skóre lepší než dosavadní NA TOMTO BOARDU, aktualizujeme per‑board meta
   if (timeSec > currentBest) {
     try {
-      await redis(['HSET', `name:${pid}`, 'name', name, 'meta', JSON.stringify(meta)]);
+      // Always keep latest nickname globally
+      await redis(['HSET', `name:${pid}`, 'name', name]);
+      // Per‑board meta: field=pid, value=JSON(meta), so each board locks metadata to its best run
+      await redis(['HSET', metaKey, pid, JSON.stringify(meta)]);
     } catch {/* ignore meta persist errors */}
   } else {
-    // Pokud se nezlepšilo, jenom (idempotentně) zapiš skóre s GT (nebude přepsáno)
-    // Jméno můžeme aktualizovat samostatně bez meta, aby změna nicku byla vidět
+    // Always keep nickname fresh even when not improving score
     try { await redis(['HSET', `name:${pid}`, 'name', name]); } catch {/* ignore */}
   }
 
@@ -258,6 +261,8 @@ export async function submitScore(opts: {
 
   if (opts.ttlSeconds && opts.ttlSeconds > 0) {
     await redis(['EXPIRE', key, String(opts.ttlSeconds)]);
+    // Keep meta hash in sync with board lifecycle
+    await redis(['EXPIRE', metaKey, String(opts.ttlSeconds)]).catch(()=>{});
   }
   lbLog('submitScore:done', { pid, board, timeSec });
 }
@@ -319,56 +324,82 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
     return lastTopCache.data;
   }
   const key = boardKey(board);
+  const metaKey = `${key}:meta`;
   // If this is a per‑operative board, capture operative id from board name (e.g., global:op:neural_nomad)
   const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
   const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
-  const flat: string[] = await redis(['ZREVRANGE', key, String(offset), String(offset + limit - 1), 'WITHSCORES']);
-  const out: LeaderEntry[] = new Array(Math.ceil(flat.length / 2));
-  // Build promises for meta fetch in parallel to reduce sequential latency
-  const tasks: Promise<void>[] = [];
-  for (let i = 0; i < flat.length; i += 2) {
-    ((idx: number) => {
-      const playerId = flat[idx];
-      const timeSecRaw = Number(flat[idx + 1]);
-      tasks.push((async () => {
-        let name = playerId;
-        let kills: number | undefined;
-  let level: number | undefined;
-        let maxDps: number | undefined;
-  let characterId: string | undefined;
-  // ZSET score je autoritativní BEST RUN čas
-  const timeSec = timeSecRaw;
-        try {
-          const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
-          if (fetchedName) name = fetchedName;
-          const metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
-          if (metaStr) {
-            const meta = JSON.parse(metaStr);
-            if (typeof meta.kills === 'number') kills = meta.kills;
-            if (typeof meta.level === 'number') level = meta.level;
-            if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
-            if (typeof meta.char === 'string') characterId = meta.char;
-          }
-        } catch {/* ignore per-player meta errors */}
-  // Fallback: when meta is missing or stale, use board‑derived operative id if present
-  // For per-operative boards, prefer the operative derived from the board name to avoid stale meta mislabels.
-  const effectiveCharId = boardOpId || characterId;
-  out[idx/2] = { rank: offset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId };
-      })());
-    })(i);
-  }
-  try {
+
+  // Helper to fetch a page and hydrate metadata
+  const fetchPage = async (pageOffset: number, pageSize: number): Promise<LeaderEntry[]> => {
+    const flat: string[] = await redis(['ZREVRANGE', key, String(pageOffset), String(pageOffset + pageSize - 1), 'WITHSCORES']);
+    const page: LeaderEntry[] = new Array(Math.ceil(flat.length / 2));
+    const tasks: Promise<void>[] = [];
+    for (let i = 0; i < flat.length; i += 2) {
+      ((idx: number) => {
+        const playerId = flat[idx];
+        const timeSecRaw = Number(flat[idx + 1]);
+        tasks.push((async () => {
+          let name = playerId;
+          let kills: number | undefined;
+          let level: number | undefined;
+          let maxDps: number | undefined;
+          let characterId: string | undefined;
+          const timeSec = timeSecRaw; // ZSET score is authoritative best run time
+          try {
+            const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
+            if (fetchedName) name = fetchedName;
+            // Prefer per‑board meta first; fallback to legacy global meta
+            let metaStr = await redis(['HGET', metaKey, playerId]).catch(()=>null);
+            if (!metaStr) metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
+            if (metaStr) {
+              const meta = JSON.parse(metaStr);
+              if (typeof meta.kills === 'number') kills = meta.kills;
+              if (typeof meta.level === 'number') level = meta.level;
+              if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
+              if (typeof meta.char === 'string') characterId = meta.char;
+            }
+          } catch {/* ignore per-player meta errors */}
+          const effectiveCharId = boardOpId || characterId;
+          page[idx/2] = { rank: pageOffset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId };
+        })());
+      })(i);
+    }
     await Promise.all(tasks);
-    lastTopCache = { key: { board, limit, offset }, data: out, ts: performance.now() };
-  // Persist snapshot
-  try { localStorage.setItem(snapshotKey(board, limit, offset), JSON.stringify(out)); } catch {/* ignore quota */}
-  lbLog('fetchTop:done', { board, count: out.length });
-    return out;
-  } catch (e) {
-    lastTopErrorAt = performance.now();
-  lbLog('fetchTop:error', { board, message: (e as any)?.message });
-    throw e;
+    return page.filter(Boolean) as LeaderEntry[];
+  };
+
+  // Only-one-entry-per-name applies to non per‑operative boards ("all operatives" boards)
+  const enforceUniqueByName = !boardOpId;
+  if (!enforceUniqueByName) {
+    // Simple one-shot fetch (original path)
+    const page = await fetchPage(offset, limit);
+    lastTopCache = { key: { board, limit, offset }, data: page, ts: performance.now() };
+    try { localStorage.setItem(snapshotKey(board, limit, offset), JSON.stringify(page)); } catch {}
+    lbLog('fetchTop:done', { board, count: page.length });
+    return page;
   }
+
+  // Unique-by-name collection with paging
+  const seen = new Set<string>();
+  const out: LeaderEntry[] = [];
+  let pageOffset = offset;
+  const pageSize = Math.max(limit, 10);
+  let guard = 0;
+  while (out.length < limit && guard++ < 20) { // safety cap to avoid infinite loop
+    const page = await fetchPage(pageOffset, pageSize);
+    if (!page.length) break;
+    for (let i = 0; i < page.length && out.length < limit; i++) {
+      const e = page[i];
+      const keyName = (e.name || '').toLowerCase();
+      if (!seen.has(keyName)) { seen.add(keyName); out.push({ ...e, rank: (offset + out.length + 1) }); }
+    }
+    pageOffset += page.length; // advance through the underlying ZSET
+    if (page.length < pageSize) break; // end reached
+  }
+  lastTopCache = { key: { board, limit, offset }, data: out, ts: performance.now() };
+  try { localStorage.setItem(snapshotKey(board, limit, offset), JSON.stringify(out)); } catch {}
+  lbLog('fetchTop:done(unique)', { board, count: out.length });
+  return out;
 }
 
 // Fetch a single player's best entry (even if not in current top window)
@@ -376,6 +407,7 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
   if (!isLeaderboardConfigured()) return null;
   lbLog('fetchPlayerEntry:start', { board, playerId });
   const key = boardKey(board);
+  const metaKey = `${key}:meta`;
   // If this is a per‑operative board, capture operative id from board name
   const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
   const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
@@ -390,7 +422,9 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
     try {
       const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
       if (fetchedName) name = fetchedName;
-      const metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
+      // Prefer per‑board meta first; fallback to legacy global meta
+      let metaStr = await redis(['HGET', metaKey, playerId]).catch(()=>null);
+      if (!metaStr) metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
       if (metaStr) {
         const meta = JSON.parse(metaStr);
         if (typeof meta.kills === 'number') kills = meta.kills;

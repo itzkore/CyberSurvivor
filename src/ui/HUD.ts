@@ -135,9 +135,9 @@ export class HUD {
         // Red theme for Tech Warrior meter
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff3b3b', '#3a0000', '#e60012', label);
       } else if (id === 'heavy_gunner' && (this.player as any).getGunnerHeat) {
-  const g: any = (this.player as any).getGunnerHeat();
-  const ratio = g.max > 0 ? g.value / g.max : 0;
-  const label = 'OVERHEAT (Spacebar)';
+        const g: any = (this.player as any).getGunnerHeat();
+        const ratio = g.max > 0 ? g.value / g.max : 0;
+        const label = g.overheated ? 'OVERHEATED' : 'OVERHEAT (Spacebar)';
         // Orange heat theme
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff9300', '#3a1a00', '#ffb347', label);
       } else if (id === 'cyber_runner' && (this.player as any).getRunnerDash) {

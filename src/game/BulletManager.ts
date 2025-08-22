@@ -24,6 +24,8 @@ export class BulletManager {
   private enemyManager: EnemyManager; // Injected EnemyManager
   private player: Player; // direct player reference for stats (crit, piercing)
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid reference
+  // Monotonic id to tag bullets for scoping behaviors (like Neural Threads)
+  private nextBulletId: number = 1;
   // Guard to prevent recursive lattice secondary spawns from re-entering spawnBullet
   private suppressWeaverSecondary: boolean = false;
   // Neural Threader threads (Nomad): lightweight state objects managed here
@@ -39,6 +41,7 @@ export class BulletManager {
     active: boolean;
     color: string;
     beadPhase: number; // for bead animation between pulses (0..1)
+    ownerId: number; // id of the spawning bullet to keep threads isolated
   }> = [];
 
   constructor(assetLoader: AssetLoader, enemySpatialGrid: SpatialGrid<Enemy>, particleManager: ParticleManager, enemyManager: EnemyManager, player: Player) {
@@ -48,6 +51,13 @@ export class BulletManager {
     this.enemyManager = enemyManager; // Assign enemy manager
     this.player = player;
     this.preallocateBullets();
+    // One-shot Overmind Overload: detonate all neural threads with amplified burst, then clear
+    try {
+      window.addEventListener('nomadOverload', ((ev: any) => {
+        const mult = ev?.detail?.multiplier || 1.5;
+        this.handleNomadOverload(mult);
+      }) as EventListener);
+    } catch { /* ignore */ }
   }
   /** Spawn a radial shrapnel burst for Scrap-Saw. Uses simple small bullets with short/medium range.
    *  Optional range/speed let callers align with the triggering explosion/sweep radius.
@@ -946,12 +956,12 @@ export class BulletManager {
                 const spec: any = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
                 const stats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : { anchors: 2, threadLifeMs: 3000, pulseIntervalMs: 500, pulsePct: 0.6 };
                 // Find existing active thread for recent hits to append, else create a new one
-                let thread = this.neuralThreads.find(t => t.active && (t.expireAt - performance.now()) > 0);
+                let thread = this.neuralThreads.find(t => t.active && (t.expireAt - performance.now()) > 0 && t.ownerId === (b as any)._id);
                 const now = performance.now();
                 const overmindUntil = (window as any).__overmindActiveUntil || 0;
                 const color = '#26ffe9';
                 if (!thread) {
-                  thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 3000), nextPulseAt: now + (stats.pulseIntervalMs || 500), pulseMs: (stats.pulseIntervalMs || 500), baseDamage: b.damage || 20, pulsePct: (stats.pulsePct || 0.6), maxAnchors: (stats.anchors || 2), active: true, color, beadPhase: 0 };
+                  thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 3000), nextPulseAt: now + (stats.pulseIntervalMs || 500), pulseMs: (stats.pulseIntervalMs || 500), baseDamage: b.damage || 20, pulsePct: (stats.pulsePct || 0.6), maxAnchors: (stats.anchors || 2), active: true, color, beadPhase: 0, ownerId: (b as any)._id };
                   this.neuralThreads.push(thread);
                 }
                 // Append if not already in anchors
@@ -969,6 +979,29 @@ export class BulletManager {
               // Mark direct hit
               const anyE: any = enemy as any;
               anyE._psionicMarkUntil = Math.max(anyE._psionicMarkUntil||0, nowMs + 1400);
+            }
+            // Psionic Wave ricochet: at L1 gain 1 bounce, +1 per level
+            if (b.weaponType === WeaponType.PSIONIC_WAVE && (b as any).bouncesRemaining && (b as any).bouncesRemaining > 0) {
+              const searchRadius = 560;
+              const candidates = this.enemySpatialGrid.query(b.x, b.y, searchRadius);
+              let best: any = null; let bestD2 = Infinity;
+              for (let ci = 0; ci < candidates.length; ci++) {
+                const c = candidates[ci];
+                if (!c.active || c.hp <= 0) continue;
+                const cid = (c as any).id || (c as any)._gid;
+                if (b.hitIds && cid && b.hitIds.indexOf(cid) !== -1) continue;
+                const dxC = c.x - b.x; const dyC = c.y - b.y; const d2C = dxC*dxC + dyC*dyC;
+                if (d2C < bestD2) { best = c; bestD2 = d2C; }
+              }
+              if (best) {
+                const curSpeed = Math.hypot(b.vx, b.vy) || ((WEAPON_SPECS as any)[WeaponType.PSIONIC_WAVE]?.speed || 9.1);
+                const dxN = best.x - b.x; const dyN = best.y - b.y; const distN = Math.hypot(dxN, dyN) || 1;
+                b.vx = dxN / distN * curSpeed;
+                b.vy = dyN / distN * curSpeed;
+                (b as any).bouncesRemaining -= 1;
+                intersectionPoint = null;
+                continue;
+              }
             }
             // Plasma detonation on first impact (no piercing). Determine over/charged multipliers here.
             if (b.weaponType === WeaponType.PLASMA) {
@@ -1620,6 +1653,45 @@ export class BulletManager {
   }
 
   /**
+   * Nomad Overload: Immediately detonate all active neural threads for a burst of damage.
+   * Each anchor takes a burst equal to baseDamage * pulsePct * 2.5 * multiplier.
+   * Nearby enemies along segments take a reduced fraction. Threads are then deactivated.
+   */
+  private handleNomadOverload(multiplier: number) {
+    try {
+      if (!this.neuralThreads || this.neuralThreads.length === 0) return;
+      for (let i = 0; i < this.neuralThreads.length; i++) {
+        const t = this.neuralThreads[i];
+        if (!t.active || !t.anchors || t.anchors.length === 0) continue;
+        const burst = Math.max(1, Math.round(t.baseDamage * t.pulsePct * 5.0 * (multiplier || 1))); // doubled overall
+        // Damage anchors heavily
+        for (let ai = 0; ai < t.anchors.length; ai++) {
+          const e = t.anchors[ai]; if (!e.active || e.hp <= 0) continue;
+          this.enemyManager.takeDamage(e, burst, false, false, WeaponType.NOMAD_NEURAL);
+          if (this.particleManager) this.particleManager.spawn(e.x, e.y, 2, '#9ffcf6');
+          // Flag RGB glitch effect
+          const anyE: any = e as any; anyE._rgbGlitchUntil = Math.max(anyE._rgbGlitchUntil||0, performance.now() + 220); anyE._rgbGlitchPhase = (anyE._rgbGlitchPhase||0) + 1;
+        }
+        // Splash along segments
+        for (let ai = 0; ai < t.anchors.length - 1; ai++) {
+          const a = t.anchors[ai], b = t.anchors[ai+1];
+          const mx = (a.x + b.x) * 0.5, my = (a.y + b.y) * 0.5;
+          const near = this.enemySpatialGrid.query(mx, my, 110);
+          for (let ni = 0; ni < near.length; ni++) {
+            const e = near[ni]; if (!e.active || e.hp <= 0) continue;
+            if (t.anchors.indexOf(e) !== -1) continue;
+            this.enemyManager.takeDamage(e, Math.max(1, Math.round(burst * 0.33)), false, false, WeaponType.NOMAD_NEURAL);
+            const anyE: any = e as any; anyE._rgbGlitchUntil = Math.max(anyE._rgbGlitchUntil||0, performance.now() + 180); anyE._rgbGlitchPhase = (anyE._rgbGlitchPhase||0) + 1;
+          }
+        }
+        // Visual zap flash
+        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 2 } })); } catch {}
+        t.active = false; // consume the thread
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
    * Smart Rifle targeting rules (priority order):
    * 1. If a boss is active & alive, ALWAYS target the boss (ignores distance & other enemies).
    * 2. Otherwise pick the "toughest" enemy within searchRadius:
@@ -1678,6 +1750,8 @@ export class BulletManager {
     b.y = y;
     b.vx = Math.cos(angle) * speed;
     b.vy = Math.sin(angle) * speed;
+  // Assign unique id for this spawn (used to scope Neural Threads per-shot)
+  (b as any)._id = this.nextBulletId++;
   (b as any)._spawnTime = performance.now(); // record spawn timestamp for time-based visuals
   // Clear pooled explosion / lifetime state
   (b as any)._exploded = false;
@@ -1786,6 +1860,15 @@ export class BulletManager {
         if ((scaled as any).bounces != null) bounceCount = (scaled as any).bounces;
       }
       (b as any).bouncesRemaining = bounceCount;
+    }
+    // Psionic Wave: add level-based ricochet bounces (L1=1, +1 per level)
+    if (weapon === WeaponType.PSIONIC_WAVE) {
+      try {
+        const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {} as any;
+        const base = (scaled as any).bounces;
+        if (base != null) (b as any).bouncesRemaining = base;
+        else (b as any).bouncesRemaining = Math.max(0, level);
+      } catch { (b as any).bouncesRemaining = Math.max(0, level); }
     }
     // Give Triple Crossbow a single pierce (hit 2 targets total)
     if (weapon === WeaponType.TRI_SHOT) {

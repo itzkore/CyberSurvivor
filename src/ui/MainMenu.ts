@@ -35,6 +35,19 @@ export class MainMenu {
     const today = new Date().toISOString().slice(0,10);
     return [
       {
+        version: '0.2.1',
+        date: today,
+        entries: [
+          { tag: 'SYS', text: 'Leaderboard: time is the rank key; per‑board metadata now locks Kills/Level/Operative to the exact record run.' },
+          { tag: 'UI', text: 'Highscores: “All Operatives” now shows one entry per name; consistent operative labels across all boards.' },
+          { tag: 'BAL', text: 'Passive Regen now applies continuously with fractional accumulation (matches balance tests).' },
+          { tag: 'BAL', text: 'Bio Engineer — Bio Toxin DoT scales strongly with weapon level and global damage; impact damage is secondary.' },
+          { tag: 'OPS', text: 'Neural Nomad — Overmind Overload reworked to a single powerful detonation; per‑shot thread ownership.' },
+          { tag: 'FX', text: 'Overmind hits add a brief RGB “old TV” glitch on affected enemies.' },
+          { tag: 'NEW', text: 'Psionic Wave ricochet: +1 bounce per level; avoids re‑hitting the same target.' }
+        ]
+      },
+      {
         version: '0.2.0',
         date: today,
         entries: [
@@ -150,7 +163,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.0 — OPERATIVES PATCH</div>
+            <div class="version-tag">v0.2.1 — OPERATIVES PATCH</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
@@ -478,17 +491,16 @@ export class MainMenu {
     this.refreshHighScores(false);
     // Board selector events
     this.mainMenuElement.querySelectorAll('.hs-board-select [data-board]')
-      .forEach(btn => btn.addEventListener('click', (e)=>{
+      .forEach(btn => btn.addEventListener('click', (e) => {
         const b = (e.currentTarget as HTMLElement).getAttribute('data-board') || 'global';
         this.currentBoard = b;
         this.refreshHighScores(true); // silent to preserve current table until new data arrives
       }));
-    // Populate operative select
-    const opSel = this.mainMenuElement.querySelector('#hs-op-select') as HTMLSelectElement | null;
+    // Populate operative filter select
+    const opSel = document.getElementById('hs-op-select') as HTMLSelectElement | null;
     if (opSel) {
-      // Unique list from CHARACTERS
       const seen = new Set<string>();
-      for (let i=0;i<CHARACTERS.length;i++) {
+      for (let i = 0; i < CHARACTERS.length; i++) {
         const c = CHARACTERS[i];
         if (!c?.id || seen.has(c.id)) continue;
         seen.add(c.id);
@@ -501,8 +513,8 @@ export class MainMenu {
         this.refreshHighScores(true);
       });
     }
-  // Render structured patch notes
-  this.renderPatchNotes();
+    // Render structured patch notes
+    this.renderPatchNotes();
   }
 
   private setupEventListeners(): void {
@@ -862,7 +874,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   const snap = loadSnapshot(finalBoard, 10, 0) || loadSnapshot(board, 10, 0);
         if (snap) {
           const fmtS = (t:number)=>`${Math.floor(t/60).toString().padStart(2,'0')}:${(t%60).toString().padStart(2,'0')}`;
-      const snapHtml = `<div class='hs-table'>
+          const snapHtml = `<div class='hs-table'>
             <div class='hs-row hs-head'>
               <span class='hs-cell rank'>#</span>
               <span class='hs-cell nick'>NAME</span>
@@ -871,10 +883,10 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
               <span class='hs-cell kills'>Kills</span>
               <span class='hs-cell lvl'>Lv</span>
               <span class='hs-cell dps'>DPS</span>
-            </div>` + snap.map((e,i)=>`<div class='hs-row data'>
+      </div>` + snap.map((e,i)=>`<div class='hs-row data'>
               <span class='hs-cell rank'>${i+1}</span>
               <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
-        <span class='hs-cell op'>${(e as any).characterId || '-'}</span>
+    <span class='hs-cell op'>${this.opName((e as any).characterId)}</span>
               <span class='hs-cell time'>${fmtS(e.timeSec)}</span>
               <span class='hs-cell kills'>${e.kills??'-'}</span>
               <span class='hs-cell lvl'>${e.level??'-'}</span>

@@ -649,7 +649,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Sweep perpendicular to enemy flow—pierce maximizes coverage.',
     'Tag elites/bosses, then pour damage while the psionic mark is active.',
     'Slows, pulls, or chokepoints extend beam uptime and stack marks safely.'
-  ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=28, baseCooldown=28, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=28, baseCooldown=28, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); const bounces = Math.max(0, level); return {damage:dmg, cooldown:cd, bounces}; } },
   [WeaponType.SCAVENGER_SLING]: { id: WeaponType.SCAVENGER_SLING, name: 'Scavenger Sling', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 38, salvo: 1, spread: 0, projectile: 'rock_gray', speed: 7, range: 300, maxLevel: 7, damage: 38, projectileVisual: { type: 'bullet', color: '#808080', size: 10, glowColor: '#808080', glowRadius: 7 }, traits: ['Bounces','Scaling'], isClassWeapon: true, knockback: 24, getLevelStats(level:number){ const baseDamage=38, baseCooldown=38, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   /** Neural Nomad class weapon: Neural Threader — pierce to anchor enemies into a threaded link that pulses. */
   [WeaponType.NOMAD_NEURAL]: {
@@ -691,7 +691,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Prioritize elites and bosses—armor pierce makes headway through tanks.'
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=95, baseCooldown=95, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   /** Void Sniper: Shadow Operative variant of Ghost Sniper. Deals damage over time only. */
-  [WeaponType.VOID_SNIPER]: { id: WeaponType.VOID_SNIPER, name: 'Void Sniper', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 95, projectileVisual: { type: 'laser', color: '#6A0DAD', thickness: 2, length: 140, glowColor: '#B266FF', glowRadius: 22 }, traits: ['Laser','Damage Over Time','Pierces','Scaling'], usageTips: [
+  [WeaponType.VOID_SNIPER]: { id: WeaponType.VOID_SNIPER, name: 'Void Sniper', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 95, projectileVisual: { type: 'laser', color: '#6A0DAD', thickness: 2, length: 140, glowColor: '#B266FF', glowRadius: 22 }, traits: ['Laser','Paralysis (0.5s)','Damage Over Time','Pierces','Scaling'], usageTips: [
     'Tag elites and kite—DoT stacks on the same target.',
     'Dark tick visuals confirm stacks; keep targets inside beam length.',
     'Pair with slows or knockback to keep afflicted mobs in range.'

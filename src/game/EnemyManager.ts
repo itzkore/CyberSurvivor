@@ -107,6 +107,9 @@ export class EnemyManager {
   private enemySprites: Record<string, { normal: HTMLCanvasElement; flash: HTMLCanvasElement; normalFlipped?: HTMLCanvasElement; flashFlipped?: HTMLCanvasElement } > = Object.create(null);
   private sharedEnemyImageLoaded = false; // indicates enemy_default.png processed
   private usePreRenderedSprites: boolean = true;
+  // Weaver Lattice tick scheduler
+  private latticeTickIntervalMs: number = 500; // 0.5s
+  private latticeNextTickMs: number = 0;
 
   /**
    * EnemyManager constructor
@@ -248,6 +251,15 @@ export class EnemyManager {
     // Psionic mark slow: flat 25% while active
   const now = performance.now();
   if (eAny._psionicMarkUntil && eAny._psionicMarkUntil > now) slow = Math.max(slow, 0.25);
+    // Weaver Lattice slow: 70% slow to all enemies currently within lattice radius around player
+    try {
+      const until = (window as any).__weaverLatticeActiveUntil || 0;
+      if (until > now) {
+        const dx = e.x - this.player.x; const dy = e.y - this.player.y;
+        const r = 320; // match draw/update radius
+        if (dx*dx + dy*dy <= r*r) slow = Math.max(slow, 0.70);
+      }
+    } catch {}
     return baseSpeed * (1 - slow);
   }
 
@@ -468,12 +480,18 @@ export class EnemyManager {
       if (!e._poisonStacks) continue;
       if (!e.active || e.hp <= 0) { e._poisonStacks = 0; continue; }
       if (now >= e._poisonExpire) { e._poisonStacks = 0; continue; }
-      if (now >= e._poisonNextTick) {
+    if (now >= e._poisonNextTick) {
         e._poisonNextTick += this.poisonTickIntervalMs;
         const stacks = e._poisonStacks | 0;
         if (stacks > 0) {
-          // Convert per-second DPS into per-tick damage
-          const dps = this.poisonDpsPerStack * stacks;
+      // Convert per-second DPS into per-tick damage.
+      // Scale Bio Toxin DoT with weapon level and global damage multiplier so DoT is the primary scaler.
+      const perStackBase = this.poisonDpsPerStack;
+      let level = 1;
+      try { level = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN) ?? 1; } catch {}
+      const levelMul = 1 + Math.max(0, (level - 1)) * 0.35; // +35% per level after L1 (L7 ~ 3.1x)
+      const dmgMul = (this.player as any)?.globalDamageMultiplier || 1;
+      const dps = perStackBase * levelMul * dmgMul * stacks;
           const perTick = dps * (this.poisonTickIntervalMs / 1000);
           this.takeDamage(e as Enemy, perTick, false, false, WeaponType.BIO_TOXIN);
           // Visual feedback: brief green flash + micro-shake
@@ -710,6 +728,34 @@ export class EnemyManager {
   const drawX = enemy.x + shakeX + stepOffsetX - size/2;
   const drawY = enemy.y + shakeY + stepOffsetY - size/2;
   ctx.drawImage(baseImg, drawX, drawY, size, size);
+        // RGB glitch overlay (for Overmind overload hits): brief channel-split style outlines
+        if ((eAny._rgbGlitchUntil || 0) > now) {
+          const tLeft = Math.max(0, Math.min(1, (eAny._rgbGlitchUntil - now) / 220));
+          const off = 1 + Math.round(2 * tLeft);
+          const cx = enemy.x + shakeX, cy = enemy.y + shakeY;
+          const r = enemy.radius * 1.18;
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.lineWidth = 1.5;
+          ctx.shadowBlur = 0;
+          // Red (left)
+          ctx.strokeStyle = '#ff2a2a';
+          ctx.beginPath(); ctx.arc(cx - off, cy, r, 0, Math.PI*2); ctx.stroke();
+          // Green (center)
+          ctx.strokeStyle = '#2aff2a';
+          ctx.beginPath(); ctx.arc(cx, cy, r*0.98, 0, Math.PI*2); ctx.stroke();
+          // Blue (right)
+          ctx.strokeStyle = '#2a66ff';
+          ctx.beginPath(); ctx.arc(cx + off, cy, r, 0, Math.PI*2); ctx.stroke();
+          // Occasional scanline slices for extra glitch vibe
+          if (((eAny._rgbGlitchPhase||0) ^ 0) % 2 === 0) {
+            const sliceY = cy + ((eAny._rgbGlitchPhase||0) % 5 - 2) * 2;
+            ctx.globalAlpha = 0.35 * tLeft;
+            ctx.strokeStyle = '#66ccff';
+            ctx.beginPath(); ctx.moveTo(cx - r, sliceY); ctx.lineTo(cx + r, sliceY); ctx.stroke();
+          }
+          ctx.restore();
+        }
         // Psionic mark aura (visible slow indicator)
         if ((eAny._psionicMarkUntil || 0) > now) {
           ctx.save();
@@ -762,8 +808,8 @@ export class EnemyManager {
             ctx.globalAlpha = 0.22;
             ctx.beginPath();
             ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
-            // If last hit was from Data Sigil pulse, tint magenta; else green for poison
-            const tint = lastHit === WeaponType.DATA_SIGIL ? '#FF00FF' : '#00FF00';
+            // If last hit was from Data Sigil or Psionic Wave pulse, tint magenta; else green for poison
+            const tint = (lastHit === WeaponType.DATA_SIGIL || lastHit === WeaponType.PSIONIC_WAVE) ? '#FF00FF' : '#00FF00';
             ctx.fillStyle = tint;
             ctx.shadowColor = tint;
             ctx.shadowBlur = 10;
@@ -834,7 +880,7 @@ export class EnemyManager {
             ctx.globalAlpha = 0.22;
             ctx.beginPath();
             ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
-            const tint = lastHit === WeaponType.DATA_SIGIL ? '#FF00FF' : '#00FF00';
+            const tint = (lastHit === WeaponType.DATA_SIGIL || lastHit === WeaponType.PSIONIC_WAVE) ? '#FF00FF' : '#00FF00';
             ctx.fillStyle = tint;
             ctx.shadowColor = tint;
             ctx.shadowBlur = 10;
@@ -975,6 +1021,39 @@ export class EnemyManager {
   const latticeActive = latticeUntil > nowMs;
   const latticeR = latticeActive ? 320 : 0;
   const latticeR2 = latticeR * latticeR;
+  // Lattice periodic damage: every 0.5s, deal 50% of Psionic Wave damage to enemies inside the zone
+  if (latticeActive) {
+    if (nowMs >= this.latticeNextTickMs) {
+      // Determine current Psionic Wave level and base damage
+      let lvl = 1;
+      try {
+        const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+        if (aw && typeof aw.get === 'function') {
+          lvl = aw.get(WeaponType.PSIONIC_WAVE) || 1;
+        }
+      } catch {}
+      const spec = WEAPON_SPECS[WeaponType.PSIONIC_WAVE];
+      const baseDmg = (spec?.getLevelStats?.(lvl)?.damage as number) || spec?.damage || 0;
+      const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+      const tickDamage = Math.max(1, Math.round(baseDmg * 0.50 * gdm));
+      const px = this.player.x, py = this.player.y;
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e = this.enemies[i];
+        if (!e.active || e.hp <= 0) continue;
+        const dx = e.x - px; const dy = e.y - py;
+        if (dx*dx + dy*dy <= latticeR2) {
+          this.takeDamage(e, tickDamage);
+          const eAny: any = e as any;
+          eAny._poisonFlashUntil = nowMs + 120; // reuse flash channel for quick feedback
+          (e as any)._lastHitByWeapon = WeaponType.PSIONIC_WAVE;
+        }
+      }
+      this.latticeNextTickMs = nowMs + this.latticeTickIntervalMs;
+    }
+  } else {
+    // Reset scheduler baseline so first tick fires promptly next activation
+    this.latticeNextTickMs = nowMs + this.latticeTickIntervalMs;
+  }
   // Rebuild active enemy cache while updating (single pass)
     this.activeEnemies.length = 0;
   // Hoist globals used inside the loop
