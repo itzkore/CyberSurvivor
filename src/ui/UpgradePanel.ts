@@ -452,9 +452,11 @@ export class UpgradePanel {
     this.shuffle(weaponOptions);
     // Build passive upgrade/unlock pool
     const passiveOptions: UpgradeOption[] = [];
+    const MAX_PASSIVES = 5;
     for (const p of PASSIVE_SPECS) {
       const existing = this.player.activePassives.find(ap => ap.type === p.name);
-      if (!ownedPassives.includes(p.name)) {
+      // Only offer new passive unlocks if under the passive cap; always allow upgrades.
+      if (!ownedPassives.includes(p.name) && this.player.activePassives.length < MAX_PASSIVES) {
         passiveOptions.push({
           type: 'passive',
           id: p.id,

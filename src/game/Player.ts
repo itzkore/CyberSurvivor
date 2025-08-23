@@ -27,7 +27,11 @@ export class Player {
   /**
    * Size of the player sprite (diameter in pixels)
    */
-  public size: number = 64; // Match asset dimensions for visibility
+  public size: number = 64; // Sprite draw size (computed from baseSpriteSize * characterScale)
+  /** Base sprite diameter before per-character scaling */
+  private baseSpriteSize: number = 64;
+  /** Character visual/physical scale (1.0 = default). Used to scale sprite size and hurtbox radius. */
+  private characterScale: number = 1.0;
 
   /**
    * Movement speed of the player (units per tick)
@@ -793,6 +797,14 @@ export class Player {
       } else {
       }
     } else {
+      // Enforce max passive slots (cap at 5). Allow upgrades but block new unlocks beyond the cap.
+      const MAX_PASSIVES = 5;
+      if (this.activePassives.length >= MAX_PASSIVES) {
+        Logger.info(`[Player.addPassive] Passive slots full (${MAX_PASSIVES}); cannot unlock '${type}'.`);
+        // Optional: surface a UI toast/event without coupling to UI layers.
+        try { window.dispatchEvent(new CustomEvent('upgradeNotice', { detail: { type: 'passive-cap', message: `Passive slots full (${MAX_PASSIVES}/5). Upgrade existing passives.` } })); } catch {}
+        return;
+      }
       const newPassive = { type, level: 1 };
       this.activePassives.push(newPassive);
       applyPassive(this, passiveSpec.id, newPassive.level);
@@ -808,24 +820,82 @@ export class Player {
   // Removed setPlayerLook as player look is now based on shape/color
 
   private findNearestEnemy(): Enemy | null {
-    // Global auto-aim: toggle between 'closest' and 'toughest'; boss always has top priority if alive
+    // Global auto-aim: toggle between 'closest' and 'toughest'; add range-aware fallback for 'toughest'
     const aimMode: 'closest' | 'toughest' = ((this.gameContext as any)?.aimMode) || ((window as any).__aimMode) || 'closest';
-    // Boss-first override
+
+    // Compute an effective maximum weapon range for target selection.
+    // If any weapon has no defined range, treat as Infinity. Include dynamic range boost for Heavy Gunner's minigun.
+    let maxRange = 0; // 0 -> no range info found yet
+    try {
+      if (this.activeWeapons && this.activeWeapons.size > 0) {
+        for (const [w, _lvl] of this.activeWeapons) {
+          const spec = (WEAPON_SPECS as any)[w];
+          let r = (spec && typeof spec.range === 'number') ? spec.range : Infinity;
+          if (this.characterData?.id === 'heavy_gunner' && w === WeaponType.GUNNER_MINIGUN) {
+            const t = this.getGunnerBoostT();
+            const rangeMul = 1 + (this.gunnerBoostRange - 1) * t;
+            if (Number.isFinite(r)) r *= rangeMul; // only scale finite ranges
+          }
+          if (!Number.isFinite(r)) { maxRange = Infinity; break; }
+          if (r > maxRange) maxRange = r;
+        }
+      } else {
+        maxRange = Infinity; // no weapons -> don't constrain selection
+      }
+    } catch { maxRange = Infinity; }
+    const maxRangeSq = Number.isFinite(maxRange) ? (maxRange * maxRange) : Infinity;
+
+    // Prefer boss first only if within effective range
     try {
       const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
-      if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') return boss as any;
+      if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+        const dxB = (boss.x ?? 0) - (this.x ?? 0);
+        const dyB = (boss.y ?? 0) - (this.y ?? 0);
+        const d2B = dxB * dxB + dyB * dyB;
+        if (d2B <= maxRangeSq) return boss as any;
+      }
     } catch {}
+
     const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
     let pick: Enemy | null = null;
+
     if (aimMode === 'toughest') {
+      // 1) Try toughest within range
       let bestHp = -1;
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
         if (!e || !(e as any).active || e.hp <= 0) continue;
+        const dx = (e.x ?? 0) - (this.x ?? 0);
+        const dy = (e.y ?? 0) - (this.y ?? 0);
+        const d2 = dx * dx + dy * dy;
+        if (d2 > maxRangeSq) continue;
         const hpMax = (e as any).maxHp ?? e.hp;
         if (hpMax > bestHp) { bestHp = hpMax; pick = e; }
       }
+      if (pick) return pick;
+      // 2) Fallback: closest within range
+      let bestD2 = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (!e || !(e as any).active || e.hp <= 0) continue;
+        const dx = (e.x ?? 0) - (this.x ?? 0);
+        const dy = (e.y ?? 0) - (this.y ?? 0);
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = e; }
+      }
+      if (pick) return pick;
+      // 3) Last resort: closest overall
+      bestD2 = Number.POSITIVE_INFINITY; pick = null;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (!e || !(e as any).active || e.hp <= 0) continue;
+        const dx = (e.x ?? 0) - (this.x ?? 0);
+        const dy = (e.y ?? 0) - (this.y ?? 0);
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; pick = e; }
+      }
     } else {
+      // 'closest' mode unchanged
       let bestD2 = Number.POSITIVE_INFINITY;
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
@@ -990,7 +1060,12 @@ export class Player {
               const spreadAng = 12 * Math.PI / 180;
               const base = finalAngle;
               const lvl = weaponLevel;
-              const dmgBase = (this.bulletDamage || bulletDamage) * 2.0;
+              // Supercharge damage should scale with the Tachyon Spear's level-based damage, not flat player damage.
+              const tachSpec: any = (WEAPON_SPECS as any)[WeaponType.TACHYON_SPEAR];
+              const scaled = tachSpec?.getLevelStats ? tachSpec.getLevelStats(lvl) : { damage: bulletDamage };
+              const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+              const volleyMul = 2.0; // keep current x2 burst feel
+              const dmgBase = Math.round(baseDmgLeveled * volleyMul * (this.globalDamageMultiplier || 1));
               const angles = [base - spreadAng, base, base + spreadAng];
               for (let ai=0; ai<angles.length; ai++) {
                 const a = angles[ai];
@@ -1784,9 +1859,17 @@ export class Player {
         this.addWeapon(data.defaultWeapon);
       }
     }
-  // Cache baseSpeed AFTER scaling applied
+    // Apply per-character visual/physical scale
+    // Tech Warrior is 25% larger (sprite + hurtbox)
+    this.characterScale = (data?.id === 'tech_warrior') ? 1.25 : 1.0;
+    // Recompute sprite size from base
+    this.size = Math.round(this.baseSpriteSize * this.characterScale);
+    // Cache baseSpeed AFTER scaling applied
   this.baseSpeed = this.speed;
   }
+
+  /** Returns per-character scale (1.0 = default). */
+  public getCharacterScale(): number { return this.characterScale; }
 
   /** Returns innate (pre-passive) movement speed */
   public getBaseMoveSpeed(): number { return this.baseMoveSpeed; }

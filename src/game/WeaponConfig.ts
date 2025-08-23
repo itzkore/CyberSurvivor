@@ -105,6 +105,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.PISTOL]:   {
     id: WeaponType.PISTOL,
     name: 'Desert Eagle',
+  description: 'Heavy sidearm favored by operatives who like decisive hits. Reliable at mid\-long lanes with stout knockback.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
   cooldown: 70, // adjusted to align L1 DPS target (50 DPS)
     salvo: 1,
@@ -156,6 +157,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     },
     explosionRadius: 100,
     traits: ['Heavy', 'High Damage', 'Strong Recoil', 'Large Caliber'],
+    usageTips: [
+      'Pick straight corridors: single shots land best at range.',
+      'Time shots on elites—knockback buys safety between volleys.',
+      'Upgrade cooldown early to smooth damage rhythm.'
+    ],
     evolution: { evolvedWeaponType: WeaponType.SHOTGUN, requiredPassive: 'Bullet Velocity' },
     isClassWeapon: false,
     knockback: 32 // Desert Eagle: strong knockback
@@ -163,6 +169,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.SHOTGUN]:  {
     id: WeaponType.SHOTGUN,
     name: 'Shotgun',
+  description: 'Close\-quarters burst. When all pellets land, it erases crowds.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 95,
     salvo: 5,
@@ -184,6 +191,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   trailLength: 8
     },
     traits: ['High Damage', 'Short Range', 'Tight Spread'],
+    usageTips: [
+      'Fight inside 200px—pellets fall off hard beyond that.',
+      'Feather movement to keep the cone tight.',
+      'Large targets can eat multiple pellets at once—hug elites.'
+    ],
     isClassWeapon: false,
     knockback: 48, // Shotgun: very strong knockback
     /**
@@ -215,6 +227,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.TRI_SHOT]: {
     id: WeaponType.TRI_SHOT,
     name: 'Triple Crossbow',
+  description: 'Triple volley piercing bolts that reward clean lines and long lanes.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 100, // slightly faster base to smooth early feel
     salvo: 3,      // three bolts per volley (central + two angled)
@@ -278,6 +291,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.RAPID]:    {
     id: WeaponType.RAPID,
     name: 'Smart Rifle',
+  description: 'Micro\-guided darts that bias toward high\-value targets. Slow to start, relentless once locked.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     // Bee-like micro-missiles: slower base fire rate, very high reliability hitting priority target
     cooldown: 42, // frames; improved by level scaling
@@ -298,6 +312,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       trailLength: 34
     },
     traits: ['Homing','Boss Focus','High Range','Evolution Ready'],
+    usageTips: [
+      'Maintain proximity—homing stays tighter up close.',
+      'Let darts curve; oversteering can cause pathing losses.',
+      'Bosses get priority—use it to clean elites during waves.'
+    ],
     isClassWeapon: false,
     /**
      * Smart Rifle scaling: lowers cooldown, increases damage & turn rate, adds auxiliary darts (salvo) late.
@@ -318,6 +337,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.LASER]:    {
     id: WeaponType.LASER,
   name: 'Laser Blaster',
+  description: 'Three\-bolt burst of coherent light. Feels like a short, angry beam.',
     icon: '/assets/ui/icons/upgrade_speed.png',
   cooldown: 70, // slowed fire rate (~0.86 bursts/sec)
     salvo: 3,     // 3 shots per burst
@@ -339,6 +359,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   trailLength: 18
     },
     traits: ['Burst','Long Range','High Damage','Burn DoT','Stacking (3x)'],
+    usageTips: [
+      'Stagger steps between bursts to land all three bolts.',
+      'Aim down long sightlines—bolts stay lethal far out.',
+      'Burn stacks reward focus on a single target.'
+    ],
     isClassWeapon: false,
   knockback: 3, // reduced to 25% of previous knockback
     getLevelStats(level: number) {
@@ -358,6 +383,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.BEAM]: {
     id: WeaponType.BEAM,
     name: 'Beam',
+  description: 'Sustained lance that carves through lines. Short uptime, huge authority.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 50,
     salvo: 1,
@@ -378,6 +404,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       trailLength: 30
     },
     traits: ['Boss Beam', 'Epic Glow', 'Animated Core'],
+    usageTips: [
+      'Sweep across the densest packs to maximize ticks.',
+      'Don’t overtrack small targets—let them walk into the beam.',
+      'Pair with slows or pulls for longer contact.'
+    ],
     isClassWeapon: false,
   knockback: 0.5, // Beam: near-zero knockback to avoid sliding
     getLevelStats(level: number){
@@ -396,6 +427,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.RICOCHET]: {
     id: WeaponType.RICOCHET,
     name: 'Ricochet',
+  description: 'Skips between targets like bad news. Excels at cleanup and chaining.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 70,
     salvo: 1,
@@ -407,6 +439,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     damage: 12,
   projectileVisual: { type: 'bullet', color: '#0090FF', size: 9, glowColor: '#33B5FF', glowRadius: 14, trailColor: 'rgba(0,144,255,0.55)', trailLength: 10 },
     traits: ['Bounces Between Enemies', 'Locks On Next Target', 'Max 3 Bounces', 'Low Damage'],
+    usageTips: [
+      'Fire into clumps—the next target is found faster.',
+      'The last bounce often misses if spaced—herd enemies closer.',
+      'Pairs well with slows to prevent wide skips.'
+    ],
     isClassWeapon: false,
     knockback: 18, // Ricochet: moderate knockback
     getLevelStats(level: number){
@@ -424,6 +461,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.HOMING]: {
     id: WeaponType.HOMING,
     name: 'Kamikaze Drone',
+  description: 'Disposable helper that hunts and detonates. Think guided grenade on wings.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 120,
     salvo: 1,
@@ -444,6 +482,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   sprite: '/assets/projectiles/bullet_drone.png'
     },
     traits: ['Homing', 'Circles Player', 'Explodes on Contact', 'Kamikaze'],
+    usageTips: [
+      'Keep moving—drone paths clear when you kite arcs.',
+      'Don’t hoard—launch early so respawns keep pressure up.',
+      'Leads targets well in open lanes; avoid tight mazeing.'
+    ],
     isClassWeapon: false,
     getLevelStats(level: number){
   // Scale damage from 40 (L1) -> 700 (L7) with geometric progression for consistent relative growth.
@@ -462,6 +505,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.RAILGUN]: {
     id: WeaponType.RAILGUN,
     name: 'Railgun',
+  description: 'Charge the core, then draw a line through the world. Cataclysm on a timer.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 120,
     salvo: 1,
@@ -481,6 +525,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       trailLength: 40
     },
     traits: ['Visible Charging Orb', '2s Charge Time', 'Fires Monster Beam', 'High Damage', 'Boss'],
+     usageTips: [
+       'Pre\-aim during charge—the beam fires where you commit.',
+       'Save for elites/bosses; overkill on trash wastes uptime.',
+       'Line up multiple targets—the beam pierces everything.'
+     ],
      beamVisual: {
        type: 'beam',
        color: '#FFFFFF',
@@ -505,6 +554,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
      }
   },
   [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma Core',  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 90,  salvo: 1, spread: 0, projectile: 'bullet_cyan', speed: 6.2, range: 520, maxLevel: 7, damage: 38, projectileVisual: { type: 'plasma', color: '#66CCFF', size: 16, glowColor: '#E6FBFF', glowRadius: 20, trailColor: 'rgba(160,220,255,0.40)', trailLength: 10 }, traits: ['Charge','Detonate','Ion Field','Scaling'], isClassWeapon: false,
+  description: 'Overcharge a core and pop it for AoE—leave an ion field that worries survivors and enemies alike.',
     chargeTimeMs: 450,
     overheatThreshold: 0.85,
     heatPerShot: 0.25,
@@ -529,6 +579,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Dash through gaps and keep pressure; salvo ×2 maintains DPS while repositioning.'
   ], isClassWeapon: true, knockback: 5, getLevelStats(level: number) { const baseDamage=6, baseCooldown=12, mult=7.5; const dmg=Math.round(baseDamage*(1+ (level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1- (level-1)*0.32/6)); return { damage:dmg, cooldown:cd }; } },
   [WeaponType.WARRIOR_CANNON]: { id: WeaponType.WARRIOR_CANNON, name: 'Warrior Cannon', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 60, salvo: 1, spread: 0, projectile: 'bullet_red', speed: 5.6, range: 250, maxLevel: 7, damage: 60, projectileVisual: { type: 'explosive', color: '#FF0000', size: 14, glowColor: '#FF0000', glowRadius: 12 }, traits: ['Explosive', 'Burst', 'Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=60, baseCooldown=60, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  // Provide a concise description and guidance for Warrior Cannon
+  
   /** Tech Warrior: Tachyon Spear — a phased dash-lance that pierces and leaves a micro-warp trail. */
   [WeaponType.TACHYON_SPEAR]: {
     id: WeaponType.TACHYON_SPEAR,
@@ -598,7 +650,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     id: WeaponType.DATA_SIGIL,
     name: 'Data Sigil',
     icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
-  description: 'Inscribe a rotating golden glyph that pulses shockwaves and showers sparks.',
+  description: 'Plant a rotating golden glyph that emits pulsing shockwaves—a programmable killzone.',
     cooldown: 72,
     salvo: 1,
     spread: 0,
@@ -627,6 +679,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     }
   },
   [WeaponType.SHADOW_DAGGER]: { id: WeaponType.SHADOW_DAGGER, name: 'Shadow Dagger', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 18, salvo: 1, spread: 0, projectile: 'dagger_purple', speed: 12.6, range: 420, maxLevel: 7, damage: 18, projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 }, traits: ['Ricochet','Critical','Scaling'], isClassWeapon: true, knockback: 20, getLevelStats(level:number){ const baseDamage=18, baseCooldown=18, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  // Shadow Daggers excel at chaining crits through clustered targets.
   [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 7, damage: 44, projectileVisual: { type: 'slime', color: '#00FF00', size: 9, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison','Area','Scaling'], usageTips: [
     'Lob into clumps—pools linger and tick multiple enemies.',
     'Upgrade cadence to chain zones; funnel mobs through the slime.',
@@ -639,11 +692,13 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     return {damage:dmg, cooldown:cd};
   } },
   [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 7, damage: 32, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP','Disrupt','Pierces','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=32, baseCooldown=32, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  // Virus bolts silence abilities briefly—great for shutting down dangerous elites.
   [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 10, salvo: 1, spread: 0.22, projectile: 'bullet_cyan', speed: 7.7, range: 320, maxLevel: 7, damage: 10, projectileVisual: { type: 'bullet', color: '#B8860B', size: 4, glowColor: '#DAA520', glowRadius: 7, trailColor: 'rgba(184,134,11,0.22)', trailLength: 8 }, traits: ['Spray','Rapid','Scaling'], usageTips: [
     'Strafe into arcs—short bursts keep spread under control.',
     'Stay within 320 range to maintain constant fire.',
     'Knockback and slows help hold targets in the stream.'
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=10, baseCooldown=10, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  // Sustained pressure—think lawnmower, not sniper.
   [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 28, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.1, range: 500, maxLevel: 7, damage: 28, 
     description: 'Sweeping psionic beam that pierces and briefly marks foes, slowing them and boosting follow-up damage during the mark.',
     projectileVisual: { type: 'beam', color: '#FFC0CB', thickness: 14, length: 120, glowColor: '#FF00FF', glowRadius: 40, trailColor: '#FFD700', trailLength: 40 }, traits: ['Pierces','Area','Slow','Scaling'], usageTips: [
@@ -652,6 +707,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Slows, pulls, or chokepoints extend beam uptime and stack marks safely.'
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=28, baseCooldown=28, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); const bounces = Math.max(0, level); return {damage:dmg, cooldown:cd, bounces}; } },
   [WeaponType.SCAVENGER_SLING]: { id: WeaponType.SCAVENGER_SLING, name: 'Scavenger Sling', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 38, salvo: 1, spread: 0, projectile: 'rock_gray', speed: 7, range: 300, maxLevel: 7, damage: 38, projectileVisual: { type: 'bullet', color: '#808080', size: 10, glowColor: '#808080', glowRadius: 7 }, traits: ['Bounces','Scaling'], isClassWeapon: true, knockback: 24, getLevelStats(level:number){ const baseDamage=38, baseCooldown=38, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  // Rocks rebound—wall angles can double up hits on corridors.
   /** Neural Nomad class weapon: Neural Threader — pierce to anchor enemies into a threaded link that pulses. */
   [WeaponType.NOMAD_NEURAL]: {
     id: WeaponType.NOMAD_NEURAL,
@@ -717,6 +773,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   // Fast precise variant: smaller core & shorter trail
   projectileVisual: { type: 'plasma', color: '#FFFBEA', size: 8, glowColor: '#FFEFA8', glowRadius: 34, trailColor: 'rgba(255,240,170,0.45)', trailLength: 14 },
     traits: ['Orbit','Persistent','Pulse','Scaling','Defense'],
+    description: 'Defensive constellation of blades—orbits that carve and push enemies away.',
     isClassWeapon: false,
     getLevelStats(level: number){
       const idx = Math.min(Math.max(level,1),7)-1;

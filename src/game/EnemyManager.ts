@@ -1285,12 +1285,36 @@ export class EnemyManager {
       ctx.fill();
       ctx.restore();
     }
+    // XP Gems — add last-10s stutter (alpha flicker + tiny jitter/pulse)
+    const nowMsG = performance.now();
     for (let i = 0, len = this.gems.length; i < len; i++) {
       const gem = this.gems[i];
       if (!gem.active) continue;
       if (gem.x < minX || gem.x > maxX || gem.y < minY || gem.y > maxY) continue;
-      drawStar(ctx, gem.x, gem.y, gem.size, gem.color);
+      let gx = gem.x, gy = gem.y;
+      let r = gem.size;
+      let alpha = 1;
+      const lifeAbs = (gem as any).lifeMs as number | undefined;
+      if (typeof lifeAbs === 'number') {
+        const rem = lifeAbs - nowMsG;
+        if (rem <= 10000) {
+          const prog = Math.max(0, 1 - (rem / 10000)); // 0..1 (near expiry)
+          // Simple deterministic jitter that intensifies as expiry nears
+          const jit = 0.5 + prog * 1.0; // 0.5..1.5 px
+          const phaseA = (Math.floor(nowMsG / 60) + i) & 1;
+          const phaseB = (Math.floor(nowMsG / 80) + i) & 1;
+          gx += phaseA === 0 ? jit : -jit;
+          gy += phaseB === 0 ? jit : -jit;
+          // Pulse radius slightly
+          r *= 1 + 0.06 * prog;
+          // Alpha flicker (stutter): ~8 Hz
+          alpha = (Math.floor(nowMsG / 120) & 1) === 0 ? 1 : 0.45;
+        }
+      }
+      ctx.globalAlpha = alpha;
+      drawStar(ctx, gx, gy, r, gem.color);
     }
+    ctx.globalAlpha = 1;
     for (let i = 0, len = this.chests.length; i < len; i++) {
       const chest = this.chests[i]; if (!chest.active) continue; if (chest.x < minX || chest.x > maxX || chest.y < minY || chest.y > maxY) continue;
       ctx.fillStyle = '#00f';

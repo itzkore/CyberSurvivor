@@ -216,18 +216,18 @@ window.onload = async () => {
         }
       }
     } catch (e){ Logger.warn('[main.ts] Progressive asset load issue', e); }
-    // Preload non-image media (e.g., Umbral Surge MP4) using multiple candidate paths
+  // Preload non-image media (e.g., Umbral Surge MP4) using multiple candidate paths
     try {
       updateLoading(0.92, 'Priming effects');
       const AL: any = (window as any).AssetLoader;
       const norm = (p:string)=> AL ? AL.normalizePath(p) : p;
       const surgeCandidates: string[] = [
-        // Real filename present in public assets
-        norm('/assets/ui/umbral_surge.mp4.mp4'),
-        norm('assets/ui/umbral_surge.mp4.mp4'),
-        // Graceful fallback if extension or prefix differs in builds
-        norm('/assets/ui/umbral_surge.mp4'),
-        norm('assets/ui/umbral_surge.mp4')
+    // Real filename present in public assets
+    norm('/assets/ui/umbral_surge.mp4.mp4'),
+    norm('assets/ui/umbral_surge.mp4.mp4'),
+    // Fallbacks for single extension (older/dev builds)
+    norm('/assets/ui/umbral_surge.mp4'),
+    norm('assets/ui/umbral_surge.mp4')
       ];
       const vid = document.createElement('video');
       (vid as any).playsInline = true; vid.muted = true; vid.preload = 'auto'; vid.crossOrigin = 'anonymous';

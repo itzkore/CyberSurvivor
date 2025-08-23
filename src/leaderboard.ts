@@ -58,20 +58,6 @@ let lastTopErrorAt = 0;
 const TOP_CACHE_TTL = 4000; // within 4s repeated calls reuse
 const ERROR_BACKOFF_MS = 5000; // after error wait before hammering
 
-// Snapshot persistence (localStorage) so UI can show last known scores offline / during errors
-function snapshotKey(board: string, limit: number, offset: number) {
-  return `lb_snapshot_${board}_${limit}_${offset}`;
-}
-
-export function loadSnapshot(board = 'global', limit = 10, offset = 0): LeaderEntry[] | null {
-  try {
-    const raw = localStorage.getItem(snapshotKey(board, limit, offset));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed as LeaderEntry[];
-  } catch {/* ignore */}
-  return null;
-}
 
 /** Manually invalidate local caches and snapshots (used after nickname rewrite). */
 export function invalidateLeaderboardCache(): void {
@@ -241,14 +227,7 @@ export function sanitizeName(name: string) {
 }
 
 // Stabilní playerId (localStorage), aby si hráč držel pozici
-export function getPlayerId(): string {
-  let pid = localStorage.getItem('pid');
-  if (!pid) {
-    pid = crypto.randomUUID();
-    localStorage.setItem('pid', pid);
-  }
-  return pid;
-}
+// Player identity is provided exclusively by Google account (AuthService); no local fallback id.
 
 // Vypočti název boardu dle volby "daily:auto" / "weekly:auto"
 export function resolveBoard(input: string): { board: string; ttlSeconds?: number } {
@@ -294,6 +273,8 @@ export async function submitScore(opts: {
   characterId?: string;
 }) {
   if (!isLeaderboardConfigured()) return; // silent no-op when not configured
+  // Validate required fields to avoid backend 400s
+  if (!opts.playerId || !opts.name) return;
   lbLog('submitScore:start', { board: opts.board||'global', timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps });
   const board = opts.board ?? 'global';
   const key = boardKey(board);
@@ -351,6 +332,7 @@ export async function submitScoreAllPeriods(opts: {
   characterId?: string;
 }) {
   if (!isLeaderboardConfigured()) return;
+  if (!opts.playerId || !opts.name) return;
   const base = { playerId: opts.playerId, name: opts.name, timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps };
   const periods = [
     { board: 'global' as string, ttlSeconds: undefined as number | undefined },
@@ -378,6 +360,8 @@ export async function submitScoreAllPeriods(opts: {
 // Načtení TOP N
 export async function fetchTop(board = 'global', limit = 10, offset = 0): Promise<LeaderEntry[]> {
   if (!isLeaderboardConfigured()) return []; // treat as empty list if misconfigured
+  if (!board) board = 'global';
+  if (limit <= 0) return [];
   lbLog('fetchTop:start', { board, limit, offset });
   const now = performance.now();
   // Error backoff: if last attempt errored very recently, serve cache (if any) or skip
@@ -442,7 +426,6 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
     // Simple one-shot fetch (original path)
     const page = await fetchPage(offset, limit);
     lastTopCache = { key: { board, limit, offset }, data: page, ts: performance.now() };
-    try { localStorage.setItem(snapshotKey(board, limit, offset), JSON.stringify(page)); } catch {}
     lbLog('fetchTop:done', { board, count: page.length });
     return page;
   }
@@ -465,7 +448,6 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
     if (page.length < pageSize) break; // end reached
   }
   lastTopCache = { key: { board, limit, offset }, data: out, ts: performance.now() };
-  try { localStorage.setItem(snapshotKey(board, limit, offset), JSON.stringify(out)); } catch {}
   lbLog('fetchTop:done(unique)', { board, count: out.length });
   return out;
 }
@@ -473,6 +455,7 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
 // Fetch a single player's best entry (even if not in current top window)
 export async function fetchPlayerEntry(board: string, playerId: string): Promise<LeaderEntry | null> {
   if (!isLeaderboardConfigured()) return null;
+  if (!playerId) return null;
   lbLog('fetchPlayerEntry:start', { board, playerId });
   const key = boardKey(board);
   const metaKey = `${key}:meta`;

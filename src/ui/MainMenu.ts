@@ -36,6 +36,25 @@ export class MainMenu {
     const today = new Date().toISOString().slice(0,10);
     return [
       {
+        version: '0.2.7',
+        date: today,
+        entries: [
+          { tag: 'UI', text: 'Minimap — XP orbs now appear as yellow markers above enemy dots.' },
+          { tag: 'FX', text: 'XP orbs stutter and flicker in the last 10s of life (in‑world and on minimap).' },
+          { tag: 'BAL', text: 'Tech Warrior: model and hurtbox scaled +25% to match visuals.' },
+          { tag: 'BAL', text: 'Tachyon Spear: supercharge scaling now increases with weapon level.' },
+          { tag: 'QOL', text: 'Auto‑aim UI is always visible for all operatives; selection persists.' },
+          { tag: 'BAL', text: 'Targeting “Toughest”: if out of range, falls back to closest in range; boss priority respects effective range.' },
+          { tag: 'SYS', text: 'Progression — cap of 5 passive unlocks enforced; upgrades still allowed. Upgrade UI filters unlocks at cap.' },
+          { tag: 'AUTH', text: 'Runs and leaderboards require Google sign‑in. Local fallback removed.' },
+          { tag: 'SYS', text: 'Leaderboard calls guarded to avoid 400s when signed out; caching/backoff maintained.' },
+          { tag: 'CSP', text: 'Content Security Policy expanded to allow Google Identity Services styles.' },
+          { tag: 'FIX', text: 'FedCM disabled scenarios handled with explicit sign‑in modal fallback.' },
+          { tag: 'FIX', text: 'Assets — cleaned invalid font paths; mapped missing bullet_grinder to sawblade to prevent 404s.' },
+          { tag: 'UI', text: 'Main menu layout fills screen reliably; Neural Link shows ONLINE/OFFLINE based on auth state.' }
+        ]
+      },
+      {
         version: '0.2.5',
         date: today,
         entries: [
@@ -208,7 +227,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.5 — GENERAL UPDATE PATCH</div>
+            <div class="version-tag">v0.2.7 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
@@ -1043,7 +1062,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
           remotePanel.setAttribute('data-hash', hash);
         }
         // If I'm not in the visible list, append own real rank from backend (may be >10)
-    if (!sorted.some(e=>e.playerId===me)) {
+  if (me && !sorted.some(e=>e.playerId===me)) {
           try {
       const meEntry = await fetchPlayerEntry(finalBoard, me) || await fetchPlayerEntry(board, me); // uses backend rank ordering
             if (meEntry && meEntry.rank > 10) {

@@ -189,7 +189,11 @@ export class Game {
 
     // Initialize player and managers in correct dependency order
     this.player = new Player(this.worldW / 2, this.worldH / 2);
-    this.player.radius = 18;
+    // Scale base radius by character scale (Tech Warrior +25%, others 1.0)
+    try {
+      const scale = (this.player as any).getCharacterScale ? (this.player as any).getCharacterScale() : 1.0;
+      this.player.radius = Math.round(18 * scale);
+    } catch { this.player.radius = 18; }
   // Expose player globally for loosely-coupled systems (crit, piercing, AoE passives)
   try { (window as any).player = this.player; } catch {}
     this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1);
@@ -375,7 +379,8 @@ export class Game {
         // Proactively load class weapon sprites via manifest to avoid placeholder text boxes
         try {
           const saw = this.assetLoader.getAsset('bullet_saw') || '/assets/projectiles/bullet_sawblade.png';
-          const grind = this.assetLoader.getAsset('bullet_grinder') || '/assets/projectiles/bullet_grinder.png';
+          // bullet_grinder.png is not present in public/assets/projectiles; fallback to sawblade to avoid 404
+          const grind = this.assetLoader.getAsset('bullet_grinder') || '/assets/projectiles/bullet_sawblade.png';
           const drone = this.assetLoader.getAsset('bullet_drone') || '/assets/projectiles/bullet_drone.png';
           await Promise.all([
             this.assetLoader.loadImage(saw),
@@ -492,6 +497,13 @@ export class Game {
             window.dispatchEvent(new CustomEvent('showPauseOverlay', { detail: { auto: false } }));
           }
         }, 16);
+      } else if (this.state === 'GAME') {
+        // Ensure aim mode is initialized when entering gameplay so HUD can always render the toggle
+        const cur = ((this as any).aimMode as ('closest'|'toughest')) || ((window as any).__aimMode);
+        const mode = (cur === 'toughest' || cur === 'closest') ? cur : 'closest';
+        (this as any).aimMode = mode; (window as any).__aimMode = mode;
+        try { localStorage.setItem('cs-aimMode', mode); } catch {}
+        window.dispatchEvent(new CustomEvent('aimModeChanged', { detail: { mode } }));
       }
     });
 
@@ -537,7 +549,10 @@ export class Game {
     }
     // Ensure we always pass a character dataset when available; prevents Player constructor fallback warnings
     this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData || this.player?.characterData);
-    this.player.radius = 18;
+    try {
+      const scale = (this.player as any).getCharacterScale ? (this.player as any).getCharacterScale() : 1.0;
+      this.player.radius = Math.round(18 * scale);
+    } catch { this.player.radius = 18; }
   } else {
     // If player already exists and no new character data, just reset existing player state
     this.player.resetState(); // Implement this method in Player.ts

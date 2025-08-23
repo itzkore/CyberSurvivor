@@ -71,7 +71,7 @@
   "bullet_laserblaster": { "file": "assets/projectiles/bullet_laserblaster.png", "w": 16, "h": 16, "frames": 1 },
   "bullet_drone": { "file": "assets/projectiles/bullet_drone.png", "w": 48, "h": 48, "frames": 1 },
   "bullet_saw": { "file": "assets/projectiles/bullet_sawblade.png", "w": 32, "h": 32, "frames": 1 },
-  "bullet_grinder": { "file": "assets/projectiles/bullet_grinder.png", "w": 40, "h": 40, "frames": 1 }
+  "bullet_grinder": { "file": "assets/projectiles/bullet_sawblade.png", "w": 40, "h": 40, "frames": 1 }
   },
   "ui": {
     "hp_bar_bg": {

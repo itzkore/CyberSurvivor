@@ -9,17 +9,17 @@ export type PassiveSpec = {
 };
 
 export const PASSIVE_SPECS: PassiveSpec[] = [
-  { id: 0, name: 'Speed Boost', icon: '/assets/ui/icons/passive_speed.png', description: 'Increase movement speed', maxLevel: 7 },
-  { id: 1, name: 'Max HP', icon: '/assets/ui/icons/passive_hp.png', description: 'Increase maximum HP', maxLevel: 7 },
-  { id: 2, name: 'Damage Up', icon: '/assets/ui/icons/passive_damage.png', description: 'Increase bullet damage', maxLevel: 7 },
-  { id: 3, name: 'Fire Rate', icon: '/assets/ui/icons/passive_fire.png', description: 'Decrease weapon cooldown', maxLevel: 7 },
-  { id: 4, name: 'AOE On Kill', icon: '/assets/ui/icons/passive_aoe.png', description: 'Small explosion on enemy death', maxLevel: 1 },
-  { id: 5, name: 'Magnet', icon: '/assets/ui/icons/passive_magnet.png', description: 'Attract nearby gems', maxLevel: 5 },
-  { id: 6, name: 'Shield', icon: '/assets/ui/icons/passive_shield.png', description: 'Chance to block damage', maxLevel: 5 },
-  { id: 7, name: 'Crit', icon: '/assets/ui/icons/passive_crit.png', description: 'Chance for critical hits', maxLevel: 7 },
-  { id: 8, name: 'Piercing', icon: '/assets/ui/icons/passive_pierce.png', description: 'Bullets pierce enemies (up to 3 levels)', maxLevel: 3 },
-  { id: 9, name: 'Regen', icon: '/assets/ui/icons/passive_regen.png', description: 'Regenerate HP over time', maxLevel: 7 },
-  { id: 10, name: 'Area Up', icon: '/assets/ui/icons/passive_aoe.png', description: 'Increase AoE radius', maxLevel: 7 }
+  { id: 0, name: 'Speed Boost', icon: '/assets/ui/icons/passive_speed.png', description: 'Move faster. Simple, lifesaving.', maxLevel: 7 },
+  { id: 1, name: 'Max HP', icon: '/assets/ui/icons/passive_hp.png', description: 'Bulk up your frame to take bigger hits.', maxLevel: 7 },
+  { id: 2, name: 'Damage Up', icon: '/assets/ui/icons/passive_damage.png', description: 'Global damage increase—every weapon benefits.', maxLevel: 7 },
+  { id: 3, name: 'Fire Rate', icon: '/assets/ui/icons/passive_fire.png', description: 'Reduce weapon cooldowns for more uptime.', maxLevel: 7 },
+  { id: 4, name: 'AOE On Kill', icon: '/assets/ui/icons/passive_aoe.png', description: 'Fallen enemies detonate in a small blast.', maxLevel: 1 },
+  { id: 5, name: 'Magnet', icon: '/assets/ui/icons/passive_magnet.png', description: 'Extend pickup radius—vacuum XP gems sooner.', maxLevel: 5 },
+  { id: 6, name: 'Shield', icon: '/assets/ui/icons/passive_shield.png', description: 'Chance to block damage completely.', maxLevel: 5 },
+  { id: 7, name: 'Crit', icon: '/assets/ui/icons/passive_crit.png', description: 'Add critical chance and multiplier.', maxLevel: 7 },
+  { id: 8, name: 'Piercing', icon: '/assets/ui/icons/passive_pierce.png', description: 'Bullets pass through more enemies.', maxLevel: 3 },
+  { id: 9, name: 'Regen', icon: '/assets/ui/icons/passive_regen.png', description: 'Slow regenerative healing over time.', maxLevel: 7 },
+  { id: 10, name: 'Area Up', icon: '/assets/ui/icons/passive_aoe.png', description: 'Increase area radius of suitable effects.', maxLevel: 7 }
 ];
 
 // Normalize asset paths for file:// protocol (Electron packaged)

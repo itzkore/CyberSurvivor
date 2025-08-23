@@ -329,7 +329,7 @@ class GoogleAuthService {
     if (document.getElementById('auth-fallback-modal')) { resolve(this.user); return; }
     const modal = document.createElement('div');
     modal.id = 'auth-fallback-modal';
-    modal.innerHTML = `
+  modal.innerHTML = `
       <div class="afm-shell">
         <div class="afm-panel">
           <h2>Sign In</h2>

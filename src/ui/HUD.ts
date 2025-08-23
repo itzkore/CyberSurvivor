@@ -279,9 +279,11 @@ export class HUD {
   } catch { /* ignore */ }
   this.drawUpgradeHistory(ctx, upgrades, upgradesPanelX, upgradesPanelY, minimapPositionSize);
 
-    // Auto-aim toggle indicator (right-anchored, near class bars) — only during active gameplay
+    // Auto-aim toggle indicator (right-anchored, near class bars) — ensure visible during active gameplay for all operatives
     try {
-      const st = (this.player as any)?.game?.state;
+      // Derive game state robustly (player.game may be undefined). Prefer global __game reference.
+      const g: any = (window as any).__game;
+      const st = (g && typeof g.getState === 'function') ? g.getState() : g?.state;
       if (st === 'GAME') {
         const mode: 'closest' | 'toughest' = ((window as any).__aimMode) || 'closest';
         // Place above class bars to the right
@@ -385,7 +387,7 @@ export class HUD {
     ctx.arc(minimapX + minimapSize/2, minimapY + minimapSize/2, 3.2, 0, Math.PI*2);
     ctx.fill();
 
-    // Enemies (relative positions); fade those near edge
+    // Enemies (relative positions); fade those near edge — draw first so XP orbs appear above
     const enemyBaseAlpha = 0.95;
     for (let i=0;i<enemies.length;i++) {
       const e = enemies[i];
@@ -400,9 +402,49 @@ export class HUD {
       const alpha = enemyBaseAlpha * (1 - distNorm*0.55);
       ctx.fillStyle = `rgba(255,60,60,${alpha.toFixed(3)})`;
       ctx.beginPath();
-  ctx.arc(minimapX + dx * mapScale, minimapY + dy * mapScale, 1.7, 0, Math.PI*2);
+      ctx.arc(minimapX + dx * mapScale, minimapY + dy * mapScale, 1.7, 0, Math.PI*2);
       ctx.fill();
     }
+
+    // XP Orbs (yellow) above enemy dots with last-10s flicker/pulse
+    try {
+      const em: any = (window as any).__gameInstance?.getEnemyManager?.();
+      const gems = em?.getGems ? em.getGems() : [];
+      if (gems && gems.length) {
+        const now = performance.now();
+        for (let i = 0; i < gems.length; i++) {
+          const g = gems[i];
+          if (!g.active) continue;
+          const dx = g.x - viewLeft;
+          const dy = g.y - viewTop;
+          if (dx < 0 || dx > viewSize || dy < 0 || dy > viewSize) continue;
+          let r = 2.1; // baseline size on minimap
+          let a = 0.95;
+          const lifeAbs = (g as any).lifeMs as number | undefined;
+          if (typeof lifeAbs === 'number') {
+            const rem = lifeAbs - now;
+            if (rem <= 10000) {
+              const prog = Math.max(0, 1 - (rem / 10000));
+              // Slight pulse and flicker
+              r *= 1 + 0.25 * prog;
+              a = ((Math.floor(now / 120) & 1) === 0) ? 1 : 0.5;
+            }
+          }
+          // Draw as filled yellow dot with subtle glow
+          const sx = minimapX + dx * mapScale;
+          const sy = minimapY + dy * mapScale;
+          ctx.save();
+          ctx.globalAlpha = a;
+          ctx.fillStyle = '#FFD700';
+          ctx.shadowColor = '#FFD700';
+          ctx.shadowBlur = 6;
+          ctx.beginPath();
+          ctx.arc(sx, sy, r, 0, Math.PI*2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+    } catch { /* ignore */ }
 
     ctx.restore(); // clip
     ctx.restore();
