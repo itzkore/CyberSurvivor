@@ -37,6 +37,16 @@ export class MainMenu {
     const today = new Date().toISOString().slice(0,10);
     return [
       {
+        version: '0.2.8',
+        date: today,
+        entries: [
+          { tag: 'UI', text: 'Main Menu: START RUN text centered; added cyberpunk glitch click effect with subtle SFX and fade-out.' },
+          { tag: 'QOL', text: 'Reduced motion: glitch animation disabled when prefers-reduced-motion is set.' },
+          { tag: 'FIX', text: 'Return to Menu: ensured menu fades back in and start button re-enables after a run ends.' },
+          { tag: 'BAL', text: 'Boss Spawns: cadence anchored to schedule so the next boss spawns immediately if overdue.' }
+        ]
+      },
+      {
         version: '0.2.7',
         date: today,
         entries: [
@@ -228,7 +238,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.7 — PATCH NOTES</div>
+            <div class="version-tag">v0.2.8 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
