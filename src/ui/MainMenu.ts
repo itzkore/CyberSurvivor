@@ -4,7 +4,7 @@ import { CHARACTERS } from '../data/characters';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
 // Static imports for auth/score services to avoid mixed dynamic+static warnings in Vite
 import { googleAuthService } from '../auth/AuthService';
-import { fetchTop, getPlayerId, resolveBoard, sanitizeName, isLeaderboardConfigured, fetchPlayerEntry, loadSnapshot } from '../leaderboard';
+import { fetchTop, getPlayerId, resolveBoard, sanitizeName, isLeaderboardConfigured, fetchPlayerEntry, loadSnapshot, rewriteNickname, invalidateLeaderboardCache, isNicknameAvailable, claimNickname } from '../leaderboard';
 
 interface PlayerProfile {
   currency: number;
@@ -213,6 +213,7 @@ export class MainMenu {
             <div class="currency-display compact">
               <span class="currency-icon">⚡</span>
               <span id="currency-amount">${this.playerProfile.currency}</span>
+              <button id="change-nickname-btn" class="mini-logout" title="Change Nickname" style="margin-left:8px">✎</button>
             </div>
             <div class="auth-container" id="auth-container">
               <button class="cyberpunk-btn tertiary-btn tight hidden-init" id="login-btn">
@@ -420,6 +421,20 @@ export class MainMenu {
           }
         }, true);
       }
+    }
+    // Change nickname quick action next to currency
+    const changeNickBtn = document.getElementById('change-nickname-btn') as HTMLButtonElement | null;
+    if (changeNickBtn) {
+      changeNickBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!this.authUser) {
+          // If not signed in, prompt sign-in first
+          googleAuthService.openLogin().catch(()=>{});
+          return;
+        }
+        this.showNicknameModal();
+      });
     }
     this.authUnsub = googleAuthService.subscribe(user => {
       this.authUser = user;
@@ -1054,19 +1069,50 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
         if (input) input.value = mod.generateNickname();
       });
     }).catch(()=>{});
-    document.getElementById('nickname-save')?.addEventListener('click', () => this.saveNickname());
+    const saveBtn = document.getElementById('nickname-save') as HTMLButtonElement | null;
+    const input = document.getElementById('nickname-input') as HTMLInputElement | null;
+    const validate = async () => {
+      if (!saveBtn || !input) return;
+      const proposed = sanitizeName(input.value);
+      if (!proposed) { saveBtn.disabled = true; return; }
+      try {
+        const ok = await isNicknameAvailable(proposed, this.playerId);
+        saveBtn.disabled = !ok;
+        saveBtn.textContent = ok ? 'SAVE' : 'NAME TAKEN';
+      } catch { saveBtn.disabled = false; }
+    };
+    if (input) {
+      input.addEventListener('input', () => { validate(); });
+      // initial
+      validate();
+    }
+    saveBtn?.addEventListener('click', () => this.saveNickname());
     document.getElementById('close-nick')?.addEventListener('click', () => modal.remove());
   }
 
   private saveNickname(): void {
     const input = document.getElementById('nickname-input') as HTMLInputElement | null;
     if (!input || !this.authUser) return;
-    const val = input.value.trim();
+    const val = sanitizeName(input.value);
     if (!val) return;
   // Use statically imported googleAuthService (avoid dynamic import causing Vite warning)
   googleAuthService.setNickname(val);
   const modal = document.getElementById('nickname-modal');
   if (modal) modal.remove();
+  // Claim nickname (enforces uniqueness) then refresh UI/HS
+  (async()=>{
+    const pid = this.playerId || getPlayerId();
+    const ok = await claimNickname(pid, val);
+    if (!ok) {
+      // fallback: notify and reopen modal
+      alert('That handle is already taken. Please choose another.');
+      this.showNicknameModal();
+      return;
+    }
+    invalidateLeaderboardCache();
+    this.updateAuthUI();
+    this.refreshHighScores(true);
+  })();
   }
 
   private initializeMatrix(): void {

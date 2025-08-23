@@ -73,6 +73,20 @@ export function loadSnapshot(board = 'global', limit = 10, offset = 0): LeaderEn
   return null;
 }
 
+/** Manually invalidate local caches and snapshots (used after nickname rewrite). */
+export function invalidateLeaderboardCache(): void {
+  lastTopCache = null;
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (k.startsWith('lb_snapshot_')) keys.push(k);
+    }
+    for (let i = 0; i < keys.length; i++) localStorage.removeItem(keys[i]);
+  } catch {/* ignore */}
+}
+
 function record(cmd: string, ms: number, err?: any) {
   totalCalls++;
   const stat = metrics[cmd] || (metrics[cmd] = { count: 0, totalMs: 0, lastMs: 0, errors: 0 });
@@ -160,6 +174,60 @@ function boardKey(board: string) {
   if (board.startsWith('weekly:')) return `lb:weekly:${board.split(':')[1]}`;
   if (board.startsWith('monthly:')) return `lb:monthly:${board.split(':')[1]}`;
   return `lb:${board}`;
+}
+
+/** Rewrite the displayed nickname for a player across all boards by updating the global name hash. */
+/** Check if a nickname is available (or already owned by the given player). */
+export async function isNicknameAvailable(newNickname: string, playerId?: string): Promise<boolean> {
+  if (!isLeaderboardConfigured()) return true;
+  const name = sanitizeName(newNickname || '');
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  try {
+    const owner = await redis(['HGET', 'name:index', lower]).catch(()=>null);
+    if (!owner) return true;
+    if (playerId && owner === playerId) return true;
+    return false;
+  } catch {
+    return true; // be permissive on check errors
+  }
+}
+
+/** Atomically claim a nickname for a player, updating indices and previous mapping. Returns true on success. */
+export async function claimNickname(playerId: string, newNickname: string): Promise<boolean> {
+  if (!isLeaderboardConfigured()) return true; // allow in offline/misconfig mode
+  const name = sanitizeName(newNickname || '');
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  // Fetch previous name for cleanup
+  let prevLower: string | undefined;
+  try {
+    const prev = await redis(['HGET', `name:${playerId}`, 'name']).catch(()=>null);
+    if (prev) prevLower = String(prev).toLowerCase();
+  } catch {/* ignore */}
+  // Try to reserve via HSETNX; if exists and owned by me, allow; if owned by different user, fail
+  try {
+    const setnx = await redis(['HSETNX', 'name:index', lower, playerId]).catch(()=>0);
+    if (setnx === 0) {
+      const owner = await redis(['HGET', 'name:index', lower]).catch(()=>null);
+      if (owner && owner !== playerId) return false; // taken by someone else
+    }
+    // Persist pretty name for this player
+    await redis(['HSET', `name:${playerId}`, 'name', name]).catch(()=>{});
+    // Clean up old index mapping if different
+    if (prevLower && prevLower !== lower) {
+      await redis(['HDEL', 'name:index', prevLower]).catch(()=>{});
+    }
+    invalidateLeaderboardCache();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Back-compat wrapper to set nickname without availability checks (now routes through claimNickname). */
+export async function rewriteNickname(playerId: string, newNickname: string): Promise<void> {
+  await claimNickname(playerId, newNickname).catch(()=>{});
 }
 
 // Sanitizace zobrazovaného jména – krátké, bez HTML
