@@ -467,13 +467,19 @@ export class BulletManager {
           const maxTurn = turnRate * (deltaTime / 16.6667);
           if (diff > maxTurn) diff = maxTurn; else if (diff < -maxTurn) diff = -maxTurn;
           const newAng = curAng + diff;
-          // Mild acceleration (tamed vs earlier) to keep path smooth
+          // Acceleration curve: start gentle, ramp up with time alive; reduces lingering bullets
           const curSpeed = Math.hypot(b.vx, b.vy) || 0.0001;
+          const spawnT = (b as any)._spawnTime || performance.now();
+          const aliveMs = Math.max(0, performance.now() - spawnT);
+          // Base speed remembered from initial spawn
           if ((b as any).baseSpeed == null) (b as any).baseSpeed = curSpeed;
           const baseSpeed = (b as any).baseSpeed;
-          const accelFactor = 1 + 0.04 * (deltaTime / 1000); // gentle growth
-          let newSpeed = curSpeed * accelFactor;
-          const maxSpeed = baseSpeed * 1.5; // cap runaway acceleration
+          // Ramp: up to +80% over ~1.5s; dt-aware
+          const ramp = Math.min(0.8, aliveMs / 1500 * 0.8);
+          // Small per-frame acceleration to converge to target ramped speed
+          const targetSpeed = baseSpeed * (1 + ramp);
+          let newSpeed = curSpeed + (targetSpeed - curSpeed) * Math.min(1, (deltaTime / 120));
+          const maxSpeed = baseSpeed * 1.85; // hard cap
           if (newSpeed > maxSpeed) newSpeed = maxSpeed;
           b.vx = Math.cos(newAng) * newSpeed;
           b.vy = Math.sin(newAng) * newSpeed;
@@ -2133,6 +2139,9 @@ export class BulletManager {
       (b as any).isMeleeSweep = true;
       (b as any).sweepStart = performance.now();
       (b as any).sweepDurationMs = scaled.sweepDurationMs || 200;
+  // Reset per-swing contact cooldowns so each sweep can hit a target at most once
+  b.contactCooldownMap = Object.create(null);
+  (b as any).tetherCooldownMap = Object.create(null);
       (b as any).arcDegrees = scaled.arcDegrees || 140;
       (b as any).reach = spec.range || 120;
       (b as any).baseAngle = Math.atan2(targetY - y, targetX - x);

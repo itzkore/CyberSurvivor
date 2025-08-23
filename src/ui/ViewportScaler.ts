@@ -49,14 +49,15 @@ function computeScale(opts: Required<AdaptiveScaleOptions>) {
       // Nothing extra needed here; we just keep computed sy.
     }
     if (!opts.allowUpscale) { sx = Math.min(sx, 1); sy = Math.min(sy, 1); }
-    sx = Math.min(Math.max(opts.minScale, sx), opts.maxScale);
-    sy = Math.min(Math.max(opts.minScale, sy), opts.maxScale);
-    return { sx, sy, key: `stretch:${sx.toFixed(4)}:${sy.toFixed(4)}` };
+  sx = Math.min(Math.max(opts.minScale, sx), opts.maxScale);
+  sy = Math.min(Math.max(opts.minScale, sy), opts.maxScale);
+  // Include viewport dimensions in key so we re-apply on F11/fullscreen even if scale stays the same
+  return { sx, sy, key: `stretch:${sx.toFixed(4)}:${sy.toFixed(4)}:${Math.round(effW)}x${Math.round(effH)}` };
   } else {
     let s = Math.min(effW / opts.baseWidth, effH / opts.baseHeight);
     if (!opts.allowUpscale) s = Math.min(s, 1);
     s = Math.min(Math.max(opts.minScale, s), opts.maxScale);
-    return { sx: s, sy: s, key: `contain:${s.toFixed(4)}` };
+  return { sx: s, sy: s, key: `contain:${s.toFixed(4)}:${Math.round(effW)}x${Math.round(effH)}` };
   }
 }
 
@@ -73,9 +74,11 @@ function applyScale(state: AttachedState) {
     el.style.left = '0';
   el.style.top = (opts.offsetY || 0) + 'px';
     el.style.transformOrigin = '0 0';
-    if (opts.adaptiveHeight && result.sy >= 1) {
-      // When we are scaling up (taller viewport), expand logical height so internal vertical flex/distribution can use extra space.
-      el.style.height = window.innerHeight + 'px';
+    // Always set logical height to the current viewport height so children using % heights fit correctly,
+    // avoiding 100vh vs transform mismatch in fullscreen.
+    if (opts.adaptiveHeight) {
+      const available = Math.max(0, window.innerHeight - (opts.offsetY || 0));
+      el.style.height = available + 'px';
     } else {
       el.style.height = opts.baseHeight + 'px';
     }
@@ -104,6 +107,9 @@ function onResize() {
 }
 
 window.addEventListener('resize', onResize);
+// Recompute on fullscreen and orientation changes (F11, mobile rotate)
+document.addEventListener('fullscreenchange', onResize);
+window.addEventListener('orientationchange', onResize);
 
 /** Attach adaptive scaling behavior to an element. */
 export function attachAdaptiveScaler(el: HTMLElement, options: AdaptiveScaleOptions = {}): void {

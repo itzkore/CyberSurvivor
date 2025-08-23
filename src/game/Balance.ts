@@ -34,3 +34,6 @@ export const XP_DROP_CHANCE_SMALL = 0.35;
 export const XP_DROP_CHANCE_MEDIUM = 0.55;
 export const XP_DROP_CHANCE_LARGE = 0.80;
 
+// XP gem lifetime before expiring (milliseconds). Long enough to avoid punishing pace but keeps memory clean.
+export const GEM_TTL_MS = 90000; // 90s
+

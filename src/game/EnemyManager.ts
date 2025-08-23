@@ -22,7 +22,7 @@ import { AssetLoader } from './AssetLoader';
 import { Logger } from '../core/Logger';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
-import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE } from './Balance';
+import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS } from './Balance';
 
 interface Wave {
   startTime: number; // in seconds
@@ -1813,9 +1813,12 @@ export class EnemyManager {
   const pickupR2 = pickupR * pickupR;
   const magnetR = Math.max(0, this.player.magnetRadius || 0);
   const magnetR2 = magnetR * magnetR;
+      const nowMs = performance.now();
       for (let i = 0, len = this.gems.length; i < len; i++) {
         const g = this.gems[i];
         if (!g.active) continue;
+        // TTL expiry (lifeMs stores absolute timestamp)
+        if (g.lifeMs && nowMs >= (g.lifeMs as number)) { g.active = false; this.gemPool.push(g); continue; }
         // Apply light friction so any initial scatter settles quickly
         g.vx *= 0.9;
         g.vy *= 0.9;
@@ -2012,7 +2015,7 @@ export class EnemyManager {
   gg.vx = (Math.random() - 0.5) * 1.5;
   gg.vy = (Math.random() - 0.5) * 1.5;
   gg.life = 0; // deprecated (no expiry)
-  gg.lifeMs = undefined; // disable ms-based expiry entirely
+  gg.lifeMs = (GEM_TTL_MS|0) > 0 ? (performance.now() + (GEM_TTL_MS|0)) : undefined; // absolute expiry timestamp (ms)
   gg.size = 4 + tier * 1.6;
   gg.value = spec.value;
   gg.tier = tier;

@@ -1,5 +1,6 @@
 import { matrixBackground } from './MatrixBackground';
 import { Game } from '../game/Game';
+import { googleAuthService } from '../auth/AuthService';
 
 /**
  * PauseOverlay
@@ -78,6 +79,9 @@ export class PauseOverlay {
   private restartRun() {
     if (!this.visible) return;
     try {
+  // Enforce Google sign-in before restarting into a new run
+  const user = googleAuthService.getCurrentUser();
+  if (!user) { try { googleAuthService.openLogin().catch(()=>{}); } catch {/* ignore */} return; }
       // Use currently selected character data from game (if tracked) or fallback
       const data = (this.game as any).selectedCharacterData;
   // Clear flags and arm pending initial upgrade + cinematic start

@@ -213,19 +213,19 @@ export class MainMenu {
             <div class="currency-display compact">
               <span class="currency-icon">⚡</span>
               <span id="currency-amount">${this.playerProfile.currency}</span>
-              <button id="change-nickname-btn" class="mini-logout" title="Change Nickname" style="margin-left:8px">✎</button>
             </div>
             <div class="auth-container" id="auth-container">
               <button class="cyberpunk-btn tertiary-btn tight hidden-init" id="login-btn">
                 <span class="btn-text">SIGN IN</span>
                 <span class="btn-glow"></span>
               </button>
-              <div class="auth-profile hidden-init" id="auth-profile">
+              <div class="auth-profile hidden-init" id="auth-profile" style="display:flex;align-items:center;gap:8px;">
                 <img id="auth-avatar" class="auth-avatar" alt="User" />
-                <div class="auth-meta">
+                <div class="auth-meta" style="display:flex;flex-direction:column;gap:2px;">
                   <div class="auth-nick" id="auth-name"></div>
                   <div class="auth-email" id="auth-email"></div>
                 </div>
+                <button id="change-nickname-btn" class="mini-logout" title="Change Nickname" style="margin-left:8px">✎</button>
                 <button id="logout-btn" class="mini-logout" title="Sign Out">✕</button>
               </div>
             </div>
@@ -291,8 +291,7 @@ export class MainMenu {
           </section>
         </main>
         <footer class="mm-footer">
-          <div class="status-line"><span class="status-dot"></span>NEURAL LINK STABLE</div>
-          <div class="hint-line">ESC = Pause · ENTER = Confirm</div>
+          <div class="status-line offline"><span class="status-dot"></span>NEURAL LINK OFFLINE</div>
         </footer>
       </div>`;
 
@@ -318,7 +317,7 @@ export class MainMenu {
     // Auth init (static import to avoid chunk duplication warnings)
     const loginBtn = document.getElementById('login-btn');
     const authProfile = document.getElementById('auth-profile');
-    if (loginBtn) {
+  if (loginBtn) {
       // Always keep button enabled so we can capture clicks for diagnostics; attempt lazy config refresh.
       if (!googleAuthService.isConfigured()) {
         const refreshed = googleAuthService.refreshClientIdFromMeta?.();
@@ -331,8 +330,17 @@ export class MainMenu {
         loginBtn.title = 'Sign in with Google';
       }
       loginBtn.removeAttribute('disabled');
-      loginBtn.style.display = 'inline-flex';
-      loginBtn.classList.remove('hidden-init');
+      // Set initial visibility based on current auth state to avoid flicker
+      const currentUser = googleAuthService.getCurrentUser();
+      if (currentUser) {
+        loginBtn.style.display = 'none';
+        loginBtn.classList.add('hidden-init');
+        const prof = document.getElementById('auth-profile');
+        if (prof) { prof.classList.remove('hidden-init'); (prof as HTMLElement).style.display = 'flex'; }
+      } else {
+        loginBtn.style.display = 'inline-flex';
+        loginBtn.classList.remove('hidden-init');
+      }
       loginBtn.addEventListener('click', () => {
         Logger.info('[AuthUI] SIGN IN raw click handler entered (configured=' + googleAuthService.isConfigured() + ', ready=' + googleAuthService.isReady() + ')');
         if (!googleAuthService.isConfigured()) {
@@ -447,12 +455,24 @@ export class MainMenu {
     const style = document.createElement('style');
       style.id = 'mm-hs-styles';
   style.textContent = `/* Layout grid */
-  .mm-main{display:grid;grid-template-columns:18% 34% 1fr;grid-template-rows:1fr;grid-template-areas:'nav middle hs';gap:28px;align-items:stretch;padding:0 8px 24px 0}
-  .nav-panel{grid-area:nav;display:flex;flex-direction:column;height:calc(100vh - 140px);}  
+  /* Make the main menu fill the viewport and allow scrolling when cramped */
+  #main-menu{position:fixed;inset:0;overflow:auto;display:flex;flex-direction:column}
+  .mm-footer{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;padding:6px 0;pointer-events:none;z-index:5}
+  .status-line{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:1px}
+  .status-line .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;box-shadow:0 0 8px currentColor}
+  .status-line.online{color:#59ff87}
+  .status-line.online .status-dot{background:#59ff87}
+  .status-line.offline{color:#ff5964}
+  .status-line.offline .status-dot{background:#ff5964}
+  .main-menu-shell{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
+  .mm-header{flex:0 0 auto}
+  .mm-main{display:grid;grid-template-columns:18% 34% 1fr;grid-template-rows:1fr;grid-template-areas:'nav middle hs';gap:28px;align-items:stretch;align-content:stretch;padding:0 8px 0 0;margin:0;flex:1 1 auto;min-height:0}
+  .panel{margin:0}
+  .nav-panel{grid-area:nav;display:flex;flex-direction:column;height:100%;min-height:0;}  
   .nav-panel .nav-buttons{display:flex;flex-direction:column;gap:10px;margin-top:14px}
   .nav-panel .main-cta{font-size:18px}
   .nav-panel .nav-btn{font-size:14px}
-  .patch-notes-container{margin-top:16px;flex:1 1 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.28);background:rgba(0,25,38,0.28);backdrop-filter:blur(4px);padding:10px 10px 8px;min-height:160px;overflow:hidden;position:relative}
+  .patch-notes-container{margin-top:16px;flex:1 1 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.28);background:rgba(0,25,38,0.28);backdrop-filter:blur(4px);padding:10px 10px 8px;min-height:160px;overflow:auto;position:relative}
   .patch-notes-container:before{content:'';position:absolute;inset:0;pointer-events:none;box-shadow:0 0 12px rgba(0,255,255,0.12) inset}
   .pn-header{font-size:18px;letter-spacing:1.2px;font-weight:700;margin-bottom:8px;color:#5EEBFF;text-shadow:0 0 6px #0ff}
   .pn-body{flex:1 1 auto;overflow:auto;font-size:13.5px;line-height:1.5;padding-right:4px}
@@ -472,10 +492,10 @@ export class MainMenu {
   .pn-tag.perf{border-color:#FF8FB3;color:#FF8FB3}
   .pn-version{margin:12px 0 6px;font-weight:700;color:#5EEBFF;letter-spacing:1px;font-size:14px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(0,255,255,0.25);padding-bottom:3px}
   .pn-version .date{font-weight:500;font-size:12px;color:#9adfff;opacity:0.9}
-  #highscores-panel{grid-area:hs;display:flex;flex-direction:column;height:calc(100vh - 140px);overflow:hidden;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:10px 12px}
+  #highscores-panel{grid-area:hs;display:flex;flex-direction:column;height:100%;min-height:0;overflow:auto;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:10px 12px}
     #highscores-panel .hs-header{font-size:22px;margin-bottom:6px;letter-spacing:1px}
-  .middle-column{grid-area:middle;display:flex;flex-direction:column;height:calc(100vh - 140px);gap:14px;overflow:hidden;}
-  #character-preview.compact{display:flex;flex-direction:column;gap:10px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.28);padding:14px 16px 12px;backdrop-filter:blur(4px);flex:0 0 auto;overflow:hidden}
+  .middle-column{grid-area:middle;display:flex;flex-direction:column;height:100%;min-height:0;gap:10px;overflow:hidden;}
+  #character-preview.compact{display:flex;flex-direction:column;gap:10px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.28);padding:10px 12px 10px;backdrop-filter:blur(4px);flex:0 0 auto;overflow:hidden}
   #character-preview .preview-upper{display:flex;flex-direction:column;align-items:center;gap:10px}
   #character-preview .preview-portrait.small{display:flex;align-items:center;justify-content:center;border:2px solid rgba(0,255,255,0.55);border-radius:50%;padding:8px;width:180px;height:180px;box-shadow:0 0 14px rgba(0,255,255,0.35) inset,0 0 12px rgba(0,255,255,0.25)}
   #character-preview .preview-portrait.small img{max-width:150px;image-rendering:pixelated;filter:drop-shadow(0 0 6px #0ff)}
@@ -483,7 +503,7 @@ export class MainMenu {
   #character-preview .preview-stats{display:flex;justify-content:center;gap:48px;margin-top:10px;font-size:11px;letter-spacing:1px;color:#b8faff}
   #character-preview .preview-stats .stat-item{text-align:center}
   #character-preview .preview-stats .stat-label{display:block;font-size:10px;opacity:.7;margin-bottom:2px}
-  .weapon-info-combined{flex:0 0 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.22);background:rgba(0,45,60,0.28);padding:8px 10px;min-height:110px;max-height:150px;position:relative}
+  .weapon-info-combined{flex:0 0 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.22);background:rgba(0,45,60,0.28);padding:8px 10px;min-height:96px;max-height:140px;position:relative}
   .weapon-info-combined:before{content:'';position:absolute;inset:0;pointer-events:none;box-shadow:0 0 10px rgba(0,255,255,0.12) inset}
   .wic-header{font-size:16px;font-weight:700;color:#5EEBFF;letter-spacing:.8px;margin-bottom:6px;text-shadow:0 0 6px #0ff}
   .wic-body{flex:1;overflow:auto;font-size:12px;line-height:1.55;color:#b8faff;padding-right:4px}
@@ -494,11 +514,19 @@ export class MainMenu {
   .weapon-block .w-desc{font-size:10px;opacity:.75;margin:2px 0 6px}
   .weapon-block .w-stats{font-size:9.5px;display:flex;flex-wrap:wrap;gap:4px;color:#9adfff}
   .weapon-block .w-stats span{background:rgba(0,255,255,0.08);padding:2px 5px;border:1px solid rgba(0,255,255,0.25);border-radius:4px}
-  .mode-info-panel{flex:1 1 0;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:14px 16px;min-height:0}
+  .mode-info-panel{flex:1 1 auto;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:12px 14px;min-height:0}
   .column-spacer{display:none}
   .mode-info-header{font-size:20px;font-weight:700;color:#5EEBFF;text-shadow:0 0 8px #0ff;letter-spacing:1.2px;margin-bottom:8px}
     .mode-info-body{flex:1;overflow:auto;font-size:14px;line-height:1.6;color:#b8faff;padding-right:4px;white-space:pre-line}
       /* Responsive height adjustments */
+  @media (max-height:800px){
+    .middle-column{gap:10px}
+    #character-preview .preview-portrait.small{width:150px;height:150px;padding:6px}
+    #character-preview .preview-portrait.small img{max-width:128px}
+    #character-preview .preview-name{font-size:24px}
+    .weapon-info-combined{max-height:120px}
+    .mode-info-body{font-size:13px}
+  }
   @media (max-height:860px){
         #character-preview .preview-portrait.small{width:160px;height:160px;padding:6px}
         #character-preview .preview-portrait.small img{max-width:135px}
@@ -527,10 +555,24 @@ export class MainMenu {
     /* Operative select readable theme */
     #hs-op-select{background:rgba(0,25,38,0.8);color:#b8faff;border:1px solid rgba(0,255,255,0.35);border-radius:4px}
     #hs-op-select option{background:#06212a;color:#b8faff}
-      #hs-remote-board{flex:1 1 auto;overflow:auto;padding-right:4px}
+  #hs-remote-board{flex:1 1 auto;min-height:0;overflow:auto;padding-right:4px}
       #hs-load-more{align-self:center;margin-top:8px;width:180px}
       /* Scrollbar styling */
       #hs-remote-board::-webkit-scrollbar{width:8px}#hs-remote-board::-webkit-scrollbar-track{background:rgba(0,0,0,0.2)}#hs-remote-board::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:4px}
+      
+      /* Responsive stacking for narrower width or short height */
+      @media (max-width: 1200px), (max-height: 720px){
+        .mm-main{grid-template-columns:1fr;grid-template-areas:'nav' 'middle' 'hs';gap:16px;padding:0 6px 16px 0}
+        .nav-panel,.middle-column,#highscores-panel{height:auto;min-height:0}
+        #highscores-panel{overflow:auto}
+      }
+      @media (max-height: 680px){
+        .nav-panel .main-cta{font-size:16px}
+        .nav-panel .nav-btn{font-size:12px}
+        #character-preview .preview-name{font-size:22px}
+        .pn-header{font-size:16px}
+        #highscores-panel .hs-header{font-size:18px}
+      }
       `;
       document.head.appendChild(style);
     }
@@ -582,11 +624,21 @@ export class MainMenu {
     const upgradesBtn = document.getElementById('upgrades-btn');
     // statistics button removed
 
-    startBtn?.addEventListener('click', () => {
+    startBtn?.addEventListener('click', async () => {
+      // Enforce Google sign-in before any run can start
+      let user = googleAuthService.getCurrentUser();
+      if (!user) {
+        try { user = await googleAuthService.openLogin(); } catch { /* ignore */ }
+      }
+      if (!user) {
+        // Block start if still not authenticated
+        alert('Sign in with Google to start a run.');
+        return;
+      }
       if (this.gameInstance.selectedCharacterData) {
         this.hide();
-        window.dispatchEvent(new CustomEvent('startGame', { 
-          detail: { character: this.gameInstance.selectedCharacterData, mode: this.selectedMode } 
+        window.dispatchEvent(new CustomEvent('startGame', {
+          detail: { character: this.gameInstance.selectedCharacterData, mode: this.selectedMode }
         }));
       } else {
         this.showCharacterSelect();
@@ -895,10 +947,14 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
     const avatar = document.getElementById('auth-avatar') as HTMLImageElement | null;
     const nameEl = document.getElementById('auth-name');
     const emailEl = document.getElementById('auth-email');
+  const statusLine = document.querySelector('.mm-footer .status-line') as HTMLElement | null;
     if (!loginBtn || !authProfile) return;
     if (this.authUser) {
-      loginBtn.classList.add('hidden-init');
-      authProfile.classList.remove('hidden-init');
+    // Hide login button explicitly and show profile
+    (loginBtn as HTMLElement).style.display = 'none';
+    loginBtn.classList.add('hidden-init');
+    authProfile.classList.remove('hidden-init');
+    (authProfile as HTMLElement).style.display = 'flex';
       if (avatar) avatar.src = this.authUser.picture || 'https://www.gravatar.com/avatar/?d=mp';
       if (nameEl) nameEl.textContent = this.authUser.nickname || this.authUser.name;
       if (emailEl) emailEl.textContent = this.authUser.email;
@@ -906,9 +962,21 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
       if (!this.authUser.profileComplete) {
         this.showNicknameModal();
       }
+      if (statusLine) {
+        statusLine.classList.remove('offline');
+        statusLine.classList.add('online');
+        statusLine.innerHTML = '<span class="status-dot"></span>NEURAL LINK ONLINE';
+      }
     } else {
   authProfile.classList.add('hidden-init');
+  (authProfile as HTMLElement).style.display = 'none';
+  (loginBtn as HTMLElement).style.display = 'inline-flex';
   loginBtn.classList.remove('hidden-init');
+      if (statusLine) {
+        statusLine.classList.remove('online');
+        statusLine.classList.add('offline');
+        statusLine.innerHTML = '<span class="status-dot"></span>NEURAL LINK OFFLINE';
+      }
     }
   }
   private async refreshHighScores(silent:boolean=false): Promise<void> {
@@ -1092,7 +1160,9 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
 
   private saveNickname(): void {
     const input = document.getElementById('nickname-input') as HTMLInputElement | null;
-    if (!input || !this.authUser) return;
+    if (!input) return;
+    // Require sign-in to change nickname
+    if (!this.authUser) { googleAuthService.openLogin().catch(()=>{}); return; }
     const val = sanitizeName(input.value);
     if (!val) return;
   // Use statically imported googleAuthService (avoid dynamic import causing Vite warning)
@@ -1101,7 +1171,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   if (modal) modal.remove();
   // Claim nickname (enforces uniqueness) then refresh UI/HS
   (async()=>{
-    const pid = this.playerId || getPlayerId();
+    const pid = this.authUser?.id || getPlayerId();
     const ok = await claimNickname(pid, val);
     if (!ok) {
       // fallback: notify and reopen modal

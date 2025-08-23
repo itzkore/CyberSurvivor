@@ -182,13 +182,21 @@ export class BossManager {
         if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#C400FF');
       }
       if (this.boss.hp <= 0) {
+        // Mark dead and dispatch rewards/FX
         this.boss.state = 'DEAD';
         this.spawnChest(this.boss.x, this.boss.y); // Spawn chest on boss defeat
         window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 500, intensity: 15 } })); // Stronger shake on boss defeat
         // Vacuum gems QoL
         window.dispatchEvent(new CustomEvent('bossGemVacuum'));
-  // Notify game systems for reward handling (double upgrade)
-  window.dispatchEvent(new CustomEvent('bossDefeated'));
+        // Notify game systems for reward handling (double upgrade)
+        window.dispatchEvent(new CustomEvent('bossDefeated'));
+        // Despawn immediately and start interval timer for next spawn
+        this.boss = null;
+        this.spellState = 'IDLE';
+        this.spellTimerMs = 0;
+        this.novaHitApplied = false;
+        this.nextSpellAtMs = 0;
+        this.lastBossSpawnTime = gameTime; // schedule next spawn after interval from death
       }
     }
   }

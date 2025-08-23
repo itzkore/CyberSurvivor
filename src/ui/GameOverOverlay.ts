@@ -92,8 +92,8 @@ export class GameOverOverlay {
   const timeSec = duration; // survival time in seconds
   const score = timeSec; // primary metric
   // Submit to global board (extend later)
-  const pid = getPlayerId();
   const user = googleAuthService.getCurrentUser();
+  const pid = user?.id || getPlayerId();
   // Stable numbered guest handle: Guest #1..#99999
   const getGuestNumber = (playerId: string): number => {
     try {
@@ -194,7 +194,12 @@ export class GameOverOverlay {
     }
   }
   public hide() { if (!this.visible) return; this.visible = false; this.el.classList.remove('visible'); matrixBackground.stop(); }
-  private restart() { const data = (this.game as any).selectedCharacterData; this.hide(); this.game.resetGame(data); }
+  private restart() {
+    // Enforce sign-in before allowing immediate restart
+    const u = googleAuthService.getCurrentUser();
+    if (!u) { try { googleAuthService.openLogin().catch(()=>{}); } catch {/* ignore */} return; }
+    const data = (this.game as any).selectedCharacterData; this.hide(); this.game.resetGame(data);
+  }
   private characterSelect() { this.hide(); window.dispatchEvent(new CustomEvent('showCharacterSelect')); }
   private toMenu() { this.hide(); window.dispatchEvent(new CustomEvent('showMainMenu')); }
 }
