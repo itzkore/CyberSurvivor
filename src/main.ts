@@ -167,19 +167,7 @@ window.onload = async () => {
       window.dispatchEvent(new CustomEvent('resumeGame'));
     }
   }, true); // capture phase so it runs before other handlers
-  // Global auto-aim toggle outside gameplay (MAIN_MENU/PAUSE)
-  window.addEventListener('keydown', (e) => {
-    const key = (e.key || '').toLowerCase();
-    if (key !== 'c') return;
-    const st = game.getState ? game.getState() : (game as any).state;
-    if (st !== 'MAIN_MENU' && st !== 'PAUSE') return; // in-game handled by Game.ts
-    const current = ((game as any).aimMode as ('closest'|'toughest')) || ((window as any).__aimMode) || 'closest';
-    const next = current === 'closest' ? 'toughest' : 'closest';
-    (game as any).aimMode = next; (window as any).__aimMode = next;
-    try { localStorage.setItem('cs-aimMode', next); } catch {}
-    window.dispatchEvent(new CustomEvent('aimModeChanged', { detail: { mode: next } }));
-    e.preventDefault();
-  });
+  // Auto-aim toggle (C) is now restricted to active gameplay; see Game.initInput handler.
   // Gate showing the pause overlay strictly to when the internal state is PAUSE
   window.addEventListener('showPauseOverlay', (e: Event) => {
     const st = game.getState ? game.getState() : (game as any).state;

@@ -279,27 +279,30 @@ export class HUD {
   } catch { /* ignore */ }
   this.drawUpgradeHistory(ctx, upgrades, upgradesPanelX, upgradesPanelY, minimapPositionSize);
 
-    // Auto-aim toggle indicator (right-anchored, near class bars)
+    // Auto-aim toggle indicator (right-anchored, near class bars) — only during active gameplay
     try {
-      const mode: 'closest' | 'toughest' = ((window as any).__aimMode) || 'closest';
-      // Place above class bars to the right
-      const boxW = 120, boxH = 18;
-      const x = width - boxW - 20;
-      const y = hpBarY - 52; // above bars
-      ctx.save();
-      ctx.globalAlpha = 0.9;
-      ctx.fillStyle = COLOR_BG_PANEL;
-      ctx.fillRect(x, y, boxW, boxH);
-      ctx.strokeStyle = COLOR_ACCENT_ALT; ctx.lineWidth = 1;
-      ctx.strokeRect(x+0.5, y+0.5, boxW-1, boxH-1);
-      ctx.font = '11px Orbitron, sans-serif';
-      ctx.textAlign = 'center'; ctx.fillStyle = COLOR_TEXT;
-      const label = mode === 'closest' ? 'Auto-aim: Closest' : 'Auto-aim: Toughest';
-      this.drawGlowText(ctx, label, x + boxW/2, y + 13, COLOR_TEXT, COLOR_CYAN, 6);
-      // Tiny tooltip below
-      ctx.font = '9px Orbitron, sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = COLOR_TEXT_DIM;
-      ctx.fillText('Toggle (C)', x + boxW - 6, y + boxH + 10);
-      ctx.restore();
+      const st = (this.player as any)?.game?.state;
+      if (st === 'GAME') {
+        const mode: 'closest' | 'toughest' = ((window as any).__aimMode) || 'closest';
+        // Place above class bars to the right
+        const boxW = 120, boxH = 18;
+        const x = width - boxW - 20;
+        const y = hpBarY - 52; // above bars
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = COLOR_BG_PANEL;
+        ctx.fillRect(x, y, boxW, boxH);
+        ctx.strokeStyle = COLOR_ACCENT_ALT; ctx.lineWidth = 1;
+        ctx.strokeRect(x+0.5, y+0.5, boxW-1, boxH-1);
+        ctx.font = '11px Orbitron, sans-serif';
+        ctx.textAlign = 'center'; ctx.fillStyle = COLOR_TEXT;
+        const label = mode === 'closest' ? 'Auto-aim: Closest' : 'Auto-aim: Toughest';
+        this.drawGlowText(ctx, label, x + boxW/2, y + 13, COLOR_TEXT, COLOR_CYAN, 6);
+        // Tiny tooltip below
+        ctx.font = '9px Orbitron, sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = COLOR_TEXT_DIM;
+        ctx.fillText('Toggle (C)', x + boxW - 6, y + boxH + 10);
+        ctx.restore();
+      }
     } catch { /* ignore */ }
 
     ctx.restore();
