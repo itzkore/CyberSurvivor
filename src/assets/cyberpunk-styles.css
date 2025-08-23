@@ -498,11 +498,35 @@ html, body { font-family: 'Orbitron', sans-serif; }
 .panel.right { overflow:hidden; }
 
 /* Nav Panel */
-.main-cta { background:linear-gradient(140deg,#083c45,#066176); border:1px solid #00ffe0; color:#dff; font:700 20px/1 'Orbitron'; letter-spacing:3px; padding:18px 26px; border-radius:14px; cursor:pointer; position:relative; overflow:hidden; text-shadow:0 0 8px #00ffe5; transition:background .3s, transform .25s, box-shadow .3s; }
+.main-cta { background:linear-gradient(140deg,#083c45,#066176); border:1px solid #00ffe0; color:#dff; font:700 20px/1 'Orbitron'; letter-spacing:3px; padding:18px 26px; border-radius:14px; cursor:pointer; position:relative; overflow:hidden; text-shadow:0 0 8px #00ffe5; transition:background .3s, transform .25s, box-shadow .3s; display:inline-flex; align-items:center; justify-content:center; min-height:52px; line-height:1; }
 .main-cta:before { content:''; position:absolute; inset:0; background:linear-gradient(100deg,rgba(0,255,255,0.35),rgba(0,140,120,0) 60%); opacity:0; transition:opacity .35s; }
 .main-cta:hover:before { opacity:1; }
 .main-cta:hover { transform:translateY(-3px); box-shadow:0 0 20px #00ffe033,0 0 2px #00ffe0 inset; }
 .main-cta:active { transform:translateY(-1px); }
+
+/* Cyberpunk glitch click effect */
+.main-cta.glitch { animation: btn-jitter .65s steps(10, end); text-shadow: -2px 0 #ff40ff, 2px 0 #40ffff; filter: brightness(1.15) saturate(1.2); }
+.main-cta.glitch::after { content:''; position:absolute; inset:-2px; pointer-events:none; background: repeating-linear-gradient(0deg, rgba(255,255,255,0.08) 0, rgba(255,255,255,0.08) 1px, transparent 1px, transparent 3px); mix-blend-mode: overlay; animation: scan-move .65s linear; }
+@keyframes btn-jitter { 
+  0% { transform:none; }
+  10% { transform: translate(-1px, 1px) skewX(-2deg); }
+  20% { transform: translate(2px, -1px) skewX(2deg); }
+  30% { transform: translate(-1px, 0) skewY(1deg); }
+  40% { transform: translate(1px, 1px) skewX(-1deg); }
+  50% { transform: translate(-2px, -1px) skewY(-1deg); }
+  60% { transform: translate(1px, 0) skewX(1deg); }
+  70% { transform: translate(-1px, 1px) skewY(1deg); }
+  80% { transform: translate(0, -1px) skewX(-1deg); }
+  90% { transform: translate(1px, 0) skewY(-1deg); }
+  100% { transform:none; }
+}
+@keyframes scan-move { from { background-position:0 0; } to { background-position:0 12px; } }
+
+/* Reduce-motion safety for glitch animation */
+@media (prefers-reduced-motion: reduce) {
+  .main-cta.glitch { animation: none; text-shadow: none; filter: none; }
+  .main-cta.glitch::after { display: none; }
+}
 
 .mode-select-block { display:flex; flex-direction:column; gap:10px; }
 .mode-select-block label { font-size:12px; letter-spacing:3px; opacity:.65; }

@@ -1,4 +1,5 @@
 import { Logger } from '../core/Logger';
+import { SoundManager } from '../game/SoundManager';
 import { matrixBackground } from './MatrixBackground';
 import { CHARACTERS } from '../data/characters';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
@@ -227,26 +228,38 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.7 — PATCH NOTES</div>
-          </div>
-          <div class="profile-block">
+            <div class="version-tag">v0.2.8 — PATCH NOTES</div>
+          {
+            version: '0.2.8',
             <div class="currency-display compact">
               <span class="currency-icon">⚡</span>
-              <span id="currency-amount">${this.playerProfile.currency}</span>
-            </div>
-            <div class="auth-container" id="auth-container">
-              <button class="cyberpunk-btn tertiary-btn tight hidden-init" id="login-btn">
-                <span class="btn-text">SIGN IN</span>
-                <span class="btn-glow"></span>
-              </button>
-              <div class="auth-profile hidden-init" id="auth-profile" style="display:flex;align-items:center;gap:8px;">
-                <img id="auth-avatar" class="auth-avatar" alt="User" />
-                <div class="auth-meta" style="display:flex;flex-direction:column;gap:2px;">
-                  <div class="auth-nick" id="auth-name"></div>
-                  <div class="auth-email" id="auth-email"></div>
-                </div>
+              { tag: 'UI', text: 'START RUN: vertically centered text + cyberpunk glitch-on-click with short start delay.' },
+              { tag: 'FX', text: 'Glitch click SFX added (low-volume synthesized blip) that respects reduced motion and volume.' },
+              { tag: 'BAL', text: 'Boss cadence: maintain anchored schedule so late boss kills don’t delay the next spawn.' },
+              { tag: 'FIX', text: 'Second boss not spawning reliably — fixed by not resetting spawn timer on boss death.' },
+              { tag: 'FIX', text: 'Return to Main Menu could show an empty background — restored menu opacity and CTA state on show().' },
+              { tag: 'BAL', text: 'Data Sigil and Plasma changes from 0.2.7 retained; minor polish for ability feel and AoE visuals.' }
                 <button id="change-nickname-btn" class="mini-logout" title="Change Nickname" style="margin-left:8px">✎</button>
                 <button id="logout-btn" class="mini-logout" title="Sign Out">✕</button>
+          {
+            version: '0.2.7',
+            date: today,
+            entries: [
+              { tag: 'UI', text: 'Minimap — XP orbs now appear as yellow markers above enemy dots.' },
+              { tag: 'FX', text: 'XP orbs stutter and flicker in the last 10s of life (in‑world and on minimap).' },
+              { tag: 'BAL', text: 'Tech Warrior: model and hurtbox scaled +25% to match visuals.' },
+              { tag: 'BAL', text: 'Tachyon Spear: supercharge scaling now increases with weapon level.' },
+              { tag: 'QOL', text: 'Auto‑aim UI is always visible for all operatives; selection persists.' },
+              { tag: 'BAL', text: 'Targeting “Toughest”: if out of range, falls back to closest in range; boss priority respects effective range.' },
+              { tag: 'SYS', text: 'Progression — cap of 5 passive unlocks enforced; upgrades still allowed. Upgrade UI filters unlocks at cap.' },
+              { tag: 'AUTH', text: 'Runs and leaderboards require Google sign‑in. Local fallback removed.' },
+              { tag: 'SYS', text: 'Leaderboard calls guarded to avoid 400s when signed out; caching/backoff maintained.' },
+              { tag: 'CSP', text: 'Content Security Policy expanded to allow Google Identity Services styles.' },
+              { tag: 'FIX', text: 'FedCM disabled scenarios handled with explicit sign‑in modal fallback.' },
+              { tag: 'FIX', text: 'Assets — cleaned invalid font paths; mapped missing bullet_grinder to sawblade to prevent 404s.' },
+              { tag: 'UI', text: 'Main menu layout fills screen reliably; Neural Link shows ONLINE/OFFLINE based on auth state.' }
+            ]
+          },
               </div>
             </div>
           </div>
@@ -655,14 +668,32 @@ export class MainMenu {
         alert('Sign in with Google to start a run.');
         return;
       }
-      if (this.gameInstance.selectedCharacterData) {
-        this.hide();
-        window.dispatchEvent(new CustomEvent('startGame', {
-          detail: { character: this.gameInstance.selectedCharacterData, mode: this.selectedMode }
-        }));
-      } else {
-        this.showCharacterSelect();
+      // Subtle SFX to complement the glitch animation
+      SoundManager.playUiClick({ volume: 0.16, durationMs: 90, freq: 1350 });
+      const btn = document.getElementById('start-mission-btn');
+      if (btn) {
+        btn.classList.add('glitch');
+        (btn as HTMLButtonElement).disabled = true;
+        // Remove effect/lock after start dispatch to avoid stale state if selection flow branches
+        setTimeout(() => { btn.classList.remove('glitch'); (btn as HTMLButtonElement).disabled = false; }, 900);
       }
+      // Fade out the main menu wrapper to smooth the transition (respects prefers-reduced-motion)
+      const menuRoot = document.getElementById('main-menu-adaptive');
+      if (menuRoot && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        (menuRoot as HTMLElement).style.transition = 'opacity .45s ease';
+        (menuRoot as HTMLElement).style.opacity = '0';
+      }
+      // Short cinematic delay so the glitch is visible
+      setTimeout(() => {
+        if (this.gameInstance.selectedCharacterData) {
+          this.hide();
+          window.dispatchEvent(new CustomEvent('startGame', {
+            detail: { character: this.gameInstance.selectedCharacterData, mode: this.selectedMode }
+          }));
+        } else {
+          this.showCharacterSelect();
+        }
+      }, 550);
     });
 
     characterBtn?.addEventListener('click', () => {
@@ -1234,6 +1265,15 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
       this.updateCurrencyDisplay();
   // Refresh highscores on each menu show
   this.refreshHighScores();
+      // Reset any fade-out applied during start transition
+      const root = document.getElementById('main-menu-adaptive') as HTMLElement | null;
+      if (root) {
+        root.style.transition = '';
+        root.style.opacity = '1';
+      }
+      // Ensure START RUN is re-enabled and effect cleared
+      const sb = document.getElementById('start-mission-btn') as HTMLButtonElement | null;
+      if (sb) { sb.disabled = false; sb.classList.remove('glitch'); }
     }
   matrixBackground.start();
   const soundPanel = document.getElementById('sound-settings-panel');

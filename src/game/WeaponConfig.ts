@@ -672,9 +672,10 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       const idx = Math.min(Math.max(level,1),7)-1;
       const dmg = [28,36,46,58,72,88,106][idx];
       const cd  = [72,68,64,60,56,52,48][idx];
-      const radius = [110,120,130,140,150,165,180][idx];
-      const pulses = [2,2,3,3,4,4,5][idx];
-      const pulseDmg = [45,60,78,100,126,156,190][idx];
+  // Balance: AoE pulse damage scales 20 -> 200 across levels; radius kept from prior balance
+  const radius = [98,112,126,140,161,182,210][idx];
+  const pulses = [2,2,3,3,4,4,5][idx];
+  const pulseDmg = [20,50,80,110,140,170,200][idx];
       return { damage: dmg, cooldown: cd, sigilRadius: radius, pulseCount: pulses, pulseDamage: pulseDmg } as any;
     }
   },

@@ -25,13 +25,16 @@ export class BossManager {
   private spellState: 'IDLE' | 'NOVA_CHARGE' | 'NOVA_RELEASE' | 'LINEUP' | 'DASH' = 'IDLE';
   private spellTimerMs: number = 0;
   private novaRadius: number = 0;
-  private novaMaxRadius: number = 360;
+  private novaMaxRadius: number = 320; // slightly reduced for fairness
   private novaHitApplied: boolean = false;
   private dashDirX: number = 0;
   private dashDirY: number = 0;
-  private dashSpeedPxPerMs: number = 1.0; // ~60 px/frame at 60fps
-  private dashDurationMs: number = 520;
+  private dashSpeedPxPerMs: number = 0.75; // slower dash to improve dodgeability
+  private dashDurationMs: number = 420; // shorter window of danger
   private dashElapsedMs: number = 0;
+  // Dash fairness controls
+  private dashDidHitOnce: boolean = false; // limit dash contact to a single hit
+  private postDashRecoverUntilMs: number = 0; // brief recovery where boss can't body-check
 
   constructor(player: Player, particleManager?: ParticleManager, difficulty = 1, assetLoader?: AssetLoader) {
     this.player = player;
@@ -143,9 +146,18 @@ export class BossManager {
         }
         if (this.spellState !== 'IDLE') this.updateSpells(deltaTime);
       }
-      // Player-boss collision with 1s cooldown contact damage (30 fixed damage to player)
+        // Player-boss collision with 1s cooldown contact damage (30 fixed damage to player)
       if (dist < this.player.radius + this.boss.radius) {
         const now = performance.now();
+        // During post-dash recovery, suppress general contact damage
+        if (now < this.postDashRecoverUntilMs) {
+          // still apply tiny positional separation to avoid sticking
+          if (dist > 0) {
+            const nx = dx / dist; const ny = dy / dist;
+            this.player.x -= nx * 6; this.player.y -= ny * 6;
+            this.boss.x += nx * 4; this.boss.y += ny * 4;
+          }
+        } else {
         if (!this.boss.lastContactHitTime || now - this.boss.lastContactHitTime >= 1000) {
           this.boss.lastContactHitTime = now;
           this.player.hp -= 30; // fixed contact damage
@@ -165,6 +177,7 @@ export class BossManager {
           if (this.particleManager) {
             this.particleManager.spawn(this.player.x, this.player.y, 2, '#f00');
           }
+        }
         }
       }
       if (this.boss._damageFlash && this.boss._damageFlash > 0) {
@@ -196,7 +209,8 @@ export class BossManager {
         this.spellTimerMs = 0;
         this.novaHitApplied = false;
         this.nextSpellAtMs = 0;
-        this.lastBossSpawnTime = gameTime; // schedule next spawn after interval from death
+  // Do not reset lastBossSpawnTime here; keep interval anchored to original schedule
+  // This ensures if a boss dies late (after the next interval), the next boss spawns immediately.
       }
     }
   }
@@ -425,6 +439,7 @@ export class BossManager {
     this.spellState = 'LINEUP';
     this.spellTimerMs = 0;
     this.dashElapsedMs = 0;
+  this.dashDidHitOnce = false;
   }
 
   private updateSpells(dtMs: number) {
@@ -439,7 +454,7 @@ export class BossManager {
           const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
           if (d <= this.boss.radius + 60) {
             const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-            this.player.hp -= Math.round(60 * specialScale);
+            this.player.hp -= Math.round(45 * specialScale); // reduced inner blast damage
             window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 180, intensity: 6 } }));
           }
         }
@@ -451,11 +466,11 @@ export class BossManager {
         const inner = this.boss.radius + 60;
         this.novaRadius = inner + (this.novaMaxRadius - inner) * t;
         const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
-        const band = 18;
+        const band = 12; // narrower hit band
         if (!this.novaHitApplied && d >= this.novaRadius - band && d <= this.novaRadius + band) {
           this.novaHitApplied = true;
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-          this.player.hp -= Math.round(45 * specialScale);
+          this.player.hp -= Math.round(35 * specialScale); // reduced ring damage
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 5 } }));
         }
         if (t >= 1) this.endSpellCooldown();
@@ -463,10 +478,11 @@ export class BossManager {
       }
       case 'LINEUP': {
         this.spellTimerMs += dtMs;
-        if (this.spellTimerMs >= 600) {
+        if (this.spellTimerMs >= 750) { // longer telegraph
           this.spellState = 'DASH';
           this.spellTimerMs = 0;
           this.dashElapsedMs = 0;
+          this.dashDidHitOnce = false;
         }
         break;
       }
@@ -483,11 +499,23 @@ export class BossManager {
         }
         // Contact damage during dash
         const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
-        if (d < this.player.radius + this.boss.radius) {
-          this.player.hp -= 35;
+        if (!this.dashDidHitOnce && d < this.player.radius + this.boss.radius) {
+          this.dashDidHitOnce = true; // only once per dash
+          this.player.hp -= 25; // reduced dash contact damage
+          // Apply a moderate knockback to give recovery space
+          if (d > 0) {
+            const nx = (this.player.x - this.boss.x) / d;
+            const ny = (this.player.y - this.boss.y) / d;
+            this.player.x += nx * 72;
+            this.player.y += ny * 72;
+          }
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 5 } }));
         }
-        if (this.dashElapsedMs >= this.dashDurationMs) this.endSpellCooldown();
+        if (this.dashElapsedMs >= this.dashDurationMs) {
+          // Start short recovery: suppress body-checks right after dash
+          this.postDashRecoverUntilMs = performance.now() + 380;
+          this.endSpellCooldown();
+        }
         break;
       }
     }
@@ -498,6 +526,7 @@ export class BossManager {
     this.spellTimerMs = 0;
     this.novaHitApplied = false;
     this.nextSpellAtMs = performance.now() + this.spellCooldownMs;
+  this.dashDidHitOnce = false;
   }
 
   public getActiveBoss() {

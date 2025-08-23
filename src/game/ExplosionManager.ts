@@ -304,7 +304,8 @@ export class ExplosionManager {
       }
     }
   // Brief filled AoE ring for clear hit location
-    this.aoeZones.push(new AoEZone(x, y, finalRadius * 0.55, Math.round(damage * 0.15), 120, 'rgba(140,200,255,0.18)', this.enemyManager, this.player));
+    // Residual after-damage area reduced to avoid oversized zones
+    this.aoeZones.push(new AoEZone(x, y, finalRadius * 0.35, Math.round(damage * 0.15), 120, 'rgba(140,200,255,0.18)', this.enemyManager, this.player));
   // Visual shockwaves in blue‑white plasma palette
     this.shockwaves.push({ x, y, startR: Math.max(8, finalRadius * 0.33), endR: finalRadius * 1.05, life: 240, maxLife: 240, color: '#A8E6FF', alphaScale: 0.6 });
   this.shockwaves.push({ x, y, startR: Math.max(4, radius * 0.18), endR: radius * 0.66, life: 190, maxLife: 190, color: '#E6FBFF', alphaScale: 0.4 });
@@ -315,7 +316,7 @@ export class ExplosionManager {
   }
 
   /** Plasma overcharged ion field: schedule multiple invisible damage pulses */
-  public triggerPlasmaIonField(x: number, y: number, damage: number, radius: number = 150, color: string = '#55C8FF') {
+  public triggerPlasmaIonField(x: number, y: number, damage: number, radius: number = 120, color: string = '#55C8FF') {
     // Single initial flash (no direct damage here; pulses handle damage)
     this.shockwaves.push({ x, y, startR: radius*0.25, endR: radius*1.15, life: 300, maxLife: 300, color, alphaScale: 0.5 });
     this.particleManager.spawn(x, y, 30, '#9FFFFF', { sizeMin: 3, sizeMax: 6, lifeMs: 500, speedMin: 0.5, speedMax: 2 });

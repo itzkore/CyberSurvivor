@@ -83,13 +83,16 @@ export class EnemyManager {
   // Ghost cloak follow: locked target position while cloak is active
   private _ghostCloakFollow: { active: boolean; x: number; y: number; until: number } = { active: false, x: 0, y: 0, until: 0 };
   // Data Sigils: planted glyphs that pulse AoE damage
-  private dataSigils: { x:number; y:number; radius:number; pulsesLeft:number; pulseDamage:number; nextPulseAt:number; active:boolean; spin:number; created:number; follow?: boolean }[] = [];
+  private dataSigils: { x:number; y:number; radius:number; pulsesLeft:number; pulseDamage:number; nextPulseAt:number; active:boolean; spin:number; created:number; follow?: boolean; cadenceMs?: number }[] = [];
 
   // Rogue Hacker paralysis/DoT zones (spawned under enemies on virus impact)
   // pulseUntil: draw a stronger spawn pulse/line for first ~220ms to improve visibility
-  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; hit:Set<string>; pulseUntil?: number; seed?: number }[] = [];
+  // stamp: unique per-zone id for O(1) per-enemy contact memoization (replaces Set<string> allocations)
+  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; stamp:number; pulseUntil?: number; seed?: number }[] = [];
   // Rogue Hacker auto-cast state: gate next cast until previous zone has expired and cooldown passed
   private hackerAutoCooldownUntil: number = 0;
+  // Monotonic counter for Rogue Hacker zone stamps
+  private hackerZoneStampCounter: number = 1;
 
   // Poison puddle system
   private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean }[] = [];
@@ -165,7 +168,7 @@ export class EnemyManager {
       const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
       const baseRadius = d.radius || 120;
       const radius = baseRadius * (areaMul || 1);
-      this.plantDataSigil(d.x, d.y, radius, d.pulseCount || 3, d.pulseDamage || 90, !!d.follow);
+      this.plantDataSigil(d.x, d.y, radius, d.pulseCount || 3, d.pulseDamage || 90, !!d.follow, d.pulseCadenceMs, d.pulseDelayMs);
     });
     window.addEventListener('bossDefeated', () => { // trigger new timed vacuum logic
       this.startTimedVacuum();
@@ -223,14 +226,14 @@ export class EnemyManager {
   this.loadSharedEnemyImage();
   }
   /** Plant a Data Sigil at position with radius and a limited number of pulses. */
-  private plantDataSigil(x:number, y:number, radius:number, pulseCount:number, pulseDamage:number, follow:boolean=false){
+  private plantDataSigil(x:number, y:number, radius:number, pulseCount:number, pulseDamage:number, follow:boolean=false, cadenceMs?: number, initialDelayMs?: number){
     let sig = this.dataSigils.find(s => !s.active);
     const now = performance.now();
     if (!sig) {
-      sig = { x, y, radius, pulsesLeft: pulseCount, pulseDamage, nextPulseAt: now + 220, active: true, spin: Math.random()*Math.PI*2, created: now, follow };
+      sig = { x, y, radius, pulsesLeft: pulseCount, pulseDamage, nextPulseAt: now + (initialDelayMs ?? 220), active: true, spin: Math.random()*Math.PI*2, created: now, follow, cadenceMs };
       this.dataSigils.push(sig);
     } else {
-      sig.x = x; sig.y = y; sig.radius = radius; sig.pulsesLeft = pulseCount; sig.pulseDamage = pulseDamage; sig.nextPulseAt = now + 220; sig.active = true; sig.spin = Math.random()*Math.PI*2; sig.created = now; sig.follow = follow;
+      sig.x = x; sig.y = y; sig.radius = radius; sig.pulsesLeft = pulseCount; sig.pulseDamage = pulseDamage; sig.nextPulseAt = now + (initialDelayMs ?? 220); sig.active = true; sig.spin = Math.random()*Math.PI*2; sig.created = now; sig.follow = follow; sig.cadenceMs = cadenceMs;
     }
   // Golden spark burst on plant
   try { this.particleManager?.spawn(x, y, 12, '#FFD700', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.2, speedMax: 3.2 }); } catch {}
@@ -243,17 +246,27 @@ export class EnemyManager {
       const s = this.dataSigils[i];
       if (!s.active) continue;
   s.spin += deltaMs * 0.006; // slow rotation
-  if (s.follow) { s.x = this.player.x; s.y = this.player.y; }
+  if (s.follow) { // smooth follow to avoid outrunning enemies; creates a trailing, more reliable hit zone
+    s.x += (this.player.x - s.x) * 0.2;
+    s.y += (this.player.y - s.y) * 0.2;
+  }
       if (now >= s.nextPulseAt && s.pulsesLeft > 0){
         s.pulsesLeft--;
-        s.nextPulseAt = now + 420; // pulse cadence
+        const cadence = (s as any).cadenceMs ?? 420;
+        s.nextPulseAt = now + cadence; // pulse cadence
         // Apply AoE damage to enemies inside radius
-        const r2 = s.radius * s.radius;
-    for (let j=0;j<this.enemies.length;j++){
+        const r = s.radius;
+        const r2 = r * r;
+        // Compute damage multiplier once per pulse
+        const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+        const len = this.enemies.length;
+        for (let j=0;j<len;j++){
           const e = this.enemies[j];
           if (!e.active || e.hp <= 0) continue;
-          const dx = e.x - s.x; const dy = e.y - s.y; if (dx*dx + dy*dy <= r2){
-  const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+          const dx = e.x - s.x; const dy = e.y - s.y;
+          // Quick AABB cull before precise circle check
+          if (dx > r || dx < -r || dy > r || dy < -r) continue;
+          if (dx*dx + dy*dy <= r2){
       this.takeDamage(e, s.pulseDamage * gdm, false, false, WeaponType.DATA_SIGIL);
             // Brief magenta flash/shake for impact
             const anyE:any = e as any; anyE._poisonFlashUntil = now + 80; // reuse green flash channel but we’ll tint magenta in draw
@@ -273,10 +286,10 @@ export class EnemyManager {
     let z = this.hackerZones.find(z=>!z.active);
     const now = performance.now();
     if (!z){
-      z = { x, y, radius, created: now, lifeMs, active: true, hit: new Set<string>(), pulseUntil: now + 220, seed: Math.floor(now % 100000) };
+  z = { x, y, radius, created: now, lifeMs, active: true, stamp: (this.hackerZoneStampCounter++), pulseUntil: now + 220, seed: Math.floor(now % 100000) };
       this.hackerZones.push(z);
     } else {
-      z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.hit.clear(); z.pulseUntil = now + 220; z.seed = Math.floor(now % 100000);
+  z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.stamp = (this.hackerZoneStampCounter++); z.pulseUntil = now + 220; z.seed = Math.floor(now % 100000);
     }
   }
 
@@ -896,10 +909,11 @@ export class EnemyManager {
     ctx.beginPath(); ctx.arc(z.x, z.y, z.radius * 0.92, 0, Math.PI*2);
     ctx.fillStyle = '#FF7700';
     ctx.fill();
-    // Hacker code glyphs + command text
+    // Hacker code glyphs + command text (adaptive count under load)
     ctx.globalAlpha = 0.22 * (1 - t);
     const seed = (z.seed || 0);
-    const glyphs = 12;
+    const frameMs = this.avgFrameMs || 16;
+    const glyphs = frameMs > 40 ? 4 : frameMs > 28 ? 8 : 12;
     const cmds = [
       'nmap -sV',
       'ssh -p 2222',
@@ -918,7 +932,7 @@ export class EnemyManager {
       const rad = z.radius * (0.28 + ((seed>> (g%7)) & 1) * 0.52);
       const gx = z.x + Math.cos(ang) * rad;
       const gy = z.y + Math.sin(ang) * rad;
-      const text = cmds[(seed + g) % cmds.length];
+      const text = frameMs > 40 ? '' : cmds[(seed + g) % cmds.length];
       ctx.save();
       ctx.translate(gx, gy);
       ctx.rotate(ang + Math.PI/2);
@@ -926,7 +940,7 @@ export class EnemyManager {
       ctx.shadowColor = '#FFD280';
       ctx.shadowBlur = 8;
       ctx.fillStyle = '#FFE6AA';
-      ctx.fillText(text, -text.length*3, 0);
+      if (text) ctx.fillText(text, -text.length*3, 0);
       ctx.restore();
     }
     // Spawn pulse: brief expanding bright ring + hack-link line from player
@@ -987,11 +1001,13 @@ export class EnemyManager {
       ctx.globalAlpha = 0.35 * (1 - t);
       ctx.fillStyle = grad;
       ctx.beginPath(); ctx.arc(fx.x, fx.y, r, 0, Math.PI*2); ctx.fill();
-      // Code burst spokes
+      // Code burst spokes (reduce count under load)
       ctx.globalAlpha = 0.5 * (1 - t);
       ctx.font = 'bold 12px monospace';
       const cmds = ['nmap -sS','ssh -p 22','sqlmap','hydra','curl -X POST','nc -lvvp','base64 -d','openssl rsautl','grep token','iptables -F'];
-      for (let k=0;k<14;k++){
+      const frameMs2 = this.avgFrameMs || 16;
+      const spokeCount = frameMs2 > 40 ? 6 : frameMs2 > 28 ? 10 : 14;
+      for (let k=0;k<spokeCount;k++){
         const ang = (now*0.006) + (Math.PI*2*k/14);
         const tx = fx.x + Math.cos(ang) * (r*0.7);
         const ty = fx.y + Math.sin(ang) * (r*0.7);
@@ -1483,39 +1499,7 @@ export class EnemyManager {
           effectiveDelta += enemy._lodCarryMs; enemy._lodCarryMs = 0;
         }
       }
-      // Rogue Hacker zones: apply one-time paralysis + schedule DoT on first contact per zone
-      if (this.hackerZones.length) {
-  const nowHz = nowFrame;
-        for (let zi = 0; zi < this.hackerZones.length; zi++) {
-          const z = this.hackerZones[zi];
-          if (!z.active) continue;
-          if (nowHz - z.created > z.lifeMs) continue; // expired; will be deactivated later
-          if (z.hit.has(enemy.id)) continue;
-          const dxz = enemy.x - z.x; const dyz = enemy.y - z.y;
-          if (dxz*dxz + dyz*dyz <= (z.radius + enemy.radius) * (z.radius + enemy.radius)) {
-            z.hit.add(enemy.id);
-            const eAny: any = enemy as any;
-            const until = nowHz + 1500; // 1.5s paralysis (fixed)
-            eAny._paralyzedUntil = Math.max(eAny._paralyzedUntil || 0, until);
-            // Scale DoT by HACKER_VIRUS level: nerfed at L1, ramps with level
-            let lvl = 1;
-            try {
-              const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
-              if (aw && typeof aw.get === 'function') {
-                lvl = aw.get(WeaponType.HACKER_VIRUS) || 1;
-              }
-            } catch {}
-            // 3 ticks over ~1.5s; per-tick scales with level (L1 total ≈51, L7 total ≈177), also with global damage
-            const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
-            const perTick = Math.max(8, Math.round((10 + lvl * 7) * gdm));
-            eAny._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick };
-            // Trigger RGB glitch instead of green poison flash
-            eAny._rgbGlitchUntil = nowHz + 260;
-            eAny._rgbGlitchPhase = ((eAny._rgbGlitchPhase || 0) + 1) % 7;
-            (enemy as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
-          }
-        }
-      }
+  // Hacker zones contact handled in a dedicated pass below for better cache behavior
       // Apply knockback velocity if active
   if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
         const dtSec = effectiveDelta / 1000;
@@ -1672,6 +1656,46 @@ export class EnemyManager {
           }
         }
         this.enemyPool.push(enemy);
+      }
+    }
+
+    // Rogue Hacker zones: apply one-time paralysis + schedule DoT on first contact per zone
+    if (this.hackerZones.length && this.activeEnemies.length) {
+      const nowHz = nowFrame;
+      // Precompute weapon level and damage multiplier once
+      let lvl = 1;
+      try {
+        const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+        if (aw && typeof aw.get === 'function') lvl = aw.get(WeaponType.HACKER_VIRUS) || 1;
+      } catch {}
+      const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+      const perTickBase = Math.max(8, Math.round((10 + lvl * 7) * gdm));
+      // Process only active zones and only if within lifetime
+      for (let zi = 0; zi < this.hackerZones.length; zi++) {
+        const z = this.hackerZones[zi];
+        if (!z.active) continue;
+        if (nowHz - z.created > z.lifeMs) continue;
+  const rEff = z.radius; // enemy radius will be added per-enemy
+        const stamp = z.stamp;
+        for (let i = 0; i < this.activeEnemies.length; i++) {
+          const e = this.activeEnemies[i];
+          if (!e.active || e.hp <= 0) continue;
+          const anyE: any = e as any;
+          // Skip if this enemy already processed for this zone
+          if (anyE._lastHackerStamp === stamp) continue;
+          const dx = e.x - z.x; const dy = e.y - z.y;
+          // Quick circle-circle with sum radii: (r+re)^2
+          const rr = rEff + (e.radius || 0);
+          if (dx*dx + dy*dy <= rr * rr) {
+            anyE._lastHackerStamp = stamp;
+            // Apply paralysis and schedule DoT
+            anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowHz + 1500);
+            anyE._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
+            anyE._rgbGlitchUntil = nowHz + 260;
+            anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 1) % 7;
+            (e as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
+          }
+        }
       }
     }
 

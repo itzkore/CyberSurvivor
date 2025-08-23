@@ -1065,7 +1065,7 @@ export class BulletManager {
               if (over) dmgBase *= (spec?.overchargedMultiplier||2.2);
               if (over) {
                 p.plasmaHeat = Math.max(0, p.plasmaHeat * 0.6); // cooldown after overcharged
-                window.dispatchEvent(new CustomEvent('plasmaIonField', { detail: { x: b.x, y: b.y, damage: dmgBase, radius: 150 } }));
+                window.dispatchEvent(new CustomEvent('plasmaIonField', { detail: { x: b.x, y: b.y, damage: dmgBase, radius: 120 } }));
               } else {
         // Preserve explicit 0 fragments (no fallback)
         const frags = (spec && Object.prototype.hasOwnProperty.call(spec,'fragmentCount')) ? (spec.fragmentCount||0) : 3;

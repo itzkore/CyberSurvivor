@@ -11,6 +11,8 @@ export class SoundManager {
   private static bgMusic: Howl | null = null;
   // Track attempted src for cache busting / reloads
   private static currentSrc: string | null = null;
+  // Lightweight shared AudioContext for UI SFX (fallbacks to Howler.ctx when available)
+  private static uiCtx: (AudioContext | null) = null;
 
   /**
    * Loads and starts background music. Only plays if not already playing.
@@ -94,5 +96,38 @@ export class SoundManager {
       src: SoundManager.currentSrc,
       volume: !!sm && sm.volume && sm.volume()
     });
+  }
+
+  /** Plays a subtle UI click/glitch blip without requiring an audio asset. */
+  public static playUiClick(opts?: { volume?: number; durationMs?: number; freq?: number }) {
+    try {
+      const volume = Math.max(0, Math.min(1, opts?.volume ?? 0.18));
+      const durationMs = Math.max(20, Math.min(300, opts?.durationMs ?? 110));
+      const freq = Math.max(120, Math.min(4000, opts?.freq ?? 1400));
+      // Prefer Howler's context if available, else keep our own
+      const anyHowler: any = (Howl as any);
+      const ctx: AudioContext = (anyHowler?._howler?._audioCtx) || (anyHowler?._audioCtx) || (Howl as any)?._audioCtx || (SoundManager.uiCtx ||= (new (window.AudioContext || (window as any).webkitAudioContext)()));
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now);
+      // Gentle quick envelope to avoid pop
+      const g = gain.gain;
+      g.setValueAtTime(0.0001, now);
+      g.exponentialRampToValueAtTime(Math.max(0.0002, volume), now + 0.01);
+      // Tiny downward pitch glide for a satisfying blip
+      osc.frequency.exponentialRampToValueAtTime(Math.max(80, freq * 0.6), now + durationMs / 1000 * 0.8);
+      // Fast release
+      g.exponentialRampToValueAtTime(0.0001, now + durationMs / 1000);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + durationMs / 1000 + 0.01);
+    } catch (e) {
+      // Non-fatal; UI sfx is optional
+      Logger.debug('[SoundManager] playUiClick error/suppressed:', e as any);
+    }
   }
 }

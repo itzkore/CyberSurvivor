@@ -19,7 +19,7 @@ export const PASSIVE_SPECS: PassiveSpec[] = [
   { id: 7, name: 'Crit', icon: '/assets/ui/icons/passive_crit.png', description: 'Add critical chance and multiplier.', maxLevel: 7 },
   { id: 8, name: 'Piercing', icon: '/assets/ui/icons/passive_pierce.png', description: 'Bullets pass through more enemies.', maxLevel: 3 },
   { id: 9, name: 'Regen', icon: '/assets/ui/icons/passive_regen.png', description: 'Slow regenerative healing over time.', maxLevel: 7 },
-  { id: 10, name: 'Area Up', icon: '/assets/ui/icons/passive_aoe.png', description: 'Increase area radius of suitable effects.', maxLevel: 7 }
+  { id: 10, name: 'Area Up', icon: '/assets/ui/icons/passive_aoe.png', description: 'Increase area radius of suitable effects.', maxLevel: 3 }
 ];
 
 // Normalize asset paths for file:// protocol (Electron packaged)
@@ -62,8 +62,9 @@ export function applyPassive(player: Player, passiveId: number, level: number) {
       break;
     case 10: // Area Up
       {
-        const perLevel = 0.10; // +10% radius per level
-        (player as any).globalAreaMultiplier = 1 + level * perLevel;
+  const perLevel = 0.10; // +10% radius per level
+  const lvl = Math.min(level, 3);
+  (player as any).globalAreaMultiplier = 1 + lvl * perLevel;
       }
       break;
     case 4: // AOE On Kill

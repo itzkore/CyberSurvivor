@@ -2126,7 +2126,17 @@ Player.prototype.activateAbility = function(this: Player & any) {
         this.sorcererSigilCdMs = this.sorcererSigilCdMaxMs;
         // Reuse EnemyManager's plantDataSigil with follow=true so it trails the player and pulses a few times
         try {
-          const detail = { x: this.x, y: this.y, radius: 140, pulseCount: 4, pulseDamage: 95, follow: true };
+          // Pull scaling from Data Sigil weapon level so ability matches weapon progression
+          const lvl = this.activeWeapons.get(WeaponType.DATA_SIGIL) ?? 1;
+          const spec: any = (WEAPON_SPECS as any)[WeaponType.DATA_SIGIL];
+          const stats = spec?.getLevelStats ? spec.getLevelStats(lvl) : undefined;
+          // Make ability sigil significantly larger; still affected by level and global area multiplier
+          const radius = ((stats?.sigilRadius ?? 140) * 1.8);
+          // Ability lives longer and connects more: more pulses, slightly faster cadence, quick initial burst
+          const basePulses = (stats?.pulseCount ?? 4);
+          const pulseCount = Math.ceil(basePulses * 1.5);
+          const pulseDamage = (stats?.pulseDamage ?? 95);
+          const detail = { x: this.x, y: this.y, radius, pulseCount, pulseDamage, follow: true, pulseCadenceMs: 360, pulseDelayMs: 140 };
           window.dispatchEvent(new CustomEvent('plantDataSigil', { detail }));
         } catch {}
       }
