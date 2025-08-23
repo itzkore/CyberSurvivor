@@ -222,14 +222,12 @@ window.onload = async () => {
       const AL: any = (window as any).AssetLoader;
       const norm = (p:string)=> AL ? AL.normalizePath(p) : p;
       const surgeCandidates: string[] = [
-        norm('/assets/ui/umbral-surge.mp4'),
-        norm('/assets/ui/umbral-surge.mp4.mp4'),
-        norm('assets/ui/umbral-surge.mp4'),
-        norm('assets/ui/umbral-surge.mp4.mp4'),
-        norm('/assets/ui/umbral_surge.mp4'),
+        // Real filename present in public assets
         norm('/assets/ui/umbral_surge.mp4.mp4'),
-        norm('assets/ui/umbral_surge.mp4'),
-        norm('assets/ui/umbral_surge.mp4.mp4')
+        norm('assets/ui/umbral_surge.mp4.mp4'),
+        // Graceful fallback if extension or prefix differs in builds
+        norm('/assets/ui/umbral_surge.mp4'),
+        norm('assets/ui/umbral_surge.mp4')
       ];
       const vid = document.createElement('video');
       (vid as any).playsInline = true; vid.muted = true; vid.preload = 'auto'; vid.crossOrigin = 'anonymous';

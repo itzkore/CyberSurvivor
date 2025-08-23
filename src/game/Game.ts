@@ -203,15 +203,12 @@ export class Game {
   this.hud = new HUD(this.player, this.assetLoader);
   // Umbral Surge video overlay setup (screen-blended full-screen video)
   this.surgeOverlay = new VideoOverlay([
-    AssetLoader.normalizePath('/assets/ui/umbral-surge.mp4'),
-    AssetLoader.normalizePath('/assets/ui/umbral-surge.mp4.mp4'),
-    AssetLoader.normalizePath('assets/ui/umbral-surge.mp4'),
-  AssetLoader.normalizePath('assets/ui/umbral-surge.mp4.mp4'),
-  // underscore variants (actual file present uses underscore)
-  AssetLoader.normalizePath('/assets/ui/umbral_surge.mp4'),
-  AssetLoader.normalizePath('/assets/ui/umbral_surge.mp4.mp4'),
-  AssetLoader.normalizePath('assets/ui/umbral_surge.mp4'),
-  AssetLoader.normalizePath('assets/ui/umbral_surge.mp4.mp4')
+    // Actual file present
+    AssetLoader.normalizePath('/assets/ui/umbral_surge.mp4.mp4'),
+    AssetLoader.normalizePath('assets/ui/umbral_surge.mp4.mp4'),
+    // Fallbacks for differing prefixes/extension handling
+    AssetLoader.normalizePath('/assets/ui/umbral_surge.mp4'),
+    AssetLoader.normalizePath('assets/ui/umbral_surge.mp4')
   ]);
   // Start overlay when surge begins
   window.addEventListener('shadowSurgeStart', (e: any) => {

@@ -1,7 +1,7 @@
 import { Game } from '../game/Game';
 import { matrixBackground } from './MatrixBackground';
 import { googleAuthService } from '../auth/AuthService';
-import { submitScore, submitScoreAllPeriods, getPlayerId, sanitizeName, isLeaderboardConfigured, fetchTop, fetchPlayerEntry, resolveBoard } from '../leaderboard';
+import { submitScore, submitScoreAllPeriods, sanitizeName, isLeaderboardConfigured, fetchTop, fetchPlayerEntry, resolveBoard } from '../leaderboard';
 import { CHARACTERS } from '../data/characters';
 
 /** Cinematic themed Game Over overlay */
@@ -93,26 +93,15 @@ export class GameOverOverlay {
   const score = timeSec; // primary metric
   // Submit to global board (extend later)
   const user = googleAuthService.getCurrentUser();
-  const pid = user?.id || getPlayerId();
-  // Stable numbered guest handle: Guest #1..#99999
-  const getGuestNumber = (playerId: string): number => {
-    try {
-      const existing = localStorage.getItem('guest.number');
-      if (existing) {
-        const n = parseInt(existing, 10);
-        if (Number.isFinite(n) && n >= 1 && n <= 99999) return n;
-      }
-      // Deterministic hash of pid → 1..99999
-      let hash = 0;
-      for (let i = 0; i < playerId.length; i++) {
-        hash = ((hash << 5) - hash + playerId.charCodeAt(i)) | 0;
-      }
-      const num = (Math.abs(hash) % 99999) + 1;
-      localStorage.setItem('guest.number', String(num));
-      return num;
-    } catch { return ((Math.random() * 99999) | 0) + 1; }
-  };
-  const name = sanitizeName(user?.nickname || user?.name || `Guest #${getGuestNumber(pid)}`);
+  if (!user?.id) {
+    const mm = Math.floor(timeSec/60).toString().padStart(2,'0');
+    const ss = (timeSec%60).toString().padStart(2,'0');
+    this.statsEl.innerHTML = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('') +
+      `<div class='go-highscores'><div class='hs-title'>Survived ${mm}:${ss} · Kills ${kills}</div><div class='hs-empty'>Sign in with Google to submit and view your leaderboard rank.</div></div>`;
+    return;
+  }
+  const pid = user.id;
+  const name = sanitizeName(user.nickname || user.name || 'Pilot');
   const maxDpsVal = Math.round((this.game as any).hud?.maxDPS || this.game.getCurrentDPS());
   let topHtml = '';
   if (isLeaderboardConfigured()) {
@@ -133,8 +122,7 @@ export class GameOverOverlay {
         return c?.name || id;
       };
       if (top.length) {
-        let hint = '';
-        if (!user) hint = "<div class='hs-empty'>Guest run saved. Login to reserve a nickname.</div>";
+  let hint = '';
         // If player not in top list, fetch their rank separately
         let myRow = '';
         if (!top.some(e=>e.playerId===me)) {

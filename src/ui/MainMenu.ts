@@ -4,7 +4,7 @@ import { CHARACTERS } from '../data/characters';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
 // Static imports for auth/score services to avoid mixed dynamic+static warnings in Vite
 import { googleAuthService } from '../auth/AuthService';
-import { fetchTop, getPlayerId, resolveBoard, sanitizeName, isLeaderboardConfigured, fetchPlayerEntry, loadSnapshot, rewriteNickname, invalidateLeaderboardCache, isNicknameAvailable, claimNickname } from '../leaderboard';
+import { fetchTop, resolveBoard, sanitizeName, isLeaderboardConfigured, fetchPlayerEntry, rewriteNickname, invalidateLeaderboardCache, isNicknameAvailable, claimNickname } from '../leaderboard';
 
 interface PlayerProfile {
   currency: number;
@@ -28,7 +28,8 @@ export class MainMenu {
   private authUnsub?: () => void;
   private authUser: import('../auth/AuthService').GoogleUserProfile | null = null;
   private incrementalEntries: any[] = [];
-  private playerId: string = getPlayerId();
+  // Player id is always the Google account id; no local fallback
+  // Read dynamically from googleAuthService when needed
   private currentBoard: string = 'global';
   /** Patch notes for current day only (auto-dated). Newest entries first in array. */
   private patchNotesHistory: { version: string; date: string; entries: { tag: 'NEW'|'UI'|'BAL'|'FX'|'QOL'|string; text: string }[] }[] = (() => {
@@ -996,37 +997,11 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   const target = this.currentBoard;
   const { board } = resolveBoard(target);
   const finalBoard = selectedOp ? `${board}:op:${selectedOp}` : board;
-      // Try snapshot immediately for responsive feel
-      if (!silent && !remotePanel.hasAttribute('data-hash')) {
-  const snap = loadSnapshot(finalBoard, 10, 0) || loadSnapshot(board, 10, 0);
-        if (snap) {
-          const fmtS = (t:number)=>`${Math.floor(t/60).toString().padStart(2,'0')}:${(t%60).toString().padStart(2,'0')}`;
-          const snapHtml = `<div class='hs-table'>
-            <div class='hs-row hs-head'>
-              <span class='hs-cell rank'>#</span>
-              <span class='hs-cell nick'>NAME</span>
-        <span class='hs-cell op'>OPERATIVE</span>
-              <span class='hs-cell time'>TIME</span>
-              <span class='hs-cell kills'>Kills</span>
-              <span class='hs-cell lvl'>Lv</span>
-              <span class='hs-cell dps'>DPS</span>
-      </div>` + snap.map((e,i)=>`<div class='hs-row data'>
-              <span class='hs-cell rank'>${i+1}</span>
-              <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
-    <span class='hs-cell op'>${this.opName((e as any).characterId)}</span>
-              <span class='hs-cell time'>${fmtS(e.timeSec)}</span>
-              <span class='hs-cell kills'>${e.kills??'-'}</span>
-              <span class='hs-cell lvl'>${e.level??'-'}</span>
-              <span class='hs-cell dps'>-</span>
-            </div>`).join('') + '</div>';
-          remotePanel.innerHTML = snapHtml;
-        }
-      }
   const top = await fetchTop(finalBoard, 10, 0).catch(()=>fetchTop(board,10,0));
   // Enforce descending ordering by timeSec (defensive if backend ever returns unsorted)
   const sorted = [...top].sort((a,b)=> (b.timeSec||0) - (a.timeSec||0));
   this.incrementalEntries = sorted;
-      const me = this.playerId;
+  const me = googleAuthService.getCurrentUser()?.id || '';
       const fmt = (t:number)=>{
         const m=Math.floor(t/60).toString().padStart(2,'0');
         const s=(t%60).toString().padStart(2,'0');
@@ -1102,10 +1077,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   private async renderHighScoreList(mode:string, characterId:string) {
     const remotePanel = document.getElementById('hs-remote-board');
     if (!remotePanel) return;
-    let html = '';
-  html = '<div class="hs-empty">(No local storage scoreboard)</div>';
-  // Remote rank/around removed
-    remotePanel.innerHTML = html;
+  remotePanel.innerHTML = '<div class="hs-empty">No scores yet.</div>';
   }
 
   private showNicknameModal(): void {
@@ -1144,7 +1116,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
       const proposed = sanitizeName(input.value);
       if (!proposed) { saveBtn.disabled = true; return; }
       try {
-        const ok = await isNicknameAvailable(proposed, this.playerId);
+  const ok = await isNicknameAvailable(proposed, this.authUser?.id || '');
         saveBtn.disabled = !ok;
         saveBtn.textContent = ok ? 'SAVE' : 'NAME TAKEN';
       } catch { saveBtn.disabled = false; }
@@ -1171,7 +1143,8 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   if (modal) modal.remove();
   // Claim nickname (enforces uniqueness) then refresh UI/HS
   (async()=>{
-    const pid = this.authUser?.id || getPlayerId();
+  if (!this.authUser?.id) return; // safety guard; sign-in enforced elsewhere
+  const pid = this.authUser.id;
     const ok = await claimNickname(pid, val);
     if (!ok) {
       // fallback: notify and reopen modal
