@@ -379,7 +379,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     },
     traits: ['Boss Beam', 'Epic Glow', 'Animated Core'],
     isClassWeapon: false,
-    knockback: 8, // Beam: low knockback
+  knockback: 0.5, // Beam: near-zero knockback to avoid sliding
     getLevelStats(level: number){
       const idx = Math.min(Math.max(level,1),7)-1;
       // Target sustained DPS curve (single-target contact): 60,90,130,180,240,300,360
@@ -390,7 +390,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       const cd = cooldowns[idx];
       const rawDamage = dpsTargets[idx] * cd / 60; // per-shot damage (beam tick when fired)
       const damage = Math.max(1, Math.round(rawDamage));
-      return { cooldown: cd, damage, thickness: thickness[idx], length: lengths[idx] };
+  return { cooldown: cd, damage, thickness: thickness[idx], length: lengths[idx] };
     }
   },
   [WeaponType.RICOCHET]: {
@@ -504,13 +504,13 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
        return { cooldown: cd, damage, length: beamLengths[idx], thickness: thickness[idx] };
      }
   },
-  [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma Core',  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 90,  salvo: 1, spread: 0, projectile: 'bullet_cyan', speed: 7.5, range: 520, maxLevel: 7, damage: 38, projectileVisual: { type: 'plasma', color: '#55C8FF', size: 14, glowColor: '#9FFFFF', glowRadius: 18, trailColor: 'rgba(120,240,255,0.45)', trailLength: 8 }, traits: ['Charge','Detonate','Fragments / Ion Field','Scaling'], isClassWeapon: false,
+  [WeaponType.PLASMA]:   { id: WeaponType.PLASMA,   name: 'Plasma Core',  icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 90,  salvo: 1, spread: 0, projectile: 'bullet_cyan', speed: 6.2, range: 520, maxLevel: 7, damage: 38, projectileVisual: { type: 'plasma', color: '#66CCFF', size: 16, glowColor: '#E6FBFF', glowRadius: 20, trailColor: 'rgba(160,220,255,0.40)', trailLength: 10 }, traits: ['Charge','Detonate','Ion Field','Scaling'], isClassWeapon: false,
     chargeTimeMs: 450,
     overheatThreshold: 0.85,
     heatPerShot: 0.25,
     heatPerFullCharge: 0.42,
     heatDecayPerSec: 0.35,
-    fragmentCount: 3,
+  fragmentCount: 0,
     ionFieldDamageFrac: 0.12, // per tick (5 ticks)
     ionFieldDurationMs: 600,
     overchargedMultiplier: 2.2,
@@ -544,7 +544,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     range: 680,
     maxLevel: 7,
     damage: 42,
-  projectileVisual: { type: 'laser', color: '#FFA500', thickness: 4, length: 100, glowColor: '#FFB347', glowRadius: 18 },
+  // Visuals tuned to match the cyan/blue spear in the reference image
+  projectileVisual: { type: 'laser', color: '#00C8FF', thickness: 4, length: 100, glowColor: '#66E6FF', glowRadius: 18 },
     traits: ['Dash Pierce','Warp Trail','Line Killer'],
     usageTips: [
       'Use short dashes to line up lanes; the spear pierces and rewards precision.',
@@ -592,12 +593,12 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     }
   },
   [WeaponType.SORCERER_ORB]: { id: WeaponType.SORCERER_ORB, name: 'Arcane Orb', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 144, salvo: 1, spread: 0, projectile: 'orb_yellow', speed: 3.2, range: 1200, maxLevel: 7, damage: 144, projectileVisual: { type: 'bullet', color: '#FFD700', size: 10, glowColor: '#FFD700', glowRadius: 18 }, traits: ['Piercing','Homing','Returns','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=144, baseCooldown=144, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
-  /** Data Sorcerer class weapon: plants a rotating magenta sigil that pulses AoE damage. */
+  /** Data Sorcerer class weapon: plants a rotating golden sigil that pulses AoE damage. */
   [WeaponType.DATA_SIGIL]: {
     id: WeaponType.DATA_SIGIL,
     name: 'Data Sigil',
     icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
-    description: 'Hack the arena with a rotating magenta glyph that pulses shockwaves.',
+  description: 'Inscribe a rotating golden glyph that pulses shockwaves and showers sparks.',
     cooldown: 72,
     salvo: 1,
     spread: 0,
@@ -606,7 +607,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     range: 380,
     maxLevel: 7,
     damage: 28,
-    projectileVisual: { type: 'plasma', color: '#FF00FF', size: 9, glowColor: '#FF66FF', glowRadius: 14, trailColor: 'rgba(255,0,255,0.25)', trailLength: 10 },
+  projectileVisual: { type: 'plasma', color: '#FFD700', size: 9, glowColor: '#FFE066', glowRadius: 16, trailColor: 'rgba(255,215,0,0.25)', trailLength: 12 },
     traits: ['Area','Pulses','Control','Scaling'],
     usageTips: [
       'Drop the sigil ahead of enemy flow—pulses clean up as mobs walk in.',
@@ -614,7 +615,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       'Pair with slows or pulls to keep enemies inside the radius.'
     ],
     isClassWeapon: true,
-    knockback: 10,
+  knockback: 2,
     getLevelStats(level:number){
       const idx = Math.min(Math.max(level,1),7)-1;
       const dmg = [28,36,46,58,72,88,106][idx];
@@ -698,7 +699,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=95, baseCooldown=95, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); // ticks: 3 over 3000ms
       return {damage:dmg, cooldown:cd, ticks:3, tickIntervalMs:1000}; } },
   // Mech Mortar: extended range + acceleration handled in BulletManager for more epic arc
-  [WeaponType.MECH_MORTAR]: { id: WeaponType.MECH_MORTAR, name: 'Mech Mortar', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 90, salvo: 1, spread: 0, projectile: 'bullet_gold', speed: 7, damage: 90, range: 520, maxLevel: 8, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_mortar.png'), size: 16, glowColor: '#FFD770', glowRadius: 14, trailColor: 'rgba(255,200,80,0.35)', trailLength: 32, rotationOffset: Math.PI/2 }, explosionRadius: 200, traits: ['Heavy','AoE','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=90, baseCooldown=90, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); return {damage:dmg, cooldown:cd}; } },
+  [WeaponType.MECH_MORTAR]: { id: WeaponType.MECH_MORTAR, name: 'Mech Mortar', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 90, salvo: 1, spread: 0, projectile: 'bullet_gold', speed: 7, damage: 90, range: 520, maxLevel: 8, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_mortar.png'), size: 16, glowColor: '#FFD770', glowRadius: 14, trailColor: 'rgba(255,200,80,0.35)', trailLength: 32, rotationOffset: Math.PI/2 }, explosionRadius: 200, traits: ['Heavy','AoE','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=90, baseCooldown=90, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); const radius = Math.round(200 * (1 + 0.12 * (Math.min(Math.max(level,1),8)-1))); return {damage:dmg, cooldown:cd, explosionRadius: radius}; } },
   /** Quantum Halo: persistent rotating orbs around player. Managed separately (cooldown unused). */
   [WeaponType.QUANTUM_HALO]: {
     id: WeaponType.QUANTUM_HALO,

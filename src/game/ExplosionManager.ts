@@ -155,17 +155,20 @@ export class ExplosionManager {
    * Shockwave-only instant explosion (no lingering filled AoE zone). Applies damage immediately and spawns wave rings.
    */
   public triggerShockwave(x: number, y: number, damage: number, radius: number = 100, color: string = '#FFA07A') {
+    // Apply global area multiplier to radius
+    const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+    const finalRadius = radius * (areaMul || 1);
     // Immediate damage application (single tick)
     if (this.enemyManager && this.enemyManager.getEnemies) {
       const enemies = this.enemyManager.getEnemies();
       for (let i=0;i<enemies.length;i++) {
         const e = enemies[i];
         const dx = e.x - x; const dy = e.y - y;
-        if (dx*dx + dy*dy <= radius*radius) this.enemyManager.takeDamage(e, damage);
+        if (dx*dx + dy*dy <= finalRadius*finalRadius) this.enemyManager.takeDamage(e, damage);
       }
     }
     // Shockwave visuals (reuse logic path by manually pushing similar rings)
-  this.shockwaves.push({ x, y, startR: Math.max(6, radius*0.25), endR: radius*1.1, life: 200, maxLife: 200, color });
+    this.shockwaves.push({ x, y, startR: Math.max(6, finalRadius*0.25), endR: finalRadius*1.1, life: 200, maxLife: 200, color });
   // Removed second ring and screen shake
   }
 
@@ -262,24 +265,20 @@ export class ExplosionManager {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
   ctx.lineWidth = Math.max(1, 3 * (1 - t));
-      ctx.beginPath();
-      ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
-      // Radial gradient stroke effect (simulate inner bright edge)
-      const grad = ctx.createRadialGradient(sw.x, sw.y, radius * 0.65, sw.x, sw.y, radius);
-      grad.addColorStop(0, `${sw.color}80`); // semi
-      grad.addColorStop(0.75, `${sw.color}30`);
-      grad.addColorStop(1, `${sw.color}00`);
-      ctx.strokeStyle = `rgba(255,255,255,${alpha * 0.8})`;
-      ctx.shadowColor = sw.color;
+  ctx.beginPath();
+  ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
+  // Dual stroke: inner color glow + crisp white rim
+  ctx.shadowColor = sw.color;
   ctx.shadowBlur = 10 * (1 - t * 0.7);
   ctx.globalAlpha = alpha;
-      ctx.stroke();
-      // Soft fill halo
-      ctx.fillStyle = grad;
-  ctx.globalAlpha = alpha * 0.4;
-      ctx.beginPath();
-      ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
-      ctx.fill();
+  ctx.strokeStyle = sw.color;
+  ctx.stroke();
+  // Crisp rim
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = Math.min(1, alpha * 1.1);
+  ctx.strokeStyle = `rgba(255,255,255,${0.8 * (1 - t)})`;
+  ctx.lineWidth = Math.max(1, 1.5 * (1 - t));
+  ctx.stroke();
       ctx.restore();
     }
   }
@@ -290,48 +289,29 @@ export class ExplosionManager {
     this.chargeGlows.push({ x, y, radius: Math.max(8, radius), color, start, duration: Math.max(120, durationMs) });
   }
 
-  /** Plasma normal detonation: immediate AoE + fragment spawn */
-  public triggerPlasmaDetonation(x: number, y: number, damage: number, fragments: number = 3, radius: number = 120, color: string = '#55C8FF') {
+  /** Plasma normal detonation: immediate AoE (no fragments) with clear impact visuals */
+  public triggerPlasmaDetonation(x: number, y: number, damage: number, fragments: number = 0, radius: number = 120, color: string = '#66CCFF') {
+    // Apply global area multiplier to radius
+    const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+    const finalRadius = radius * (areaMul || 1);
     // Immediate AoE damage (single tick) scaled
     if (this.enemyManager && this.enemyManager.getEnemies) {
       const enemies = this.enemyManager.getEnemies();
-      const r2 = radius * radius;
+      const r2 = finalRadius * finalRadius;
       for (let i=0;i<enemies.length;i++) {
         const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
         const dx = e.x - x; const dy = e.y - y; if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage);
       }
     }
-    // Visual shockwaves
-    this.shockwaves.push({ x, y, startR: Math.max(8, radius * 0.35), endR: radius * 1.05, life: 260, maxLife: 260, color, alphaScale: 0.55 });
-    this.shockwaves.push({ x, y, startR: Math.max(4, radius * 0.18), endR: radius * 0.65, life: 200, maxLife: 200, color: '#9FFFFF', alphaScale: 0.35 });
-    this.particleManager.spawn(x, y, 24, '#9FFFFF', { sizeMin: 3, sizeMax: 6, lifeMs: 420, speedMin: 1, speedMax: 3.5 });
-    this.particleManager.spawn(x, y, 14, '#55C8FF', { sizeMin: 2, sizeMax: 4, lifeMs: 300, speedMin: 0.6, speedMax: 2 });
+  // Brief filled AoE ring for clear hit location
+    this.aoeZones.push(new AoEZone(x, y, finalRadius * 0.55, Math.round(damage * 0.15), 120, 'rgba(140,200,255,0.18)', this.enemyManager, this.player));
+  // Visual shockwaves in blue‑white plasma palette
+    this.shockwaves.push({ x, y, startR: Math.max(8, finalRadius * 0.33), endR: finalRadius * 1.05, life: 240, maxLife: 240, color: '#A8E6FF', alphaScale: 0.6 });
+  this.shockwaves.push({ x, y, startR: Math.max(4, radius * 0.18), endR: radius * 0.66, life: 190, maxLife: 190, color: '#E6FBFF', alphaScale: 0.4 });
+  this.particleManager.spawn(x, y, 20, '#E6FBFF', { sizeMin: 3, sizeMax: 6, lifeMs: 420, speedMin: 1, speedMax: 2.8 });
+  this.particleManager.spawn(x, y, 12, '#66CCFF', { sizeMin: 2, sizeMax: 4, lifeMs: 300, speedMin: 0.6, speedMax: 1.8 });
     if (this.onShake) this.onShake(90, 3);
-    // Spawn fragments (converted bullets) radially with slight random jitter
-    if (this.bulletManager) {
-      for (let i=0;i<fragments;i++) {
-        const ang = (i / fragments) * Math.PI * 2 + (Math.random()*0.35 - 0.175);
-        const dist = 1; // spawn at center
-        const bx = x + Math.cos(ang) * dist;
-        const by = y + Math.sin(ang) * dist;
-        const dmgFrac = 0.34; // each fragment fraction of base damage
-        this.bulletManager.spawnBullet(bx, by, bx + Math.cos(ang)*10, by + Math.sin(ang)*10, (this as any).fragmentWeaponType || (window as any).WeaponType?.PLASMA ||  WeaponTypeFallback.PLASMA, Math.round(damage * dmgFrac), 1);
-        // Mark last spawned bullet as fragment to skip charging
-        const last = this.bulletManager.bullets[this.bulletManager.bullets.length - 1];
-        if (last) {
-          (last as any).isPlasmaFragment = true;
-          last.phase = 'TRAVEL';
-          (last as any).chargeT = 1;
-          // Increase speed
-          const spd = 11 + Math.random()*2;
-          const mag = Math.hypot(last.vx, last.vy)||1;
-          last.vx = (last.vx / mag) * spd;
-          last.vy = (last.vy / mag) * spd;
-          last.life = 50; // shorter life
-          last.maxDistanceSq = (260*260);
-        }
-      }
-    }
+  // No fragment bullets for plasma detonation anymore
   }
 
   /** Plasma overcharged ion field: schedule multiple invisible damage pulses */

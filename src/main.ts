@@ -143,6 +143,13 @@ window.onload = async () => {
   const pauseOverlay = ensurePauseOverlay(game);
   // Instantiate game over overlay early so event will show it instantly
   const gameOverOverlay = ensureGameOverOverlay(game);
+  // Auto-aim: initialize from persisted setting and expose globally
+  try {
+    const savedAim = localStorage.getItem('cs-aimMode');
+    const initialAim = (savedAim === 'toughest' || savedAim === 'closest') ? savedAim : 'closest';
+    (window as any).__aimMode = initialAim;
+    (game as any).aimMode = initialAim;
+  } catch { (window as any).__aimMode = 'closest'; (game as any).aimMode = 'closest'; }
   // Robust capture-phase ESC handler (prevents race conditions / missed pause)
   let escToggleGuard = 0; // timestamp of last ESC handling
   window.addEventListener('keydown', (e) => {
@@ -160,6 +167,19 @@ window.onload = async () => {
       window.dispatchEvent(new CustomEvent('resumeGame'));
     }
   }, true); // capture phase so it runs before other handlers
+  // Global auto-aim toggle outside gameplay (MAIN_MENU/PAUSE)
+  window.addEventListener('keydown', (e) => {
+    const key = (e.key || '').toLowerCase();
+    if (key !== 'c') return;
+    const st = game.getState ? game.getState() : (game as any).state;
+    if (st !== 'MAIN_MENU' && st !== 'PAUSE') return; // in-game handled by Game.ts
+    const current = ((game as any).aimMode as ('closest'|'toughest')) || ((window as any).__aimMode) || 'closest';
+    const next = current === 'closest' ? 'toughest' : 'closest';
+    (game as any).aimMode = next; (window as any).__aimMode = next;
+    try { localStorage.setItem('cs-aimMode', next); } catch {}
+    window.dispatchEvent(new CustomEvent('aimModeChanged', { detail: { mode: next } }));
+    e.preventDefault();
+  });
   // Gate showing the pause overlay strictly to when the internal state is PAUSE
   window.addEventListener('showPauseOverlay', (e: Event) => {
     const st = game.getState ? game.getState() : (game as any).state;
@@ -208,6 +228,45 @@ window.onload = async () => {
         }
       }
     } catch (e){ Logger.warn('[main.ts] Progressive asset load issue', e); }
+    // Preload non-image media (e.g., Umbral Surge MP4) using multiple candidate paths
+    try {
+      updateLoading(0.92, 'Priming effects');
+      const AL: any = (window as any).AssetLoader;
+      const norm = (p:string)=> AL ? AL.normalizePath(p) : p;
+      const surgeCandidates: string[] = [
+        norm('/assets/ui/umbral-surge.mp4'),
+        norm('/assets/ui/umbral-surge.mp4.mp4'),
+        norm('assets/ui/umbral-surge.mp4'),
+        norm('assets/ui/umbral-surge.mp4.mp4'),
+        norm('/assets/ui/umbral_surge.mp4'),
+        norm('/assets/ui/umbral_surge.mp4.mp4'),
+        norm('assets/ui/umbral_surge.mp4'),
+        norm('assets/ui/umbral_surge.mp4.mp4')
+      ];
+      const vid = document.createElement('video');
+      (vid as any).playsInline = true; vid.muted = true; vid.preload = 'auto'; vid.crossOrigin = 'anonymous';
+      let idx = 0;
+      const tryNext = (): Promise<void> => new Promise((resolve) => {
+        if (idx >= surgeCandidates.length) { resolve(); return; }
+        const src = surgeCandidates[idx++];
+        let done = false;
+        const cleanup = () => {
+          vid.removeEventListener('loadedmetadata', onMeta);
+          vid.removeEventListener('canplay', onMeta);
+          vid.removeEventListener('error', onErr);
+        };
+        const onMeta = () => { if (done) return; done = true; cleanup(); resolve(); };
+        const onErr = () => { if (done) return; done = true; cleanup(); tryNext().then(resolve); };
+        vid.addEventListener('loadedmetadata', onMeta, { once: true });
+        vid.addEventListener('canplay', onMeta, { once: true });
+        vid.addEventListener('error', onErr, { once: true });
+        try { vid.src = src; vid.load(); } catch { onErr(); }
+        // Safety timeout
+        setTimeout(() => { if (!done) onErr(); }, 1500);
+      });
+      // Fire-and-forget; do not block startup
+      tryNext().catch(()=>{});
+    } catch {}
   updateLoading(0.94, 'Finalizing...');
     Logger.info('[main.ts] Game assets loaded');
   } catch (fatal) {

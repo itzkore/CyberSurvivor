@@ -19,6 +19,7 @@ import { WeaponType } from './WeaponType';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
 import { EnvironmentManager } from './EnvironmentManager';
 import { RoomManager } from './RoomManager';
+import { VideoOverlay } from '../ui/VideoOverlay';
 
 export class Game {
   /**
@@ -42,6 +43,8 @@ export class Game {
   private bgGridSize: number = 160; // logical grid spacing
   private bgPatternNeedsRedraw: boolean = true; // flag for lazy rebuild
   private bgGradient?: CanvasGradient; // cached vertical gradient
+  // Optional full-screen video overlay for Umbral Surge
+  private surgeOverlay?: VideoOverlay;
   /**
    * Sets the game state. Used for UI panels like upgrade menu.
    * @param state New state string
@@ -198,6 +201,28 @@ export class Game {
       this.explosionManager = new ExplosionManager(this.particleManager, this.enemyManager, this.player, this.bulletManager, (durationMs: number, intensity: number) => this.startScreenShake(durationMs, intensity));
     }
   this.hud = new HUD(this.player, this.assetLoader);
+  // Umbral Surge video overlay setup (screen-blended full-screen video)
+  this.surgeOverlay = new VideoOverlay([
+    AssetLoader.normalizePath('/assets/ui/umbral-surge.mp4'),
+    AssetLoader.normalizePath('/assets/ui/umbral-surge.mp4.mp4'),
+    AssetLoader.normalizePath('assets/ui/umbral-surge.mp4'),
+  AssetLoader.normalizePath('assets/ui/umbral-surge.mp4.mp4'),
+  // underscore variants (actual file present uses underscore)
+  AssetLoader.normalizePath('/assets/ui/umbral_surge.mp4'),
+  AssetLoader.normalizePath('/assets/ui/umbral_surge.mp4.mp4'),
+  AssetLoader.normalizePath('assets/ui/umbral_surge.mp4'),
+  AssetLoader.normalizePath('assets/ui/umbral_surge.mp4.mp4')
+  ]);
+  // Start overlay when surge begins
+  window.addEventListener('shadowSurgeStart', (e: any) => {
+    const dur = (e?.detail?.durationMs) ?? 5000;
+  // Make the effect less obstructive near the end with a longer fade-out
+  this.surgeOverlay?.play(dur, { fadeInMs: 140, fadeOutMs: 700 });
+  });
+  // Stop overlay early if surge explicitly ends sooner
+  window.addEventListener('shadowSurgeEnd', () => {
+    this.surgeOverlay?.stop();
+  });
   this.environment = new EnvironmentManager();
   this.roomManager = new RoomManager(this.worldW, this.worldH);
   // Generate structure only for Dungeon mode (default Showdown = open field)
@@ -452,6 +477,13 @@ export class Game {
       } else if (e.key === 'k' || e.key === 'K') {
         // Manual hero kill hotkey for rapid leaderboard submission testing
         if (this.state === 'GAME') { this.player.hp = 0; }
+      } else if (this.state === 'GAME' && (e.key === 'c' || e.key === 'C')) {
+        // Global auto-aim toggle: closest <-> toughest, boss highest priority
+        const current = ((this as any).aimMode as ('closest'|'toughest')) || ((window as any).__aimMode) || 'closest';
+        const next = current === 'closest' ? 'toughest' : 'closest';
+        (this as any).aimMode = next; (window as any).__aimMode = next;
+        try { localStorage.setItem('cs-aimMode', next); } catch {}
+        window.dispatchEvent(new CustomEvent('aimModeChanged', { detail: { mode: next } }));
       }
     });
 
@@ -770,12 +802,15 @@ export class Game {
       for (let i = 0; i < potentialBullets.length; i++) {
         const b = potentialBullets[i];
         if (!b.active) continue;
+        // Do not collide orbiting bullets here (Quantum Halo / Grinder), they handle contact internally with cooldown
+        if ((b as any).isOrbiting) continue;
         const dx = b.x - boss.x;
         const dy = b.y - boss.y;
         const r = bossRadSumSqBase + b.radius;
         if (dx*dx + dy*dy < r*r) { // squared distance check
-          boss.hp -= b.damage;
-          boss._damageFlash = 12;
+          // Route through EnemyManager for consistency, pass weapon type when available
+          const wType: any = (b as any).weaponType;
+          try { (this.enemyManager as any)?.takeBossDamage?.(boss, b.damage, false, wType, b.x, b.y); } catch {}
           b.active = false;
           this.particleManager.spawn(boss.x, boss.y, 1, '#FFD700');
           window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: b.damage, isCritical: false, x: boss.x, y: boss.y } }));
@@ -1015,6 +1050,39 @@ export class Game {
               } else {
                 this.ctx.strokeStyle = this.lowFX ? `rgba(255,255,255,${0.3 * fadeEase})` : `rgba(255,255,255,${0.7 * fadeEase})`;
               }
+            } else if (beam.type === 'melter') {
+              // Melter beam: tight bright core with faint amber; draws only up to visLen
+              const visLen = Math.min(len, beam.visLen || len);
+              const fadeEase = fade * fade;
+              const coreT = Math.max(6, (beam.thickness || 12) * 0.6);
+              const rimT = coreT * 1.8;
+              if (!this.lowFX && !debugNoAdd) {
+                this.ctx.globalCompositeOperation = 'lighter';
+                // Core (white)
+                this.ctx.fillStyle = `rgba(255,255,255,${0.85 * fadeEase})`;
+                this.ctx.fillRect(0, -coreT/2, visLen, coreT);
+                // Rim (amber)
+                const grad = this.ctx.createLinearGradient(0, 0, visLen, 0);
+                grad.addColorStop(0, `rgba(255,190,120,${0.55 * fadeEase})`);
+                grad.addColorStop(0.2, `rgba(255,170,80,${0.35 * fadeEase})`);
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                this.ctx.fillStyle = grad;
+                this.ctx.fillRect(0, -rimT/2, visLen, rimT);
+                // Impact bloom
+                const impact = this.ctx.createRadialGradient(visLen, 0, 0, visLen, 0, 18);
+                impact.addColorStop(0, `rgba(255,240,200,${0.8 * fadeEase})`);
+                impact.addColorStop(0.5, `rgba(255,200,120,${0.45 * fadeEase})`);
+                impact.addColorStop(1, 'rgba(0,0,0,0)');
+                this.ctx.fillStyle = impact;
+                this.ctx.beginPath();
+                this.ctx.arc(visLen, 0, 18, 0, Math.PI * 2);
+                this.ctx.fill();
+              } else {
+                this.ctx.globalCompositeOperation = 'source-over';
+                this.ctx.fillStyle = `rgba(255,220,160,${0.6 * fadeEase})`;
+                this.ctx.fillRect(0, -rimT/2, visLen, rimT);
+              }
+              this.ctx.strokeStyle = this.lowFX ? `rgba(255,220,180,${0.3 * fadeEase})` : `rgba(255,230,200,${0.6 * fadeEase})`;
             } else {
               // Railgun: twin parallel rails + animated crossbar rungs (distinct from sniper beams)
               const fadeEase = fade * (0.7 + 0.3 * Math.min(1, fade));
@@ -1094,6 +1162,12 @@ export class Game {
   this.ctx.restore();
   // (Removed post-entity drawWalkableMask; underlay already applied beneath entities)
   this.damageTextManager.draw(this.ctx, this.camX, this.camY, this.renderScale);
+  // Draw Umbral Surge overlay after all world-space elements and damage text, but before HUD
+  const overlay = this.surgeOverlay;
+  if (overlay && overlay.isActive()) {
+  // Prefer 'screen' blending with an even lower base alpha to keep visibility clear.
+  overlay.draw(this.ctx, this.designWidth, this.designHeight, 'screen', 0.6);
+  }
   // Removed full-screen additive overlay to prevent global flash; enemy hit feedback now strictly per-entity.
         this.hud.draw(this.ctx, this.gameTime, this.enemyManager.getEnemies(), this.worldW, this.worldH, this.player.upgrades);
 
@@ -1129,9 +1203,13 @@ export class Game {
    * @param event CustomEvent with explosion details (x, y, damage, hitEnemy)
    */
   private handleMortarExplosion(event: CustomEvent): void {
-    const { x, y, damage, hitEnemy, radius } = event.detail;
+  const { x, y, damage, hitEnemy, radius } = event.detail;
+  // Scale radius by player's global area multiplier if available
+  const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+  const baseR = radius ? Math.max(radius, 200) : 220;
+  const finalR = baseR * (areaMul || 1);
   // Titan Mech uses dedicated high-impact mortar explosion (full damage, larger visuals)
-  this.explosionManager?.triggerTitanMortarExplosion(x, y, damage, radius ? Math.max(radius, 200) : 220);
+  this.explosionManager?.triggerTitanMortarExplosion(x, y, damage, finalR);
   }
   /**
    * Handles mortar implosion pre-effect.

@@ -18,7 +18,8 @@ export const PASSIVE_SPECS: PassiveSpec[] = [
   { id: 6, name: 'Shield', icon: '/assets/ui/icons/passive_shield.png', description: 'Chance to block damage', maxLevel: 5 },
   { id: 7, name: 'Crit', icon: '/assets/ui/icons/passive_crit.png', description: 'Chance for critical hits', maxLevel: 7 },
   { id: 8, name: 'Piercing', icon: '/assets/ui/icons/passive_pierce.png', description: 'Bullets pierce enemies (up to 3 levels)', maxLevel: 3 },
-  { id: 9, name: 'Regen', icon: '/assets/ui/icons/passive_regen.png', description: 'Regenerate HP over time', maxLevel: 7 }
+  { id: 9, name: 'Regen', icon: '/assets/ui/icons/passive_regen.png', description: 'Regenerate HP over time', maxLevel: 7 },
+  { id: 10, name: 'Area Up', icon: '/assets/ui/icons/passive_aoe.png', description: 'Increase AoE radius', maxLevel: 7 }
 ];
 
 // Normalize asset paths for file:// protocol (Electron packaged)
@@ -58,6 +59,12 @@ export function applyPassive(player: Player, passiveId: number, level: number) {
     case 3: // Fire Rate
       // 13% faster per level with extended cap (L7 ~ +91%)
       player.fireRateModifier = 1 + (level * 0.13);
+      break;
+    case 10: // Area Up
+      {
+        const perLevel = 0.10; // +10% radius per level
+        (player as any).globalAreaMultiplier = 1 + level * perLevel;
+      }
       break;
     case 4: // AOE On Kill
       (player as any).hasAoeOnKill = true; // This might need more complex logic for scaling

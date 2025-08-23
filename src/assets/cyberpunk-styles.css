@@ -929,6 +929,13 @@ html, body { font-family: 'Orbitron', sans-serif; }
   flex: 1;
 }
 
+/* Emphasized upgrade info rows (no decimals) */
+.upgrade-info.emph { font-weight:700; letter-spacing:.2px; margin-top:6px; font-size:.9rem; }
+.upgrade-info .delta { display:inline-flex; align-items:center; gap:3px; }
+.upgrade-info .delta .k { opacity:.9; text-transform:uppercase; font-weight:800; letter-spacing:.3px; }
+.upgrade-info .delta .v { margin-left:1px; }
+.upgrade-info .delta .arrow { margin-left:2px; filter: drop-shadow(0 0 6px rgba(255,255,255,0.2)); }
+
 .upgrade-name {
   font-size: 1.3rem;
   font-weight: 600;

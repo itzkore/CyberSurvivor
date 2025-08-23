@@ -13,17 +13,18 @@ interface Biome {
 const BIOMES: Biome[] = [
   {
     name: 'Neon Plains',
-    gradient: { top: '#041c20', mid: '#092b33', bottom: '#0d3b44' },
-    gridColor: '#1e3f4455',
-    noiseColor: '#235e68',
-    accentDots: ['#26ffe9', '#00b3a3']
+  // Darker, cooler palette to avoid green cast while keeping a cyber tone
+  gradient: { top: '#070b12', mid: '#0a1220', bottom: '#0d1826' },
+  gridColor: '#1b233a55',
+  noiseColor: '#1b2740',
+  accentDots: ['#26e0ff', '#00a3ff']
   },
   {
     name: 'Data Wastes',
-    gradient: { top: '#0a0a1a', mid: '#181825', bottom: '#232347' },
-    gridColor: '#2a2f4d55',
-    noiseColor: '#2d3558',
-    accentDots: ['#26ffe9', '#00b3ff']
+  gradient: { top: '#080812', mid: '#0e0e18', bottom: '#141428' },
+  gridColor: '#20243e55',
+  noiseColor: '#222a4a',
+  accentDots: ['#26e0ff', '#00b3ff']
   }
 ];
 
@@ -190,15 +191,17 @@ export class EnvironmentManager {
         }
       }
     }
+    // Very subtle ambient bloom with neutral-blue tone; avoid green cast
     if (!this.lowFX) {
       const t = (performance.now()/4000)%1;
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = 0.04 + Math.sin(t * Math.PI*2) * 0.015;
-      const rg = ctx.createRadialGradient(canvasW*0.6, canvasH*0.4, 40, canvasW*0.6, canvasH*0.4, canvasH*0.9);
-      rg.addColorStop(0, 'rgba(38,255,233,0.12)');
+      ctx.globalCompositeOperation = 'overlay';
+      ctx.globalAlpha = 0.015 + Math.sin(t * Math.PI*2) * 0.006;
+      const rg = ctx.createRadialGradient(canvasW*0.55, canvasH*0.45, 60, canvasW*0.55, canvasH*0.45, canvasH*0.95);
+      rg.addColorStop(0, 'rgba(80,140,200,0.10)');
       rg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = rg;
       ctx.fillRect(0,0,canvasW,canvasH);
+      ctx.globalCompositeOperation = 'source-over';
     }
     // Initialize ambient particles lazily (after first draw when we have cam & viewport)
     if (!this.ambientInited) {
@@ -208,21 +211,21 @@ export class EnvironmentManager {
     // Update + draw ambient particles (before night overlay so they dim consistently)
     this.updateAmbient(camX, camY, canvasW, canvasH);
     this.drawAmbient(ctx, camX, camY, canvasW, canvasH);
-    // Night overlay (multiply darkness based on inverse dayFactor)
-    const darkness = 1 - this.dayFactor; // 0 (day) -> ~0.45 (night)
-    if (darkness > 0.02) {
-      ctx.fillStyle = `rgba(0,10,16,${(darkness*0.55).toFixed(3)})`;
+    // Persistent dark overlay: always keep scene slightly dark, with stronger darkness at "night"
+    const baseShade = 0.10; // always-on shade
+    const dynamicDark = Math.max(0, 1 - this.dayFactor); // 0 (day) .. ~0.48 (night)
+    const totalDark = Math.min(0.65, baseShade + dynamicDark * 0.45);
+    ctx.fillStyle = `rgba(0,10,16,${totalDark.toFixed(3)})`;
+    ctx.fillRect(0,0,canvasW,canvasH);
+    if (!this.lowFX && dynamicDark > 0.01) {
+      // Subtle neutral-blue city glow scaled by night factor (reduced saturation)
+      ctx.globalCompositeOperation = 'overlay';
+      const glow = ctx.createRadialGradient(canvasW*0.56, canvasH*0.44, 30, canvasW*0.56, canvasH*0.44, canvasH*0.85);
+      glow.addColorStop(0, `rgba(90,150,210,${0.10*dynamicDark})`);
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
       ctx.fillRect(0,0,canvasW,canvasH);
-      if (!this.lowFX) {
-        // Subtle city light bloom at night
-        ctx.globalCompositeOperation = 'overlay';
-        const glow = ctx.createRadialGradient(canvasW*0.55, canvasH*0.42, 30, canvasW*0.55, canvasH*0.42, canvasH*0.85);
-        glow.addColorStop(0, `rgba(38,255,233,${0.12*darkness})`);
-        glow.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = glow;
-        ctx.fillRect(0,0,canvasW,canvasH);
-        ctx.globalCompositeOperation = 'source-over';
-      }
+      ctx.globalCompositeOperation = 'source-over';
     }
     ctx.restore();
   }

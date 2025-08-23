@@ -65,6 +65,8 @@ export class Player {
   private baseBulletDamage: number = 10;
   /** Global multiplicative damage bonus from passives (1 = base) */
   public globalDamageMultiplier: number = 1;
+  /** Global multiplicative area bonus from passives (1 = base). Used for AoE radii when applicable. */
+  public globalAreaMultiplier: number = 1;
   public magnetRadius: number = 50; // Radius for gem collection
   public attackSpeed: number = 1; // Attack speed multiplier (1 = base)
   // Plasma weapon heat (0..1)
@@ -105,18 +107,18 @@ export class Player {
 
   // Heavy Gunner: Overheat boost (hold Space)
   private gunnerHeatMs: number = 0; // current heat in ms (0..gunnerHeatMsMax)
-  private gunnerHeatMsMax: number = 2000; // max boost duration = 2s
-  private gunnerHeatCooldownMs: number = 10000; // full cool-down time = 10s
+  private gunnerHeatMsMax: number = 4000; // max boost duration = 4s (double uptime)
+  private gunnerHeatCooldownMs: number = 5000; // full cool-down time = 5s (half cooldown)
   private gunnerBoostActive: boolean = false; // true while boosting (Space held and not overheated)
   private gunnerOverheated: boolean = false;  // lockout when heat hits max
   private gunnerReengageT: number = 0.3;     // must cool below 30% to reengage after overheat
   // Boost multipliers
-  private gunnerBoostFireRate: number = 1.6;  // 60% faster fire rate
+  private gunnerBoostFireRate: number = 2.0;  // 100% faster fire rate (more noticeable)
   private gunnerBoostDamage: number = 2.0;    // double damage while boosting
-  private gunnerBoostRange: number = 1.4;     // +40% projectile reach
-  private gunnerBoostSpread: number = 0.65;   // tighter spread while boosting (35% of base)
+  private gunnerBoostRange: number = 1.7;     // +70% projectile reach (more noticeable)
+  private gunnerBoostSpread: number = 0.45;   // much tighter spread while boosting (stabilized)
   private gunnerBaseRatePenalty: number = 0.7; // 30% slower when not boosting
-  private gunnerBoostJitter: number = 0.06;   // small random aim jitter (radians) for minigun while boosting
+  private gunnerBoostJitter: number = 0.02;   // reduced aim jitter for minigun while boosting (stabilized)
 
   public getGunnerHeat() { return { value: this.gunnerHeatMs, max: this.gunnerHeatMsMax, active: this.gunnerBoostActive, overheated: this.gunnerOverheated }; }
 
@@ -138,6 +140,23 @@ export class Player {
   /** Afterimage trail entries for Cyber Runner dash */
   private runnerAfterimages: { x: number; y: number; rotation: number; flip: boolean; ageMs: number; lifeMs: number; alpha: number; }[] = [];
   public getRunnerDash() { return { value: this.runnerDashCooldownMsMax - this.runnerDashCooldownMs, max: this.runnerDashCooldownMsMax, ready: this.runnerDashCooldownMs <= 0 }; }
+  public getTechGlide(): { value: number; max: number; ready: boolean; active: boolean } {
+    // Value counts up toward max while on cooldown (similar to Runner dash meter)
+    return { value: this.techDashCooldownMsMax - this.techDashCooldownMs, max: this.techDashCooldownMsMax, ready: this.techDashCooldownMs <= 0 && !this.techDashActive, active: this.techDashActive };
+  }
+
+  // Tech Warrior: Glide Dash (Shift) — shorter, slower, smoother glide with brief i-frames, 6s cooldown
+  private techDashCooldownMsMax: number = 6000;
+  private techDashCooldownMs: number = 0;
+  private techDashPrevKey: boolean = false;
+  private techDashActive: boolean = false;
+  private techDashTimeMs: number = 0;
+  private techDashDurationMs: number = 360; // slower glide than Runner’s snap
+  private techDashStartX: number = 0;
+  private techDashStartY: number = 0;
+  private techDashEndX: number = 0;
+  private techDashEndY: number = 0;
+  private techDashEmitAccum: number = 0;
 
   // Data Sorcerer: Sigil Surge (Spacebar) — 15s cooldown, summon a large following sigil that pulses damage
   private sorcererSigilCdMaxMs: number = 15000;
@@ -171,9 +190,16 @@ export class Player {
   private cloakActiveMs: number = 0;
   private cloakActive: boolean = false;
   private cloakPrevSpeed?: number;
+  // Shadow Operative: restore speed after Umbral Surge
+  private shadowPrevSpeed?: number;
   public getGhostCloakMeter() {
     return { value: this.cloakActive ? this.cloakActiveMs : (this.cloakCdMaxMs - this.cloakCdMs), max: this.cloakActive ? 5000 : this.cloakCdMaxMs, ready: this.cloakCdMs <= 0 && !this.cloakActive, active: this.cloakActive };
   }
+
+  // Rogue Hacker: System Hack (Spacebar) — 20s cooldown, instant burst
+  private hackerHackCdMaxMs: number = 20000;
+  private hackerHackCdMs: number = 0;
+  public getHackerHackMeter() { return { value: this.hackerHackCdMaxMs - this.hackerHackCdMs, max: this.hackerHackCdMaxMs, ready: this.hackerHackCdMs <= 0 }; }
 
   /**
    * Ghost Operative sniper charge meter. Mirrors the internal charge state used during steady aim.
@@ -269,6 +295,9 @@ export class Player {
    */
   public update(deltaTime: number) {
     const dt = Math.max(0, deltaTime | 0);
+  const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // Tick class ability cooldowns/buffs
+  this._preUpdate(now, dt);
     // Movement (WASD/Arrows)
     let ax = 0, ay = 0;
   if (keyState['w'] || keyState['arrowup']) ay -= 1;
@@ -310,7 +339,7 @@ export class Player {
       }
     }
 
-    // Cyber Runner: dash cooldown tick + input edge detect (Shift)
+  // Cyber Runner: dash cooldown tick + input edge detect (Shift)
     if (this.characterData?.id === 'cyber_runner') {
       if (this.runnerDashCooldownMs > 0) this.runnerDashCooldownMs = Math.max(0, this.runnerDashCooldownMs - dt);
       const shiftNow = !!keyState['shift'];
@@ -318,20 +347,57 @@ export class Player {
         this.performRunnerDash?.();
       }
       this.runnerDashPrevKey = shiftNow;
-      // Age and prune dash afterimages
-      if (this.runnerAfterimages.length) {
-        for (let i = 0; i < this.runnerAfterimages.length; i++) {
-          const g = this.runnerAfterimages[i];
-          g.ageMs += dt;
-        }
-        // remove expired in place
-        let w = 0;
-        for (let r = 0; r < this.runnerAfterimages.length; r++) {
-          const g = this.runnerAfterimages[r];
-          if (g.ageMs < g.lifeMs) this.runnerAfterimages[w++] = g;
-        }
-        this.runnerAfterimages.length = w;
+    }
+
+    // Tech Warrior: glide dash (Shift) — slower, shorter, smoother
+    if (this.characterData?.id === 'tech_warrior') {
+      if (this.techDashCooldownMs > 0) this.techDashCooldownMs = Math.max(0, this.techDashCooldownMs - dt);
+      const shiftNow = !!keyState['shift'];
+      if (shiftNow && !this.techDashPrevKey && this.techDashCooldownMs <= 0 && !this.techDashActive) {
+        this.performTechGlide?.();
       }
+      this.techDashPrevKey = shiftNow;
+  // Update active glide: ease along path, spawn subtle afterimages
+      if (this.techDashActive) {
+        this.techDashTimeMs += dt;
+        const t = Math.max(0, Math.min(1, this.techDashTimeMs / this.techDashDurationMs));
+        // easeInOutQuad
+        const ease = t < 0.5 ? (2 * t * t) : (1 - Math.pow(-2 * t + 2, 2) / 2);
+        this.x = this.techDashStartX + (this.techDashEndX - this.techDashStartX) * ease;
+        this.y = this.techDashStartY + (this.techDashEndY - this.techDashStartY) * ease;
+        // Emit afterimages at fixed cadence
+        this.techDashEmitAccum += dt;
+        const emitStep = 18; // ms
+        while (this.techDashEmitAccum >= emitStep) {
+          this.techDashEmitAccum -= emitStep;
+          const flipNow = this.lastDirX < 0;
+          const alpha = 0.35 * (1 - t) + 0.15;
+          const lifeMs = 280;
+          this.runnerAfterimages.push({ x: this.x, y: this.y, rotation: this.rotation - Math.PI/2, flip: flipNow, ageMs: 0, lifeMs, alpha });
+          if (this.runnerAfterimages.length > 64) this.runnerAfterimages.splice(0, this.runnerAfterimages.length - 64);
+        }
+        if (this.techDashTimeMs >= this.techDashDurationMs) {
+          this.techDashActive = false;
+          this.techDashTimeMs = 0;
+          this.techDashEmitAccum = 0;
+          this.techDashCooldownMs = this.techDashCooldownMsMax;
+        }
+      }
+    }
+
+    // Age and prune afterimages for all classes
+    if (this.runnerAfterimages.length) {
+      for (let i = 0; i < this.runnerAfterimages.length; i++) {
+        const g = this.runnerAfterimages[i];
+        g.ageMs += dt;
+      }
+      // remove expired in place
+      let w = 0;
+      for (let r = 0; r < this.runnerAfterimages.length; r++) {
+        const g = this.runnerAfterimages[r];
+        if (g.ageMs < g.lifeMs) this.runnerAfterimages[w++] = g;
+      }
+      this.runnerAfterimages.length = w;
     }
 
     // Ability timers: decrement per-frame, clamp at 0; advance active durations
@@ -376,6 +442,10 @@ export class Player {
         this.cloakCdMs = Math.max(0, this.cloakCdMs - dt);
       }
     }
+    // Rogue Hacker: cooldown tick
+    if (this.characterData?.id === 'rogue_hacker' && this.hackerHackCdMs > 0) {
+      this.hackerHackCdMs = Math.max(0, this.hackerHackCdMs - dt);
+    }
     // Passive HP regeneration (applies continuously; supports fractional accumulation)
     if ((this.regen || 0) > 0 && this.hp < this.maxHp) {
       const heal = (this.regen || 0) * (dt / 1000);
@@ -412,6 +482,26 @@ export class Player {
       this.rotation = Math.atan2(target.y - this.y, target.x - this.x);
     }
 
+    // Immediate sniper charge start when stationary (Ghost/Shadow), independent of cooldown
+    if (target) {
+      const moveMagForSniper = Math.hypot(this.vx || 0, this.vy || 0);
+      if (moveMagForSniper <= 0.01 && !(this as any)._sniperCharging) {
+        if (this.activeWeapons.has(WeaponType.GHOST_SNIPER)) {
+          // Ghost: allow pre-charging regardless of cooldown; will hold until ready
+          const spec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
+          const lvl = this.activeWeapons.get(WeaponType.GHOST_SNIPER) ?? 1;
+          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+          this.handleGhostSniperFire(baseAngle, target, spec, lvl);
+        } else if (this.activeWeapons.has(WeaponType.VOID_SNIPER)) {
+          // Shadow: start charging immediately when stationary; charge loop cycles while waiting for cooldown.
+          const spec = WEAPON_SPECS[WeaponType.VOID_SNIPER];
+          const lvl = this.activeWeapons.get(WeaponType.VOID_SNIPER) ?? 1;
+          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+          this.handleVoidSniperFire(baseAngle, target, spec, lvl);
+        }
+      }
+    }
+
     // Fire weapons when off cooldown
     if (target) {
       const isRogueHacker = this.characterData?.id === 'rogue_hacker';
@@ -420,6 +510,10 @@ export class Player {
         if (isRogueHacker && weaponType === WeaponType.HACKER_VIRUS) continue;
         if (!this.shootCooldowns.has(weaponType)) this.shootCooldowns.set(weaponType, 0);
         const cd = this.shootCooldowns.get(weaponType) || 0;
+        // Sniper special-case: if a charge is in progress, don't attempt to fire or reset cooldown here
+        if ((weaponType === WeaponType.GHOST_SNIPER || weaponType === WeaponType.VOID_SNIPER) && (this as any)._sniperCharging) {
+          continue;
+        }
         if (cd <= 0) {
           // Compute effective cooldown
           const spec = WEAPON_SPECS[weaponType];
@@ -438,7 +532,8 @@ export class Player {
           }
           // Apply attack speed modifiers; if in ms, adjust directly; if in frames, adjust frames then convert
           let effCd: number;
-          const rateMul = Math.max(0.1, (this.attackSpeed || 1) * (this.fireRateModifier || 1));
+          const rateSource = (this.getFireRateModifier?.() ?? this.fireRateModifier);
+          const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource != null ? rateSource : 1)));
           // Heavy Gunner: minigun spins up while boosting — increase fire rate with heat
           let rateMulWithBoost = rateMul;
           if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN) {
@@ -508,6 +603,7 @@ export class Player {
     this.speed = this.baseMoveSpeed;
     this.fireRateModifier = 1;
     this.globalDamageMultiplier = 1;
+  this.globalAreaMultiplier = 1;
     this.magnetRadius = 50;
     this.regen = 0;
     // Clear dynamic passive flags stored via indexer
@@ -712,30 +808,35 @@ export class Player {
   // Removed setPlayerLook as player look is now based on shape/color
 
   private findNearestEnemy(): Enemy | null {
-    // Autoaim: pick absolute nearest target (boss no longer forced priority)
+    // Global auto-aim: toggle between 'closest' and 'toughest'; boss always has top priority if alive
+    const aimMode: 'closest' | 'toughest' = ((this.gameContext as any)?.aimMode) || ((window as any).__aimMode) || 'closest';
+    // Boss-first override
+    try {
+      const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
+      if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') return boss as any;
+    } catch {}
     const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
-    // Optionally include active boss in distance comparison (without auto-priority)
-    if (this.gameContext && typeof this.gameContext.bossManager?.getActiveBoss === 'function') {
-      const boss = this.gameContext.bossManager.getActiveBoss();
-      if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-        enemies.push(boss as any);
+    let pick: Enemy | null = null;
+    if (aimMode === 'toughest') {
+      let bestHp = -1;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (!e || !(e as any).active || e.hp <= 0) continue;
+        const hpMax = (e as any).maxHp ?? e.hp;
+        if (hpMax > bestHp) { bestHp = hpMax; pick = e; }
       }
-    }
-    let nearest: Enemy | null = null;
-    let bestD2 = Number.POSITIVE_INFINITY;
-    for (const e of enemies) {
-      if (!e || (e as any).active === false || (e.hp != null && e.hp <= 0)) {
-        continue; // Only target active, alive enemies
-      }
-      const dx = (e.x ?? 0) - (this.x ?? 0);
-      const dy = (e.y ?? 0) - (this.y ?? 0);
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD2) { bestD2 = d2; nearest = e; }
-    }
-    if (nearest) {
     } else {
+      let bestD2 = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (!e || !(e as any).active || e.hp <= 0) continue;
+        const dx = (e.x ?? 0) - (this.x ?? 0);
+        const dy = (e.y ?? 0) - (this.y ?? 0);
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) { bestD2 = d2; pick = e; }
+      }
     }
-    return nearest;
+    return pick;
   }
 
   private shootAt(target: Enemy, weaponType: WeaponType) {
@@ -801,6 +902,12 @@ export class Player {
   if (weaponType === WeaponType.RAILGUN) {
           this.handleRailgunFire(baseAngle, target, spec, weaponLevel);
           return; // Skip normal projectile loop
+        }
+
+        // Beam rework: single-target melting beam rendered via active-beam path
+        if (weaponType === WeaponType.BEAM) {
+          this.handleBeamMelterFire(baseAngle, target, spec, weaponLevel);
+          return; // handled by beam path
         }
 
   // Ghost Operative: heavyweight sniper — must be stationary; charge then instant hitscan beam with pierce
@@ -943,19 +1050,59 @@ export class Player {
     }
   }
 
+  // === Shadow Operative: Umbral Surge state ===
+  private shadowSurgeCdMaxMs: number = 20000; // 20s cooldown
+  private shadowSurgeCdMs: number = 20000;
+  private shadowSurgeUntil: number = 0;
+  private isShadowSurgeActive(): boolean { return performance.now() < this.shadowSurgeUntil; }
+  public getShadowSurgeMeter() {
+    const now = performance.now();
+    const active = now < this.shadowSurgeUntil;
+    const remaining = active ? (this.shadowSurgeUntil - now) : 0;
+    return { value: active ? remaining : (this.shadowSurgeCdMs), max: active ? 5000 : this.shadowSurgeCdMaxMs, ready: !active && this.shadowSurgeCdMs >= this.shadowSurgeCdMaxMs };
+  }
+  // Umbral Surge aura state
+  private shadowTentaclePhase: number = 0; // ms accumulator
+  private shadowTentacles?: Array<{ baseAngle: number; len: number; wobble: number; speed: number; width: number }>; // precomputed arms
+
   /** Spawn one projectile for a (possibly staggered) multi-shot weapon. */
-  private spawnSingleProjectile(bm: any, weaponType: WeaponType, bulletDamage: number, weaponLevel: number, baseAngle: number, index: number, total: number, spread: number, target: Enemy) {
-    const angle = baseAngle + (index - (total - 1) / 2) * spread;
+  private spawnSingleProjectile(
+    bm: any,
+    weaponType: WeaponType,
+    bulletDamage: number,
+    weaponLevel: number,
+    baseAngle: number,
+    index: number,
+    total: number,
+    spread: number,
+    target: Enemy
+  ) {
+    const angle = baseAngle + (index - (total - 1)) / 2 * spread;
     let originX = this.x;
     let originY = this.y;
     if (weaponType === WeaponType.RUNNER_GUN) {
-      const sideOffsetBase = 22; const perpX = -Math.sin(baseAngle); const perpY = Math.cos(baseAngle); const centeredIndex = (index - (total - 1) / 2); const sideSign = centeredIndex < 0 ? -1 : 1; originX += perpX * sideOffsetBase * sideSign; originY += perpY * sideOffsetBase * sideSign;
+      const sideOffsetBase = 22;
+      const perpX = -Math.sin(baseAngle);
+      const perpY = Math.cos(baseAngle);
+      const centeredIndex = (index - (total - 1) / 2);
+      const sideSign = centeredIndex < 0 ? -1 : 1;
+      originX += perpX * sideOffsetBase * sideSign;
+      originY += perpY * sideOffsetBase * sideSign;
     } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
-      const perpX = -Math.sin(baseAngle); const perpY = Math.cos(baseAngle); const barrelOffset = 30; originX += perpX * barrelOffset * this.mechMortarSide; originY += perpY * barrelOffset * this.mechMortarSide; originX += Math.cos(baseAngle) * 18; originY += Math.sin(baseAngle) * 18; this.mechMortarSide *= -1;
+      const perpX = -Math.sin(baseAngle);
+      const perpY = Math.cos(baseAngle);
+      const barrelOffset = 30;
+      originX += perpX * barrelOffset * this.mechMortarSide;
+      originY += perpY * barrelOffset * this.mechMortarSide;
+      originX += Math.cos(baseAngle) * 18;
+      originY += Math.sin(baseAngle) * 18;
+      this.mechMortarSide *= -1;
     }
     let finalAngle = angle;
     if (weaponType === WeaponType.RUNNER_GUN || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
-      const tdx = target.x - originX; const tdy = target.y - originY; finalAngle = Math.atan2(tdy, tdx);
+      const tdx = target.x - originX;
+      const tdy = target.y - originY;
+      finalAngle = Math.atan2(tdy, tdx);
     }
     // Heavy Gunner: extra jitter on minigun while boosting, scales with heat t
     if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN) {
@@ -965,61 +1112,66 @@ export class Player {
         finalAngle += (Math.random() * 2 - 1) * j;
       }
     }
-  // Apply global damage multiplier (percent-based passive)
-  const gdm = (this as any).globalDamageMultiplier || 1;
-  bulletDamage *= gdm;
+    // Apply global damage multiplier (percent-based passive)
+  const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+    bulletDamage *= gdm;
+
     if (weaponType === WeaponType.RAPID) {
-      const arcSpread = 0.35; const arcIndex = (index - (total - 1) / 2); const arcAngle = finalAngle + arcIndex * (arcSpread / Math.max(1,(total-1)||1));
+      const arcSpread = 0.35;
+      const arcIndex = (index - (total - 1) / 2);
+      const arcAngle = finalAngle + arcIndex * (arcSpread / Math.max(1, (total - 1) || 1));
       bm.spawnBullet(originX, originY, originX + Math.cos(arcAngle) * 100, originY + Math.sin(arcAngle) * 100, weaponType, bulletDamage, weaponLevel);
-    } else {
-      // Tech Warrior: if charged and firing a spear, emit a triple-spear volley instead, then consume charge
-  if ((weaponType === WeaponType.TACHYON_SPEAR || weaponType === WeaponType.SINGULARITY_SPEAR) && (this as any).techCharged) {
-        const spreadAng = 12 * Math.PI / 180;
-        const base = finalAngle;
-        const lvl = weaponLevel;
-  const dmgBase = (this.bulletDamage || bulletDamage) * 2.0;
-        const angles = [base - spreadAng, base, base + spreadAng];
-        for (let ai=0; ai<angles.length; ai++) {
-          const a = angles[ai];
-          const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
-          if (b) {
-            (b as any)._isVolley = true;
-            b.damage = dmgBase;
-            // Speed boost so volley uses the faster spear speed
-            const boost = 1.35;
-            b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
-            // Apply special dark-red visuals here
-            if (b.projectileVisual) {
-              const vis: any = { ...(b.projectileVisual as any) };
-              vis.color = '#8B0000';
-              vis.glowColor = '#B22222';
-              vis.glowRadius = Math.max(vis.glowRadius || 18, 22);
-              vis.trailColor = 'rgba(139,0,0,0.50)';
-              vis.trailLength = Math.max(vis.trailLength || 26, 34);
-              vis.thickness = Math.max(vis.thickness || 4, 6);
-              vis.length = Math.max(vis.length || 26, 34);
-              b.projectileVisual = vis;
-            }
-            b.radius = Math.max(b.radius || 6, 8);
+      return;
+    }
+
+    // Tech Warrior: if charged and firing a spear, emit a triple-spear volley instead, then consume charge
+    if ((weaponType === WeaponType.TACHYON_SPEAR || weaponType === WeaponType.SINGULARITY_SPEAR) && (this as any).techCharged) {
+      const spreadAng = 12 * Math.PI / 180;
+      const base = finalAngle;
+      const lvl = weaponLevel;
+      const dmgBase = (this.bulletDamage || bulletDamage) * 2.0;
+      const angles = [base - spreadAng, base, base + spreadAng];
+      for (let ai = 0; ai < angles.length; ai++) {
+        const a = angles[ai];
+        const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
+        if (b) {
+          (b as any)._isVolley = true;
+          b.damage = dmgBase;
+          const boost = 1.35;
+          b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
+          if (b.projectileVisual) {
+            const vis: any = { ...(b.projectileVisual as any) };
+            vis.color = '#8B0000';
+            vis.glowColor = '#B22222';
+            vis.glowRadius = Math.max(vis.glowRadius || 18, 22);
+            vis.trailColor = 'rgba(139,0,0,0.50)';
+            vis.trailLength = Math.max(vis.trailLength || 26, 34);
+            vis.thickness = Math.max(vis.thickness || 4, 6);
+            vis.length = Math.max(vis.length || 26, 34);
+            b.projectileVisual = vis;
           }
+          b.radius = Math.max(b.radius || 6, 8);
         }
-  (this as any).techCharged = false;
-        window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
-      } else {
-  {
+      }
+      (this as any).techCharged = false;
+      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+      return;
+    }
+
+    // Default single projectile spawn
     const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
-    // Scale Heavy Gunner minigun bullets with current heat t
     if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN && b) {
       const t = this.getGunnerBoostT();
       if (t > 0) {
         const rMul = 1 + (this.gunnerBoostRange - 1) * t;
-        if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul*rMul);
+        if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul * rMul);
         if (b.life != null) b.life = Math.round(b.life * rMul);
         const dmgMul = 1 + (this.gunnerBoostDamage - 1) * t;
         b.damage = (b.damage ?? bulletDamage) * dmgMul;
-      }
-    }
-  }
+  // Add temporary piercing +2 during boost
+  const addPierce = 2;
+  if ((b as any).pierceRemaining == null) (b as any).pierceRemaining = 0;
+  (b as any).pierceRemaining += addPierce;
       }
     }
   }
@@ -1030,7 +1182,8 @@ export class Player {
     if ((this as any)._railgunCharging) return;
     (this as any)._railgunCharging = true;
   const chargeTimeMs = 1000; // single subtle reverse shockwave at 1s
-    const startTime = performance.now();
+  let startTime = performance.now();
+  let chargedOnce = false;
     const originX = this.x;
     const originY = this.y - 10; // slight upward to eye line
   const ex = (this.gameContext as any)?.explosionManager;
@@ -1098,6 +1251,112 @@ export class Player {
     requestAnimationFrame(chargeStep);
   }
 
+  /**
+   * Beam (melter): fires a short-lived continuous beam that locks a single target and applies DPS each frame.
+   * Visuals: tight white-hot core with faint amber, small impact bloom and occasional sparks.
+   */
+  private handleBeamMelterFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+    const game: any = this.gameContext; if (!game) return;
+    // Resolve base stats and intended DPS from spec level data
+    const lvlStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
+    const baseCdFrames: number = (lvlStats && typeof (lvlStats as any).cooldown === 'number') ? (lvlStats as any).cooldown : (spec?.cooldown ?? 60);
+    const baseCdSec = baseCdFrames / 60;
+    const baseDamage: number = (lvlStats && typeof (lvlStats as any).damage === 'number') ? (lvlStats as any).damage : (spec?.damage ?? 30);
+    const thickness: number = (lvlStats && typeof (lvlStats as any).thickness === 'number') ? (lvlStats as any).thickness : 16;
+    const range: number = (spec?.range ?? 700);
+    const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+    const dps = (baseDamage / baseCdSec) * gdm; // recover intended DPS curve
+
+    // Prefer boss if active and within range
+    const bossMgr: any = (window as any).__bossManager;
+    const boss = bossMgr && typeof bossMgr.getActiveBoss === 'function' ? bossMgr.getActiveBoss() : null;
+    const hasBoss = boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0;
+    const distTo = (x1:number,y1:number,x2:number,y2:number) => Math.hypot(x2-x1, y2-y1);
+    let lockedBoss: any = null;
+    let lockedTarget: any = null;
+    const eyeX = this.x;
+    const eyeY = this.y - 8;
+    if (hasBoss && distTo(eyeX, eyeY, boss.x, boss.y) <= range) {
+      lockedBoss = boss;
+    } else if (target && (target as any).active && distTo(eyeX, eyeY, target.x, target.y) <= range) {
+      lockedTarget = target;
+    } else {
+      // Fallback: attempt to find closest enemy within range
+      try {
+        const enemies = game.enemyManager?.getEnemies?.() || [];
+        let best: any = null; let bestD = range + 1;
+        for (let i=0;i<enemies.length;i++) {
+          const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
+          const d = distTo(eyeX, eyeY, e.x, e.y); if (d < bestD && d <= range) { bestD = d; best = e; }
+        }
+        if (best) lockedTarget = best;
+      } catch {}
+    }
+    if (!lockedBoss && !lockedTarget) return; // nothing to melt
+
+    // Beam lifetime and tick setup
+    const beamDurationMs = 420; // short, punchy melt window
+    const start = performance.now();
+    if (!game._activeBeams) game._activeBeams = [];
+    const playerRef = this;
+    const beamObj: any = {
+      type: 'melter',
+      x: eyeX,
+      y: eyeY,
+      angle: baseAngle,
+      range,
+      start,
+      duration: beamDurationMs,
+      lastTick: start,
+      weaponLevel,
+      thickness,
+      visLen: Math.min(range, lockedBoss ? distTo(eyeX, eyeY, lockedBoss.x, lockedBoss.y) : distTo(eyeX, eyeY, lockedTarget.x, lockedTarget.y)),
+      lockedTarget,
+      lockedBoss,
+      _lastSpark: start,
+      dealDamage(now:number) {
+        // Update origin to player's current eye line so the beam follows movement
+        const ox = playerRef.x; const oy = playerRef.y - 8;
+        this.x = ox; this.y = oy;
+        // Choose current target and validate
+        let tx:number, ty:number, isBoss:boolean = false;
+        if (this.lockedBoss && this.lockedBoss.active && this.lockedBoss.state === 'ACTIVE' && this.lockedBoss.hp > 0) {
+          tx = this.lockedBoss.x; ty = this.lockedBoss.y; isBoss = true;
+        } else if (this.lockedTarget && this.lockedTarget.active && this.lockedTarget.hp > 0) {
+          tx = this.lockedTarget.x; ty = this.lockedTarget.y;
+        } else {
+          // End early if no target; shrink quickly
+          this.visLen = Math.max(0, this.visLen - 40);
+          return;
+        }
+        const dx = tx - ox; const dy = ty - oy;
+        const dist = Math.hypot(dx, dy);
+        const clamped = Math.min(dist, this.range);
+        this.visLen = clamped;
+        this.angle = Math.atan2(dy, dx);
+        // Apply DPS scaled by elapsed time since last tick
+        const dtSec = Math.max(0, (now - this.lastTick) / 1000);
+        const dmg = dps * dtSec;
+        if (dmg > 0.0001) {
+          if (isBoss) {
+            try { game.enemyManager?.takeBossDamage?.(this.lockedBoss, dmg, false, WeaponType.BEAM, tx, ty, playerRef.activeWeapons.get(WeaponType.BEAM) || weaponLevel); } catch {}
+          } else {
+            try { game.enemyManager?.takeDamage?.(this.lockedTarget, dmg, false, false, WeaponType.BEAM, ox, oy, playerRef.activeWeapons.get(WeaponType.BEAM) || weaponLevel); } catch {}
+          }
+        }
+        this.lastTick = now;
+        // Occasional impact spark for feedback (throttled)
+        if (game.particleManager && now - this._lastSpark > 60) {
+          this._lastSpark = now;
+          const impactX = ox + Math.cos(this.angle) * this.visLen;
+          const impactY = oy + Math.sin(this.angle) * this.visLen;
+          game.particleManager.spawn(impactX, impactY, 1, '#FFD27F', { sizeMin: 0.6, sizeMax: 1.2, life: 30, speedMin: 0.5, speedMax: 1.4 });
+        }
+      }
+    };
+    game._activeBeams.push(beamObj);
+  }
+
   /** Ghost Sniper: brief steady aim + instant hitscan beam that pierces with damage falloff. */
   private handleGhostSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
     // Prevent overlapping charges
@@ -1113,9 +1372,10 @@ export class Player {
     (this as any)._sniperCharging = true;
     (this as any)._sniperState = 'charging';
     const chargeTimeMs = 1500; // 1.5s steady-aim time
-    (this as any)._sniperChargeStart = performance.now();
-    (this as any)._sniperChargeMax = chargeTimeMs;
-    const startTime = performance.now();
+  (this as any)._sniperChargeStart = performance.now();
+  (this as any)._sniperChargeMax = chargeTimeMs;
+  let startTime = performance.now();
+  let chargedOnce = false;
     const originX = this.x;
     const originY = this.y - 8; // slight eye-line offset
     const pm = this.gameContext?.particleManager;
@@ -1144,16 +1404,24 @@ export class Player {
         (this as any)._sniperChargeMax = 0;
         return;
       }
-      // Continue charging if time remains
-      if (now - startTime < chargeTimeMs) {
-        requestAnimationFrame(chargeStep);
-        return;
-      }
+  // Continue charging if time remains; fire immediately upon completion
+  if (now - startTime < chargeTimeMs) { requestAnimationFrame(chargeStep); return; }
       // Fire instantaneous beam
       (this as any)._sniperCharging = false;
       (this as any)._sniperState = 'idle';
       (this as any)._sniperChargeStart = undefined;
       (this as any)._sniperChargeMax = 0;
+      // Start weapon cooldown now (mirror loop logic)
+      {
+        const FRAME_MS = 1000 / 60;
+        const specStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
+        let baseCdMs: number | undefined = (specStats && typeof (specStats as any).cooldownMs === 'number') ? (specStats as any).cooldownMs : (typeof (spec as any).cooldownMs === 'number' ? (spec as any).cooldownMs : undefined);
+        let baseCdFrames: number | undefined = baseCdMs == null ? (specStats && typeof (specStats as any).cooldown === 'number' ? (specStats as any).cooldown : (spec?.cooldown ?? 60)) : undefined;
+  const rateSource2 = (this.getFireRateModifier?.() ?? this.fireRateModifier);
+  const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource2 != null ? rateSource2 : 1)));
+        const effCd = typeof baseCdMs === 'number' ? (baseCdMs / rateMul) : ((baseCdFrames as number) / rateMul) * FRAME_MS;
+        this.shootCooldowns.set(WeaponType.GHOST_SNIPER, effCd);
+      }
       const game: any = this.gameContext;
       if (!game) return;
       const beamAngle = Math.atan2(target.y - originY, target.x - originX);
@@ -1250,11 +1518,14 @@ export class Player {
     }
     (this as any)._sniperCharging = true;
     (this as any)._sniperState = 'charging';
-  // Shorter steady-aim for Shadow Operative per request
-  const chargeTimeMs = 1000;
-    (this as any)._sniperChargeStart = performance.now();
-    (this as any)._sniperChargeMax = chargeTimeMs;
-    const startTime = performance.now();
+  // Shorter steady-aim; during Umbral Surge, near-instant aim
+  const surge = this.isShadowSurgeActive();
+  // Increase charge time by 50% (surge and normal)
+  const chargeTimeMs = surge ? 375 : 1050;
+  (this as any)._sniperChargeStart = performance.now();
+  (this as any)._sniperChargeMax = chargeTimeMs;
+  let startTime = performance.now();
+  let chargedOnce = false;
     const originX = this.x;
     const originY = this.y - 8;
     const pm = this.gameContext?.particleManager;
@@ -1281,21 +1552,36 @@ export class Player {
         (this as any)._sniperChargeMax = 0;
         return;
       }
-      if (now - startTime < chargeTimeMs) { requestAnimationFrame(chargeStep); return; }
+  // Fire immediately when charge completes; bar is the shot caller
+  const elapsed = now - startTime;
+  if (elapsed < chargeTimeMs) { requestAnimationFrame(chargeStep); return; }
       (this as any)._sniperCharging = false;
       (this as any)._sniperState = 'idle';
       (this as any)._sniperChargeStart = undefined;
       (this as any)._sniperChargeMax = 0;
+      // Start weapon cooldown now (mirror loop logic)
+      {
+        const FRAME_MS = 1000 / 60;
+        const specStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
+        let baseCdMs: number | undefined = (specStats && typeof (specStats as any).cooldownMs === 'number') ? (specStats as any).cooldownMs : (typeof (spec as any).cooldownMs === 'number' ? (spec as any).cooldownMs : undefined);
+        let baseCdFrames: number | undefined = baseCdMs == null ? (specStats && typeof (specStats as any).cooldown === 'number' ? (specStats as any).cooldown : (spec?.cooldown ?? 60)) : undefined;
+  const rateSource3 = (this.getFireRateModifier?.() ?? this.fireRateModifier);
+  const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource3 != null ? rateSource3 : 1)));
+        const effCd = typeof baseCdMs === 'number' ? (baseCdMs / rateMul) : ((baseCdFrames as number) / rateMul) * FRAME_MS;
+        this.shootCooldowns.set(WeaponType.VOID_SNIPER, effCd);
+      }
       const game: any = this.gameContext; if (!game) return;
       const beamAngle = Math.atan2(target.y - originY, target.x - originX);
-      const range = spec.range || 1200;
+  const range = spec.range || 1200;
   const ghostSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
   const baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
-      const perTick = 0.5 * baseDamageGhost; // half of ghost sniper dmg per tick at level 1 baseline; scaled via baseDamageGhost at level
+  // Slightly reduce per-tick damage to balance faster cadence overall; include global damage scaling
+  const gdmVS = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+  const perTick = 0.40 * baseDamageGhost * gdmVS;
       const ticks = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).ticks : 3) || 3;
       const tickIntervalMs = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).tickIntervalMs : 1000) || 1000;
       const thickness = 6;
-      const enemies = game.enemyManager?.getEnemies() || [];
+  const enemies = game.enemyManager?.getEnemies() || [];
       const cosA = Math.cos(beamAngle);
       const sinA = Math.sin(beamAngle);
       const candidates: Array<{e: Enemy, proj: number}> = [];
@@ -1313,19 +1599,68 @@ export class Player {
       for (let i = 0; i < candidates.length; i++) {
         const e = candidates[i].e as any;
         // Attach a simple voidDoT structure to enemy; merge stacks by resetting timer and max ticks
-        const dot = e._voidSniperDot as { next:number; left:number; dmg:number } | undefined;
+        const dot = e._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
         if (!dot) {
-          e._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick };
+          // New stack: create DoT state and apply an immediate tick so the enemy cannot "dodge" the first damage
+          e._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 } as any;
+          try {
+            const gm: any = this.gameContext?.enemyManager;
+            if (gm) {
+              gm.takeDamage(e as Enemy, perTick, false, false, WeaponType.VOID_SNIPER);
+            }
+          } catch {}
+          // Consume one tick immediately
+          if (e._voidSniperDot.left > 0) e._voidSniperDot.left--;
         } else {
           // Stacking: add per-tick damage; refresh next tick time; keep at least current max remaining ticks
           dot.left = Math.max(dot.left, ticks);
           dot.dmg = (dot.dmg || 0) + perTick;
           dot.next = nowBase + tickIntervalMs;
+          dot.stacks = (dot.stacks || 1) + 1;
+          // Apply an immediate tick with the updated per-tick amount
+          try {
+            const gm: any = this.gameContext?.enemyManager;
+            if (gm) {
+              gm.takeDamage(e as Enemy, dot.dmg, false, false, WeaponType.VOID_SNIPER);
+            }
+          } catch {}
+          if (dot.left > 0) dot.left--;
         }
         // Brief paralysis on impact (0.5s)
         e._paralyzedUntil = Math.max(e._paralyzedUntil || 0, nowBase + 500);
         e._lastHitByWeapon = WeaponType.VOID_SNIPER as any;
       }
+
+      // Boss intersection: apply the same DoT to boss if the beam crosses it
+      try {
+        const bossMgr: any = (window as any).__bossManager;
+        const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+          const relX = boss.x - originX; const relY = boss.y - originY;
+          const proj = relX * cosA + relY * sinA;
+          const ortho = Math.abs(-sinA * relX + cosA * relY);
+          if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius || 160))) {
+            const bAny: any = boss as any;
+            const dotB = bAny._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
+            if (!dotB) {
+              bAny._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 };
+              // Immediate first tick on boss via EnemyManager.takeBossDamage
+              try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, perTick, false, false, weaponLevel); } catch {}
+              if ((bAny._voidSniperDot as any).left > 0) (bAny._voidSniperDot as any).left--;
+            } else {
+              dotB.left = Math.max(dotB.left, ticks);
+              dotB.dmg = (dotB.dmg || 0) + perTick;
+              dotB.next = nowBase + tickIntervalMs;
+              dotB.stacks = (dotB.stacks || 1) + 1;
+              try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dotB.dmg, false, false, weaponLevel); } catch {}
+              if (dotB.left > 0) dotB.left--;
+            }
+            (boss as any)._lastHitByWeapon = WeaponType.VOID_SNIPER;
+            // Subtle visual ping on boss
+            try { this.gameContext?.particleManager?.spawn(boss.x, boss.y, 1, '#B266FF'); } catch {}
+          }
+        }
+      } catch {}
       // Recoil & visuals
       this.x -= Math.cos(beamAngle) * 8; this.y -= Math.sin(beamAngle) * 8;
       if (!game._activeBeams) game._activeBeams = [];
@@ -1334,6 +1669,31 @@ export class Player {
       window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
     };
     requestAnimationFrame(chargeStep);
+  }
+
+  // Tick cooldowns and temporary buffs for class abilities
+  private _preUpdate(now: number, dt: number) {
+    // Shadow Operative cooldown tick
+    if (this.characterData?.id === 'shadow_operative') {
+      if (now < this.shadowSurgeUntil) {
+        // Active window — advance aura phase
+        this.shadowTentaclePhase += dt;
+      } else {
+        // Ended: restore speed once, then refill CD
+        if (this.shadowPrevSpeed != null) {
+          this.speed = this.shadowPrevSpeed;
+          this.shadowPrevSpeed = undefined;
+        }
+        // Notify overlay listeners once per end
+        if (this.shadowSurgeUntil !== 0) {
+          try { window.dispatchEvent(new CustomEvent('shadowSurgeEnd')); } catch {}
+        }
+        // Clear aura data when surge ends
+        if (this.shadowTentacles) this.shadowTentacles = undefined;
+        this.shadowTentaclePhase = 0;
+        this.shadowSurgeCdMs = Math.min(this.shadowSurgeCdMaxMs, this.shadowSurgeCdMs + dt);
+      }
+    }
   }
 
   /** Rogue Hacker: spawn a paralysis/DoT zone at target (or forward) instead of firing bullets. */
@@ -1436,6 +1796,10 @@ export class Player {
   public getBaseBulletDamage(): number { return this.baseBulletDamage; }
   /** Returns global damage multiplier */
   public getGlobalDamageMultiplier(): number { return this.globalDamageMultiplier; }
+  /** Returns global area multiplier (AoE radius scale) */
+  public getGlobalAreaMultiplier(): number { return this.globalAreaMultiplier; }
+  /** Returns global fire-rate modifier (cooldown scale; >1 = faster) */
+  public getFireRateModifier(): number { return this.fireRateModifier; }
 
   /**
    * Draws the player character using a PNG sprite from /assets/player/{characterId}.png.
@@ -1450,6 +1814,47 @@ export class Player {
   const prefix = (location.protocol === 'file:' ? './assets/player/' : '/assets/player/');
   const img = this.gameContext?.assetLoader?.getImage(prefix + assetKey + '.png') as HTMLImageElement | undefined;
     if (img && img.complete && img.naturalWidth > 0) {
+      // Shadow Operative: draw tentacle aura under the main sprite when Umbral Surge is active
+      if (this.characterData?.id === 'shadow_operative' && (typeof performance !== 'undefined' ? performance.now() : Date.now()) < this.shadowSurgeUntil && this.shadowTentacles?.length) {
+        const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        const t = (this.shadowTentaclePhase || 0) / 1000;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < this.shadowTentacles.length; i++) {
+          const arm = this.shadowTentacles[i];
+          const ang = arm.baseAngle + Math.sin(t * arm.speed * Math.PI * 2 + i * 0.7) * arm.wobble;
+          const segs = 8;
+          const step = arm.len / segs;
+          const cosA = Math.cos(ang), sinA = Math.sin(ang);
+          let px = 0, py = 0;
+          for (let s = 0; s < segs; s++) {
+            const nx = px + cosA * step;
+            const ny = py + sinA * step;
+            const w = arm.width * (1 - s / segs);
+            ctx.strokeStyle = 'rgba(60, 0, 90, 0.35)';
+            ctx.lineWidth = Math.max(1, w);
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(nx, ny);
+            ctx.stroke();
+            // inner glow
+            ctx.strokeStyle = 'rgba(178, 102, 255, 0.25)';
+            ctx.lineWidth = Math.max(0.5, w * 0.5);
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(nx, ny);
+            ctx.stroke();
+            px = nx; py = ny;
+          }
+          // tip wisp
+          ctx.fillStyle = 'rgba(210, 160, 255, 0.18)';
+          ctx.beginPath();
+          ctx.arc(px, py, 4, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
       // Draw afterimages first (under main sprite)
       if (this.runnerAfterimages.length) {
         for (let i = 0; i < this.runnerAfterimages.length; i++) {
@@ -1534,12 +1939,30 @@ export class Player {
 export interface Player {
   activateAbility?: () => void;
   performRunnerDash?: () => void;
+  performTechGlide?: () => void;
 }
 
 Player.prototype.activateAbility = function(this: Player & any) {
   const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const id = this.characterData?.id;
   switch (id) {
+    case 'rogue_hacker': {
+      // System Hack: massive EMP-like hack that damages and disables nearby enemies instantly
+      if (this.hackerHackCdMs <= 0) {
+        this.hackerHackCdMs = this.hackerHackCdMaxMs;
+        const lvl = this.activeWeapons.get(WeaponType.HACKER_VIRUS) ?? 1;
+        const gdm = (this as any).globalDamageMultiplier || 1;
+        // Scale damage moderately with level; wide radius; 2s paralysis baseline
+        const radius = 360;
+        const base = 70 + 28 * (Math.max(1, Math.min(7, lvl)) - 1); // 70 → 238
+        const damage = Math.round(base * gdm);
+        const paralyzeMs = 2000;
+        const glitchMs = 520;
+        try { window.dispatchEvent(new CustomEvent('rogueHackUltimate', { detail: { x: this.x, y: this.y, radius, damage, paralyzeMs, glitchMs } })); } catch {}
+        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 3.2 } })); } catch {}
+      }
+      break;
+    }
     case 'ghost_operative': {
       // Phase Cloak: 5s duration invis + immunity + speed boost; 30s cooldown
       if (!this.cloakActive && (this.cloakCdMs <= 0)) {
@@ -1554,6 +1977,35 @@ Player.prototype.activateAbility = function(this: Player & any) {
         try { window.dispatchEvent(new CustomEvent('ghostCloakStart', { detail: { x: this.x, y: this.y, durationMs: 5000 } })); } catch {}
         // Small feedback
         try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 70, intensity: 1.6 } })); } catch {}
+      }
+      break;
+    }
+    case 'shadow_operative': {
+      // Umbral Surge: 5s burst of speed and near-instant void shots; 20s cooldown
+      if (this.shadowSurgeCdMs >= this.shadowSurgeCdMaxMs) {
+        this.shadowSurgeCdMs = 0;
+        this.shadowSurgeUntil = now + 5000;
+  try { window.dispatchEvent(new CustomEvent('shadowSurgeStart', { detail: { durationMs: 5000 } })); } catch {}
+        // Grant brief i-frames and speed buff
+        this.invulnerableUntilMs = Math.max(this.invulnerableUntilMs || 0, now + 600);
+  if (this.shadowPrevSpeed == null) this.shadowPrevSpeed = this.speed;
+  this.speed = (this.shadowPrevSpeed || this.speed || 2.2) * 1.25; // small bump; restored after surge
+        // Initialize aura tentacles
+        this.shadowTentaclePhase = 0;
+        const count = 7; // odd for organic distribution
+        const twoPi = Math.PI * 2;
+        const tentacles: Array<{ baseAngle: number; len: number; wobble: number; speed: number; width: number }> = new Array(count);
+        for (let i = 0; i < count; i++) {
+          const base = (i / count) * twoPi + (Math.random() * 0.5 - 0.25);
+          const len = 36 + Math.random() * 18;
+          const wobble = 0.4 + Math.random() * 0.6; // radians sway
+          const speed = 1.2 + Math.random() * 1.2; // Hz-ish
+          const width = 6 + Math.random() * 4;
+          tentacles[i] = { baseAngle: base, len, wobble, speed, width };
+        }
+        this.shadowTentacles = tentacles;
+        // Feedback VFX
+        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 2.2 } })); } catch {}
       }
       break;
     }
@@ -1601,7 +2053,7 @@ Player.prototype.activateAbility = function(this: Player & any) {
       // Basic toggle-on press; full hold logic could be added later
       if (!this.gunnerBoostActive) {
         this.gunnerBoostActive = true;
-        this.gunnerHeatMs = Math.min(this.gunnerHeatMs + 250, this.gunnerHeatMsMax); // small upfront heat
+  // No initiation cost
       }
       break;
     }
@@ -1668,5 +2120,30 @@ Player.prototype.activateAbility = function(this: Player & any) {
   this.runnerDashCooldownMs = this.runnerDashCooldownMsMax;
   // Haptic: slight screen shake
   try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 2 } })); } catch {}
+};
+
+// Class-private helper: perform Tech Warrior glide dash with easing and brief i-frames
+(Player as any).prototype.performTechGlide = function(this: Player & any) {
+  if (this.characterData?.id !== 'tech_warrior') return;
+  if (this.techDashCooldownMs > 0 || this.techDashActive) return;
+  const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // Parameters: shorter distance, slower duration
+  const baseDistance = 240; // shorter than Runner
+  const durationMs = this.techDashDurationMs; // 360ms by default
+  // Direction: follow current move input; if idle, do nothing
+  const mvMag = Math.hypot(this.vx || 0, this.vy || 0);
+  if (mvMag < 0.01) return;
+  const ang = Math.atan2(this.vy, this.vx);
+  const dx = Math.cos(ang), dy = Math.sin(ang);
+  this.techDashStartX = this.x; this.techDashStartY = this.y;
+  this.techDashEndX = this.x + dx * baseDistance;
+  this.techDashEndY = this.y + dy * baseDistance;
+  this.techDashTimeMs = 0;
+  this.techDashActive = true;
+  this.techDashEmitAccum = 0;
+  // Brief i-frames (slightly shorter than full duration for counterplay)
+  this.invulnerableUntilMs = Math.max(this.invulnerableUntilMs || 0, now + Math.min(durationMs - 40, 300));
+  // Gentle feedback
+  try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 70, intensity: 1.6 } })); } catch {}
 };
 

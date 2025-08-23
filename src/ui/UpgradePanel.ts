@@ -197,7 +197,7 @@ export class UpgradePanel {
     for (let i = 0; i < this.options.length; i++) {
       const opt = this.options[i];
       const isClassWeapon = opt.type === 'weapon' && opt.id === this.player.characterData?.defaultWeapon;
-      const card = document.createElement('button');
+  const card = document.createElement('button');
       card.type = 'button';
       card.className = 'upgrade-card';
       if (opt.type === 'weapon') card.classList.add('is-weapon');
@@ -217,7 +217,7 @@ export class UpgradePanel {
         </div>`;
       }
 
-      // Decide icon markup: weapons keep their image; passives use neon green arrow SVG
+  // Decide icon markup: weapons keep their image; passives use neon green arrow SVG
       let iconHtml = '';
       if (opt.type === 'weapon' && opt.icon) {
         iconHtml = `<img src="${opt.icon}" alt="${opt.name}" />`;
@@ -234,6 +234,71 @@ export class UpgradePanel {
         </svg>`;
       }
 
+      // Build supplemental info rows: unlock hint for weapons on first pick; stat deltas for upgrades
+  let infoHtml = '';
+  if (opt.type === 'weapon') {
+        const spec = WEAPON_SPECS[opt.id as WeaponType];
+        if (spec) {
+          const ownedLv = this.player.activeWeapons.get(opt.id as WeaponType) || 0;
+          if (ownedLv === 0) {
+            // Unlock-only brief info: clearer, bold label and no decimals concern here
+            infoHtml = `<div class="upgrade-info emph" style="font-weight:700;letter-spacing:.2px;">`+
+              `<strong>Unlocks:</strong> ${spec.traits?.slice(0,3).join(' • ') || 'Weapon unlocked'}`+
+              `</div>`;
+          } else {
+            // Upgrade stat delta preview (damage/cooldown/speed/length)
+            try {
+              const next = spec.getLevelStats ? spec.getLevelStats(ownedLv + 1) : undefined;
+              const cur = spec.getLevelStats ? spec.getLevelStats(ownedLv) : undefined;
+              if (next && cur) {
+                const parts: string[] = [];
+                const addDelta = (label: string, a?: number, b?: number, inv = false) => {
+                  if (typeof a !== 'number' || typeof b !== 'number') return;
+                  const d = a - b;
+                  const dInt = Math.round(d);
+                  if (dInt === 0) return; // hide near-zero changes after rounding
+                  const shown = inv ? -dInt : dInt;
+                  const valStr = shown > 0 ? `+${shown}` : `${shown}`;
+                  const isBetter = inv ? d < 0 : d > 0; // evaluate on raw delta for intent
+                  const arrow = inv ? (d < 0 ? '↓' : '↑') : (d > 0 ? '↑' : '↓');
+                  const color = isBetter ? '#57ffb0' : '#ff7b7b';
+                  parts.push(
+                    `<span class="delta ${isBetter ? 'good' : 'bad'}" style="color:${color};font-weight:700;">`+
+                      `<span class="k">${label}</span> `+
+                         `<span class="v">${valStr}</span> `+
+                      `<span class="arrow">${arrow}</span>`+
+                    `</span>`
+                  );
+                };
+                addDelta('dmg', next.damage as number, cur.damage as number);
+                addDelta('cd', next.cooldown as number, cur.cooldown as number, true);
+                addDelta('spd', (next as any).speed as number, (cur as any).speed as number);
+                addDelta('len', (next as any).length as number, (cur as any).length as number);
+                if (parts.length)
+                  infoHtml = `<div class="upgrade-info emph" style="font-weight:700;letter-spacing:.2px;">${parts.join(' · ')}</div>`;
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      }
+      // Passive: emphasize unlock/upgrade info for clarity
+      else if (opt.type === 'passive') {
+        const pSpec = PASSIVE_SPECS.find(p => p.id === opt.id);
+        const existing = this.player.activePassives.find(ap => ap.type === pSpec?.name);
+        if (pSpec) {
+          if (!existing) {
+            infoHtml = `<div class="upgrade-info emph" style="font-weight:700;letter-spacing:.2px;">`+
+              `<strong>Unlocks:</strong> ${pSpec.name}`+
+              `</div>`;
+          } else if (existing.level < pSpec.maxLevel) {
+            const nextLv = Math.min(existing.level + 1, pSpec.maxLevel);
+            infoHtml = `<div class="upgrade-info emph" style="font-weight:700;letter-spacing:.2px;">`+
+              `<span class="delta good" style="color:#57ffb0;">Lv +1 → <strong>${nextLv}</strong></span>`+
+            `</div>`;
+          }
+        }
+      }
+
       card.innerHTML = `
         <div class="upgrade-key-indicator">${i + 1}</div>
         <div class="upgrade-icon top-right">${iconHtml}</div>
@@ -241,11 +306,12 @@ export class UpgradePanel {
           <div class="upgrade-row">
             <div class="upgrade-title-line">
               <span class="upgrade-title">${opt.name}</span>
-              ${isClassWeapon ? '<span class="badge badge-class" title="Class Weapon">C</span>' : ''}
+              ${isClassWeapon && (opt.currentLevel||0) === 0 ? '<span class="badge badge-class" title="Class Weapon">C</span>' : ''}
             </div>
             <div class="upgrade-type-line">${opt.type === 'weapon' ? '<span class="badge badge-weapon">Weapon</span>' : opt.type === 'passive' ? '<span class="badge badge-passive">Passive</span>' : '<span class="badge badge-skip">Skip</span>'}</div>
           </div>
           <div class="upgrade-desc">${opt.description}</div>
+          ${infoHtml}
         </div>
         ${progressHtml ? `<div class="upgrade-progress-wrapper">${progressHtml}</div>` : ''}
       `;

@@ -116,7 +116,7 @@ export class HUD {
     // HP Bar
     const hpBarY = height - 64;
     const hpBarWidth = Math.min(480, width - 320);
-  this.drawThemedBar(ctx, 20, hpBarY, hpBarWidth, 22, this.player.hp / this.player.maxHp, '#fe2740', '#4a0910', COLOR_ACCENT_ALT, `HP ${this.player.hp}/${this.player.maxHp}`);
+  this.drawThemedBar(ctx, 20, hpBarY, hpBarWidth, 22, this.player.hp / this.player.maxHp, '#fe2740', '#4a0910', COLOR_ACCENT_ALT, `HP ${Math.floor(this.player.hp)}/${Math.floor(this.player.maxHp)}`);
 
     // Class-specific bar(s): Scrap only for Scavenger, Tech only for Tech Warrior
     try {
@@ -134,6 +134,14 @@ export class HUD {
         const label = `TACHYON ${meter.value}/${meter.max}`;
         // Red theme for Tech Warrior meter
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff3b3b', '#3a0000', '#e60012', label);
+        // Second bar: Glide Dash cooldown/active state (Shift)
+        if ((this.player as any).getTechGlide) {
+          const gm: any = (this.player as any).getTechGlide();
+          const ratio2 = gm.max > 0 ? gm.value / gm.max : 0;
+          const label2 = gm.active ? 'GLIDE ACTIVE' : (gm.ready ? 'GLIDE READY (Shift)' : `GLIDE ${Math.ceil((gm.max - gm.value)/1000)}s`);
+          // Place directly above the tachyon bar with a violet tech theme
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#a86bff', '#200a38', '#c59bff', label2);
+        }
       } else if (id === 'heavy_gunner' && (this.player as any).getGunnerHeat) {
         const g: any = (this.player as any).getGunnerHeat();
         const ratio = g.max > 0 ? g.value / g.max : 0;
@@ -151,8 +159,8 @@ export class HUD {
         const m: any = (this.player as any).getSorcererSigilMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
         const label = m.ready ? 'SIGIL READY (Spacebar)' : `SIGIL ${Math.ceil((m.max - m.value)/1000)}s`;
-        // Magenta theme for Sorcerer
-        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff00ff', '#300033', '#ff66ff', label);
+  // Golden theme for Sorcerer
+  this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ffd700', '#332600', '#ffe066', label);
       } else if (id === 'ghost_operative' && (this.player as any).getGhostSniperCharge) {
         const s: any = (this.player as any).getGhostSniperCharge();
         let ratio = 0;
@@ -187,6 +195,13 @@ export class HUD {
         }
         // Void theme for Shadow (deep purple with neon glow)
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#b266ff', '#220a33', '#d5a6ff', label);
+        // Second bar: Umbral Surge cooldown/active state (20s CD, 5s duration)
+        if ((this.player as any).getShadowSurgeMeter) {
+          const um: any = (this.player as any).getShadowSurgeMeter();
+          const ratio2 = um.max > 0 ? um.value / um.max : 0;
+          const label2 = um.ready ? 'UMBRAL SURGE READY (Spacebar)' : (um.value > 0 && um.max === 5000 ? 'SURGE ACTIVE' : `SURGE ${Math.ceil((um.max - um.value)/1000)}s`);
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#8c3cff', '#1a0830', '#bb88ff', label2);
+        }
       } else if (id === 'neural_nomad' && (this.player as any).getOvermindMeter) {
         const m: any = (this.player as any).getOvermindMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
@@ -199,10 +214,16 @@ export class HUD {
         const label = m.active ? 'LATTICE ACTIVE' : (m.ready ? 'LATTICE READY (Spacebar)' : `LATTICE ${Math.ceil((m.max - m.value)/1000)}s`);
         // Magenta/violet theme for Weaver
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff4de3', '#2a0b28', '#ff94f0', label);
+      } else if (id === 'rogue_hacker' && (this.player as any).getHackerHackMeter) {
+        const m: any = (this.player as any).getHackerHackMeter();
+        const ratio = m.max > 0 ? m.value / m.max : 0;
+        const label = m.ready ? 'SYSTEM HACK READY (Spacebar)' : `SYSTEM HACK ${Math.ceil((m.max - m.value)/1000)}s`;
+        // Orange/amber theme for Hacker
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ffa500', '#2a1400', '#ffd280', label);
       }
     } catch { /* ignore */ }
 
-    // XP Bar
+  // XP Bar
     const xpBarY = height - 34;
     const nextExp = this.player.getNextExp();
   this.drawThemedBar(ctx, 20, xpBarY, width - 40, 14, this.player.exp / nextExp, '#0099c8', '#022e33', COLOR_CYAN, `XP ${this.player.exp}/${nextExp}`);
@@ -257,6 +278,29 @@ export class HUD {
     }
   } catch { /* ignore */ }
   this.drawUpgradeHistory(ctx, upgrades, upgradesPanelX, upgradesPanelY, minimapPositionSize);
+
+    // Auto-aim toggle indicator (right-anchored, near class bars)
+    try {
+      const mode: 'closest' | 'toughest' = ((window as any).__aimMode) || 'closest';
+      // Place above class bars to the right
+      const boxW = 120, boxH = 18;
+      const x = width - boxW - 20;
+      const y = hpBarY - 52; // above bars
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = COLOR_BG_PANEL;
+      ctx.fillRect(x, y, boxW, boxH);
+      ctx.strokeStyle = COLOR_ACCENT_ALT; ctx.lineWidth = 1;
+      ctx.strokeRect(x+0.5, y+0.5, boxW-1, boxH-1);
+      ctx.font = '11px Orbitron, sans-serif';
+      ctx.textAlign = 'center'; ctx.fillStyle = COLOR_TEXT;
+      const label = mode === 'closest' ? 'Auto-aim: Closest' : 'Auto-aim: Toughest';
+      this.drawGlowText(ctx, label, x + boxW/2, y + 13, COLOR_TEXT, COLOR_CYAN, 6);
+      // Tiny tooltip below
+      ctx.font = '9px Orbitron, sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = COLOR_TEXT_DIM;
+      ctx.fillText('Toggle (C)', x + boxW - 6, y + boxH + 10);
+      ctx.restore();
+    } catch { /* ignore */ }
 
     ctx.restore();
   }

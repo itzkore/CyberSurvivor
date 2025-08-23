@@ -86,7 +86,8 @@ export class EnemyManager {
   private dataSigils: { x:number; y:number; radius:number; pulsesLeft:number; pulseDamage:number; nextPulseAt:number; active:boolean; spin:number; created:number; follow?: boolean }[] = [];
 
   // Rogue Hacker paralysis/DoT zones (spawned under enemies on virus impact)
-  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; hit:Set<string> }[] = [];
+  // pulseUntil: draw a stronger spawn pulse/line for first ~220ms to improve visibility
+  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; hit:Set<string>; pulseUntil?: number; seed?: number }[] = [];
   // Rogue Hacker auto-cast state: gate next cast until previous zone has expired and cooldown passed
   private hackerAutoCooldownUntil: number = 0;
 
@@ -110,6 +111,9 @@ export class EnemyManager {
   // Weaver Lattice tick scheduler
   private latticeTickIntervalMs: number = 500; // 0.5s
   private latticeNextTickMs: number = 0;
+  // Boss-specific status trackers (stored on boss object via dynamic fields but we tick from here)
+  private _bossLastVoidTickMs: number = 0;
+  private _bossLastHackerTickMs: number = 0;
 
   /**
    * EnemyManager constructor
@@ -157,7 +161,11 @@ export class EnemyManager {
     // Listen for Data Sigil planting
     window.addEventListener('plantDataSigil', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
-      this.plantDataSigil(d.x, d.y, d.radius || 120, d.pulseCount || 3, d.pulseDamage || 90, !!d.follow);
+      // Apply player's global area multiplier to radius if provided
+      const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+      const baseRadius = d.radius || 120;
+      const radius = baseRadius * (areaMul || 1);
+      this.plantDataSigil(d.x, d.y, radius, d.pulseCount || 3, d.pulseDamage || 90, !!d.follow);
     });
     window.addEventListener('bossDefeated', () => { // trigger new timed vacuum logic
       this.startTimedVacuum();
@@ -174,6 +182,42 @@ export class EnemyManager {
       const d = (e as CustomEvent).detail || {};
       this.spawnHackerZone(d.x, d.y, d.radius || 120, d.lifeMs || 2000);
     });
+    // Listen for Rogue Hacker ultimate: System Hack
+    window.addEventListener('rogueHackUltimate', (e: Event) => {
+      const d = (e as CustomEvent).detail as { x:number; y:number; radius:number; damage:number; paralyzeMs:number; glitchMs:number };
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      // Visual ping storage
+      try { (window as any).__rogueHackFX = { x: d.x, y: d.y, start: now, duration: 480, radius: d.radius }; } catch {}
+      // Apply to enemies in radius
+      const r2 = d.radius * d.radius;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e1 = this.activeEnemies[i];
+        if (!e1.active || e1.hp <= 0) continue;
+        const dx = e1.x - d.x, dy = e1.y - d.y;
+        if (dx*dx + dy*dy <= r2) {
+          this.takeDamage(e1, d.damage, false, false, WeaponType.HACKER_VIRUS);
+          const anyE: any = e1 as any;
+          anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, now + d.paralyzeMs);
+          anyE._rgbGlitchUntil = now + Math.max(260, d.glitchMs|0);
+          anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 2) % 7;
+        }
+      }
+      // Apply to boss as well
+      try {
+        const bm: any = (window as any).__bossManager;
+        const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+          const bdx = boss.x - d.x, bdy = boss.y - d.y;
+          if (bdx*bdx + bdy*bdy <= r2) {
+            this.takeBossDamage(boss, d.damage, false, d.x, d.y);
+            const bAny: any = boss as any;
+            bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, now + d.paralyzeMs);
+            bAny._rgbGlitchUntil = now + Math.max(260, d.glitchMs|0);
+            bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 2) % 7;
+          }
+        }
+      } catch { /* ignore */ }
+    });
     if (this.usePreRenderedSprites) this.preRenderEnemySprites();
   // Attempt to load shared enemy image and build size variants
   this.loadSharedEnemyImage();
@@ -188,6 +232,8 @@ export class EnemyManager {
     } else {
       sig.x = x; sig.y = y; sig.radius = radius; sig.pulsesLeft = pulseCount; sig.pulseDamage = pulseDamage; sig.nextPulseAt = now + 220; sig.active = true; sig.spin = Math.random()*Math.PI*2; sig.created = now; sig.follow = follow;
     }
+  // Golden spark burst on plant
+  try { this.particleManager?.spawn(x, y, 12, '#FFD700', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.2, speedMax: 3.2 }); } catch {}
   }
 
   /** Update Data Sigils: emit pulses on cadence and apply AoE damage. */
@@ -203,16 +249,19 @@ export class EnemyManager {
         s.nextPulseAt = now + 420; // pulse cadence
         // Apply AoE damage to enemies inside radius
         const r2 = s.radius * s.radius;
-        for (let j=0;j<this.enemies.length;j++){
+    for (let j=0;j<this.enemies.length;j++){
           const e = this.enemies[j];
           if (!e.active || e.hp <= 0) continue;
           const dx = e.x - s.x; const dy = e.y - s.y; if (dx*dx + dy*dy <= r2){
-            this.takeDamage(e, s.pulseDamage, false, false, WeaponType.DATA_SIGIL);
+  const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+      this.takeDamage(e, s.pulseDamage * gdm, false, false, WeaponType.DATA_SIGIL);
             // Brief magenta flash/shake for impact
             const anyE:any = e as any; anyE._poisonFlashUntil = now + 80; // reuse green flash channel but we’ll tint magenta in draw
             anyE._shakeAmp = Math.max(anyE._shakeAmp||0, 1.2); anyE._shakeUntil = now + 90; if (!anyE._shakePhase) anyE._shakePhase = Math.random()*10;
           }
         }
+  // Emit golden sparks on pulse
+  try { this.particleManager?.spawn(s.x, s.y, 10, '#FFE066', { sizeMin: 1, sizeMax: 2.5, lifeMs: 360, speedMin: 1.2, speedMax: 2.6 }); } catch {}
       }
       if (s.pulsesLeft <= 0 && now > s.nextPulseAt + 200){ s.active = false; }
     }
@@ -224,10 +273,10 @@ export class EnemyManager {
     let z = this.hackerZones.find(z=>!z.active);
     const now = performance.now();
     if (!z){
-      z = { x, y, radius, created: now, lifeMs, active: true, hit: new Set<string>() };
+      z = { x, y, radius, created: now, lifeMs, active: true, hit: new Set<string>(), pulseUntil: now + 220, seed: Math.floor(now % 100000) };
       this.hackerZones.push(z);
     } else {
-      z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.hit.clear();
+      z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.hit.clear(); z.pulseUntil = now + 220; z.seed = Math.floor(now % 100000);
     }
   }
 
@@ -410,33 +459,50 @@ export class EnemyManager {
       }
       // --- Knockback logic ---
       /**
-       * Compute direction from source to enemy if coordinates provided.
+       * Compute knockback direction.
+       * - For continuous BEAM: push strictly away from the player to avoid sideways slide while ticking.
+       * - For all other sources: if impact coordinates are provided, use those (feels more physical);
+       *   otherwise fall back to radial-from-player.
        */
       const spec = WEAPON_SPECS[sourceWeaponType];
-    if (spec) {
-  // Direction: force radial from player so enemies are always pushed directly away from hero
-  // (user feedback: side impacts sometimes produced lateral slide instead of backward push).
-  const sx = this.player.x;
-  const sy = this.player.y;
-  // spec.knockback historically represented px per 60fps frame
+      if (spec) {
+        // Choose knockback origin per weapon type
+        const isBeam = sourceWeaponType === WeaponType.BEAM;
+        let sx: number; let sy: number;
+        if (isBeam) {
+          // Continuous beams originate at the player for stable, radial push
+          sx = this.player.x; sy = this.player.y;
+        } else if (typeof sourceX === 'number' && typeof sourceY === 'number') {
+          // Use precise impact origin when available (projectile or melee contact point)
+          sx = sourceX; sy = sourceY;
+        } else {
+          // Fallback to player position
+          sx = this.player.x; sy = this.player.y;
+        }
+        // spec.knockback historically represented px per 60fps frame
         let perFrame = spec.knockback ?? this.knockbackMinPerFrame;
-        if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
-        if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25; // simple linear scaling
+        if (!isBeam) {
+          // Preserve legacy minimum and level scaling for impulse-based weapons
+          if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
+          if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25; // simple linear scaling
+        } else {
+          // Continuous beams: honor exact spec.knockback (can be near-zero) and do NOT scale by level
+          if (perFrame < 0) perFrame = 0;
+        }
         const baseForcePerSec = perFrame * 60; // convert to px/sec
         // Compute direction from chosen source point to enemy (push enemy away from source)
         let dx = enemy.x - sx;
         let dy = enemy.y - sy;
         let dist = Math.hypot(dx, dy);
-        if (dist < 0.0001) {
-          // Overlapping: default unit vector (1,0)
-          if (dist < 0.0001) { dx = 1; dy = 0; dist = 1; }
-        }
+        if (dist < 0.0001) { dx = 1; dy = 0; dist = 1; }
         const invDist = 1 / dist;
         const nx = dx * invDist;
         const ny = dy * invDist;
         // Mass attenuation (bigger radius -> more mass -> less acceleration)
         const massScale = 24 / Math.max(8, enemy.radius);
-  let impulse = baseForcePerSec * massScale * 0.3; // reduce overall strength by 70%
+        // Strongly dampen beams to avoid runaway stacking between frames
+        const beamDampen = isBeam ? 0.12 : 0.3;
+        let impulse = baseForcePerSec * massScale * beamDampen;
         // Radial-only stacking: project any existing knockback onto radial axis, discard sideways component
         let existingRadial = 0;
         if (enemy.knockbackTimer && enemy.knockbackTimer > 0 && (enemy.knockbackVx || enemy.knockbackVy)) {
@@ -448,7 +514,6 @@ export class EnemyManager {
         if (newMagnitude > this.knockbackMaxVelocity) newMagnitude = this.knockbackMaxVelocity;
         enemy.knockbackVx = nx * newMagnitude;
         enemy.knockbackVy = ny * newMagnitude;
-        const kMag = newMagnitude; // already clamped
         // Timer extension: proportional bonus to initial impulse (capped)
         const bonus = Math.min(180, (impulse / 2200) * 90);
         enemy.knockbackTimer = Math.max(enemy.knockbackTimer ?? 0, this.knockbackBaseMs + bonus);
@@ -456,6 +521,114 @@ export class EnemyManager {
     }
   // Dispatch damage event with enemy world coordinates so floating damage text appears above the enemy
   window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount, isCritical, x: enemy.x, y: enemy.y } }));
+  }
+
+  /** Centralized boss damage application to unify DPS tracking and flash/particles. */
+  public takeBossDamage(
+    boss: any,
+    amount: number,
+    isCritical: boolean = false,
+    sourceWeaponType?: WeaponType,
+    sourceX?: number,
+    sourceY?: number,
+    weaponLevel?: number
+  ): void {
+    if (!boss || boss.hp <= 0 || boss.state !== 'ACTIVE') return;
+    // Armor shred increases damage taken while active (mirror enemy logic)
+    const bAny: any = boss as any;
+    if (bAny._armorShredExpire && performance.now() < bAny._armorShredExpire) {
+      amount *= 1.12;
+    }
+    boss.hp -= amount;
+    boss._damageFlash = Math.max(10, (boss._damageFlash || 0));
+    // Side-effects based on source weapon (limited for boss to avoid runaway)
+    if (sourceWeaponType !== undefined) {
+      bAny._lastHitByWeapon = sourceWeaponType;
+      // Apply short shred on Scrap-Saw
+      if (sourceWeaponType === WeaponType.SCRAP_SAW && amount > 0) {
+        const now = performance.now();
+        bAny._armorShredExpire = now + 600;
+      }
+      // Apply burn on Laser: cap stacks to 3, tick via boss burn ticker
+      if (sourceWeaponType === WeaponType.LASER && amount > 0) {
+        const perTick = amount * 0.10;
+        this.applyBossBurn(boss, perTick);
+      }
+      // Apply poison stacks on Bio Toxin hit
+      if (sourceWeaponType === WeaponType.BIO_TOXIN && amount > 0) {
+        this.applyBossPoison(boss, 2);
+      }
+      // Rogue Hacker impacts schedule separate DoT elsewhere; mark glitch flash
+      if (sourceWeaponType === WeaponType.HACKER_VIRUS && amount > 0) {
+        const now = performance.now();
+        bAny._rgbGlitchUntil = now + 260;
+        bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
+      }
+    }
+    // Emit particle + DPS event
+    try { this.particleManager?.spawn(boss.x, boss.y, 1, isCritical ? '#ffcccc' : '#ffd280'); } catch {}
+    try { window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount, isCritical, x: boss.x, y: boss.y } })); } catch {}
+  }
+
+  /** Apply or refresh poison on boss (reduced slow cap same as enemies). */
+  private applyBossPoison(boss: any, stacks: number = 1) {
+    const now = performance.now();
+    const b: any = boss as any;
+    if (!b._poisonStacks) {
+      b._poisonStacks = 0;
+      b._poisonNextTick = now + this.poisonTickIntervalMs;
+      b._poisonExpire = now + this.poisonDurationMs;
+    }
+    b._poisonStacks = Math.min(this.poisonMaxStacks, (b._poisonStacks || 0) + stacks);
+    b._poisonExpire = now + this.poisonDurationMs;
+  }
+
+  /** Tick boss poison damage over time. */
+  private updateBossPoisons(now: number, boss: any) {
+    const b: any = boss as any;
+    if (!b._poisonStacks) return;
+    if (now >= b._poisonExpire) { b._poisonStacks = 0; return; }
+    if (now >= b._poisonNextTick) {
+      b._poisonNextTick += this.poisonTickIntervalMs;
+      const stacks = b._poisonStacks | 0; if (stacks <= 0) return;
+      // Scale like enemies: level + global damage multiplier
+      let level = 1; try { level = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN) ?? 1; } catch {}
+      const levelMul = 1 + Math.max(0, (level - 1)) * 0.35;
+  const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+      const dps = this.poisonDpsPerStack * levelMul * dmgMul * stacks;
+      const perTick = dps * (this.poisonTickIntervalMs / 1000);
+      this.takeBossDamage(boss, perTick, false, WeaponType.BIO_TOXIN, boss.x, boss.y);
+      // Visual: reuse green flash channel
+      b._poisonFlashUntil = now + 120;
+    }
+  }
+
+  /** Apply or refresh a burn stack on boss. */
+  private applyBossBurn(boss: any, tickDamage: number) {
+    const now = performance.now();
+    const b: any = boss as any;
+    if (!b._burnStacks) {
+      b._burnStacks = 0;
+      b._burnTickDamage = 0;
+      b._burnNextTick = now + this.burnTickIntervalMs;
+      b._burnExpire = now + this.burnDurationMs;
+    }
+    if (b._burnStacks < 3) b._burnStacks++;
+    b._burnTickDamage = (b._burnTickDamage || 0) + tickDamage;
+    b._burnExpire = now + this.burnDurationMs;
+  }
+
+  /** Tick boss burn DoT. */
+  private updateBossBurn(now: number, boss: any) {
+    const b: any = boss as any;
+    if (!b._burnStacks) return;
+    if (now >= b._burnExpire) { b._burnStacks = 0; b._burnTickDamage = 0; return; }
+    if (now >= b._burnNextTick) {
+      b._burnNextTick += this.burnTickIntervalMs;
+      if (b._burnTickDamage > 0) {
+        this.takeBossDamage(boss, b._burnTickDamage, false, WeaponType.LASER, boss.x, boss.y);
+      }
+    }
   }
 
   /** Apply or refresh poison on an enemy, increasing stacks up to cap and refreshing expiration. */
@@ -490,7 +663,7 @@ export class EnemyManager {
       let level = 1;
       try { level = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN) ?? 1; } catch {}
       const levelMul = 1 + Math.max(0, (level - 1)) * 0.35; // +35% per level after L1 (L7 ~ 3.1x)
-      const dmgMul = (this.player as any)?.globalDamageMultiplier || 1;
+  const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
       const dps = perStackBase * levelMul * dmgMul * stacks;
           const perTick = dps * (this.poisonTickIntervalMs / 1000);
           this.takeDamage(e as Enemy, perTick, false, false, WeaponType.BIO_TOXIN);
@@ -648,32 +821,49 @@ export class EnemyManager {
       }
     }
   } catch { /* ignore */ }
-  // Draw Data Sigils below enemies
+  // Draw Data Sigils below enemies (golden, glitchy magical)
   for (let i=0;i<this.dataSigils.length;i++){
     const s = this.dataSigils[i]; if (!s.active) continue;
     if (s.x < minX || s.x > maxX || s.y < minY || s.y > maxY) continue;
     ctx.save();
     const t = (performance.now() - s.created) / 1000;
-    // Base ring
-    ctx.globalAlpha = 0.15;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI*2); ctx.strokeStyle = '#FF00FF'; ctx.lineWidth = 2; ctx.stroke();
-    // Rotating glyph spokes
-    ctx.globalAlpha = 0.35;
+    // Base golden rings with slight RGB offset for glitch shimmer
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 0.22;
+    ctx.beginPath(); ctx.arc(s.x-1, s.y, s.radius, 0, Math.PI*2); ctx.strokeStyle = '#FFD280'; ctx.lineWidth = 2.5; ctx.shadowColor = '#FFD280'; ctx.shadowBlur = 10; ctx.stroke();
+    ctx.globalAlpha = 0.18;
+    ctx.beginPath(); ctx.arc(s.x+1, s.y, s.radius*0.985, 0, Math.PI*2); ctx.strokeStyle = '#FFF2A8'; ctx.lineWidth = 2; ctx.shadowColor = '#FFF2A8'; ctx.shadowBlur = 8; ctx.stroke();
+    ctx.globalAlpha = 0.14;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius*1.02, 0, Math.PI*2); ctx.strokeStyle = '#FFC94D'; ctx.lineWidth = 1.5; ctx.stroke();
+    // Rotating glyph spokes (golden)
+    ctx.globalAlpha = 0.36;
     const spokes = 6; const len = s.radius * 0.9;
     for (let k=0;k<spokes;k++){
       const ang = s.spin + (Math.PI*2*k/spokes);
       ctx.beginPath();
       ctx.moveTo(s.x + Math.cos(ang)* (s.radius*0.2), s.y + Math.sin(ang)*(s.radius*0.2));
       ctx.lineTo(s.x + Math.cos(ang)* len, s.y + Math.sin(ang)* len);
-      ctx.strokeStyle = '#FF66FF'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.strokeStyle = '#FFE066'; ctx.lineWidth = 1.5; ctx.stroke();
     }
-    // Pulse wave (brief expanding ring)
+    // Pulse wave (brief expanding golden ring)
     const phase = Math.max(0, 1 - (s.nextPulseAt - performance.now())/420);
-    ctx.globalAlpha = 0.25 * phase;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius*phase, 0, Math.PI*2); ctx.strokeStyle = '#FFA3FF'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.globalAlpha = 0.28 * phase;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius*phase, 0, Math.PI*2); ctx.strokeStyle = '#FFEFA8'; ctx.lineWidth = 3; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 14; ctx.stroke();
+    // Tiny sparkle crosses orbiting (non-expensive: 4 marks)
+    ctx.globalAlpha = 0.32;
+    const marks = 4;
+    for (let m=0;m<marks;m++){
+      const ang = s.spin*1.7 + m * (Math.PI*2/marks);
+      const rad = s.radius * (0.35 + 0.5 * ((m%2)?1:0.85));
+      const mx = s.x + Math.cos(ang)*rad;
+      const my = s.y + Math.sin(ang)*rad;
+      ctx.strokeStyle = '#FFF8C9'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(mx-3, my); ctx.lineTo(mx+3, my); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(mx, my-3); ctx.lineTo(mx, my+3); ctx.stroke();
+    }
     ctx.restore();
   }
-  // Draw Rogue Hacker zones (subtle techno ring under enemies)
+  // Draw Rogue Hacker zones (techno ring under enemies) — boosted visibility
   for (let i=0;i<this.hackerZones.length;i++){
     const z = this.hackerZones[i];
     if (!z.active) continue;
@@ -681,24 +871,140 @@ export class EnemyManager {
     if (age > z.lifeMs) continue; // will be culled in update
     if (z.x < minX || z.x > maxX || z.y < minY || z.y > maxY) continue;
     const t = age / z.lifeMs;
-    const pulse = 1 + Math.sin(now * 0.02 + i) * 0.06;
+    const pulse = 1 + Math.sin(now * 0.02 + i) * 0.08;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    ctx.globalAlpha = 0.18 * (1 - t);
+    // Stronger ring and subtle fill so it stands out on bright backgrounds
+    ctx.globalAlpha = 0.28 * (1 - t);
     ctx.beginPath();
     ctx.arc(z.x, z.y, z.radius * pulse, 0, Math.PI * 2);
     ctx.strokeStyle = '#FFA500'; // orange virus ring
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 4;
     ctx.shadowColor = '#FFA500';
-    ctx.shadowBlur = 12;
+    ctx.shadowBlur = 16;
     ctx.stroke();
+    // RGB glitch ring: slight channel offsets for brain‑fry vibe
+    ctx.globalAlpha = 0.22 * (1 - t);
+    const r = z.radius * (0.92 + 0.06 * Math.sin(now * 0.025 + i));
+    ctx.lineWidth = 1.6;
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ff2a2a'; ctx.beginPath(); ctx.arc(z.x - 1, z.y, r, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = '#2aff2a'; ctx.beginPath(); ctx.arc(z.x, z.y, r*0.985, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = '#2a66ff'; ctx.beginPath(); ctx.arc(z.x + 1, z.y, r, 0, Math.PI*2); ctx.stroke();
     // faint fill
-    ctx.globalAlpha = 0.06 * (1 - t);
+    ctx.globalAlpha = 0.12 * (1 - t);
     ctx.beginPath(); ctx.arc(z.x, z.y, z.radius * 0.92, 0, Math.PI*2);
     ctx.fillStyle = '#FF7700';
     ctx.fill();
+    // Hacker code glyphs + command text
+    ctx.globalAlpha = 0.22 * (1 - t);
+    const seed = (z.seed || 0);
+    const glyphs = 12;
+    const cmds = [
+      'nmap -sV',
+      'ssh -p 2222',
+      'sqlmap --dump',
+      'hydra -l admin',
+      'curl -k -X POST',
+      'nc -lvvp 4444',
+      'base64 -d',
+      'openssl rsautl',
+      'grep -R \'token\'',
+      'iptables -F'
+    ];
+    ctx.font = '10px monospace';
+    for (let g=0; g<glyphs; g++){
+      const ang = (now * 0.0012) + ((seed + g*53) % 628) * 0.01;
+      const rad = z.radius * (0.28 + ((seed>> (g%7)) & 1) * 0.52);
+      const gx = z.x + Math.cos(ang) * rad;
+      const gy = z.y + Math.sin(ang) * rad;
+      const text = cmds[(seed + g) % cmds.length];
+      ctx.save();
+      ctx.translate(gx, gy);
+      ctx.rotate(ang + Math.PI/2);
+      // Neon glow text
+      ctx.shadowColor = '#FFD280';
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = '#FFE6AA';
+      ctx.fillText(text, -text.length*3, 0);
+      ctx.restore();
+    }
+    // Spawn pulse: brief expanding bright ring + hack-link line from player
+    if ((z.pulseUntil || 0) > now) {
+      const left = Math.max(0, Math.min(1, (z.pulseUntil! - now) / 220));
+      const r = z.radius * (1.0 + (1 - left) * 0.35);
+      ctx.globalAlpha = 0.40 * left;
+      ctx.beginPath();
+      ctx.arc(z.x, z.y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = '#FFD280';
+      ctx.lineWidth = 2;
+      ctx.shadowColor = '#FFD280';
+      ctx.shadowBlur = 10;
+      ctx.stroke();
+      // Hack-link line (very brief)
+      ctx.globalAlpha = 0.18 * left;
+      ctx.beginPath();
+      ctx.moveTo(this.player.x, this.player.y);
+      ctx.lineTo(z.x, z.y);
+      ctx.strokeStyle = '#FFA500';
+      ctx.lineWidth = 2;
+      ctx.shadowBlur = 6;
+      ctx.stroke();
+    }
+    // Circuit spokes (low-cost): 6 short lines rotating slowly
+    ctx.globalAlpha = 0.18 * (1 - t);
+    const spokes = 6; const inner = z.radius * 0.25; const outer = z.radius * 0.85;
+    for (let k=0;k<spokes;k++){
+      const ang = (now * 0.002) + (Math.PI * 2 * k / spokes) + i * 0.37;
+      ctx.beginPath();
+      ctx.moveTo(z.x + Math.cos(ang) * inner, z.y + Math.sin(ang) * inner);
+      ctx.lineTo(z.x + Math.cos(ang) * outer, z.y + Math.sin(ang) * outer);
+      ctx.strokeStyle = '#FFAA55';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
     ctx.restore();
   }
+  // Rogue Hacker ultimate VFX (global): brief expanding RGB EMP ring + code burst
+  try {
+    const fx = (window as any).__rogueHackFX;
+    if (fx) {
+      const now = performance.now();
+      const t = Math.min(1, Math.max(0, (now - fx.start) / fx.duration));
+      const r = fx.radius * (0.8 + 0.6 * t);
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      // Outer RGB split rings
+      ctx.globalAlpha = 0.45 * (1 - t);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = '#ff2a2a'; ctx.beginPath(); ctx.arc(fx.x - 2, fx.y, r, 0, Math.PI*2); ctx.stroke();
+      ctx.strokeStyle = '#2aff2a'; ctx.beginPath(); ctx.arc(fx.x, fx.y, r*0.985, 0, Math.PI*2); ctx.stroke();
+      ctx.strokeStyle = '#2a66ff'; ctx.beginPath(); ctx.arc(fx.x + 2, fx.y, r, 0, Math.PI*2); ctx.stroke();
+      // Inner glow disk
+      const grad = ctx.createRadialGradient(fx.x, fx.y, Math.max(6, r*0.2), fx.x, fx.y, r);
+      grad.addColorStop(0, 'rgba(255,200,120,0.35)');
+      grad.addColorStop(1, 'rgba(255,200,120,0)');
+      ctx.globalAlpha = 0.35 * (1 - t);
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(fx.x, fx.y, r, 0, Math.PI*2); ctx.fill();
+      // Code burst spokes
+      ctx.globalAlpha = 0.5 * (1 - t);
+      ctx.font = 'bold 12px monospace';
+      const cmds = ['nmap -sS','ssh -p 22','sqlmap','hydra','curl -X POST','nc -lvvp','base64 -d','openssl rsautl','grep token','iptables -F'];
+      for (let k=0;k<14;k++){
+        const ang = (now*0.006) + (Math.PI*2*k/14);
+        const tx = fx.x + Math.cos(ang) * (r*0.7);
+        const ty = fx.y + Math.sin(ang) * (r*0.7);
+        ctx.save(); ctx.translate(tx, ty); ctx.rotate(ang);
+        ctx.shadowColor = '#FFD280'; ctx.shadowBlur = 12; ctx.fillStyle = '#FFE6AA';
+        const text = cmds[k % cmds.length];
+        ctx.fillText(text, -ctx.measureText(text).width/2, 0);
+        ctx.restore();
+      }
+      ctx.restore();
+      if (t >= 1) { (window as any).__rogueHackFX = undefined; }
+    }
+  } catch {}
   // Draw enemies (cached sprite images if enabled)
     if (this.usePreRenderedSprites) {
   for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
@@ -728,31 +1034,96 @@ export class EnemyManager {
   const drawX = enemy.x + shakeX + stepOffsetX - size/2;
   const drawY = enemy.y + shakeY + stepOffsetY - size/2;
   ctx.drawImage(baseImg, drawX, drawY, size, size);
-        // RGB glitch overlay (for Overmind overload hits): brief channel-split style outlines
+        // Paralyzed indicator (Rogue Hacker): small "X" above enemy while paralysis is active
+        {
+          const anyE: any = enemy as any;
+          const until = anyE._paralyzedUntil || 0;
+          if (until > now) {
+            const tLeft = Math.max(0, Math.min(1, (until - now) / 1500));
+            const hx = enemy.x; const hy = enemy.y - enemy.radius - 8;
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.65 + 0.25 * tLeft; // fade slightly as it ends
+            ctx.strokeStyle = '#FFA500';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(hx - 6, hy - 4); ctx.lineTo(hx + 6, hy + 4);
+            ctx.moveTo(hx + 6, hy - 4); ctx.lineTo(hx - 6, hy + 4);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+        // Void Sniper stacks indicator: dark purple glowing particles above target while DoT is active
+        {
+          const anyE: any = enemy as any;
+          const vdot = anyE._voidSniperDot as { next: number; left: number; dmg: number; stacks?: number } | undefined;
+          if (vdot && vdot.left > 0 && this.particleManager) {
+            const stackCount = Math.max(1, Math.min(6, vdot.stacks || 1));
+            // Emit a small cluster of purple orbs above the enemy, rate scales slightly with stacks
+            const emit = 0.15 * stackCount; // particles per frame approx
+            // Use a fractional accumulator on enemy to spread over time
+            anyE._voidStackEmitAcc = (anyE._voidStackEmitAcc || 0) + emit;
+            if (anyE._voidStackEmitAcc >= 1) {
+              const toSpawn = Math.min(4, Math.floor(anyE._voidStackEmitAcc));
+              anyE._voidStackEmitAcc -= toSpawn;
+              for (let k = 0; k < toSpawn; k++) {
+                const offY = enemy.radius + 10 + Math.random() * 6;
+                const offX = (Math.random() - 0.5) * (enemy.radius * 0.8);
+                const px = enemy.x + offX;
+                const py = enemy.y - offY;
+                this.particleManager.spawn(px, py, 1, '#7A2CFF', { sizeMin: 0.8, sizeMax: 1.6, lifeMs: 36 + Math.random() * 20, speedMin: 0.2, speedMax: 0.6 });
+              }
+            }
+          }
+        }
+        // RGB glitch effect: intensified visibility with stronger ghosts, more slices, and brief jitter
         if ((eAny._rgbGlitchUntil || 0) > now) {
           const tLeft = Math.max(0, Math.min(1, (eAny._rgbGlitchUntil - now) / 220));
-          const off = 1 + Math.round(2 * tLeft);
-          const cx = enemy.x + shakeX, cy = enemy.y + shakeY;
-          const r = enemy.radius * 1.18;
+          const phase = (eAny._rgbGlitchPhase || 0);
           ctx.save();
-          ctx.globalCompositeOperation = 'screen';
-          ctx.lineWidth = 1.5;
-          ctx.shadowBlur = 0;
-          // Red (left)
-          ctx.strokeStyle = '#ff2a2a';
-          ctx.beginPath(); ctx.arc(cx - off, cy, r, 0, Math.PI*2); ctx.stroke();
-          // Green (center)
-          ctx.strokeStyle = '#2aff2a';
-          ctx.beginPath(); ctx.arc(cx, cy, r*0.98, 0, Math.PI*2); ctx.stroke();
-          // Blue (right)
-          ctx.strokeStyle = '#2a66ff';
-          ctx.beginPath(); ctx.arc(cx + off, cy, r, 0, Math.PI*2); ctx.stroke();
-          // Occasional scanline slices for extra glitch vibe
-          if (((eAny._rgbGlitchPhase||0) ^ 0) % 2 === 0) {
-            const sliceY = cy + ((eAny._rgbGlitchPhase||0) % 5 - 2) * 2;
-            ctx.globalAlpha = 0.35 * tLeft;
-            ctx.strokeStyle = '#66ccff';
-            ctx.beginPath(); ctx.moveTo(cx - r, sliceY); ctx.lineTo(cx + r, sliceY); ctx.stroke();
+          // Slight positional jitter during glitch window
+          const jx = ((phase * 31) % 3) - 1; // -1..+1
+          const jy = (((phase * 47) >> 1) % 3) - 1; // -1..+1
+          // Color-bleed ghost copies with stronger offsets
+          const ghostOffset = 2 + Math.round(6 * tLeft); // up to ~8 px
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = 0.35 + 0.35 * tLeft;
+          // Red-ish ghost (left)
+          try { ctx.filter = 'hue-rotate(330deg) saturate(2.0) brightness(1.2)'; } catch {}
+          ctx.drawImage(baseImg, drawX - ghostOffset + jx, drawY + jy, size, size);
+          // Blue-ish ghost (right)
+          try { ctx.filter = 'hue-rotate(210deg) saturate(2.0) brightness(1.2)'; } catch {}
+          ctx.drawImage(baseImg, drawX + ghostOffset + jx, drawY + jy, size, size);
+          // Green-ish mid ghost (optional center)
+          try { ctx.filter = 'hue-rotate(120deg) saturate(1.8) brightness(1.15)'; } catch {}
+          ctx.globalAlpha = 0.22 + 0.28 * tLeft;
+          ctx.drawImage(baseImg, drawX + Math.sign(ghostOffset), drawY, size, size);
+          // Reset filter
+          try { ctx.filter = 'none'; } catch {}
+          // Slice glitch: increased slices and stronger horizontal offsets
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1;
+          const sliceCount = 6 + (phase % 5); // 6..10 slices
+          for (let s = 0; s < sliceCount; s++) {
+            const rng = ((phase * 73856093) ^ (s * 19349663)) >>> 0;
+            const sy = (rng % (size - 8));
+            const sh = 4 + (rng % Math.min(22, size - sy));
+            const baseOff = ((rng >> 5) % 25) - 12; // -12..+12 px
+            const off = Math.max(-16, Math.min(16, Math.round(baseOff * (0.8 + 0.8 * tLeft))));
+            const h = Math.min(sh, size - sy);
+            try {
+              ctx.drawImage(baseImg, 0, sy, size, h, drawX + off, drawY + sy, size, h);
+            } catch {}
+          }
+          // Enhanced scanlines/tearing
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = 0.18 + 0.22 * tLeft;
+          ctx.strokeStyle = '#66ccff';
+          ctx.lineWidth = 1;
+          const lines = 3 + (phase % 4);
+          for (let li = 0; li < lines; li++) {
+            const y = drawY + ((phase * 13 + li * 11) % (size - 2)) + 1;
+            ctx.beginPath(); ctx.moveTo(drawX, y); ctx.lineTo(drawX + size, y); ctx.stroke();
           }
           ctx.restore();
         }
@@ -771,7 +1142,7 @@ export class EnemyManager {
           ctx.restore();
         }
         // Status flash overlay: poison (green), sigil (magenta), or void sniper tick (unique dark void purple)
-        if (eAny._poisonFlashUntil && now < eAny._poisonFlashUntil) {
+  if (eAny._poisonFlashUntil && now < eAny._poisonFlashUntil && !(eAny._rgbGlitchUntil && eAny._rgbGlitchUntil > now)) {
           const lastHit = (enemy as any)._lastHitByWeapon;
           // Compute short-lived intensity 0..1
           const flashLeft = Math.max(0, Math.min(1, (eAny._poisonFlashUntil - now) / 140));
@@ -808,8 +1179,8 @@ export class EnemyManager {
             ctx.globalAlpha = 0.22;
             ctx.beginPath();
             ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
-            // If last hit was from Data Sigil or Psionic Wave pulse, tint magenta; else green for poison
-            const tint = (lastHit === WeaponType.DATA_SIGIL || lastHit === WeaponType.PSIONIC_WAVE) ? '#FF00FF' : '#00FF00';
+            // If last hit was from Data Sigil use golden; Psionic Wave remains magenta; else green for poison
+            const tint = (lastHit === WeaponType.DATA_SIGIL) ? '#FFD700' : (lastHit === WeaponType.PSIONIC_WAVE ? '#FF00FF' : '#00FF00');
             ctx.fillStyle = tint;
             ctx.shadowColor = tint;
             ctx.shadowBlur = 10;
@@ -852,7 +1223,7 @@ export class EnemyManager {
         ctx.stroke();
         ctx.closePath();
         // Status flash overlay: poison (green), sigil (magenta), void sniper (void purple)
-        if (eAny._poisonFlashUntil && now < eAny._poisonFlashUntil) {
+  if (eAny._poisonFlashUntil && now < eAny._poisonFlashUntil && !(eAny._rgbGlitchUntil && eAny._rgbGlitchUntil > now)) {
           const lastHit = (enemy as any)._lastHitByWeapon;
           const flashLeft = Math.max(0, Math.min(1, (eAny._poisonFlashUntil - now) / 140));
           if (lastHit === WeaponType.VOID_SNIPER) {
@@ -880,7 +1251,7 @@ export class EnemyManager {
             ctx.globalAlpha = 0.22;
             ctx.beginPath();
             ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
-            const tint = (lastHit === WeaponType.DATA_SIGIL || lastHit === WeaponType.PSIONIC_WAVE) ? '#FF00FF' : '#00FF00';
+            const tint = (lastHit === WeaponType.DATA_SIGIL) ? '#FFD700' : (lastHit === WeaponType.PSIONIC_WAVE ? '#FF00FF' : '#00FF00');
             ctx.fillStyle = tint;
             ctx.shadowColor = tint;
             ctx.shadowBlur = 10;
@@ -1034,7 +1405,7 @@ export class EnemyManager {
       } catch {}
       const spec = WEAPON_SPECS[WeaponType.PSIONIC_WAVE];
       const baseDmg = (spec?.getLevelStats?.(lvl)?.damage as number) || spec?.damage || 0;
-      const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+  const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
       const tickDamage = Math.max(1, Math.round(baseDmg * 0.50 * gdm));
       const px = this.player.x, py = this.player.y;
       for (let i = 0; i < this.enemies.length; i++) {
@@ -1110,10 +1481,13 @@ export class EnemyManager {
                 lvl = aw.get(WeaponType.HACKER_VIRUS) || 1;
               }
             } catch {}
-            // 3 ticks over ~1.5s; per-tick scales with level (L1 total ≈51, L7 total ≈177)
-            const perTick = Math.max(8, Math.round(10 + lvl * 7));
+            // 3 ticks over ~1.5s; per-tick scales with level (L1 total ≈51, L7 total ≈177), also with global damage
+            const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+            const perTick = Math.max(8, Math.round((10 + lvl * 7) * gdm));
             eAny._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick };
-            eAny._poisonFlashUntil = nowHz + 120; // reuse flash channel for quick feedback
+            // Trigger RGB glitch instead of green poison flash
+            eAny._rgbGlitchUntil = nowHz + 260;
+            eAny._rgbGlitchPhase = ((eAny._rgbGlitchPhase || 0) + 1) % 7;
             (enemy as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
           }
         }
@@ -1254,9 +1628,10 @@ export class EnemyManager {
         // Passive: AOE On Kill
         const playerAny: any = this.player as any;
         if (playerAny.hasAoeOnKill) {
-          const gdm = playerAny.globalDamageMultiplier || 1;
+          const gdm = playerAny.getGlobalDamageMultiplier?.() ?? (playerAny.globalDamageMultiplier ?? 1);
           const dmg = (this.player.bulletDamage || 10) * gdm * 0.4; // 40% scaled
-          const radius = 70; // modest radius to avoid chain wipes
+          const areaMul = playerAny.getGlobalAreaMultiplier?.() ?? (playerAny.globalAreaMultiplier ?? 1);
+          const radius = 70 * (areaMul || 1); // modest radius to avoid chain wipes
           const game: any = (window as any).__gameInstance || (window as any).gameInstance;
           if (game && game.explosionManager && typeof game.explosionManager.triggerExplosion === 'function') {
             game.explosionManager.triggerExplosion(enemy.x, enemy.y, dmg, undefined, radius, '#FFAA33');
@@ -1288,7 +1663,9 @@ export class EnemyManager {
           dot.ticksLeft--;
           dot.nextTick += 500;
           this.takeDamage(e as Enemy, dot.perTick, false, false, WeaponType.HACKER_VIRUS);
-          e._poisonFlashUntil = now + 100;
+          // RGB glitch flash for hacker DoT (no green poison flash)
+          e._rgbGlitchUntil = now + 260;
+          e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
         }
         if (dot.ticksLeft <= 0) {
           e._hackerDot = undefined;
@@ -1316,6 +1693,45 @@ export class EnemyManager {
         }
       }
     }
+
+    // Boss DoT ticking for Rogue Hacker and Void Sniper
+  try {
+      const bm: any = (window as any).__bossManager;
+      const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+      if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+        const bAny: any = boss as any;
+        const now = nowFrame;
+    // Tick generic boss DoTs (poison/burn) similar to enemies
+    this.updateBossPoisons(now, boss);
+    this.updateBossBurn(now, boss);
+        // Hacker DoT on boss: nextTick/ticksLeft/perTick at 500ms cadence
+        const hdot = bAny._hackerDot as { nextTick: number; ticksLeft: number; perTick: number } | undefined;
+        if (hdot && hdot.ticksLeft > 0) {
+          let guard = 4;
+          while (hdot.ticksLeft > 0 && now >= hdot.nextTick && guard-- > 0) {
+            hdot.ticksLeft--;
+            hdot.nextTick += 500;
+            this.takeBossDamage(boss, hdot.perTick, false, WeaponType.HACKER_VIRUS, boss.x, boss.y);
+            // Amplified RGB glitch feedback channel on boss as well
+            bAny._rgbGlitchUntil = now + 260;
+            bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
+          }
+          if (hdot.ticksLeft <= 0) bAny._hackerDot = undefined;
+        }
+        // Void Sniper DoT on boss: next/left/dmg at 1000ms cadence
+        const vdotB = bAny._voidSniperDot as { next: number; left: number; dmg: number } | undefined;
+        if (vdotB && vdotB.left > 0) {
+          let guard2 = 4;
+          while (vdotB.left > 0 && now >= vdotB.next && guard2-- > 0) {
+            vdotB.left--;
+            vdotB.next += 1000;
+            this.takeBossDamage(boss, vdotB.dmg, false, WeaponType.VOID_SNIPER, boss.x, boss.y);
+            // Use damage flash maintained inside takeBossDamage
+          }
+          if (vdotB.left <= 0) bAny._voidSniperDot = undefined;
+        }
+      }
+    } catch { /* ignore boss dot tick errors */ }
 
     // Deactivate expired hacker zones
     {

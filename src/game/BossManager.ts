@@ -19,6 +19,19 @@ export class BossManager {
   private bossWalkFlip: boolean = false;
   private bossWalkFlipTimerMs: number = 0;
   private readonly bossWalkIntervalMs: number = 1000;
+  // Spells state
+  private spellCooldownMs: number = 5000;
+  private nextSpellAtMs: number = 0;
+  private spellState: 'IDLE' | 'NOVA_CHARGE' | 'NOVA_RELEASE' | 'LINEUP' | 'DASH' = 'IDLE';
+  private spellTimerMs: number = 0;
+  private novaRadius: number = 0;
+  private novaMaxRadius: number = 360;
+  private novaHitApplied: boolean = false;
+  private dashDirX: number = 0;
+  private dashDirY: number = 0;
+  private dashSpeedPxPerMs: number = 1.0; // ~60 px/frame at 60fps
+  private dashDurationMs: number = 520;
+  private dashElapsedMs: number = 0;
 
   constructor(player: Player, particleManager?: ParticleManager, difficulty = 1, assetLoader?: AssetLoader) {
     this.player = player;
@@ -27,6 +40,8 @@ export class BossManager {
     this.lastBossSpawnTime = 0; // Initialize to 0
     this.assetLoader = assetLoader || null;
     this.loadBossImage();
+  // Expose globally for systems that need boss reference
+  try { (window as any).__bossManager = this; } catch {}
   }
 
   private loadBossImage() {
@@ -57,12 +72,13 @@ export class BossManager {
       const dx = this.player.x - this.boss.x;
       const dy = this.player.y - this.boss.y;
       const dist = Math.hypot(dx, dy);
+      const isSpellActive = this.spellState !== 'IDLE';
       // Special attack logic
       if (this.boss.specialCharge == null) this.boss.specialCharge = 0;
       if (this.boss.specialReady == null) this.boss.specialReady = false;
       if (!this.boss.specialReady) {
         // Move slower
-        if (dist > 0) {
+        if (!isSpellActive && dist > 0) {
           const stepX = (dx / dist) * 0.7;
           const stepY = (dy / dist) * 0.7;
           this.boss.x += stepX;
@@ -114,6 +130,18 @@ export class BossManager {
         this.launchAttackWave();
   const spawnHaste = Math.min(15, (this.bossSpawnCount - 1) * 1.5);
   this.boss.attackTimer = Math.max(30, 60 - (this.difficulty - 1) * 10 - spawnHaste);
+      }
+      // Decide and advance spells when not in boss special telegraph
+      if (!this.boss.specialReady) {
+        if (performance.now() >= this.nextSpellAtMs && this.spellState === 'IDLE') {
+          const pick = (this.bossSpawnCount + Math.floor(performance.now() / 10000)) % 2;
+          if (pick === 0) {
+            this.startShockNova();
+          } else {
+            this.startLineDash(dx, dy, dist);
+          }
+        }
+        if (this.spellState !== 'IDLE') this.updateSpells(deltaTime);
       }
       // Player-boss collision with 1s cooldown contact damage (30 fixed damage to player)
       if (dist < this.player.radius + this.boss.radius) {
@@ -205,6 +233,11 @@ export class BossManager {
       _damageFlash: 0
     };
   (this.boss as any)._phase = 1;
+  // Prime spells after brief delay to let player orient
+  this.nextSpellAtMs = performance.now() + 2500;
+  this.spellState = 'IDLE';
+  this.spellTimerMs = 0;
+  this.novaHitApplied = false;
     // Immediately activate boss fight overlay
     if (window && window.dispatchEvent) {
       window.dispatchEvent(new CustomEvent('bossFightStart', { detail: { boss: this.boss } }));
@@ -270,7 +303,7 @@ export class BossManager {
       ctx.arc(this.boss.x, this.boss.y, this.boss.radius + 48, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
-    } else if (this.boss.state === 'ACTIVE') {
+  } else if (this.boss.state === 'ACTIVE') {
       // Large HP bar above boss
       ctx.save();
       ctx.globalAlpha = 0.98;
@@ -327,11 +360,145 @@ export class BossManager {
         ctx.fill();
         ctx.restore();
       }
+      // Spell telegraphs and effects
+      if (this.spellState === 'NOVA_CHARGE' || this.spellState === 'NOVA_RELEASE') {
+        const t = this.spellState === 'NOVA_CHARGE' ? Math.min(1, this.spellTimerMs / 900) : Math.min(1, this.spellTimerMs / 900);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        // Charge glow
+        ctx.globalAlpha = 0.18 + 0.22 * t;
+        ctx.fillStyle = '#B266FF';
+        ctx.beginPath(); ctx.arc(this.boss.x, this.boss.y, this.boss.radius + 40 + 10 * Math.sin(performance.now()*0.02), 0, Math.PI*2); ctx.fill();
+        // Ring
+        const r = (this.spellState === 'NOVA_RELEASE') ? this.novaRadius : (this.boss.radius + 50 + 120 * t);
+        ctx.globalAlpha = 0.35;
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = '#CC66FF';
+        ctx.shadowColor = '#CC66FF';
+        ctx.shadowBlur = 24;
+        ctx.beginPath(); ctx.arc(this.boss.x, this.boss.y, r, 0, Math.PI*2); ctx.stroke();
+        ctx.restore();
+      }
+      if (this.spellState === 'LINEUP' || this.spellState === 'DASH') {
+        // Floor telegraph line in dash direction
+        const len = 520;
+        const t = Math.min(1, (this.spellTimerMs / 600));
+        const alpha = this.spellState === 'LINEUP' ? (0.15 + 0.35 * t) : 0.22;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = '#FF3366';
+        ctx.lineWidth = 4;
+        ctx.shadowColor = '#FF99AA';
+        ctx.shadowBlur = 18;
+        ctx.beginPath();
+        ctx.moveTo(this.boss.x, this.boss.y);
+        ctx.lineTo(this.boss.x + this.dashDirX * len, this.boss.y + this.dashDirY * len);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
+  }
+
+  // --- Spells ---
+  private startShockNova() {
+    if (!this.boss) return;
+    this.spellState = 'NOVA_CHARGE';
+    this.spellTimerMs = 0;
+    this.novaRadius = 0;
+    this.novaHitApplied = false;
+  }
+
+  private startLineDash(dx: number, dy: number, dist: number) {
+    if (!this.boss) return;
+    if (dist < 0.0001) { dx = 1; dy = 0; dist = 1; }
+    this.dashDirX = dx / dist;
+    this.dashDirY = dy / dist;
+    this.spellState = 'LINEUP';
+    this.spellTimerMs = 0;
+    this.dashElapsedMs = 0;
+  }
+
+  private updateSpells(dtMs: number) {
+    if (!this.boss) return;
+    switch (this.spellState) {
+      case 'NOVA_CHARGE': {
+        this.spellTimerMs += dtMs;
+        if (this.spellTimerMs >= 900) {
+          this.spellState = 'NOVA_RELEASE';
+          this.spellTimerMs = 0;
+          // Inner blast damage near boss center
+          const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
+          if (d <= this.boss.radius + 60) {
+            const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
+            this.player.hp -= Math.round(60 * specialScale);
+            window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 180, intensity: 6 } }));
+          }
+        }
+        break;
+      }
+      case 'NOVA_RELEASE': {
+        this.spellTimerMs += dtMs;
+        const t = Math.min(1, this.spellTimerMs / 900);
+        const inner = this.boss.radius + 60;
+        this.novaRadius = inner + (this.novaMaxRadius - inner) * t;
+        const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
+        const band = 18;
+        if (!this.novaHitApplied && d >= this.novaRadius - band && d <= this.novaRadius + band) {
+          this.novaHitApplied = true;
+          const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
+          this.player.hp -= Math.round(45 * specialScale);
+          window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 5 } }));
+        }
+        if (t >= 1) this.endSpellCooldown();
+        break;
+      }
+      case 'LINEUP': {
+        this.spellTimerMs += dtMs;
+        if (this.spellTimerMs >= 600) {
+          this.spellState = 'DASH';
+          this.spellTimerMs = 0;
+          this.dashElapsedMs = 0;
+        }
+        break;
+      }
+      case 'DASH': {
+        const step = this.dashSpeedPxPerMs * dtMs;
+        this.boss.x += this.dashDirX * step;
+        this.boss.y += this.dashDirY * step;
+        this.dashElapsedMs += dtMs;
+        // Clamp to walkable area
+        const rm = (window as any).__roomManager;
+        if (rm && typeof rm.clampToWalkable === 'function') {
+          const c = rm.clampToWalkable(this.boss.x, this.boss.y, this.boss.radius || 80);
+          this.boss.x = c.x; this.boss.y = c.y;
+        }
+        // Contact damage during dash
+        const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
+        if (d < this.player.radius + this.boss.radius) {
+          this.player.hp -= 35;
+          window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 5 } }));
+        }
+        if (this.dashElapsedMs >= this.dashDurationMs) this.endSpellCooldown();
+        break;
+      }
+    }
+  }
+
+  private endSpellCooldown() {
+    this.spellState = 'IDLE';
+    this.spellTimerMs = 0;
+    this.novaHitApplied = false;
+    this.nextSpellAtMs = performance.now() + this.spellCooldownMs;
   }
 
   public getActiveBoss() {
     return this.boss && this.boss.state === 'ACTIVE' ? this.boss : null;
+  }
+
+  /** Compatibility alias for existing callers. */
+  public getBoss() {
+    return this.getActiveBoss();
   }
 
   public setDifficulty(d: number) {

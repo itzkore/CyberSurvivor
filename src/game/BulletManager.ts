@@ -292,11 +292,38 @@ export class BulletManager {
             }
           }
         }
+        // Boss contact: explicit check (boss not in enemy spatial grid). Uses same cooldown as enemies, with key 'boss'.
+        {
+          const bossMgr: any = (window as any).__bossManager;
+          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+            const dxB = boss.x - b.x; const dyB = boss.y - b.y;
+            const rsB = (boss.radius || 160) + (b.radius * 0.55);
+            if (dxB*dxB + dyB*dyB <= rsB*rsB) {
+              const key = 'boss';
+              const nextOkB = b.contactCooldownMap[key] || 0;
+              if (nowT >= nextOkB) {
+                const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.10); }
+                const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
+                const baseDmg = isGrinder ? ((grinderSpec?.getLevelStats ? grinderSpec.getLevelStats(level).damage : (b.damage||20))) : (b.damage||scaled.damage||20);
+                const dmgBase = baseDmg * (isCrit?critMult:1);
+                if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
+                  (this.enemyManager as any).takeBossDamage(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level);
+                } else {
+                  boss.hp -= dmgBase;
+                  window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage: dmgBase, crit: isCrit, x: b.x, y: b.y } }));
+                }
+                b.contactCooldownMap[key] = nowT + (isGrinder ? 160 : 1000);
+                if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#7DFFEA');
+              }
+            }
+          }
+        }
         activeBullets.push(b);
         continue; // skip generic processing
       }
 
-      // Melee sweep (Scrap-Saw): ring-arc hitbox at blade distance + tether contact (half damage)
+  // Melee sweep (Scrap-Saw): ring-arc hitbox at blade distance + tether contact (half damage)
   if ((b as any).isMeleeSweep && b.weaponType === WeaponType.SCRAP_SAW) {
         const pl = this.player;
         const start = (b as any).sweepStart || performance.now();
@@ -318,8 +345,8 @@ export class BulletManager {
         // Collision: query nearby and sector test
         const potential = this.enemySpatialGrid.query(pl.x, pl.y, reach + 40);
         const nowT = performance.now();
-        if (!b.contactCooldownMap) b.contactCooldownMap = {};
-        if (!(b as any).tetherCooldownMap) (b as any).tetherCooldownMap = {};
+        // One-hit-per-enemy per sweep: shared set for blade+tether
+        if (!(b as any)._hitOnce) (b as any)._hitOnce = Object.create(null);
         const halfArc = arcRad/2;
         for (let i2=0;i2<potential.length;i2++){
           const e = potential[i2]; if (!e.active || e.hp<=0) continue;
@@ -331,28 +358,28 @@ export class BulletManager {
           ang = (ang + Math.PI) % (Math.PI*2) - Math.PI;
           const withinAngle = Math.abs(ang - curOffset) <= halfArc * angleBandScale;
           const withinRing = Math.abs(dist - reach) <= (bladeThickness + (e.radius||16));
+          const eid = (e as any).id || (e as any)._gid || 'e'+i2;
+          // Skip if already hit by this sweep (blade or tether)
+          if ((b as any)._hitOnce[eid]) continue;
           // Primary blade contact: ring-arc at blade distance
           if (withinAngle && withinRing) {
-            const eid = (e as any).id || (e as any)._gid || 'e'+i2;
-            const nextOk = b.contactCooldownMap[eid] || 0;
-            if (nowT >= nextOk) {
-              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-              const dmg = (b.damage||32) * (isCrit ? critMult : 1);
-              this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
-              // Increment scrap meter per enemy hit; trigger secondary explosion at 10
-              const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
-              if (triggered) {
-                // Reworked Scrap ability: big explosion around player and heal 5 HP
-                const reach = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-                const radius = Math.max(200, Math.round(reach * 1.5));
-                const dmg = b.damage || 20;
-                try {
-                  window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmg*1.0), radius, color: '#FFAA33' } }));
-                } catch {}
-                // Heal player by 5 HP (clamped to max)
-                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
-              }
-              b.contactCooldownMap[eid] = nowT + 120; // can hit same target again within sweep a bit later
+            const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
+            const dmg = (b.damage||32) * (isCrit ? critMult : 1);
+            this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
+            // Mark as hit for this sweep
+            (b as any)._hitOnce[eid] = 1;
+            // Increment scrap meter per enemy hit; trigger secondary explosion at 10
+            const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+            if (triggered) {
+              // Reworked Scrap ability: big explosion around player and heal 5 HP
+              const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+              const radius2 = Math.max(200, Math.round(reach2 * 1.5));
+              const dmgRef = b.damage || 20;
+              try {
+                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmgRef*1.0), radius: radius2, color: '#FFAA33' } }));
+              } catch {}
+              // Heal player by 5 HP (clamped to max)
+              (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
             }
           }
           // Tether contact: segment from player to blade, half damage, separate cooldown
@@ -366,26 +393,22 @@ export class BulletManager {
           const dSeg = Math.hypot(ex - cx, ey - cy);
           const tetherWidth = 10; // collision thickness for tether line
           if (dSeg <= tetherWidth + (e.radius||16)) {
-            const eid = (e as any).id || (e as any)._gid || 'e'+i2;
-            const nextOkT = (b as any).tetherCooldownMap[eid] || 0;
-            // If blade already hit recently (within its cooldown), skip tether to avoid double-dipping
-            const bladeOnCd = (b.contactCooldownMap[eid] || 0) > nowT;
-            if (!bladeOnCd && nowT >= nextOkT) {
-              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-              const base = (b.damage||32) * 0.5; // 50% damage on tether contact
-              const dmg = base * (isCrit ? critMult : 1);
-              this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
-              const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
-              if (triggered) {
-                const reach = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-                const radius = Math.max(200, Math.round(reach * 1.5));
-                const dmgRef = b.damage || 20;
-                try {
-                  window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmgRef*1.0), radius, color: '#FFAA33' } }));
-                } catch {}
-                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
-              }
-              (b as any).tetherCooldownMap[eid] = nowT + 160; // slightly slower cadence than blade per target
+            // Skip if already hit by this sweep
+            if ((b as any)._hitOnce[eid]) continue;
+            const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
+            const base = (b.damage||32) * 0.5; // 50% damage on tether contact
+            const dmg = base * (isCrit ? critMult : 1);
+            this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
+            (b as any)._hitOnce[eid] = 1; // mark as hit for this sweep
+            const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+            if (triggered) {
+              const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+              const radius2 = Math.max(200, Math.round(reach2 * 1.5));
+              const dmgRef = b.damage || 20;
+              try {
+                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmgRef*1.0), radius: radius2, color: '#FFAA33' } }));
+              } catch {}
+              (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
             }
           }
         }
@@ -550,14 +573,36 @@ export class BulletManager {
               continue; // skip movement/collision while charging
             }
           } else if (b.phase === 'TRAVEL') {
-            // Mild acceleration curve to target speed
+            // Mild acceleration toward configured speed (no extra multiplier)
             const cur = Math.hypot(b.vx,b.vy)||0.0001;
-            const target = (WEAPON_SPECS as any)[WeaponType.PLASMA]?.speed * 1.8 || 13.5;
+            const spec: any = (WEAPON_SPECS as any)[WeaponType.PLASMA];
+            const target = (spec?.speed != null ? spec.speed : 7.5);
             const ns = cur + (target - cur) * 0.06 * (deltaTime/16.6667);
             b.vx = b.vx/cur * ns;
             b.vy = b.vy/cur * ns;
           }
         }
+      }
+      // Tachyon/Singularity spear: realistic spear travel physics (ease-in + slight drag; slowdown on pierce)
+      if ((b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR) && b.active) {
+        // Cache base speed from spec once
+        const spec: any = (WEAPON_SPECS as any)[b.weaponType];
+        if ((b as any)._baseSpeed == null) (b as any)._baseSpeed = spec?.speed || Math.hypot(b.vx, b.vy) || 12;
+        const base = (b as any)._baseSpeed;
+        const cur = Math.hypot(b.vx, b.vy) || 0.0001;
+        // Ease-in acceleration toward base speed early in flight
+        const tMs = performance.now() - ((b as any)._spawnTime || performance.now());
+        const accelPhase = Math.min(1, tMs / 180); // first 180ms
+        const accel = 0.18 * (deltaTime / 16.6667) * (0.4 + 0.6 * accelPhase); // ramping accel
+        let target = base * (1 + 0.04 * Math.sin(tMs * 0.01)); // tiny jitter for life
+        let ns = cur + (target - cur) * accel;
+        // Air drag: mild reduction to avoid infinite straight-line with huge speed
+        const drag = 0.004 * (deltaTime / 16.6667);
+        ns *= (1 - drag);
+        b.vx = (b.vx / cur) * ns;
+        b.vy = (b.vy / cur) * ns;
+        // Record speed for potential hit-based slowdown hook
+        (b as any)._lastSpeed = ns;
       }
       // Kamikaze Drone phased logic
   if (b.weaponType === WeaponType.HOMING && b.active) {
@@ -1004,7 +1049,7 @@ export class BulletManager {
               }
             }
             // Plasma detonation on first impact (no piercing). Determine over/charged multipliers here.
-            if (b.weaponType === WeaponType.PLASMA) {
+      if (b.weaponType === WeaponType.PLASMA) {
               const spec: any = (WEAPON_SPECS as any)[WeaponType.PLASMA];
               const p:any = this.player;
               const over = (p?.plasmaHeat||0) >= (spec?.overheatThreshold||0.85);
@@ -1016,8 +1061,9 @@ export class BulletManager {
                 p.plasmaHeat = Math.max(0, p.plasmaHeat * 0.6); // cooldown after overcharged
                 window.dispatchEvent(new CustomEvent('plasmaIonField', { detail: { x: b.x, y: b.y, damage: dmgBase, radius: 150 } }));
               } else {
-                const frags = spec?.fragmentCount || 3;
-                window.dispatchEvent(new CustomEvent('plasmaDetonation', { detail: { x: b.x, y: b.y, damage: dmgBase, fragments: frags, radius: 120 } }));
+        // Preserve explicit 0 fragments (no fallback)
+        const frags = (spec && Object.prototype.hasOwnProperty.call(spec,'fragmentCount')) ? (spec.fragmentCount||0) : 3;
+        window.dispatchEvent(new CustomEvent('plasmaDetonation', { detail: { x: b.x, y: b.y, damage: dmgBase, fragments: frags, radius: 120 } }));
               }
               b.active = false; this.bulletPool.push(b); break; // consume plasma core
             }
@@ -1055,6 +1101,13 @@ export class BulletManager {
             }
             if (b.pierceRemaining && b.pierceRemaining > 0) {
               b.pierceRemaining -= 1;
+              // Spear realism: lose some speed when piercing a target
+              if (b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR) {
+                const cur = Math.hypot(b.vx, b.vy) || 0.0001;
+                const slow = 0.88; // retain 88% speed after each pierce
+                b.vx = b.vx / cur * (cur * slow);
+                b.vy = b.vy / cur * (cur * slow);
+              }
               intersectionPoint = null;
               continue;
             } else {
@@ -1075,6 +1128,8 @@ export class BulletManager {
                   const spec: any = (WEAPON_SPECS as any)[WeaponType.DATA_SIGIL];
                   const stats = spec?.getLevelStats ? spec.getLevelStats(lvl) : {};
                   window.dispatchEvent(new CustomEvent('plantDataSigil', { detail: { x: b.x, y: b.y, level: lvl, radius: stats?.sigilRadius || 120, pulseCount: stats?.pulseCount || 3, pulseDamage: stats?.pulseDamage || 90 } }));
+                  // Golden sparks on creation
+                  try { this.particleManager?.spawn(b.x, b.y, 10, '#FFD700', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.2, speedMax: 3.0 }); } catch {}
                 } catch {}
               }
               b.active = false;
@@ -1112,7 +1167,7 @@ export class BulletManager {
               const damage = isCritical ? b.damage * critMult : b.damage;
               // Reuse enemyManager damage pathway if compatible, else dispatch custom event
               if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.x, b.y, weaponLevel);
+                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
               } else {
                 boss.hp -= damage;
                 window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
@@ -1191,7 +1246,7 @@ export class BulletManager {
       }
 
   // Trail accumulation for weapons with trail visuals (added LASER for subtle trace)
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
+  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
         if (!b.trail) b.trail = [];
         b.trail.push({ x: b.x, y: b.y });
         const baseMax = (b.projectileVisual as any).trailLength || 10;
@@ -1230,7 +1285,7 @@ export class BulletManager {
       if (b.x < minX || b.x > maxX || b.y < minY || b.y > maxY) continue;
       ctx.save();
   // Draw trail first (behind projectile) – Crossbow + Smart Rifle + Laser Blaster subtle trace
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
+  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
         const visual = b.projectileVisual as any;
         ctx.save();
   // Thicker, softer trail for mortar vs others
@@ -1784,6 +1839,10 @@ export class BulletManager {
       if ((scaled as any).thickness != null) {
         projectileVisual = { ...projectileVisual, thickness: (scaled as any).thickness } as any;
       }
+      // Propagate scaled explosion radius if provided by the weapon at this level
+      if ((scaled as any).explosionRadius != null) {
+        (b as any).explosionRadius = (scaled as any).explosionRadius;
+      }
     }
 
     // Range & lifetime derivation (gentler compression of very large ranges)
@@ -2053,14 +2112,15 @@ export class BulletManager {
       b.pierceRemaining = 999;
       // Ensure laser visuals have a visible wake
       const vis: any = b.projectileVisual || {};
-      if (!vis.trailColor) vis.trailColor = (weapon === WeaponType.SINGULARITY_SPEAR) ? 'rgba(201,166,255,0.45)' : 'rgba(255,165,0,0.45)';
+  if (!vis.trailColor) vis.trailColor = (weapon === WeaponType.SINGULARITY_SPEAR) ? 'rgba(201,166,255,0.45)' : 'rgba(0,200,255,0.45)';
       if (!vis.trailLength) vis.trailLength = 34;
       // If this is a charged volley spear, tint to glowing dark red (per-bullet clone)
       if ((b as any)._isVolley) {
-        vis.color = '#8B0000';
-        vis.glowColor = '#B22222';
-        vis.glowRadius = Math.max(vis.glowRadius || 18, 22);
-        vis.trailColor = 'rgba(139,0,0,0.50)';
+        // Charged volley: brighter cyan tip with stronger glow
+        vis.color = '#33E0FF';
+        vis.glowColor = '#99F0FF';
+        vis.glowRadius = Math.max(vis.glowRadius || 18, 24);
+        vis.trailColor = 'rgba(51,224,255,0.55)';
       }
       b.projectileVisual = vis;
       // Slightly increase collision radius to help fast spear connect

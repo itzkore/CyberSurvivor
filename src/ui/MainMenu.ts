@@ -35,6 +35,50 @@ export class MainMenu {
     const today = new Date().toISOString().slice(0,10);
     return [
       {
+        version: '0.2.5',
+        date: today,
+        entries: [
+          { tag: 'NEW', text: 'Passive — Area Up added: +10% radius per level across compatible area effects.' },
+          { tag: 'SYS', text: 'Global area multiplier framework — AoE systems now scale consistently: Data Sigils, Titan Mortar, Shockwaves, Plasma Detonation, and On‑Kill pulses.' },
+          { tag: 'BAL', text: 'Beam melter — reduced knockback and enforced radial push from player for stable target lock.' },
+          { tag: 'QOL', text: 'Standardized multiplier getters (damage/area/fire‑rate); cooldowns and damage paths honor passives uniformly.' },
+          { tag: 'FIX', text: 'Prevented double‑scaling of AoE; ensured explosionRadius propagation through event chain.' }
+        ]
+      },
+      {
+        version: '0.2.4',
+        date: today,
+        entries: [
+          { tag: 'FX', text: 'Umbral Surge — integrated MP4 overlay with auto-transparency, darker purple tint, and smoother, longer fade-out.' },
+          { tag: 'UI', text: 'Upgrade choices — integer-only stat deltas with bold arrows/colors; class badge shows only on unlock.' },
+          { tag: 'UI', text: 'HUD — health now displays whole numbers only for better readability.' },
+          { tag: 'NEW', text: 'Tech Warrior — Glide Dash (Shift): short, smooth dash with brief i-frames and afterimages; dedicated ability bar added.' },
+          { tag: 'BAL', text: 'Heavy Gunner — Overdrive uptime doubled, cooldown halved, no startup heat cost; +2 pierce during boost; steadier recoil/spread.' },
+          { tag: 'NEW', text: 'Boss — two telegraphed spells: Shock Nova (charge ring → expanding blast) and Line Dash (floor lineup → high‑speed dash).'},
+          { tag: 'BAL', text: 'Boss — on‑hit parity with enemies (armor shred, burn, poison, glitch) with periodic DoT ticks for consistency.' },
+          { tag: 'FX', text: 'Tachyon Spear — cyan/blue visuals and trail; flight physics feel heavier with ease‑in acceleration, light drag, and per‑pierce slowdown.' }
+        ]
+      },
+      {
+        version: '0.2.3',
+        date: today,
+        entries: [
+          { tag: 'BAL', text: 'SNIPER PATCH — Charge bar is authoritative: Ghost and Shadow snipers fire the instant the bar fills (no cooldown waits or post-shot idle).'},
+          { tag: 'FX', text: 'Shadow (Void Sniper): dark purple stack particles above tagged enemies; clearer visual feedback for DoT stacks.'},
+          { tag: 'BAL', text: 'Void Sniper charge time increased by 50% (375ms during Umbral Surge, 1050ms normal).'},
+          { tag: 'QOL', text: 'Applying a new Void DoT stack now deals an immediate tick so enemies can’t “dodge” the first damage.'}
+        ]
+      },
+      {
+        version: '0.2.2',
+        date: today,
+        entries: [
+          { tag: 'NEW', text: 'Rogue Hacker rework — System Hack ultimate added: a massive EMP-like hack that deals damage in a large radius and paralyzes enemies briefly.' },
+          { tag: 'FX', text: 'RGB glitch visuals made far more visible on hacked enemies (stronger color ghosts, slices, scanlines, and duration).'},
+          { tag: 'UI', text: 'HUD adds a Rogue Hacker ability meter with clear READY state and cooldown countdown.' }
+        ]
+      },
+      {
         version: '0.2.1',
         date: today,
         entries: [
@@ -163,7 +207,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.1 — OPERATIVES PATCH</div>
+            <div class="version-tag">v0.2.5 — GENERAL UPDATE PATCH</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
