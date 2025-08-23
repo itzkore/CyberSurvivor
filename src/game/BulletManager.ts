@@ -467,19 +467,21 @@ export class BulletManager {
           const maxTurn = turnRate * (deltaTime / 16.6667);
           if (diff > maxTurn) diff = maxTurn; else if (diff < -maxTurn) diff = -maxTurn;
           const newAng = curAng + diff;
-          // Acceleration curve: start gentle, ramp up with time alive; reduces lingering bullets
+          // Acceleration curve: exponential ramp for quick lock-on chase
           const curSpeed = Math.hypot(b.vx, b.vy) || 0.0001;
           const spawnT = (b as any)._spawnTime || performance.now();
           const aliveMs = Math.max(0, performance.now() - spawnT);
           // Base speed remembered from initial spawn
           if ((b as any).baseSpeed == null) (b as any).baseSpeed = curSpeed;
           const baseSpeed = (b as any).baseSpeed;
-          // Ramp: up to +80% over ~1.5s; dt-aware
-          const ramp = Math.min(0.8, aliveMs / 1500 * 0.8);
-          // Small per-frame acceleration to converge to target ramped speed
-          const targetSpeed = baseSpeed * (1 + ramp);
-          let newSpeed = curSpeed + (targetSpeed - curSpeed) * Math.min(1, (deltaTime / 120));
-          const maxSpeed = baseSpeed * 1.85; // hard cap
+          // Exponential ramp: approaches +150% quickly (~0.8s to 63%, ~2s near max)
+          const maxBoost = 1.5; // +150%
+          const k = 0.004; // growth rate
+          const rampT = 1 - Math.exp(-k * aliveMs);
+          const targetSpeed = baseSpeed * (1 + maxBoost * rampT);
+          // Faster convergence toward target speed
+          let newSpeed = curSpeed + (targetSpeed - curSpeed) * Math.min(1, (deltaTime / 80));
+          const maxSpeed = baseSpeed * 2.2; // hard cap
           if (newSpeed > maxSpeed) newSpeed = maxSpeed;
           b.vx = Math.cos(newAng) * newSpeed;
           b.vy = Math.sin(newAng) * newSpeed;

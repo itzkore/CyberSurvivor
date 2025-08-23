@@ -111,18 +111,24 @@ export class Player {
 
   // Heavy Gunner: Overheat boost (hold Space)
   private gunnerHeatMs: number = 0; // current heat in ms (0..gunnerHeatMsMax)
-  private gunnerHeatMsMax: number = 4000; // max boost duration = 4s (double uptime)
-  private gunnerHeatCooldownMs: number = 5000; // full cool-down time = 5s (half cooldown)
+  private gunnerHeatMsMax: number = 5000; // max boost duration = 5s (longer uptime)
+  private gunnerHeatCooldownMs: number = 3500; // full cool-down time = 3.5s (faster recovery)
   private gunnerBoostActive: boolean = false; // true while boosting (Space held and not overheated)
   private gunnerOverheated: boolean = false;  // lockout when heat hits max
   private gunnerReengageT: number = 0.3;     // must cool below 30% to reengage after overheat
+  /** Time actively boosting in the current hold (ms) — used to grant a brief heat-free startup window. */
+  private gunnerBoostActiveMs: number = 0;
+  /** Heat-free grace window at boost start (ms); allows short, powerful bursts with no heat cost. */
+  private gunnerFreeStartMs: number = 800;
   // Boost multipliers
-  private gunnerBoostFireRate: number = 2.0;  // 100% faster fire rate (more noticeable)
-  private gunnerBoostDamage: number = 2.0;    // double damage while boosting
-  private gunnerBoostRange: number = 1.7;     // +70% projectile reach (more noticeable)
-  private gunnerBoostSpread: number = 0.45;   // much tighter spread while boosting (stabilized)
+  private gunnerBoostFireRate: number = 2.4;  // 140% faster fire rate
+  private gunnerBoostDamage: number = 2.2;    // +120% damage while boosting
+  private gunnerBoostRange: number = 2.0;     // +100% projectile reach
+  private gunnerBoostSpread: number = 0.35;   // even tighter spread while boosting (stabilized)
   private gunnerBaseRatePenalty: number = 0.7; // 30% slower when not boosting
-  private gunnerBoostJitter: number = 0.02;   // reduced aim jitter for minigun while boosting (stabilized)
+  private gunnerBoostJitter: number = 0.012;  // steadier aim while boosting
+  /** Minimum effective boost strength while held (0..1). Grants immediate potency before heat ramps. */
+  private gunnerBoostFloorT: number = 0.5;
 
   public getGunnerHeat() { return { value: this.gunnerHeatMs, max: this.gunnerHeatMsMax, active: this.gunnerBoostActive, overheated: this.gunnerOverheated }; }
 
@@ -132,8 +138,10 @@ export class Player {
    */
   private getGunnerBoostT(): number {
     if (this.characterData?.id !== 'heavy_gunner') return 0;
-    if (!this.gunnerBoostActive) return 0;
-    return Math.max(0, Math.min(1, this.gunnerHeatMs / this.gunnerHeatMsMax));
+  if (!this.gunnerBoostActive) return 0;
+  const heatT = Math.max(0, Math.min(1, this.gunnerHeatMs / this.gunnerHeatMsMax));
+  // Apply a floor so boost feels immediate, then ramp to full with heat
+  return Math.max(this.gunnerBoostFloorT, heatT);
   }
 
   // Cyber Runner: Dash (Shift) — dodge distance scales with level (200px at Lv1 → 400px at Lv50), 5s cooldown
@@ -468,13 +476,20 @@ export class Player {
         if (this.gunnerHeatMs <= this.gunnerHeatMsMax * this.gunnerReengageT) this.gunnerOverheated = false;
       } else if (holdSpace) {
         this.gunnerBoostActive = true;
-        this.gunnerHeatMs = Math.min(this.gunnerHeatMsMax, this.gunnerHeatMs + dt);
+        // Track active hold time
+        this.gunnerBoostActiveMs += dt;
+        // Heat-free grace: only start accumulating heat after the grace window
+        if (this.gunnerBoostActiveMs > this.gunnerFreeStartMs) {
+          this.gunnerHeatMs = Math.min(this.gunnerHeatMsMax, this.gunnerHeatMs + dt);
+        }
         if (this.gunnerHeatMs >= this.gunnerHeatMsMax) {
           this.gunnerOverheated = true;
           this.gunnerBoostActive = false;
         }
       } else {
         this.gunnerBoostActive = false;
+        // Reset active hold timer when not boosting
+        this.gunnerBoostActiveMs = 0;
         if (this.gunnerHeatMs > 0) this.gunnerHeatMs = Math.max(0, this.gunnerHeatMs - dt * coolPerMs);
       }
     }
@@ -507,7 +522,7 @@ export class Player {
     }
 
     // Fire weapons when off cooldown
-    if (target) {
+  if (target) {
       const isRogueHacker = this.characterData?.id === 'rogue_hacker';
       for (const [weaponType, level] of this.activeWeapons) {
         // Rogue Hacker: skip class weapon here (zones are auto-cast by EnemyManager); allow other weapons
@@ -563,6 +578,30 @@ export class Player {
             canFire = dist <= effectiveRange;
           }
           if (canFire) {
+            // Neural Nomad: fire to multiple nearest enemies per attack (2 at L1 → up to 5 at L7)
+            if (this.characterData?.id === 'neural_nomad' && weaponType === WeaponType.NOMAD_NEURAL) {
+              const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
+              // Collect alive enemies and sort by distance
+              const maxShots = Math.min(5, Math.max(2, 1 + Math.floor(level))); // L1~2:2, ... L5+:5
+              const pairs: Array<{e: any, d2: number}> = [];
+              for (let i = 0; i < enemies.length; i++) {
+                const e = enemies[i]; if (!e || !(e as any).active || e.hp <= 0) continue;
+                const dx = e.x - this.x; const dy = e.y - this.y; const d2 = dx*dx + dy*dy;
+                // within effective range
+                if (spec && typeof spec.range === 'number' && d2 > (spec.range*spec.range)) continue;
+                pairs.push({ e, d2 });
+              }
+              pairs.sort((a,b) => a.d2 - b.d2);
+              const shots = Math.min(maxShots, pairs.length);
+              for (let si = 0; si < shots; si++) {
+                const e = pairs[si].e;
+                const ang = Math.atan2(e.y - this.y, e.x - this.x);
+                // Fire a single projectile at this enemy
+                this.spawnSingleProjectile(this.gameContext.bulletManager, weaponType, (WEAPON_SPECS[weaponType].damage || this.bulletDamage), level, ang, 0, 1, 0, e as any);
+              }
+              this.shootCooldowns.set(weaponType, effCd);
+              continue;
+            }
             this.shootAt(target, weaponType);
             this.shootCooldowns.set(weaponType, effCd);
           }
@@ -1369,11 +1408,12 @@ export class Player {
     }
     if (!lockedBoss && !lockedTarget) return; // nothing to melt
 
-    // Beam lifetime and tick setup
-    const beamDurationMs = 420; // short, punchy melt window
+    // Beam lifetime and tick setup — ramping needle up to 10s max intensity
+    const beamDurationMs = 10000; // allow long ramp; damage per tick scales up over time
     const start = performance.now();
     if (!game._activeBeams) game._activeBeams = [];
     const playerRef = this;
+    // Thin-at-origin visual that grows with ramp
     const beamObj: any = {
       type: 'melter',
       x: eyeX,
@@ -1389,7 +1429,10 @@ export class Player {
       lockedTarget,
       lockedBoss,
       _lastSpark: start,
+      _killLockUntil: 0,
       dealDamage(now:number) {
+        // Enforce post-kill cooldown lockout (1s)
+        if (now < this._killLockUntil) { this.lastTick = now; return; }
         // Update origin to player's current eye line so the beam follows movement
         const ox = playerRef.x; const oy = playerRef.y - 8;
         this.x = ox; this.y = oy;
@@ -1409,14 +1452,24 @@ export class Player {
         const clamped = Math.min(dist, this.range);
         this.visLen = clamped;
         this.angle = Math.atan2(dy, dx);
-        // Apply DPS scaled by elapsed time since last tick
+        // Ramping intensity: start at 20% DPS and grow to 100% over 10s
+        const t = Math.max(0, Math.min(1, (now - this.start) / this.duration));
+        const ramp = 0.2 + 0.8 * t; // 0.2 -> 1.0
+        // Beam gets slightly thicker as it ramps (visual only)
+        this.thickness = Math.max(6, Math.round(thickness * (0.5 + 0.5 * ramp)));
+        // Apply DPS scaled by elapsed time since last tick and ramp
         const dtSec = Math.max(0, (now - this.lastTick) / 1000);
-        const dmg = dps * dtSec;
+        const dmg = (dps * ramp) * dtSec;
         if (dmg > 0.0001) {
           if (isBoss) {
             try { game.enemyManager?.takeBossDamage?.(this.lockedBoss, dmg, false, WeaponType.BEAM, tx, ty, playerRef.activeWeapons.get(WeaponType.BEAM) || weaponLevel); } catch {}
           } else {
+            const preHp = this.lockedTarget.hp;
             try { game.enemyManager?.takeDamage?.(this.lockedTarget, dmg, false, false, WeaponType.BEAM, ox, oy, playerRef.activeWeapons.get(WeaponType.BEAM) || weaponLevel); } catch {}
+            if (this.lockedTarget && this.lockedTarget.hp <= 0 && preHp > 0) {
+              // Apply 1s lockout after a kill
+              this._killLockUntil = now + 1000;
+            }
           }
         }
         this.lastTick = now;

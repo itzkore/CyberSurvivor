@@ -37,13 +37,25 @@ export class MainMenu {
     const today = new Date().toISOString().slice(0,10);
     return [
       {
+        version: '0.2.9',
+        date: today,
+        entries: [
+          { tag: 'BAL', text: 'Beam — post‑kill lockout reduced to 1s (down from 5s) to keep flow snappy.' },
+          { tag: 'FX', text: 'Beam — rim now cycles smoothly through the RGB spectrum as intensity ramps.' }
+        ]
+      },
+      {
         version: '0.2.8',
         date: today,
         entries: [
           { tag: 'UI', text: 'Main Menu: START RUN text centered; added cyberpunk glitch click effect with subtle SFX and fade-out.' },
           { tag: 'QOL', text: 'Reduced motion: glitch animation disabled when prefers-reduced-motion is set.' },
           { tag: 'FIX', text: 'Return to Menu: ensured menu fades back in and start button re-enables after a run ends.' },
-          { tag: 'BAL', text: 'Boss Spawns: cadence anchored to schedule so the next boss spawns immediately if overdue.' }
+          { tag: 'BAL', text: 'Boss Spawns: cadence anchored to schedule so the next boss spawns immediately if overdue.' },
+          { tag: 'BAL', text: 'Heavy Gunner — Overdrive buff: instant power floor, 0.8s heat‑free startup, longer uptime, faster cooldown, tighter spread, bigger range, more damage.' },
+          { tag: 'BAL', text: 'Smart Rifle — exponential homing speed ramp for quicker locks and chase.' },
+          { tag: 'BAL', text: 'Neural Threader (Nomad) — fires to 2–5 nearest enemies per attack; threads/Overmind scale with level and damage multipliers.' },
+          { tag: 'BAL', text: 'Beam — long ramping needle: thin at start, ramps damage up to 10s; 5s lockout after a kill to contain power.' }
         ]
       },
       {
@@ -238,7 +250,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.8 — PATCH NOTES</div>
+            <div class="version-tag">v0.2.9 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">

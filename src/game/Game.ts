@@ -1063,27 +1063,37 @@ export class Game {
                 this.ctx.strokeStyle = this.lowFX ? `rgba(255,255,255,${0.3 * fadeEase})` : `rgba(255,255,255,${0.7 * fadeEase})`;
               }
             } else if (beam.type === 'melter') {
-              // Melter beam: tight bright core with faint amber; draws only up to visLen
+              // Melter beam: tight core, RGB hue-cycling rim while intensifying; draws only up to visLen
               const visLen = Math.min(len, beam.visLen || len);
               const fadeEase = fade * fade;
               const coreT = Math.max(6, (beam.thickness || 12) * 0.6);
               const rimT = coreT * 1.8;
+              // Compute intensity-ramp t based on beam duration for color cycle (0..1)
+              const elapsedBeam = Math.max(0, Math.min(beam.duration, (performance.now() - beam.start)));
+              const tRamp = beam.duration > 0 ? (elapsedBeam / beam.duration) : 0;
+              // Hue cycles 0->360 once over the ramp; keep a tiny offset to start near red
+              const hue = Math.floor((tRamp * 360) % 360);
               if (!this.lowFX && !debugNoAdd) {
                 this.ctx.globalCompositeOperation = 'lighter';
                 // Core (white)
                 this.ctx.fillStyle = `rgba(255,255,255,${0.85 * fadeEase})`;
                 this.ctx.fillRect(0, -coreT/2, visLen, coreT);
-                // Rim (amber)
+                // Rim (RGB gradient along beam length)
                 const grad = this.ctx.createLinearGradient(0, 0, visLen, 0);
-                grad.addColorStop(0, `rgba(255,190,120,${0.55 * fadeEase})`);
-                grad.addColorStop(0.2, `rgba(255,170,80,${0.35 * fadeEase})`);
-                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                // Use HSL for smooth spectrum; convert via CSS hsl()
+                const rimA1 = (0.55 * fadeEase).toFixed(3);
+                const rimA2 = (0.35 * fadeEase).toFixed(3);
+                grad.addColorStop(0.00, `hsla(${hue}, 100%, 70%, ${rimA1})`);
+                grad.addColorStop(0.25, `hsla(${(hue+60)%360}, 100%, 65%, ${rimA2})`);
+                grad.addColorStop(0.50, `hsla(${(hue+120)%360}, 100%, 60%, ${rimA2})`);
+                grad.addColorStop(0.75, `hsla(${(hue+180)%360}, 100%, 55%, ${rimA2})`);
+                grad.addColorStop(1.00, 'rgba(0,0,0,0)');
                 this.ctx.fillStyle = grad;
                 this.ctx.fillRect(0, -rimT/2, visLen, rimT);
-                // Impact bloom
+                // Impact bloom tinted by current hue
                 const impact = this.ctx.createRadialGradient(visLen, 0, 0, visLen, 0, 18);
-                impact.addColorStop(0, `rgba(255,240,200,${0.8 * fadeEase})`);
-                impact.addColorStop(0.5, `rgba(255,200,120,${0.45 * fadeEase})`);
+                impact.addColorStop(0, `hsla(${hue}, 100%, 85%, ${0.8 * fadeEase})`);
+                impact.addColorStop(0.5, `hsla(${(hue+40)%360}, 100%, 70%, ${0.45 * fadeEase})`);
                 impact.addColorStop(1, 'rgba(0,0,0,0)');
                 this.ctx.fillStyle = impact;
                 this.ctx.beginPath();
@@ -1091,10 +1101,12 @@ export class Game {
                 this.ctx.fill();
               } else {
                 this.ctx.globalCompositeOperation = 'source-over';
-                this.ctx.fillStyle = `rgba(255,220,160,${0.6 * fadeEase})`;
+                // Low FX: single color band based on hue
+                this.ctx.fillStyle = `hsla(${hue}, 100%, 70%, ${0.6 * fadeEase})`;
                 this.ctx.fillRect(0, -rimT/2, visLen, rimT);
               }
-              this.ctx.strokeStyle = this.lowFX ? `rgba(255,220,180,${0.3 * fadeEase})` : `rgba(255,230,200,${0.6 * fadeEase})`;
+              // Subtle outline that follows the hue at low opacity
+              this.ctx.strokeStyle = this.lowFX ? `hsla(${hue}, 100%, 80%, ${0.3 * fadeEase})` : `hsla(${hue}, 100%, 90%, ${0.6 * fadeEase})`;
             } else {
               // Railgun: twin parallel rails + animated crossbar rungs (distinct from sniper beams)
               const fadeEase = fade * (0.7 + 0.3 * Math.min(1, fade));
