@@ -1,6 +1,6 @@
 {
   "name": "cyber-survivor-ts",
-  "version": "0.2.8",
+  "version": "0.2.7",
   "private": true,
   "description": "CyberSurvivor game (Web / Vite + TypeScript)",
   "license": "UNLICENSED",
