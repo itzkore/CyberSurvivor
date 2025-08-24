@@ -1,5 +1,6 @@
 import { Player } from '../game/Player';
 import { AssetLoader } from '../game/AssetLoader';
+import { WEAPON_SPECS } from '../game/WeaponConfig';
 import { Enemy } from '../game/EnemyManager'; // Import Enemy type
 
 export class HUD {
@@ -59,59 +60,51 @@ export class HUD {
     } catch { /* ignore */ }
   // We'll draw FPS later once minimap position vars are defined so it sits in the gap above minimap.
 
-  // --- LEFT PANEL (Stats + Level) ---
+  // --- LEFT PANEL (Simplified Class Stats) ---
   const panelX = 14;
   const panelY = 14;
   // Match minimap width for consistent layout (minimap = 150)
   const minimapSize = 150;
   const panelW = minimapSize;
-  // Dynamic panel height: base + per-stat lines (15 stats currently)
-  const statCount = 15;
-  const panelH = 70 + statCount * 20 + 16;
-  this.drawPanel(ctx, panelX, panelY, panelW, panelH, () => {
-      ctx.save();
+  // Class dominant color (fallback to cyan theme)
+  const classAccent = (this.player as any)?.color || (this.player as any)?.characterData?.color || COLOR_CYAN;
+  const simpleStats = this.getSimpleClassStats();
+  const headerH = 58; // taller header to avoid overlap with first stat line
+  const lineH = 24;   // more vertical spacing per stat row
+  const panelH = headerH + (simpleStats.length * lineH) + 16;
+  this.drawPanelThemed(ctx, panelX, panelY, panelW, panelH, classAccent, () => {
+    ctx.save();
+  // Header: Class name (fitted) + Level
+  ctx.textAlign = 'left';
+  const name = (this.player as any)?.characterData?.name || 'OPERATIVE';
+  // Fit class name into panel width with dynamic font size and ellipsis
+  const headerMaxW = panelW - 24; // padding 12 on both sides
+  const fitted = this.fitTextToWidth(ctx, name, headerMaxW, 18, 12);
+  ctx.font = `bold ${fitted.fontSize}px Orbitron, sans-serif`;
+  this.drawGlowText(ctx, fitted.text, panelX + 12, panelY + 26, COLOR_TEXT, classAccent, 6);
+  // Level line (smaller, typically fits)
+  ctx.font = 'bold 14px Orbitron, sans-serif';
+  const lvlText = `LEVEL ${this.player.level}`;
+  // If needed, also clamp level text just in case of extreme locales/fonts
+  const lvlF = this.fitTextToWidth(ctx, lvlText, headerMaxW, 14, 11);
+  ctx.font = `bold ${lvlF.fontSize}px Orbitron, sans-serif`;
+  this.drawGlowText(ctx, lvlF.text, panelX + 12, panelY + 50, COLOR_TEXT_DIM, classAccent, 4);
+
+    // Stats list (labels left, values right, accented by class color)
+  ctx.font = FONT_STAT;
+  let y = panelY + headerH + 6; // extra breathing room below header
+    for (let i = 0; i < simpleStats.length; i++) {
+      const [label, value] = simpleStats[i];
+      ctx.fillStyle = COLOR_TEXT_DIM;
       ctx.textAlign = 'left';
-      ctx.font = FONT_SECTION;
-  this.drawGlowText(ctx, `LEVEL ${this.player.level}`, panelX + 12, panelY + 32, COLOR_TEXT, COLOR_ACCENT_ALT, 8);
-
-      // Derive extended stats
-      const critChance = this.computeCritChance();
-      const survivability = Math.round(this.player.maxHp * (1 + (this.player.defense || 0) / 50));
-      const powerScore = this.computePowerScore();
-
-      const stats: [string, string][] = [
-        ['HP', `${this.player.hp} / ${this.player.maxHp}`],
-        ['Speed', `${this.player.speed.toFixed(2)}`],
-        ['Damage', `${this.player.bulletDamage ?? 0}`],
-        ['Strength', `${this.player.strength ?? 0}`],
-        ['Defense', `${this.player.defense ?? 0}`],
-        ['Atk Spd', `${(this.player.attackSpeed ?? 1).toFixed(2)}`],
-        ['Magnet', `${this.player.magnetRadius ?? 0}`],
-        ['Regen', `${(this.player.regen || 0).toFixed(1)}/s`],
-        ['Luck', `${this.player.luck ?? 0}`],
-        ['Intel', `${this.player.intelligence ?? 0}`],
-        ['Agility', `${this.player.agility ?? 0}`],
-        ['Crit %', `${critChance.toFixed(0)}`],
-        ['Survive', `${survivability}`],
-        ['Power', `${powerScore}`],
-        ['DPS', `${this.currentDPS.toFixed(2)}`]
-      ];
-      ctx.font = FONT_STAT;
-      ctx.fillStyle = COLOR_TEXT;
-      let y = panelY + 60;
-      // Dynamic right-aligned values for narrow panel
-      for (let i = 0; i < stats.length; i++) {
-        const [label, value] = stats[i];
-        ctx.fillStyle = COLOR_TEXT_DIM;
-        ctx.textAlign = 'left';
-        ctx.fillText(label + ':', panelX + 10, y);
-        ctx.fillStyle = COLOR_CYAN;
-        ctx.textAlign = 'right';
-        ctx.fillText(value, panelX + panelW - 10, y);
-        y += 20;
-      }
-      ctx.restore();
-    });
+      ctx.fillText(label + ':', panelX + 10, y);
+      ctx.fillStyle = classAccent;
+      ctx.textAlign = 'right';
+      ctx.fillText(value, panelX + panelW - 10, y);
+      y += lineH;
+    }
+    ctx.restore();
+  });
 
     // HP Bar
     const hpBarY = height - 64;
@@ -208,6 +201,33 @@ export class HUD {
         const label = m.active ? 'OVERMIND ACTIVE' : (m.ready ? 'OVERMIND READY (Spacebar)' : `OVERMIND ${Math.ceil((m.max - m.value)/1000)}s`);
         // Teal theme for Nomad
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#26ffe9', '#07333a', '#00b3a3', label);
+      } else if (id === 'bio_engineer' && (this.player as any).getBioOutbreakMeter) {
+        const m: any = (this.player as any).getBioOutbreakMeter();
+        const ratio = m.max > 0 ? m.value / m.max : 0;
+        const label = m.active ? 'OUTBREAK ACTIVE' : (m.ready ? 'OUTBREAK READY (Spacebar)' : `OUTBREAK ${Math.ceil((m.max - m.value)/1000)}s`);
+        // Bio/acid green theme for Bio Engineer
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#73ff00', '#143300', '#adff2f', label);
+        // Tiny biohazard icon hint to the left of the bar when active/ready
+        try {
+          const iconX = classX - 18;
+          const iconY = hpBarY + 11;
+          ctx.save();
+          ctx.globalAlpha = m.active ? 0.95 : (m.ready ? 0.75 : 0.35);
+          ctx.strokeStyle = m.active ? '#B6FF00' : '#73FF00';
+          ctx.fillStyle = m.active ? 'rgba(182,255,0,0.18)' : 'rgba(115,255,0,0.10)';
+          ctx.lineWidth = 2;
+          // Simple trefoil-like symbol using three small arcs
+          for (let i = 0; i < 3; i++) {
+            const ang = i * (Math.PI * 2 / 3);
+            ctx.beginPath();
+            ctx.arc(iconX + Math.cos(ang) * 6, iconY + Math.sin(ang) * 6, 5, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          ctx.beginPath();
+          ctx.arc(iconX, iconY, 2.6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        } catch { /* ignore */ }
       } else if (id === 'psionic_weaver' && (this.player as any).getWeaverLatticeMeter) {
         const m: any = (this.player as any).getWeaverLatticeMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
@@ -619,6 +639,48 @@ export class HUD {
     body();
   }
 
+  // --- Helper: Themed neon panel wrapper (accent by class color) ---
+  private drawPanelThemed(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, accentHex: string, body: () => void) {
+    // Convert accent to rgba variants
+    const rgb = this.hexToRgb(accentHex) || { r: 38, g: 255, b: 233 };
+    const glow = `rgba(${rgb.r},${rgb.g},${rgb.b},0.35)`;
+    const border = `rgba(${rgb.r},${rgb.g},${rgb.b},0.78)`;
+    const corner = `rgba(${rgb.r},${rgb.g},${rgb.b},0.80)`;
+    const gradA = `rgba(${rgb.r},${rgb.g},${rgb.b},0.10)`;
+    const gradB = `rgba(${rgb.r},${rgb.g},${rgb.b},0.06)`;
+    const gradC = `rgba(${rgb.r},${rgb.g},${rgb.b},0.09)`;
+    ctx.save();
+    // Outer glow
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = 'rgba(6,14,18,0.55)';
+    ctx.fillRect(x, y, w, h);
+    // Inner gradient overlay tinted by accent
+    const grad = ctx.createLinearGradient(x, y, x + w, y + h);
+    grad.addColorStop(0, gradA);
+    grad.addColorStop(0.55, gradB);
+    grad.addColorStop(1, gradC);
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, w, h);
+    // Border
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = border;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    // Corner accents
+    ctx.strokeStyle = corner;
+    const c = 18;
+    ctx.beginPath();
+    ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
+    ctx.moveTo(x + w - c, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
+    ctx.moveTo(x, y + h - c); ctx.lineTo(x, y + h); ctx.lineTo(x + c, y + h);
+    ctx.moveTo(x + w - c, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - c);
+    ctx.stroke();
+    ctx.restore();
+    // Body
+    body();
+  }
+
   // --- Helper: Glow text ---
   private drawGlowText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, fill: string, glow: string, glowSize: number) {
     ctx.save();
@@ -687,6 +749,143 @@ export class HUD {
       (this.player.defense || 0) * 0.8 +
       (this.player.speed || 0) * 3
     );
+  }
+
+  // --- Helper: Fit text to a max width by reducing font size and adding ellipsis if needed ---
+  private fitTextToWidth(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxFontPx: number, minFontPx: number): { text: string; fontSize: number } {
+    let size = Math.max(minFontPx, Math.min(maxFontPx, Math.floor(maxFontPx)));
+    // Try shrinking font until it fits or reach min size
+    for (; size >= minFontPx; size--) {
+      ctx.font = `bold ${size}px Orbitron, sans-serif`;
+      const w = ctx.measureText(text).width;
+      if (w <= maxWidth) return { text, fontSize: size };
+    }
+    // At min size and still too long: truncate with ellipsis
+    ctx.font = `bold ${minFontPx}px Orbitron, sans-serif`;
+    const ell = '…';
+    let fitted = '';
+    for (let i = 0; i < text.length; i++) {
+      const candidate = text.slice(0, i + 1) + ell;
+      if (ctx.measureText(candidate).width > maxWidth) {
+        break;
+      }
+      fitted = candidate;
+    }
+    if (!fitted) {
+      // Fallback: just show ellipsis
+      fitted = ell;
+    }
+    return { text: fitted, fontSize: minFontPx };
+  }
+
+  // --- Helper: Build simplified, class-relevant stat lines (now with extended stats) ---
+  private getSimpleClassStats(): [string, string][] {
+    const id = (this.player as any)?.characterData?.id as string | undefined;
+    const crit = Math.round(this.computeCritChance());
+    const dmg = Math.round(this.player.bulletDamage || 0);
+    const spd = (this.player.speed || 0).toFixed(2);
+    const dps = Math.max(0, Math.round(this.currentDPS || 0)).toString();
+    const hp = `${Math.floor(this.player.hp)}/${Math.floor(this.player.maxHp)}`;
+    const atk = (this.player.attackSpeed || 1).toFixed(2);
+    const intel = this.player.intelligence ?? 0;
+    const agi = this.player.agility ?? 0;
+    const def = this.player.defense ?? 0;
+    const luck = this.player.luck ?? 0;
+    const regen = `${(this.player.regen || 0).toFixed(1)}/s`;
+    const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+    const areaPct = `${Math.round((areaMul || 1) * 100)}%`;
+    const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+    const fireRateSource = (this.player as any)?.getFireRateModifier?.() ?? (this.player as any)?.fireRateModifier ?? 1;
+    const atkSpdMul = (this.player.attackSpeed || 1);
+    const fireRateMul = Math.max(0.1, atkSpdMul * (fireRateSource || 1));
+
+    // Core weapon details (class default) to show projectiles and cooldown
+    let coreProj = '-';
+    let coreCdLabel = '-';
+    try {
+      const coreType = (this.player as any)?.characterData?.defaultWeapon;
+      const spec: any = WEAPON_SPECS?.[coreType as keyof typeof WEAPON_SPECS];
+      if (spec) {
+        const lvl = (this.player as any)?.activeWeapons?.get?.(coreType) || 1;
+        let scaled: any = undefined;
+        if (typeof spec.getLevelStats === 'function') {
+          try { scaled = spec.getLevelStats(lvl); } catch {}
+        }
+        const salvo = (scaled && typeof scaled.salvo === 'number') ? scaled.salvo : (typeof spec.salvo === 'number' ? spec.salvo : undefined);
+        if (typeof salvo === 'number') coreProj = String(salvo);
+        // Prefer ms if available
+        const cdMs = (scaled && typeof scaled.cooldownMs === 'number') ? scaled.cooldownMs
+                    : (typeof spec.cooldownMs === 'number' ? spec.cooldownMs : undefined);
+        const cd = (scaled && typeof scaled.cooldown === 'number') ? scaled.cooldown
+                   : (typeof spec.cooldown === 'number' ? spec.cooldown : undefined);
+        let seconds: number | undefined = undefined;
+        if (typeof cdMs === 'number') seconds = cdMs / 1000;
+        else if (typeof cd === 'number' && cd > 0) seconds = cd / 60; // frames -> seconds (assuming 60fps)
+        if (typeof seconds === 'number') coreCdLabel = `${seconds.toFixed(2)}s`;
+      }
+    } catch {}
+
+    // Defaults for all classes
+    // Base 5 stats
+    let stats: [string, string][] = [
+      ['HP', hp],
+      ['Damage', `${dmg}`],
+      ['Speed', spd],
+      ['Crit %', `${crit}`],
+      ['DPS', dps],
+    ];
+
+    // Extended 5 stats (universal across classes)
+    const extended: [string, string][] = [
+      ['Projectiles', coreProj],
+      ['Atk Spd', `x${Number(atk).toFixed(2)}`],
+      ['Dmg Mult', `x${(dmgMul || 1).toFixed(2)}`],
+      ['Area', areaPct],
+      ['CD', coreCdLabel],
+    ];
+
+    switch (id) {
+      case 'heavy_gunner':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Atk Spd', atk], ['Defense', `${def}`], ['DPS', dps] ];
+        break;
+      case 'cyber_runner':
+        stats = [ ['HP', hp], ['Speed', spd], ['Agility', `${agi}`], ['Crit %', `${crit}`], ['DPS', dps] ];
+        break;
+      case 'bio_engineer':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Intel', `${intel}`], ['Regen', regen], ['DPS', dps] ];
+        break;
+      case 'data_sorcerer':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Intel', `${intel}`], ['Area', areaPct], ['DPS', dps] ];
+        break;
+      case 'ghost_operative':
+      case 'shadow_operative':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Crit %', `${crit}`], ['Agility', `${agi}`], ['DPS', dps] ];
+        break;
+      case 'neural_nomad':
+      case 'psionic_weaver':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Intel', `${intel}`], ['Area', areaPct], ['DPS', dps] ];
+        break;
+      case 'rogue_hacker':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Intel', `${intel}`], ['Luck', `${luck}`], ['DPS', dps] ];
+        break;
+      case 'titan_mech':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Defense', `${def}`], ['Speed', spd], ['DPS', dps] ];
+        break;
+      case 'tech_warrior':
+        stats = [ ['HP', hp], ['Damage', `${dmg}`], ['Atk Spd', atk], ['Defense', `${def}`], ['DPS', dps] ];
+        break;
+      default:
+    // keep defaults
+    break;
+    }
+  // Always append extended stats
+  return stats.concat(extended);
+  }
+
+  // --- Helper: Hex to RGB ---
+  private hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return m ? { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) } : null;
   }
 
   public drawAliveEnemiesCount(ctx: CanvasRenderingContext2D, count: number): void {

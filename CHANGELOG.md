@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+Format: Keep a Changelog style with semantic, grouped bullets. Dates are in YYYY-MM-DD.
+
+## [Unreleased]
+
+- feat(bio): Add Bio Engineer class ability “Outbreak!” — 5s duration, 15s cooldown, forces 100% poison virality within 300px (scaled by Area). Visual green ring during active window.
+- ui(hud): Add Bio Engineer Outbreak class bar (shows READY/ACTIVE/CD). 🎛️
+- fix(bio): Bio Toxin puddles now scale with weapon level and Area multiplier on both impact and expiry for consistent size and lifetime.
+- bal(bio): Bio Toxin projectiles no longer deal impact damage; they only spawn puddles on hit/expiry. DoT carries all damage.
+
+## [0.2.9] - 2025-08-24
+
+- feat(balance): Heavy Gunner Overdrive buff; Smart Rifle speed ramp made exponential.
+- feat(neural): Neural Nomad threads shared per player and prioritize psionic-marked targets; multi-target linking.
+- chore(weapon): Beam disabled for now due to stability/UX concerns.
+- fix(boss): Boss spawn cadence tied to elapsed time to ensure second boss spawns.
+- fix(visuals): Prevent background from brightening after restarts and when firing railgun; environment reset/clamps.
+- fix(qol): Rerolls reset correctly at start-of-run; return-to-menu issues addressed; main menu polish.
+- docs(gameplay): Documented that Beam is disabled in this release.
+
+---
+
+Older changes prior to 0.2.9 were informal and are not listed here.
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
 ## 0.2.0 — 2025-08-22
 
 Highlights

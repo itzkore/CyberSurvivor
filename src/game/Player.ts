@@ -101,7 +101,7 @@ export class Player {
   public classWeaponType?: WeaponType; // Cache class weapon type
   // Scavenger Scrap meter (class-specific): fills on Scrap-Saw hits
   private scrapMeter: number = 0;
-  private scrapMeterMax: number = 10;
+  private scrapMeterMax: number = 8;
   private lastScrapTriggerMs: number = 0;
   // Tech Warrior Tachyon meter (class-specific): fills on spear hits, max 5, triggers triple-spear volley
   private techMeter: number = 0;
@@ -212,6 +212,16 @@ export class Player {
   private hackerHackCdMaxMs: number = 20000;
   private hackerHackCdMs: number = 0;
   public getHackerHackMeter() { return { value: this.hackerHackCdMaxMs - this.hackerHackCdMs, max: this.hackerHackCdMaxMs, ready: this.hackerHackCdMs <= 0 }; }
+
+  // Bio Engineer: Outbreak! (Spacebar) — 15s cooldown, 5s duration; poison virality 100% in 300px
+  private bioOutbreakCdMaxMs: number = 15000;
+  private bioOutbreakCdMs: number = 0;
+  private bioOutbreakActiveMs: number = 0;
+  private bioOutbreakActive: boolean = false;
+  private bioOutbreakPrevKey: boolean = false;
+  public getBioOutbreakMeter() {
+    return { value: this.bioOutbreakActive ? this.bioOutbreakActiveMs : (this.bioOutbreakCdMaxMs - this.bioOutbreakCdMs), max: this.bioOutbreakActive ? 5000 : this.bioOutbreakCdMaxMs, ready: this.bioOutbreakCdMs <= 0 && !this.bioOutbreakActive, active: this.bioOutbreakActive };
+  }
 
   /**
    * Ghost Operative sniper charge meter. Mirrors the internal charge state used during steady aim.
@@ -458,6 +468,33 @@ export class Player {
     if (this.characterData?.id === 'rogue_hacker' && this.hackerHackCdMs > 0) {
       this.hackerHackCdMs = Math.max(0, this.hackerHackCdMs - dt);
     }
+    // Bio Engineer: Outbreak timers and input (Spacebar). 5s active, 15s cooldown.
+    if (this.characterData?.id === 'bio_engineer') {
+      if (this.bioOutbreakActive) {
+        this.bioOutbreakActiveMs += dt;
+        if (this.bioOutbreakActiveMs >= 5000) {
+          this.bioOutbreakActive = false;
+          this.bioOutbreakActiveMs = 0;
+          this.bioOutbreakCdMs = this.bioOutbreakCdMaxMs; // start cooldown when effect ends
+          try { (window as any).__bioOutbreakActiveUntil = 0; window.dispatchEvent(new CustomEvent('bioOutbreakEnd')); } catch {}
+        }
+      } else if (this.bioOutbreakCdMs > 0) {
+        this.bioOutbreakCdMs = Math.max(0, this.bioOutbreakCdMs - dt);
+      }
+      const spaceNow = !!(keyState[' '] || (keyState as any)['space'] || (keyState as any)['spacebar']);
+      if (spaceNow && !this.bioOutbreakPrevKey && this.bioOutbreakCdMs <= 0 && !this.bioOutbreakActive) {
+        this.bioOutbreakActive = true;
+        this.bioOutbreakActiveMs = 0;
+        const areaMul = this.getGlobalAreaMultiplier?.() ?? (this.globalAreaMultiplier ?? 1);
+        const radius = 300 * (areaMul || 1);
+        const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        try {
+          (window as any).__bioOutbreakActiveUntil = nowMs + 5000;
+          window.dispatchEvent(new CustomEvent('bioOutbreakStart', { detail: { x: this.x, y: this.y, radius, durationMs: 5000 } }));
+        } catch {}
+      }
+      this.bioOutbreakPrevKey = spaceNow;
+    }
     // Passive HP regeneration (applies continuously; supports fractional accumulation)
     if ((this.regen || 0) > 0 && this.hp < this.maxHp) {
       const heal = (this.regen || 0) * (dt / 1000);
@@ -495,7 +532,16 @@ export class Player {
     }
 
     // Auto-aim target
-    const target = this.findNearestEnemy();
+    let target = this.findNearestEnemy();
+    // Fallback: if no enemy is found, but a boss is active, target the boss so weapons still fire
+    if (!target) {
+      try {
+        const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
+        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+          target = boss as any;
+        }
+      } catch {}
+    }
     if (target) {
       // Face target
       this.rotation = Math.atan2(target.y - this.y, target.x - this.x);
@@ -521,10 +567,11 @@ export class Player {
       }
     }
 
-    // Fire weapons when off cooldown
-  if (target) {
-      const isRogueHacker = this.characterData?.id === 'rogue_hacker';
-      for (const [weaponType, level] of this.activeWeapons) {
+  // Fire weapons when off cooldown. Most weapons require a target; Scrap-Saw can self-swing.
+  const isRogueHacker = this.characterData?.id === 'rogue_hacker';
+  for (const [weaponType, level] of this.activeWeapons) {
+        // Quantum Halo: persistent orbs are managed by BulletManager; never fire like a normal weapon
+        if (weaponType === WeaponType.QUANTUM_HALO) continue;
         // Rogue Hacker: skip class weapon here (zones are auto-cast by EnemyManager); allow other weapons
         if (isRogueHacker && weaponType === WeaponType.HACKER_VIRUS) continue;
         if (!this.shootCooldowns.has(weaponType)) this.shootCooldowns.set(weaponType, 0);
@@ -561,23 +608,54 @@ export class Player {
           }
           if (typeof baseCdMs === 'number') { effCd = baseCdMs / rateMulWithBoost; }
           else { const effCdFrames = (baseCdFrames as number) / rateMulWithBoost; effCd = effCdFrames * FRAME_MS; }
-          // Gate: only fire if target is within base range (no extra +10%). If a weapon has no range, allow.
+          // Gate: only fire if target is within base range (no extra +10%).
+          // Scrap-Saw: ignore target requirement (can always sweep); other weapons require a target.
           let canFire = true;
-          if (spec && typeof spec.range === 'number' && spec.range > 0) {
-            const dx = target.x - this.x;
-            const dy = target.y - this.y;
-            const dist = Math.hypot(dx, dy);
-            // Consider temporary range multipliers (e.g., Heavy Gunner boost)
-            const isGunner = this.characterData?.id === 'heavy_gunner';
-            let rangeMul = 1;
-            if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
-              const t = this.getGunnerBoostT();
-              rangeMul = 1 + (this.gunnerBoostRange - 1) * t;
+          if (weaponType !== WeaponType.SCRAP_SAW) {
+            if (!(target && spec && typeof spec.range === 'number' && spec.range > 0)) {
+              canFire = !!target; // no range or no target -> require target
             }
-            const effectiveRange = spec.range * rangeMul; // no additive buffer
-            canFire = dist <= effectiveRange;
+            if (canFire && target && spec && typeof spec.range === 'number' && spec.range > 0) {
+              const dx = target.x - this.x;
+              const dy = target.y - this.y;
+              const dist = Math.hypot(dx, dy);
+              const isGunner = this.characterData?.id === 'heavy_gunner';
+              let rangeMul = 1;
+              if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
+                const t = this.getGunnerBoostT();
+                rangeMul = 1 + (this.gunnerBoostRange - 1) * t;
+              }
+              const effectiveRange = spec.range * rangeMul;
+              canFire = dist <= effectiveRange;
+            }
           }
-          if (canFire) {
+          // Determine final target for this weapon.
+          // For Scrap-Saw, always sweep even if no enemy/boss is in range: use a synthetic forward aim.
+          let fireTarget: Enemy | null = canFire ? target : null;
+          if (weaponType === WeaponType.SCRAP_SAW) {
+            if (!fireTarget) {
+              try {
+                const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
+                if (boss && boss.active && boss.hp > 0) {
+                  const dxB = boss.x - this.x; const dyB = boss.y - this.y;
+                  const distB = Math.hypot(dxB, dyB);
+                  if (spec && typeof spec.range === 'number' && distB <= spec.range) {
+                    fireTarget = boss as any;
+                  }
+                }
+              } catch {}
+            }
+            if (!fireTarget) {
+              // Synthesize a forward aim target using current movement direction (fallback to +X)
+              const vx = (this as any).vx || 1;
+              const vy = (this as any).vy || 0;
+              const norm = Math.hypot(vx, vy) || 1;
+              const ax = this.x + (vx / norm) * 100;
+              const ay = this.y + (vy / norm) * 100;
+              fireTarget = { x: ax, y: ay, hp: 1, active: true } as any; // minimal shape consumed by shootAt
+            }
+          }
+          if (fireTarget) {
             // Neural Nomad: fire to multiple nearest enemies per attack (2 at L1 → up to 5 at L7)
             if (this.characterData?.id === 'neural_nomad' && weaponType === WeaponType.NOMAD_NEURAL) {
               const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
@@ -602,13 +680,12 @@ export class Player {
               this.shootCooldowns.set(weaponType, effCd);
               continue;
             }
-            this.shootAt(target, weaponType);
+            this.shootAt(fireTarget, weaponType);
             this.shootCooldowns.set(weaponType, effCd);
           }
         }
       }
     }
-  }
 
   /**
    * Handles chest pickup event, granting rewards or upgrades to the player.
@@ -884,16 +961,18 @@ export class Player {
     } catch { maxRange = Infinity; }
     const maxRangeSq = Number.isFinite(maxRange) ? (maxRange * maxRange) : Infinity;
 
-    // Prefer boss first only if within effective range
-    try {
-      const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
-      if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-        const dxB = (boss.x ?? 0) - (this.x ?? 0);
-        const dyB = (boss.y ?? 0) - (this.y ?? 0);
-        const d2B = dxB * dxB + dyB * dyB;
-        if (d2B <= maxRangeSq) return boss as any;
-      }
-    } catch {}
+    // Prefer boss first only in 'toughest' mode and when within effective range
+    if (aimMode === 'toughest') {
+      try {
+        const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
+        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+          const dxB = (boss.x ?? 0) - (this.x ?? 0);
+          const dyB = (boss.y ?? 0) - (this.y ?? 0);
+          const d2B = dxB * dxB + dyB * dyB;
+          if (d2B <= maxRangeSq) return boss as any;
+        }
+      } catch {}
+    }
 
     const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
     let pick: Enemy | null = null;
@@ -1015,6 +1094,10 @@ export class Player {
 
         // Beam rework: single-target melting beam rendered via active-beam path
         if (weaponType === WeaponType.BEAM) {
+          if ((spec as any)?.disabled) {
+            // Beam temporarily disabled
+            return;
+          }
           this.handleBeamMelterFire(baseAngle, target, spec, weaponLevel);
           return; // handled by beam path
         }
@@ -1371,6 +1454,10 @@ export class Player {
    */
   private handleBeamMelterFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
     const game: any = this.gameContext; if (!game) return;
+  // Global post-kill lockout: prevent spawning a new melter until it expires
+  const now0 = performance.now();
+  const pkLock = (this as any)._beamKillLockUntil || 0;
+  if (now0 < pkLock) return;
     // Resolve base stats and intended DPS from spec level data
     const lvlStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
     const baseCdFrames: number = (lvlStats && typeof (lvlStats as any).cooldown === 'number') ? (lvlStats as any).cooldown : (spec?.cooldown ?? 60);
@@ -1379,7 +1466,9 @@ export class Player {
     const thickness: number = (lvlStats && typeof (lvlStats as any).thickness === 'number') ? (lvlStats as any).thickness : 16;
     const range: number = (spec?.range ?? 700);
     const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-    const dps = (baseDamage / baseCdSec) * gdm; // recover intended DPS curve
+  let dps = (baseDamage / baseCdSec) * gdm; // recover intended DPS curve
+  // Slightly stronger at level 1 for feel
+  if (weaponLevel <= 1) dps *= 1.15;
 
     // Prefer boss if active and within range
     const bossMgr: any = (window as any).__bossManager;
@@ -1390,12 +1479,12 @@ export class Player {
     let lockedTarget: any = null;
     const eyeX = this.x;
     const eyeY = this.y - 8;
+    // Choose initial target only; do not change mid-beam even if another gets closer
     if (hasBoss && distTo(eyeX, eyeY, boss.x, boss.y) <= range) {
       lockedBoss = boss;
     } else if (target && (target as any).active && distTo(eyeX, eyeY, target.x, target.y) <= range) {
       lockedTarget = target;
     } else {
-      // Fallback: attempt to find closest enemy within range
       try {
         const enemies = game.enemyManager?.getEnemies?.() || [];
         let best: any = null; let bestD = range + 1;
@@ -1412,6 +1501,20 @@ export class Player {
     const beamDurationMs = 10000; // allow long ramp; damage per tick scales up over time
     const start = performance.now();
     if (!game._activeBeams) game._activeBeams = [];
+    // If a melter beam is already active (ramping/ongoing), don't spawn a new one—preserve ramp and focus
+    {
+      const now = performance.now();
+      for (let i = 0; i < game._activeBeams.length; i++) {
+        const b = game._activeBeams[i];
+        if (b && b.type === 'melter') {
+          const alive = (now - b.start) < b.duration;
+          const notLocked = now >= (b._killLockUntil || 0);
+          if (alive && notLocked) {
+            return; // keep current melter active
+          }
+        }
+      }
+    }
     const playerRef = this;
     // Thin-at-origin visual that grows with ramp
     const beamObj: any = {
@@ -1431,7 +1534,7 @@ export class Player {
       _lastSpark: start,
       _killLockUntil: 0,
       dealDamage(now:number) {
-        // Enforce post-kill cooldown lockout (1s)
+        // Enforce post-kill cooldown lockout (2s) — note: we also end beam on kill, this is a safety guard
         if (now < this._killLockUntil) { this.lastTick = now; return; }
         // Update origin to player's current eye line so the beam follows movement
         const ox = playerRef.x; const oy = playerRef.y - 8;
@@ -1448,13 +1551,15 @@ export class Player {
           return;
         }
         const dx = tx - ox; const dy = ty - oy;
-        const dist = Math.hypot(dx, dy);
-        const clamped = Math.min(dist, this.range);
-        this.visLen = clamped;
+  const dist = Math.hypot(dx, dy);
+  const targetRadius = isBoss ? (this.lockedBoss.radius || 120) : ((this.lockedTarget.radius) || 12);
+  // Stop the beam at the target surface, never drawing through the enemy
+  const drawLen = Math.max(0, Math.min(dist - targetRadius, this.range));
+  this.visLen = drawLen;
         this.angle = Math.atan2(dy, dx);
-        // Ramping intensity: start at 20% DPS and grow to 100% over 10s
-        const t = Math.max(0, Math.min(1, (now - this.start) / this.duration));
-        const ramp = 0.2 + 0.8 * t; // 0.2 -> 1.0
+  // Ramping intensity: start very low and grow to full over 10s
+  const t = Math.max(0, Math.min(1, (now - this.start) / this.duration));
+  const ramp = 0.12 + 0.88 * t; // 0.12 -> 1.0
         // Beam gets slightly thicker as it ramps (visual only)
         this.thickness = Math.max(6, Math.round(thickness * (0.5 + 0.5 * ramp)));
         // Apply DPS scaled by elapsed time since last tick and ramp
@@ -1467,8 +1572,12 @@ export class Player {
             const preHp = this.lockedTarget.hp;
             try { game.enemyManager?.takeDamage?.(this.lockedTarget, dmg, false, false, WeaponType.BEAM, ox, oy, playerRef.activeWeapons.get(WeaponType.BEAM) || weaponLevel); } catch {}
             if (this.lockedTarget && this.lockedTarget.hp <= 0 && preHp > 0) {
-              // Apply 1s lockout after a kill
-              this._killLockUntil = now + 1000;
+              // On kill: immediately end this beam and impose a 2s global lockout before next melt
+              (playerRef as any)._beamKillLockUntil = now + 2000;
+              this._killLockUntil = now + 2000; // safety guard if not removed instantly
+              this.visLen = 0;
+              this.duration = 0; // mark for removal on next tick
+              return;
             }
           }
         }

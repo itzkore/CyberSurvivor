@@ -1,18 +1,23 @@
-# Google Sign-In (Remote Leaderboard Removed)
+# Google Sign-In (Profile + Optional Remote Leaderboard)
 
-Project supports Google Sign-In for nickname/profile only. Remote leaderboard endpoints and related service were removed; the game now uses purely local high scores (`HighScoreService`).
+Project supports Google Sign-In for nickname/profile. Remote leaderboards are optional:
+
+- No-backend mode using Upstash Redis REST (client-side; allow-listed commands). See root `README.md` for setup under “Leaderboards (Upstash Redis, no backend)”.
+- Minimal backend mode (sample Express server) for token verification and profile storage.
+
+Local high scores (`HighScoreService`) are kept as a fallback for offline or when remote config is missing.
 
 ## Components
 
 Front-end:
 
 1. `AuthService.ts` – wraps Google Identity Services (one-tap + fallback modal), nickname, token expiry refresh, backend verification.
-2. `RemoteLeaderboardService.ts` – (removed/stub) previously handled remote leaderboard.
+2. `RemoteLeaderboardService.ts` – optional integration; for Upstash mode refer to `src/lb-config.ts` and root README.
 3. `HighScoreService.ts` – local storage fallback for offline / no-backend mode.
 4. Updated UI (`MainMenu.ts`, `GameOverOverlay.ts`) shows profile, nickname modal, and high scores.
 
 Backend (sample):
-`backend/server.js` – Minimal Express server exposing only `/verify` and `/profile`.
+`backend/server.js` – Minimal Express server exposing only `/verify` and `/profile` (optional when using Upstash no-backend mode).
 
 ## Environment Variables
 
@@ -46,7 +51,7 @@ npm run dev
 
 Navigate to `http://localhost:5173`.
 
-## Score Submission Flow
+## Score Submission Flow (backend mode)
 
 1. Game over records score locally via `HighScoreService.record()`.
 2. Service verifies token freshness via `AuthService.ensureValidToken()`.

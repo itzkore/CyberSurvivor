@@ -414,11 +414,12 @@ export class UpgradePanel {
      */
     // Only allow non-class weapons and the player's own class weapon
     const playerClassWeapon = this.player.characterData?.defaultWeapon;
-    const allowedWeaponTypes: WeaponType[] = Object.keys(WEAPON_SPECS)
+  const allowedWeaponTypes: WeaponType[] = Object.keys(WEAPON_SPECS)
       .map(wt => Number(wt))
       .filter(wt => {
         const spec = WEAPON_SPECS[wt as WeaponType];
-        if (!spec) return false;
+    if (!spec) return false;
+    if (spec.disabled) return false; // hide disabled weapons
         // Allow if not a class weapon, or is the player's own class weapon
         return !spec.isClassWeapon || wt === playerClassWeapon;
       });

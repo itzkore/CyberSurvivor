@@ -37,11 +37,22 @@ export class MainMenu {
     const today = new Date().toISOString().slice(0,10);
     return [
       {
+        version: '0.2.10',
+        date: today,
+        entries: [
+          { tag: 'FIX', text: 'Quantum Halo and Industrial Grinder separated: independent logic branches with strict pooled state reset; no cross-behavior.' },
+          { tag: 'FIX', text: 'Quantum Halo now maintained exclusively by orbit system; won’t fire as a standard projectile.' },
+          { tag: 'QOL', text: 'Scrap-Saw always swings even without target; synthetic forward aim plus boss fallback.' },
+          { tag: 'FIX', text: 'Boss parity sweep: ensured poison ticks, tethers, pulses, and Psionic Wave affect boss same as enemies.' },
+          { tag: 'FIX', text: 'Pooled bullet leakage eliminated for orbit/sweep/melee; added deep reset path.' },
+          { tag: 'UI', text: 'HUD stat panel extended (Projectiles, Attack Speed, Damage Mult, Area, Cooldown) with auto-size and class theming.' }
+        ]
+      },
+      {
         version: '0.2.9',
         date: today,
         entries: [
-          { tag: 'BAL', text: 'Beam — post‑kill lockout reduced to 1s (down from 5s) to keep flow snappy.' },
-          { tag: 'FX', text: 'Beam — rim now cycles smoothly through the RGB spectrum as intensity ramps.' }
+          { tag: 'BAL', text: 'Beam — temporarily disabled while we rework behavior and visuals.' }
         ]
       },
       {
@@ -128,7 +139,7 @@ export class MainMenu {
           { tag: 'SYS', text: 'Leaderboard: time is the rank key; per‑board metadata now locks Kills/Level/Operative to the exact record run.' },
           { tag: 'UI', text: 'Highscores: “All Operatives” now shows one entry per name; consistent operative labels across all boards.' },
           { tag: 'BAL', text: 'Passive Regen now applies continuously with fractional accumulation (matches balance tests).' },
-          { tag: 'BAL', text: 'Bio Engineer — Bio Toxin DoT scales strongly with weapon level and global damage; impact damage is secondary.' },
+          { tag: 'BAL', text: 'Bio Engineer — Bio Toxin now deals no impact damage; acts as a pure puddle spawner with DoT scaling.' },
           { tag: 'OPS', text: 'Neural Nomad — Overmind Overload reworked to a single powerful detonation; per‑shot thread ownership.' },
           { tag: 'FX', text: 'Overmind hits add a brief RGB “old TV” glitch on affected enemies.' },
           { tag: 'NEW', text: 'Psionic Wave ricochet: +1 bounce per level; avoids re‑hitting the same target.' }
@@ -250,7 +261,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.9 — PATCH NOTES</div>
+            <div class="version-tag">v0.2.10 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">

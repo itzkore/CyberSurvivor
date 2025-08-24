@@ -13,15 +13,15 @@ interface Biome {
 const BIOMES: Biome[] = [
   {
     name: 'Neon Plains',
-  // Darker, cooler palette to avoid green cast while keeping a cyber tone
-  gradient: { top: '#070b12', mid: '#0a1220', bottom: '#0d1826' },
+  // Dark, neutral-cool palette. Avoid any green cast.
+  gradient: { top: '#07090f', mid: '#0a0f19', bottom: '#0c131d' },
   gridColor: '#1b233a55',
   noiseColor: '#1b2740',
   accentDots: ['#26e0ff', '#00a3ff']
   },
   {
     name: 'Data Wastes',
-  gradient: { top: '#080812', mid: '#0e0e18', bottom: '#141428' },
+  gradient: { top: '#07070f', mid: '#0d0d18', bottom: '#141427' },
   gridColor: '#20243e55',
   noiseColor: '#222a4a',
   accentDots: ['#26e0ff', '#00b3ff']
@@ -80,9 +80,12 @@ export class EnvironmentManager {
       Logger.info('[Environment] Switching biome to ' + BIOMES[this.currentBiomeIndex].name);
     }
     // Handle transition blend at start of each biome period
-    const sinceSwitch = nowMs - this.lastBiomeSwitch;
+    let sinceSwitch = nowMs - this.lastBiomeSwitch;
+    // Clamp negative deltas on fresh runs (gameTime reset) to prevent color blowouts
+    if (sinceSwitch < 0) sinceSwitch = 0;
     if (sinceSwitch < this.transitionMs) {
-      this.biomeBlend = sinceSwitch / this.transitionMs;
+      // Clamp to [0,1]
+      this.biomeBlend = Math.max(0, Math.min(1, sinceSwitch / this.transitionMs));
       this.gradientCache = undefined; // gradient shifts during blend
     } else {
       this.biomeBlend = 1;
@@ -160,7 +163,7 @@ export class EnvironmentManager {
 
   private ensureGradient(ctx: CanvasRenderingContext2D, canvasHeight: number) {
     const [a, b] = this.getBiomePair();
-    const t = this.biomeBlend;
+    const t = Math.max(0, Math.min(1, this.biomeBlend));
     const key = a.name + '|' + b.name + '|' + t.toFixed(3) + '|' + canvasHeight;
     if (this.gradientBiomeKey === key && this.gradientCache) return;
     // Blend top/mid/bottom colors
@@ -173,6 +176,23 @@ export class EnvironmentManager {
     g.addColorStop(1, bottom);
     this.gradientCache = g;
     this.gradientBiomeKey = key;
+  }
+
+  /** Reset environment state for a new run to avoid invalid blends after gameTime reset. */
+  public reset(): void {
+    this.currentBiomeIndex = 0;
+    this.nextBiomeIndex = (this.currentBiomeIndex + 1) % BIOMES.length;
+    this.biomeBlend = 1;
+    this.lastBiomeSwitch = 0;
+    this.gradientCache = undefined;
+    this.gradientBiomeKey = '';
+    this.needsPatternRedraw = true;
+    // Reset ambient so particles are rebuilt lazily on first draw
+    this.ambientInited = false;
+    this.ambientParticles.length = 0;
+    // Reset day/night brightness to neutral daytime
+    this.dayFactor = 1;
+    this.lastPhaseBucket = -1;
   }
 
   public draw(ctx: CanvasRenderingContext2D, camX: number, camY: number, canvasW: number, canvasH: number) {
@@ -191,13 +211,13 @@ export class EnvironmentManager {
         }
       }
     }
-    // Very subtle ambient bloom with neutral-blue tone; avoid green cast
+    // Subtler ambient bloom (reduced alpha, cooler neutral tone)
     if (!this.lowFX) {
-      const t = (performance.now()/4000)%1;
+      const t = (performance.now()/5000)%1;
       ctx.globalCompositeOperation = 'overlay';
-      ctx.globalAlpha = 0.015 + Math.sin(t * Math.PI*2) * 0.006;
+      ctx.globalAlpha = 0.008 + Math.sin(t * Math.PI*2) * 0.004;
       const rg = ctx.createRadialGradient(canvasW*0.55, canvasH*0.45, 60, canvasW*0.55, canvasH*0.45, canvasH*0.95);
-      rg.addColorStop(0, 'rgba(80,140,200,0.10)');
+      rg.addColorStop(0, 'rgba(70,120,180,0.09)');
       rg.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = rg;
       ctx.fillRect(0,0,canvasW,canvasH);
@@ -212,7 +232,7 @@ export class EnvironmentManager {
     this.updateAmbient(camX, camY, canvasW, canvasH);
     this.drawAmbient(ctx, camX, camY, canvasW, canvasH);
     // Persistent dark overlay: always keep scene slightly dark, with stronger darkness at "night"
-    const baseShade = 0.10; // always-on shade
+  const baseShade = 0.14; // slightly darker baseline to prevent bright backgrounds
     const dynamicDark = Math.max(0, 1 - this.dayFactor); // 0 (day) .. ~0.48 (night)
     const totalDark = Math.min(0.65, baseShade + dynamicDark * 0.45);
     ctx.fillStyle = `rgba(0,10,16,${totalDark.toFixed(3)})`;

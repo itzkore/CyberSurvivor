@@ -41,7 +41,8 @@ export class BulletManager {
     active: boolean;
     color: string;
     beadPhase: number; // for bead animation between pulses (0..1)
-    ownerId: number; // id of the spawning bullet to keep threads isolated
+  ownerId: number; // legacy: id of the spawning bullet; not used for strict isolation anymore
+  ownerPlayerId?: number; // logical owner (player instance identity)
   }> = [];
 
   constructor(assetLoader: AssetLoader, enemySpatialGrid: SpatialGrid<Enemy>, particleManager: ParticleManager, enemyManager: EnemyManager, player: Player) {
@@ -59,6 +60,60 @@ export class BulletManager {
       }) as EventListener);
     } catch { /* ignore */ }
   }
+  /**
+   * Reset a pooled bullet to a neutral state so flags from one weapon path never leak into another.
+   * This is critical for collisionless/orbit vs. melee sweep bullets sharing the same pool.
+   */
+  private resetPooledBullet(b: Bullet): void {
+    // Basic kinematics & life
+    b.vx = 0; b.vy = 0;
+    b.life = 0; b.lifeMs = undefined;
+    b.radius = b.radius || 0;
+    b.active = false;
+    // Common projectile state
+    b.pierceRemaining = undefined;
+    b.trail = undefined;
+    if (b.hitIds) b.hitIds.length = 0; else b.hitIds = [];
+    b.targetId = undefined;
+    (b as any)._spawnTime = undefined;
+    // Explosion/transient state
+    (b as any)._exploded = false;
+    (b as any)._explosionStartTime = undefined;
+    (b as any)._maxExplosionDuration = undefined;
+    // Drone/phased state
+    b.phase = undefined;
+    b.phaseStartTime = undefined;
+    b.searchCooldownMs = undefined;
+    b.altitudeScale = undefined;
+    b.targetX = undefined; b.targetY = undefined;
+    // Orbit state (Quantum Halo / Grinder)
+    b.isOrbiting = false;
+  (b as any).orbitKind = undefined; // 'HALO' | 'GRINDER' for strict separation
+    b.orbitIndex = undefined;
+    b.orbitCount = undefined;
+    b.orbitAngle = undefined;
+    b.orbitRadius = undefined;
+    b.orbitRadiusBase = undefined;
+    b.spinSpeed = undefined;
+    b.angleOffset = undefined;
+    b.lastPulseAngle = undefined;
+    b.contactCooldownMap = undefined as any;
+    // Melee sweep (Scrap-Saw) state
+    (b as any).isMeleeSweep = false;
+    (b as any).sweepStart = undefined;
+    (b as any).sweepDurationMs = undefined;
+    (b as any).baseAngle = undefined;
+    (b as any).sweepDir = undefined;
+    (b as any).arcDegrees = undefined;
+    (b as any).reach = undefined;
+    (b as any).thickness = undefined;
+    (b as any)._hitOnce = undefined;
+    (b as any).tetherCooldownMap = undefined;
+    (b as any).displayAngle = undefined;
+    // Misc
+    b.projectileImageKey = undefined;
+    // Leave projectileVisual as-is; it will be reassigned by spawners as needed
+  }
   /** Spawn a radial shrapnel burst for Scrap-Saw. Uses simple small bullets with short/medium range.
    *  Optional range/speed let callers align with the triggering explosion/sweep radius.
    */
@@ -67,7 +122,9 @@ export class BulletManager {
       const ang = (Math.PI * 2 * i) / count + Math.random() * 0.2 - 0.1;
       const tx = cx + Math.cos(ang) * 40;
       const ty = cy + Math.sin(ang) * 40;
-      const b: Bullet = this.bulletPool.pop() || { x: cx, y: cy, vx: 0, vy: 0, radius: 4, life: 0, active: false, damage, weaponType: WeaponType.SCRAP_SAW } as Bullet;
+  const bFromPool = this.bulletPool.pop();
+  const b: Bullet = bFromPool || { x: cx, y: cy, vx: 0, vy: 0, radius: 4, life: 0, active: false, damage, weaponType: WeaponType.SCRAP_SAW } as Bullet;
+  if (bFromPool) this.resetPooledBullet(b);
       b.x = cx; b.y = cy;
       const dx = tx - cx, dy = ty - cy; const d = Math.hypot(dx, dy) || 1; b.vx = (dx/d) * speed; b.vy = (dy/d) * speed;
       b.radius = 4; b.active = true; b.weaponType = WeaponType.SCRAP_SAW; b.damage = damage;
@@ -90,19 +147,16 @@ export class BulletManager {
     const spec: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO]; if (!spec) return;
     const scaled = spec.getLevelStats ? spec.getLevelStats(level) : {};
                 const needed = scaled.orbCount || 1; // Ensure we have the correct number of orbs
-    const current = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO);
+  // Only consider HALO-tagged orbit bullets; grinder uses a separate tag and branch
+  const current = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO && (b as any).orbitKind === 'HALO');
     if (current.length !== needed) {
-      // Deactivate extras
-      if (current.length > needed) {
-        let removed = 0; 
-        for (let i = 0; i < current.length && removed < current.length - needed; i++) { 
-          current[i].active = false; 
-          removed++; 
-        }
-      } else {
-        // Spawn missing
-        for (let i = current.length; i < needed; i++) {
-          const b: Bullet = this.bulletPool.pop() || { 
+      // If we are short, rebuild clean to avoid partial states during unlocks
+      if (current.length < needed) {
+        // Deactivate all existing HALO orbs and recreate the full set
+        for (let i = 0; i < current.length; i++) { current[i].active = false; }
+        for (let i = 0; i < needed; i++) {
+          const bFromPool = this.bulletPool.pop();
+          const b: Bullet = bFromPool || { 
             x: player.x, 
             y: player.y, 
             vx: 0, 
@@ -113,6 +167,8 @@ export class BulletManager {
             damage: scaled.damage || 22, 
             weaponType: WeaponType.QUANTUM_HALO 
           } as Bullet;
+          // Ensure clean state if reused from pool
+          if (bFromPool) this.resetPooledBullet(b);
           b.x = player.x; 
           b.y = player.y; 
           b.vx = 0; 
@@ -121,6 +177,7 @@ export class BulletManager {
           b.weaponType = WeaponType.QUANTUM_HALO; 
           b.active = true; 
           b.isOrbiting = true; 
+      (b as any).orbitKind = 'HALO';
           (b as any).level = level;
           b.orbitIndex = i; 
           b.orbitCount = needed; 
@@ -132,9 +189,16 @@ export class BulletManager {
           b.contactCooldownMap = {};
           this.bullets.push(b);
         }
+      } else {
+        // Deactivate extras
+        let removed = 0; 
+        for (let i = 0; i < current.length && removed < current.length - needed; i++) { 
+          current[i].active = false; 
+          removed++; 
+        }
       }
       // Reassign indices & offsets to all halo bullets for even distribution
-      const halos = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO);
+    const halos = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO && (b as any).orbitKind === 'HALO');
       halos.sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
       for (let i = 0; i < halos.length; i++) { 
         const hb = halos[i]; 
@@ -231,68 +295,53 @@ export class BulletManager {
         continue;
       }
 
-      // Quantum Halo / Grinder orbit handling: position bound to player each frame; no standard movement or life decay
-      if (b.isOrbiting && (b.weaponType === WeaponType.QUANTUM_HALO || b.weaponType === WeaponType.INDUSTRIAL_GRINDER)) {
-  const spec: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO];
-  const isGrinder = b.weaponType === WeaponType.INDUSTRIAL_GRINDER;
-  const grinderSpec: any = isGrinder ? (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER] : null;
-  const level = (b as any).level || 1;
-  const scaled = isGrinder ? (grinderSpec?.getLevelStats ? grinderSpec.getLevelStats(level) : {}) : (spec?.getLevelStats ? spec.getLevelStats(level) : {});
-  const playerRef = this.player;
-  // Unified clockwise rotation (canvas Y axis down -> positive angle is clockwise on screen)
-  const spinBase = isGrinder ? 4.2 : (b.spinSpeed || scaled.spinSpeed || 1);
-  const spin = spinBase * (deltaTime/1000);
-  b.orbitAngle = (b.orbitAngle || (b.angleOffset||0)) + spin;
-        // Expire grinder after duration
-        if (isGrinder) {
-          const nowT = performance.now();
-          if ((b as any).endTime && nowT >= (b as any).endTime) { b.active = false; this.bulletPool.push(b); continue; }
-        }
-        // Wrap angle and detect full rotation for pulse
+      // Quantum Halo orbit handling: isolated branch
+      if (b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO) {
+        const specHalo: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO];
+        const level = (b as any).level || 1;
+        const scaled = specHalo?.getLevelStats ? specHalo.getLevelStats(level) : {};
+        const playerRef = this.player;
+        const spinBase = (b.spinSpeed || scaled.spinSpeed || 1);
+        const spin = spinBase * (deltaTime/1000);
+        b.orbitAngle = (b.orbitAngle || (b.angleOffset||0)) + spin;
         if (b.orbitAngle > Math.PI*2) {
           b.orbitAngle -= Math.PI*2;
-          // Pulse only once per full ring (index 0 triggers)
-          if (!isGrinder && b.orbitIndex === 0 && scaled.pulseDamage > 0) {
+          if (b.orbitIndex === 0 && scaled.pulseDamage > 0) {
             window.dispatchEvent(new CustomEvent('quantumHaloPulse', { detail: { x: playerRef.x, y: playerRef.y, damage: scaled.pulseDamage, radius: scaled.orbitRadius + 40 } }));
           }
         }
-  const radius = (isGrinder ? (scaled.orbitRadius || 140) : (scaled.orbitRadius || 90)); // uniform radius (no breathing)
-  const angleTotal = b.orbitAngle; // already includes offset
-  b.x = playerRef.x + Math.cos(angleTotal) * radius;
-  b.y = playerRef.y + Math.sin(angleTotal) * radius;
-  // Fixed size (no shimmer)
-  const sizeBase = isGrinder ? 14 : (spec?.projectileVisual?.size || 12);
-  b.radius = sizeBase;
-  // Dynamic hue (assign to projectileVisual for render gradient)
-  const hue = (performance.now()*0.05 + (b.orbitIndex||0)*70) % 360;
-  if (!b.projectileVisual) b.projectileVisual = { type:'plasma', size: b.radius } as any;
-  (b.projectileVisual as any)._dynamicHue = hue;
-  // Trail disabled for Quantum Halo (no accumulation)
-        b.lifeMs = isGrinder ? Math.max(1, (((b as any).endTime||0) - performance.now())) : 9999999; // keep alive or finite
-        // Collision pass (contact damage with per-enemy cooldown)
-  // Query small area (precise hit window)
-  const potential = this.enemySpatialGrid.query(b.x, b.y, Math.max(28, b.radius + 8));
+        const radius = (scaled.orbitRadius || 90);
+        const angleTotal = b.orbitAngle;
+        b.x = playerRef.x + Math.cos(angleTotal) * radius;
+        b.y = playerRef.y + Math.sin(angleTotal) * radius;
+        b.radius = (specHalo?.projectileVisual?.size || 12);
+        // Dynamic hue for halo
+        const hue = (performance.now()*0.05 + (b.orbitIndex||0)*70) % 360;
+        if (!b.projectileVisual) b.projectileVisual = { type:'plasma', size: b.radius } as any;
+        (b.projectileVisual as any)._dynamicHue = hue;
+        b.lifeMs = 9999999; // persistent
+        // Contact damage with per-enemy cooldown
+        const potential = this.enemySpatialGrid.query(b.x, b.y, Math.max(28, b.radius + 8));
         if (!b.contactCooldownMap) b.contactCooldownMap = {};
         const nowT = performance.now();
         for (let ei=0; ei<potential.length; ei++){
           const e = potential[ei]; if (!e.active || e.hp<=0) continue;
-          const dxE = e.x - b.x; const dyE = e.y - b.y; const rs = (e.radius||16) + (b.radius*0.55); // smaller effective area
+          const dxE = e.x - b.x; const dyE = e.y - b.y; const rs = (e.radius||16) + (b.radius*0.55);
           if (dxE*dxE + dyE*dyE <= rs*rs){
             const eid = (e as any).id || (e as any)._gid || 'e'+ei;
             const nextOk = b.contactCooldownMap[eid] || 0;
             if (nowT >= nextOk){
               const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.10); }
               const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
-              const baseDmg = isGrinder ? ((grinderSpec?.getLevelStats ? grinderSpec.getLevelStats(level).damage : (b.damage||20))) : (b.damage||scaled.damage||20);
+              const baseDmg = (b.damage||scaled.damage||20);
               const dmgBase = baseDmg * (isCrit?critMult:1);
-              // Apply damage; EnemyManager will derive knockback from weapon spec
               this.enemyManager.takeDamage(e, dmgBase, isCrit, false, b.weaponType, b.x, b.y, level);
-              b.contactCooldownMap[eid] = nowT + (isGrinder ? 160 : 1000); // grinder multi-ticks fast; halo 1s per-enemy
+              b.contactCooldownMap[eid] = nowT + 1000; // halo: 1s per-enemy
               if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#7DFFEA');
             }
           }
         }
-        // Boss contact: explicit check (boss not in enemy spatial grid). Uses same cooldown as enemies, with key 'boss'.
+        // Boss contact
         {
           const bossMgr: any = (window as any).__bossManager;
           const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
@@ -305,7 +354,7 @@ export class BulletManager {
               if (nowT >= nextOkB) {
                 const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.10); }
                 const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
-                const baseDmg = isGrinder ? ((grinderSpec?.getLevelStats ? grinderSpec.getLevelStats(level).damage : (b.damage||20))) : (b.damage||scaled.damage||20);
+                const baseDmg = (b.damage||scaled.damage||20);
                 const dmgBase = baseDmg * (isCrit?critMult:1);
                 if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
                   (this.enemyManager as any).takeBossDamage(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level);
@@ -313,22 +362,94 @@ export class BulletManager {
                   boss.hp -= dmgBase;
                   window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage: dmgBase, crit: isCrit, x: b.x, y: b.y } }));
                 }
-                b.contactCooldownMap[key] = nowT + (isGrinder ? 160 : 1000);
+                b.contactCooldownMap[key] = nowT + 1000;
                 if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#7DFFEA');
               }
             }
           }
         }
         activeBullets.push(b);
-        continue; // skip generic processing
+        continue;
+      }
+
+      // Industrial Grinder orbit handling: isolated branch
+      if (b.isOrbiting && b.weaponType === WeaponType.INDUSTRIAL_GRINDER) {
+        const specGrind: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];
+        const level = (b as any).level || 1;
+        const scaled = specGrind?.getLevelStats ? specGrind.getLevelStats(level) : {};
+        const playerRef = this.player;
+        const spin = 4.2 * (deltaTime/1000);
+        b.orbitAngle = (b.orbitAngle || 0) + spin;
+        // Expire grinder after duration
+        const nowT = performance.now();
+        if ((b as any).endTime && nowT >= (b as any).endTime) { b.active = false; this.bulletPool.push(b); continue; }
+        const radius = (scaled.orbitRadius || 140);
+        b.x = playerRef.x + Math.cos(b.orbitAngle) * radius;
+        b.y = playerRef.y + Math.sin(b.orbitAngle) * radius;
+        b.radius = 14;
+        if (!b.projectileVisual) b.projectileVisual = { type:'bullet', sprite: 'bullet_grinder', size: b.radius } as any;
+        b.lifeMs = Math.max(1, (((b as any).endTime||0) - nowT));
+        // Contact damage with faster per-enemy cooldown
+        const potential = this.enemySpatialGrid.query(b.x, b.y, Math.max(28, b.radius + 8));
+        if (!b.contactCooldownMap) b.contactCooldownMap = {};
+        for (let ei=0; ei<potential.length; ei++){
+          const e = potential[ei]; if (!e.active || e.hp<=0) continue;
+          const dxE = e.x - b.x; const dyE = e.y - b.y; const rs = (e.radius||16) + (b.radius*0.55);
+          if (dxE*dxE + dyE*dyE <= rs*rs){
+            const eid = (e as any).id || (e as any)._gid || 'e'+ei;
+            const nextOk = b.contactCooldownMap[eid] || 0;
+            if (nowT >= nextOk){
+              const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.10); }
+              const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
+              const baseDmg = (specGrind?.getLevelStats ? specGrind.getLevelStats(level).damage : (b.damage||20));
+              const dmgBase = baseDmg * (isCrit?critMult:1);
+              this.enemyManager.takeDamage(e, dmgBase, isCrit, false, b.weaponType, b.x, b.y, level);
+              b.contactCooldownMap[eid] = nowT + 160; // grinder: ~6 ticks/sec per target
+              if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#7DFFEA');
+            }
+          }
+        }
+        // Boss contact for grinder
+        {
+          const bossMgr: any = (window as any).__bossManager;
+          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+            const dxB = boss.x - b.x; const dyB = boss.y - b.y;
+            const rsB = (boss.radius || 160) + (b.radius * 0.55);
+            if (dxB*dxB + dyB*dyB <= rsB*rsB) {
+              const key = 'boss';
+              const nextOkB = b.contactCooldownMap[key] || 0;
+              if (nowT >= nextOkB) {
+                const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.10); }
+                const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
+                const baseDmg = (specGrind?.getLevelStats ? specGrind.getLevelStats(level).damage : (b.damage||20));
+                const dmgBase = baseDmg * (isCrit?critMult:1);
+                if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
+                  (this.enemyManager as any).takeBossDamage(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level);
+                } else {
+                  boss.hp -= dmgBase;
+                  window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage: dmgBase, crit: isCrit, x: b.x, y: b.y } }));
+                }
+                b.contactCooldownMap[key] = nowT + 160;
+                if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#7DFFEA');
+              }
+            }
+          }
+        }
+        activeBullets.push(b);
+        continue;
       }
 
   // Melee sweep (Scrap-Saw): ring-arc hitbox at blade distance + tether contact (half damage)
   if ((b as any).isMeleeSweep && b.weaponType === WeaponType.SCRAP_SAW) {
-        const pl = this.player;
-        const start = (b as any).sweepStart || performance.now();
-        const dur = (b as any).sweepDurationMs || 200;
-        const t = Math.min(1, (performance.now() - start) / dur);
+  const pl = this.player;
+  const start = (b as any).sweepStart || performance.now();
+  // Slightly slower and smoother sweep: apply a modest slowdown and easing
+  const baseDur = (b as any).sweepDurationMs || 200;
+  const dur = Math.max(120, Math.floor(baseDur * 1.15)); // +15% duration for smoother motion
+  const tRaw = Math.min(1, (performance.now() - start) / dur);
+  // Ease-in-out (sine) for smoother arc
+  const t = 0.5 - 0.5 * Math.cos(Math.PI * tRaw);
         const arcRad = ((b as any).arcDegrees || 140) * Math.PI / 180;
         // Sweep from -arc/2 to +arc/2 relative to facing
         const baseAng = (b as any).baseAngle != null ? (b as any).baseAngle : Math.atan2(pl.vy || 0.0001, pl.vx || 1);
@@ -344,9 +465,11 @@ export class BulletManager {
         b.y = pl.y + Math.sin(centerAng) * reach;
         // Collision: query nearby and sector test
         const potential = this.enemySpatialGrid.query(pl.x, pl.y, reach + 40);
-        const nowT = performance.now();
+  const nowT = performance.now();
         // One-hit-per-enemy per sweep: shared set for blade+tether
         if (!(b as any)._hitOnce) (b as any)._hitOnce = Object.create(null);
+  // Ensure contact cooldown map exists (used for boss continuous contact)
+  if (!(b as any).contactCooldownMap) (b as any).contactCooldownMap = Object.create(null);
         const halfArc = arcRad/2;
         for (let i2=0;i2<potential.length;i2++){
           const e = potential[i2]; if (!e.active || e.hp<=0) continue;
@@ -373,10 +496,12 @@ export class BulletManager {
             if (triggered) {
               // Reworked Scrap ability: big explosion around player and heal 5 HP
               const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-              const radius2 = Math.max(200, Math.round(reach2 * 1.5));
-              const dmgRef = b.damage || 20;
+              const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+              // Scale explosion damage off current blade damage and player's global damage multiplier
+              const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
+              const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
               try {
-                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmgRef*1.0), radius: radius2, color: '#FFAA33' } }));
+                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } }));
               } catch {}
               // Heal player by 5 HP (clamped to max)
               (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
@@ -396,22 +521,81 @@ export class BulletManager {
             // Skip if already hit by this sweep
             if ((b as any)._hitOnce[eid]) continue;
             const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-            const base = (b.damage||32) * 0.5; // 50% damage on tether contact
+            // Buff tether contribution to 65% of blade damage
+            const base = (b.damage||32) * 0.65; // 65% damage on tether contact
             const dmg = base * (isCrit ? critMult : 1);
             this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
             (b as any)._hitOnce[eid] = 1; // mark as hit for this sweep
             const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
             if (triggered) {
               const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-              const radius2 = Math.max(200, Math.round(reach2 * 1.5));
-              const dmgRef = b.damage || 20;
+              const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+              const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
+              const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
               try {
-                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: Math.round(dmgRef*1.0), radius: radius2, color: '#FFAA33' } }));
+                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } }));
               } catch {}
               (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
             }
           }
         }
+        // Boss parity: allow Scrap-Saw to hit boss via blade arc and tether, once per sweep
+        try {
+          const bossMgr: any = (window as any).__bossManager;
+          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+            const dxB = boss.x - pl.x; const dyB = boss.y - pl.y;
+            const distB = Math.hypot(dxB, dyB);
+            let angB = Math.atan2(dyB, dxB) - baseAng; angB = (angB + Math.PI) % (Math.PI*2) - Math.PI;
+            const withinAngleB = Math.abs(angB - curOffset) <= halfArc * angleBandScale;
+            const withinRingB = Math.abs(distB - reach) <= (bladeThickness + (boss.radius||160));
+            const bossKey = 'boss';
+            const nextOk = (b as any).contactCooldownMap[bossKey] || 0;
+            const bossCooldownMs = 120; // slightly faster multi-tick vs boss during a sweep
+            if (withinAngleB && withinRingB && nowT >= nextOk) {
+              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
+              const dmg = (b.damage||32) * (isCrit ? critMult : 1);
+              if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
+              (b as any).contactCooldownMap[bossKey] = nowT + bossCooldownMs;
+              const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+              if (triggered) {
+                const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+                const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+                const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
+                const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
+                try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
+                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
+              }
+            }
+            // Tether vs boss (half damage)
+            {
+              const x1 = pl.x, y1 = pl.y, x2 = b.x, y2 = b.y;
+              const vx = x2 - x1, vy = y2 - y1; const segLen2 = vx*vx + vy*vy || 1;
+              const tSeg = Math.max(0, Math.min(1, ((boss.x - x1)*vx + (boss.y - y1)*vy) / segLen2));
+              const cx = x1 + vx * tSeg, cy = y1 + vy * tSeg;
+              const dSeg = Math.hypot(boss.x - cx, boss.y - cy);
+              const tetherWidth = 10;
+              const nextOk2 = (b as any).contactCooldownMap[bossKey] || 0;
+              const bossCooldownMs2 = 120;
+              if (dSeg <= tetherWidth + (boss.radius||160) && nowT >= nextOk2) {
+                const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
+                // Boss tether damage follows same 65% scaling
+                const base = (b.damage||32) * 0.65; const dmg = base * (isCrit ? critMult : 1);
+                if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
+                (b as any).contactCooldownMap[bossKey] = nowT + bossCooldownMs2;
+                const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+                if (triggered) {
+                  const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+                  const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+                  const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
+                  const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
+                  try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
+                  (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
+                }
+              }
+            }
+          }
+        } catch { /* ignore boss checks */ }
         // End sweep
         if (t >= 1) {
           // End sweep; no extra shrapnel burst on completion in rework
@@ -928,7 +1112,7 @@ export class BulletManager {
   let hitEnemy: Enemy | null = null;
   let intersectionPoint: { x: number, y: number } | null = null;
 
-      // Use spatial grid to find potential enemies near the bullet
+  // Use spatial grid to find potential enemies near the bullet
   // Query potential enemies near the bullet's current position
   const potentialEnemies = this.enemySpatialGrid.query(b.x, b.y, b.radius);
   for (const enemy of potentialEnemies) {
@@ -970,7 +1154,7 @@ export class BulletManager {
           }
         }
 
-        if (intersectionPoint) {
+  if (intersectionPoint) {
           // Prevent double-hit on same enemy in a single frame (swept path could overlap)
           const enemyId = (enemy as any).id || (enemy as any)._gid || undefined;
           if (enemyId && b.hitIds && b.hitIds.indexOf(enemyId) !== -1) {
@@ -991,9 +1175,12 @@ export class BulletManager {
             }
             const critMult = p?.critMultiplier ?? 2.0;
             const isCritical = Math.random() < critChance;
-            const damage = isCritical ? b.damage * critMult : b.damage;
-            this.enemyManager.takeDamage(enemy, damage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
-            if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
+            // Bio Toxin: no direct impact damage; act as a zero-damage puddle spawner only
+            if (b.weaponType !== WeaponType.BIO_TOXIN) {
+              const damage = isCritical ? b.damage * critMult : b.damage;
+              this.enemyManager.takeDamage(enemy, damage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
+              if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
+            }
             // Virus: spawn a paralysis/DoT zone at impact point, except for Rogue Hacker (auto-casts zones separately)
             if (b.weaponType === WeaponType.HACKER_VIRUS) {
               const isRogue = (this.player as any)?.characterData?.id === 'rogue_hacker';
@@ -1003,27 +1190,58 @@ export class BulletManager {
                 } catch {}
               }
             }
-            // Neural Threader: on impact, anchor enemy into a thread polyline (pierces through until anchor limit)
+            // Neural Threader: only anchor the directly hit enemy if it currently has a debuff; no auto-append
             if (b.weaponType === WeaponType.NOMAD_NEURAL) {
               try {
-                const spec: any = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
-                const stats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : { anchors: 2, threadLifeMs: 3000, pulseIntervalMs: 500, pulsePct: 0.6 };
-                // Find existing active thread for recent hits to append, else create a new one
-                let thread = this.neuralThreads.find(t => t.active && (t.expireAt - performance.now()) > 0 && t.ownerId === (b as any)._id);
                 const now = performance.now();
-                const overmindUntil = (window as any).__overmindActiveUntil || 0;
-                const color = '#26ffe9';
-                if (!thread) {
-                  thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 3000), nextPulseAt: now + (stats.pulseIntervalMs || 500), pulseMs: (stats.pulseIntervalMs || 500), baseDamage: b.damage || 20, pulsePct: (stats.pulsePct || 0.6), maxAnchors: (stats.anchors || 2), active: true, color, beadPhase: 0, ownerId: (b as any)._id };
-                  this.neuralThreads.push(thread);
+                const anyHit: any = enemy as any;
+                // Apply a short primer debuff DoT on direct hit so first hit can seed a debuff state
+                this.enemyManager.applyNeuralDebuff(enemy);
+                const debuffed = (anyHit._poisonStacks && anyHit._poisonStacks > 0)
+                  || (anyHit._burnStacks && anyHit._burnStacks > 0)
+                  || ((anyHit._psionicMarkUntil || 0) > now)
+                  || ((anyHit._paralyzedUntil || 0) > now)
+                  || ((anyHit._armorShredExpire || 0) > now)
+                  || ((anyHit._rgbGlitchUntil || 0) > now)
+                  || ((anyHit._neuralDebuffUntil || 0) > now);
+                if (!debuffed) {
+                  // Do not start or extend a thread if the enemy has no debuff
+                  // Leave pierce as-is so bullet can find a valid, debuffed target next
+                } else {
+                  const spec: any = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
+                  const stats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : { anchors: 2, threadLifeMs: 3000, pulseIntervalMs: 500, pulsePct: 0.6 };
+                  const overmindUntil = (window as any).__overmindActiveUntil || 0;
+                  const capacityBonus = (overmindUntil > now ? 1 : 0);
+                  const maxAnchors = (stats.anchors || 2);
+                  // Find nearest existing thread belonging to this player with capacity
+                  let nearest: any = null; let bestD2 = Infinity;
+                  for (let iT = 0; iT < this.neuralThreads.length; iT++) {
+                    const t = this.neuralThreads[iT];
+                    if (!t.active) continue;
+                    if (t.expireAt <= now) continue;
+                    if (t.ownerPlayerId != null && t.ownerPlayerId !== (this.player as any)._instanceId) continue;
+                    const cap = t.maxAnchors + capacityBonus;
+                    if (t.anchors.length >= cap) continue;
+                    const last = t.anchors.length > 0 ? t.anchors[t.anchors.length - 1] : null;
+                    const lx = last ? last.x : enemy.x; const ly = last ? last.y : enemy.y;
+                    const dxT = enemy.x - lx; const dyT = enemy.y - ly; const d2 = dxT*dxT + dyT*dyT;
+                    if (d2 < bestD2) { bestD2 = d2; nearest = t; }
+                  }
+                  let thread = nearest;
+                  if (!thread) {
+                    // Create a new thread only when we have a valid debuffed hit to anchor
+                    const color = '#26ffe9';
+                    const ownerPid = (this.player as any)._instanceId ?? 1;
+                    thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 3000), nextPulseAt: now + (stats.pulseIntervalMs || 500), pulseMs: (stats.pulseIntervalMs || 500), baseDamage: b.damage || 20, pulsePct: (stats.pulsePct || 0.6), maxAnchors: maxAnchors, active: true, color, beadPhase: 0, ownerId: (b as any)._id, ownerPlayerId: ownerPid };
+                    this.neuralThreads.push(thread);
+                  }
+                  if (thread.anchors.indexOf(enemy) === -1) {
+                    thread.anchors.push(enemy);
+                  }
+                  // Maintain pierce budget only while we can still add anchors
+                  const hasRoom = thread.anchors.length < (thread.maxAnchors + capacityBonus);
+                  if (hasRoom) b.pierceRemaining = 999; else b.pierceRemaining = 0;
                 }
-                // Append if not already in anchors
-                if (thread.anchors.indexOf(enemy) === -1) {
-                  thread.anchors.push(enemy);
-                }
-                // Maintain pierce budget: consume but keep bullet alive while we can add anchors
-                const hasRoom = thread.anchors.length < thread.maxAnchors + (overmindUntil > now ? 1 : 0);
-                b.pierceRemaining = hasRoom ? 999 : 0; // bypass normal pierce while capacity remains
               } catch { /* ignore */ }
             }
             // Psionic Wave: apply brief psionic mark (slow + bonus damage window) to hit enemy only
@@ -1124,8 +1342,20 @@ export class BulletManager {
                 try {
                   const lvl = (b as any).level || 1;
                   const baseR = 28, baseMs = 2600;
-                  const radius = baseR + (lvl - 1) * 3;
-                  const lifeMs = baseMs + (lvl - 1) * 200;
+                  // Prefer precomputed puddle params, else derive now
+                  let radius: number = (b as any).puddleRadius;
+                  let lifeMs: number = (b as any).puddleLifeMs;
+                  if (radius == null) {
+                    radius = baseR + (lvl - 1) * 3;
+                    // Apply global area multiplier if available
+                    try {
+                      const mul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+                      radius *= (mul || 1);
+                    } catch { /* ignore */ }
+                  }
+                  if (lifeMs == null) {
+                    lifeMs = baseMs + (lvl - 1) * 200;
+                  }
                   this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs);
                 } catch {}
               }
@@ -1146,6 +1376,65 @@ export class BulletManager {
               }
               break;
             }
+          }
+        }
+      }
+
+      // Boss collision parity for PSIONIC_WAVE: swept segment vs boss circle, apply mark and damage
+      if (b.weaponType === WeaponType.PSIONIC_WAVE && (!hitEnemy)) {
+        const bossMgr: any = (window as any).__bossManager;
+        const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+          const thickness = Math.max(8, (((b.projectileVisual as any)?.thickness) || 12));
+          const effR = (boss.radius || 160) + thickness * 0.5;
+          const pt = this.lineCircleIntersect(prevX, prevY, b.x, b.y, boss.x, boss.y, effR);
+          if (pt) {
+            // Prevent repeated hits on boss by reusing hitIds with a special key
+            const bossKey = 'boss';
+            if (b.hitIds && b.hitIds.indexOf(bossKey) !== -1) {
+              // Already hit boss with this projectile; skip
+            } else {
+              if (b.hitIds) b.hitIds.push(bossKey);
+            const p: any = this.player;
+            let critChance = 0.15;
+            if (p) {
+              const agi = p.agility || 0; const luck = p.luck || 0;
+              const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+              const bonus = p.critBonus ? p.critBonus * 100 : 0;
+              critChance = Math.min(100, basePct + bonus) / 100;
+            }
+            const critMult = p?.critMultiplier ?? 2.0;
+            const isCritical = Math.random() < critChance;
+            const damage = isCritical ? b.damage * critMult : b.damage;
+            if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
+              (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, (b as any).level ?? 1);
+            } else {
+              boss.hp -= damage;
+              window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
+            }
+            // Apply psionic mark to boss (slow + bonus window)
+            const bAny: any = boss as any;
+            const nowMs = performance.now();
+            bAny._psionicMarkUntil = Math.max(bAny._psionicMarkUntil || 0, nowMs + 1400);
+              // Consume a bounce if available, mirroring enemy handling
+              if ((b as any).bouncesRemaining && (b as any).bouncesRemaining > 0) {
+                (b as any).bouncesRemaining -= 1;
+              }
+            }
+          }
+        }
+      }
+
+      // NOMAD_NEURAL: boss direct hit should apply primer debuff so tethers can link to boss later
+      if (b.weaponType === WeaponType.NOMAD_NEURAL && b.active && (!hitEnemy)) {
+        const bossMgr: any = (window as any).__bossManager;
+        const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+          const dxB = boss.x - b.x; const dyB = boss.y - b.y; const rsB = (boss.radius || 160) + (b.radius * 0.55);
+          if (dxB*dxB + dyB*dyB <= rsB*rsB) {
+            // Apply debuff primer to boss
+            try { (this.enemyManager as any).applyBossNeuralDebuff?.(boss); } catch { /* ignore */ }
+            // Allow damage application as usual (already handled above in generic collision when it happens)
           }
         }
       }
@@ -1224,8 +1513,13 @@ export class BulletManager {
         try {
           const lvl = (b as any).level || 1;
           const baseR = 28, baseMs = 2600;
-          const radius = baseR + (lvl - 1) * 3;
-          const lifeMs = baseMs + (lvl - 1) * 200;
+          let radius: number = (b as any).puddleRadius;
+          let lifeMs: number = (b as any).puddleLifeMs;
+          if (radius == null) {
+            radius = baseR + (lvl - 1) * 3;
+            try { const mul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1); radius *= (mul || 1); } catch { /* ignore */ }
+          }
+          if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 200;
           this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs);
         } catch { this.enemyManager.spawnPoisonPuddle(b.x, b.y); }
         b.active = false; // Mark as inactive to be returned to pool
@@ -1622,14 +1916,25 @@ export class BulletManager {
         const last = t.anchors[t.anchors.length - 1];
         const sx = last.x, sy = last.y;
         const candidates = this.enemySpatialGrid.query(sx, sy, 240);
-        let best: Enemy | null = null; let bestD2 = Infinity;
+        // Pass 1: prefer psionic-marked enemies
+        let added = false;
         for (let ci = 0; ci < candidates.length; ci++) {
           const e = candidates[ci]; if (!e.active || e.hp <= 0) continue;
           if (t.anchors.indexOf(e) !== -1) continue;
-          const dx = e.x - sx, dy = e.y - sy; const d2 = dx*dx + dy*dy;
-          if (d2 < bestD2) { best = e; bestD2 = d2; }
+          const anyE: any = e as any; if ((anyE._psionicMarkUntil || 0) <= now) continue;
+          t.anchors.push(e); added = true; break;
         }
-        if (best) t.anchors.push(best);
+        // Pass 2: fallback to nearest if none marked
+        if (!added) {
+          let best: Enemy | null = null; let bestD2 = Infinity;
+          for (let ci = 0; ci < candidates.length; ci++) {
+            const e = candidates[ci]; if (!e.active || e.hp <= 0) continue;
+            if (t.anchors.indexOf(e) !== -1) continue;
+            const dx = e.x - sx, dy = e.y - sy; const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { best = e; bestD2 = d2; }
+          }
+          if (best) t.anchors.push(best);
+        }
       }
       // Pulse damage on cadence
       if (now >= t.nextPulseAt) {
@@ -1637,14 +1942,20 @@ export class BulletManager {
         // Damage anchors
         const perPulse = Math.max(1, Math.round(t.baseDamage * t.pulsePct));
         for (let ai = 0; ai < t.anchors.length; ai++) {
-          const e = t.anchors[ai]; if (!e.active || e.hp <= 0) continue;
-          this.enemyManager.takeDamage(e, perPulse, false, false, WeaponType.NOMAD_NEURAL);
-          if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#26ffe9');
+          const e: any = t.anchors[ai]; if (!e || !e.active || e.hp <= 0) continue;
+          if ((e as any).isBoss) {
+            // Boss anchor: route via boss damage path
+            (this.enemyManager as any).takeBossDamage?.(e, perPulse, false, WeaponType.NOMAD_NEURAL, e.x, e.y);
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#26ffe9');
+          } else {
+            this.enemyManager.takeDamage(e, perPulse, false, false, WeaponType.NOMAD_NEURAL);
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#26ffe9');
+          }
         }
         // Light arc zap to enemies near each segment for readability/aoe feel
         for (let ai = 0; ai < t.anchors.length - 1; ai++) {
-          const a = t.anchors[ai], b = t.anchors[ai+1];
-          const mx = (a.x + b.x) * 0.5, my = (a.y + b.y) * 0.5;
+          const a: any = t.anchors[ai], bA: any = t.anchors[ai+1];
+          const mx = (a.x + bA.x) * 0.5, my = (a.y + bA.y) * 0.5;
           const near = this.enemySpatialGrid.query(mx, my, 80);
           for (let ni = 0; ni < near.length; ni++) {
             const e = near[ni]; if (!e.active || e.hp <= 0) continue;
@@ -1729,9 +2040,14 @@ export class BulletManager {
         const burst = Math.max(1, Math.round(t.baseDamage * t.pulsePct * 5.0 * (multiplier || 1))); // doubled overall
         // Damage anchors heavily
         for (let ai = 0; ai < t.anchors.length; ai++) {
-          const e = t.anchors[ai]; if (!e.active || e.hp <= 0) continue;
-          this.enemyManager.takeDamage(e, burst, false, false, WeaponType.NOMAD_NEURAL);
-          if (this.particleManager) this.particleManager.spawn(e.x, e.y, 2, '#9ffcf6');
+          const e: any = t.anchors[ai]; if (!e || !e.active || e.hp <= 0) continue;
+          if ((e as any).isBoss) {
+            (this.enemyManager as any).takeBossDamage?.(e, burst, false, WeaponType.NOMAD_NEURAL, e.x, e.y);
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 2, '#9ffcf6');
+          } else {
+            this.enemyManager.takeDamage(e, burst, false, false, WeaponType.NOMAD_NEURAL);
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 2, '#9ffcf6');
+          }
           // Flag RGB glitch effect
           const anyE: any = e as any; anyE._rgbGlitchUntil = Math.max(anyE._rgbGlitchUntil||0, performance.now() + 220); anyE._rgbGlitchPhase = (anyE._rgbGlitchPhase||0) + 1;
         }
@@ -1801,7 +2117,8 @@ export class BulletManager {
   // Clone visual spec per spawn to avoid mutating shared objects (prevents red tint leaking to later shots)
   let projectileVisual = spec?.projectileVisual ? { ...(spec.projectileVisual as any) } : { type: 'bullet', color: '#0ff', size: 6 };
 
-    let b: Bullet | undefined = this.bulletPool.pop(); // Try to get from pool
+  let b: Bullet | undefined = this.bulletPool.pop(); // Try to get from pool
+  if (b) this.resetPooledBullet(b);
 
     if (!b) {
       // If pool is empty, create a new one (should be rare if initialPoolSize is sufficient)
@@ -1824,7 +2141,7 @@ export class BulletManager {
   (b as any)._isVolley = undefined;
   (b as any).volleySpeedBoost = undefined;
   b.lifeMs = undefined as any; // will be recalculated in update
-    b.radius = projectileVisual.size ?? 6; // Ensure radius matches the new visual size
+  b.radius = projectileVisual.size ?? 6; // Ensure radius matches the new visual size
     // Derive life from weapon range if available: life (frames) = range / speed.
     // Clamp to avoid extremely long-lived projectiles; fallback to 60 if insufficient data.
     let appliedDamage = spec?.damage ?? damage;
@@ -1851,6 +2168,11 @@ export class BulletManager {
       if ((scaled as any).explosionRadius != null) {
         (b as any).explosionRadius = (scaled as any).explosionRadius;
       }
+    }
+
+    // Slight pellet radius bump for Shotgun to reduce near-miss feel on clustered targets
+    if (weapon === WeaponType.SHOTGUN) {
+      b.radius = Math.max(b.radius || 0, 9);
     }
 
     // Range & lifetime derivation (gentler compression of very large ranges)
@@ -2001,6 +2323,20 @@ export class BulletManager {
         }
       } catch { /* ignore */ }
     }
+  // Bio Toxin: precompute puddle radius and lifetime based on level and area multiplier, and force no-impact behavior
+    if (weapon === WeaponType.BIO_TOXIN) {
+      try {
+        const lvl = level || (b as any).level || 1;
+        const baseR = 28, baseMs = 2600;
+        const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+        (b as any).level = lvl;
+        (b as any).puddleRadius = (baseR + (lvl - 1) * 3) * (areaMul || 1);
+        (b as any).puddleLifeMs = baseMs + (lvl - 1) * 200;
+    // Ensure Bio Toxin projectiles never deal direct impact damage nor pierce
+    b.damage = 0;
+    b.pierceRemaining = 0;
+      } catch { /* ignore */ }
+    }
     // Psionic Wave: during Weaver Lattice, emit symmetric faint secondary waves to form a fuller weave pattern
   if (weapon === WeaponType.PSIONIC_WAVE && !this.suppressWeaverSecondary) {
       try {
@@ -2135,7 +2471,7 @@ export class BulletManager {
       b.radius = Math.max(b.radius || 6, (vis.thickness || 4) * 0.75);
     }
     // Melee: Scrap-Saw sweep spawns a transient sweep bullet bound to player
-    if (weapon === WeaponType.SCRAP_SAW) {
+  if (weapon === WeaponType.SCRAP_SAW) {
       const spec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
       const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {};
       (b as any).isMeleeSweep = true;
@@ -2144,8 +2480,12 @@ export class BulletManager {
   // Reset per-swing contact cooldowns so each sweep can hit a target at most once
   b.contactCooldownMap = Object.create(null);
   (b as any).tetherCooldownMap = Object.create(null);
-      (b as any).arcDegrees = scaled.arcDegrees || 140;
-      (b as any).reach = spec.range || 120;
+  // Reset per-sweep hit memo to avoid carrying hits from previous pooled bullets
+  (b as any)._hitOnce = Object.create(null);
+  (b as any).arcDegrees = scaled.arcDegrees || 140;
+  // Apply level-scaled reach/thickness when present
+  (b as any).reach = (scaled as any).reachPx || spec.range || 120;
+  (b as any).thickness = (scaled as any).thicknessPx || undefined;
       (b as any).baseAngle = Math.atan2(targetY - y, targetX - x);
       (b as any).level = level;
       (b as any).sweepDir = (((this as any)._lastScrapDir = -(((this as any)._lastScrapDir)||-1))) as number; // alternate -1/1
@@ -2156,7 +2496,7 @@ export class BulletManager {
     if (weapon === WeaponType.INDUSTRIAL_GRINDER) {
       const spec: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];
       const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {};
-      b.isOrbiting = true; (b as any).level = level; b.orbitIndex = 0; b.orbitCount = 1; b.orbitAngle = Math.random()*Math.PI*2; b.spinSpeed = 4.2;
+  b.isOrbiting = true; (b as any).orbitKind = 'GRINDER'; (b as any).level = level; b.orbitIndex = 0; b.orbitCount = 1; b.orbitAngle = Math.random()*Math.PI*2; b.spinSpeed = 4.2;
       (b as any).endTime = performance.now() + (scaled.durationMs || 1200);
       b.contactCooldownMap = {};
       // Position initially at radius

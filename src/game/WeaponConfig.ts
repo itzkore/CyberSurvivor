@@ -61,6 +61,8 @@ export interface WeaponSpec {
   description?: string; // Added description property
   /** Short actionable tips shown in UI */
   usageTips?: string[];
+  /** If true, this weapon is temporarily disabled and should not be offered or fired. */
+  disabled?: boolean;
   cooldown: number; // frames between shots (fallback if cooldownMs not provided)
   /** Optional cooldown expressed in milliseconds. If provided, takes precedence over frame-based cooldown. */
   cooldownMs?: number;
@@ -383,6 +385,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   [WeaponType.BEAM]: {
     id: WeaponType.BEAM,
     name: 'Beam',
+  disabled: true,
   description: 'Sustained lance that carves through lines. Short uptime, huge authority.',
   icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
     cooldown: 50,
@@ -681,16 +684,16 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   },
   [WeaponType.SHADOW_DAGGER]: { id: WeaponType.SHADOW_DAGGER, name: 'Shadow Dagger', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 18, salvo: 1, spread: 0, projectile: 'dagger_purple', speed: 12.6, range: 420, maxLevel: 7, damage: 18, projectileVisual: { type: 'ricochet', color: '#800080', size: 7, glowColor: '#800080', glowRadius: 8 }, traits: ['Ricochet','Critical','Scaling'], isClassWeapon: true, knockback: 20, getLevelStats(level:number){ const baseDamage=18, baseCooldown=18, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   // Shadow Daggers excel at chaining crits through clustered targets.
-  [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 7, damage: 44, projectileVisual: { type: 'slime', color: '#00FF00', size: 9, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison','Area','Scaling'], usageTips: [
+  [WeaponType.BIO_TOXIN]: { id: WeaponType.BIO_TOXIN, name: 'Bio Toxin', icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'), cooldown: 88, salvo: 1, spread: 0, projectile: 'toxin_green', speed: 3.5, range: 260, maxLevel: 7, damage: 0, projectileVisual: { type: 'slime', color: '#00FF00', size: 9, glowColor: '#00FF00', glowRadius: 10 }, traits: ['Poison','Area','Scaling'], usageTips: [
     'Lob into clumps—pools linger and tick multiple enemies.',
     'Upgrade cadence to chain zones; funnel mobs through the slime.',
     'Pair with slows or pulls to keep enemies bathing in damage.'
   ], isClassWeapon: true, getLevelStats(level:number){
-    const baseDamage=44, baseCooldown=88, dmgMult=7.5;
-    const dmg=Math.round(baseDamage*(1+(level-1)*(dmgMult-1)/6));
+    const baseCooldown=88;
     // Faster fire rate with level: cooldown reduces up to ~40% by level 7
     const cd=Math.max(36, Math.round(baseCooldown*(1-(level-1)*0.40/6)));
-    return {damage:dmg, cooldown:cd};
+    // Impact damage intentionally 0; puddles and poison ticks carry the damage model
+    return {damage:0, cooldown:cd};
   } },
   [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: '/assets/ui/icons/upgrade_speed.png', cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 7, damage: 32, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP','Disrupt','Pierces','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=32, baseCooldown=32, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   // Virus bolts silence abilities briefly—great for shutting down dangerous elites.
@@ -823,14 +826,20 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     evolution: { evolvedWeaponType: WeaponType.INDUSTRIAL_GRINDER, requiredPassive: 'Magnet' },
     getLevelStats(level: number){
       const idx = Math.min(Math.max(level,1),7)-1;
-      const dmg = [32,46,64,88,118,150,185][idx];
-  // Bigger cooldown progression in ms; longer sweep duration for a slower, smoother arc
-  const cdMs  = [930,900,870,840,810,780,750][idx];
-  const arc = [120,130,140,150,160,160,160][idx];
-  const dur = [280,300,320,340,360,380,400][idx];
+  // Buffed base damage across levels (~+20%)
+  const dmg = [38,55,77,106,142,180,225][idx];
+  // Slightly faster cadence (~-10% cooldown)
+  const cdMs  = [840,810,780,750,720,690,660][idx];
+      // Arc grows by level and reaches full 360° at max level
+      const arc = [140,180,220,260,300,330,360][idx];
+      const dur = [280,300,320,340,360,380,420][idx];
       const knock= [60,64,68,72,76,80,84][idx];
       const shards=[6,6,7,8,8,9,10][idx];
-  return { damage: dmg, cooldownMs: cdMs, arcDegrees: arc, sweepDurationMs: dur, knockback: knock, shrapnelCount: shards } as any;
+      // Reach (ring radius from the player) scales modestly with level for bigger coverage
+      const reachPx = [140,150,160,170,180,190,200][idx];
+      // Blade thickness also grows slightly so ring-arc feels meatier late
+      const thicknessPx = [22,24,26,28,30,32,36][idx];
+      return { damage: dmg, cooldownMs: cdMs, arcDegrees: arc, sweepDurationMs: dur, knockback: knock, shrapnelCount: shards, reachPx, thicknessPx } as any;
     }
   },
   /** Evolution: timed 360° grinder with stronger knockback and DoT-like multi-hit */

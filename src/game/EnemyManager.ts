@@ -75,6 +75,8 @@ export class EnemyManager {
   private readonly knockbackMaxVelocity: number = 4200; // clamp to avoid extreme stacking
   private readonly knockbackStackScale: number = 0.55; // scaling when stacking onto existing velocity
   private readonly knockbackMinPerFrame: number = 4; // legacy per-frame minimum (converted to px/sec later)
+  // Minimal knockback used for Bio Engineer poison DoT ticks to avoid pushing enemies around
+  private readonly knockbackBioTickPerFrame: number = 0.2;
   // LOD
   private lodToggle: boolean = false; // flip each update to stagger LOD skips
   private readonly lodFarDistSq: number = 1600*1600; // >1600px from player qualifies as far
@@ -96,6 +98,10 @@ export class EnemyManager {
 
   // Poison puddle system
   private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean }[] = [];
+  // Bio Engineer Outbreak! state
+  private bioOutbreakUntil: number = 0;
+  private bioOutbreakRadius: number = 0;
+  private bioOutbreakLastTickMs: number = 0;
   // Poison (Bio Engineer) status: stacking DoT with movement slow and contagion
   private readonly poisonTickIntervalMs: number = 500; // damage application cadence
   private readonly poisonDurationMs: number = 4000; // duration refreshed per stack add
@@ -153,6 +159,19 @@ export class EnemyManager {
       this.spawnChest(customEvent.detail.x, customEvent.detail.y);
     });
     window.addEventListener('bossGemVacuum', () => this.vacuumGemsToPlayer());
+    // Listen for Bio Engineer Outbreak events (force contagion radius around player)
+    window.addEventListener('bioOutbreakStart', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      this.bioOutbreakUntil = nowMs + (d.durationMs || 5000);
+      this.bioOutbreakRadius = d.radius || 300;
+      this.bioOutbreakLastTickMs = 0;
+    });
+    window.addEventListener('bioOutbreakEnd', () => {
+      this.bioOutbreakUntil = 0;
+      this.bioOutbreakRadius = 0;
+      this.bioOutbreakLastTickMs = 0;
+    });
     // Ghost Operative cloak: lock enemies to the player's position at start until cloak ends
     window.addEventListener('ghostCloakStart', (e: Event) => {
       try {
@@ -273,6 +292,21 @@ export class EnemyManager {
             anyE._shakeAmp = Math.max(anyE._shakeAmp||0, 1.2); anyE._shakeUntil = now + 90; if (!anyE._shakePhase) anyE._shakePhase = Math.random()*10;
           }
         }
+        // Boss parity: Data Sigil pulses also damage the boss if within radius
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+          if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+            const dxB = boss.x - s.x; const dyB = boss.y - s.y;
+            // Quick AABB cull before circle check
+            if (!(dxB > r || dxB < -r || dyB > r || dyB < -r)) {
+              if (dxB*dxB + dyB*dyB <= r2) {
+                this.takeBossDamage(boss, s.pulseDamage * gdm, false, WeaponType.DATA_SIGIL, s.x, s.y);
+                const bAny: any = boss as any; bAny._poisonFlashUntil = now + 80; // reuse flash channel; draw tints by lastHit
+              }
+            }
+          }
+        } catch { /* ignore */ }
   // Emit golden sparks on pulse
   try { this.particleManager?.spawn(s.x, s.y, 10, '#FFE066', { sizeMin: 1, sizeMax: 2.5, lifeMs: 360, speedMin: 1.2, speedMax: 2.6 }); } catch {}
       }
@@ -424,6 +458,19 @@ export class EnemyManager {
   return this.activeEnemies;
   }
 
+  /** Apply a short Neural Threader primer debuff (light DoT) to enable tether linking on subsequent hits. */
+  public applyNeuralDebuff(enemy: Enemy) {
+    if (!enemy || !enemy.active || enemy.hp <= 0) return;
+    const now = performance.now();
+    const eAny: any = enemy as any;
+    // Duration ~2s, 3 ticks at 500ms cadence
+    const lvl = (() => { try { return (this.player as any)?.activeWeapons?.get(WeaponType.NOMAD_NEURAL) || 1; } catch { return 1; } })();
+    const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+    const perTick = Math.max(2, Math.round((6 + lvl * 4) * gdm));
+    eAny._neuralDebuffUntil = now + 2000;
+    eAny._neuralDot = { next: now + 500, left: 3, dmg: perTick };
+  }
+
   public getGems() {
     return this.gems.filter(g => g.active);
   }
@@ -461,10 +508,7 @@ export class EnemyManager {
     }
     if (sourceWeaponType !== undefined) {
       enemy._lastHitByWeapon = sourceWeaponType;
-      // Apply extra poison stacks on Bio Toxin direct hits to bias damage into DoT
-      if (sourceWeaponType === WeaponType.BIO_TOXIN && amount > 0) {
-        this.applyPoison(enemy, 2);
-      }
+  // Bio Toxin no longer applies direct impact damage; stacks are applied via puddles/outbreak only
       // Apply armor shred on Scrap-Saw hits: short 0.6s window
       if (sourceWeaponType === WeaponType.SCRAP_SAW && amount > 0) {
         const now = performance.now();
@@ -481,6 +525,7 @@ export class EnemyManager {
       if (spec) {
         // Choose knockback origin per weapon type
         const isBeam = sourceWeaponType === WeaponType.BEAM;
+        const isBioTick = sourceWeaponType === WeaponType.BIO_TOXIN; // DoT ticks only; direct impact is zeroed elsewhere
         let sx: number; let sy: number;
         if (isBeam) {
           // Continuous beams originate at the player for stable, radial push
@@ -494,7 +539,10 @@ export class EnemyManager {
         }
         // spec.knockback historically represented px per 60fps frame
         let perFrame = spec.knockback ?? this.knockbackMinPerFrame;
-        if (!isBeam) {
+        if (isBioTick) {
+          // Bio DoT: force a tiny knockback, ignore min clamp and level scaling
+          perFrame = this.knockbackBioTickPerFrame;
+        } else if (!isBeam) {
           // Preserve legacy minimum and level scaling for impulse-based weapons
           if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
           if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25; // simple linear scaling
@@ -512,9 +560,9 @@ export class EnemyManager {
         const nx = dx * invDist;
         const ny = dy * invDist;
         // Mass attenuation (bigger radius -> more mass -> less acceleration)
-        const massScale = 24 / Math.max(8, enemy.radius);
-        // Strongly dampen beams to avoid runaway stacking between frames
-        const beamDampen = isBeam ? 0.12 : 0.3;
+  const massScale = 24 / Math.max(8, enemy.radius);
+  // Strongly dampen beams to avoid runaway stacking; apply extra damping for Bio ticks
+  const beamDampen = isBeam ? 0.12 : (isBioTick ? 0.08 : 0.3);
         let impulse = baseForcePerSec * massScale * beamDampen;
         // Radial-only stacking: project any existing knockback onto radial axis, discard sideways component
         let existingRadial = 0;
@@ -555,7 +603,7 @@ export class EnemyManager {
     boss.hp -= amount;
     boss._damageFlash = Math.max(10, (boss._damageFlash || 0));
     // Side-effects based on source weapon (limited for boss to avoid runaway)
-    if (sourceWeaponType !== undefined) {
+  if (sourceWeaponType !== undefined) {
       bAny._lastHitByWeapon = sourceWeaponType;
       // Apply short shred on Scrap-Saw
       if (sourceWeaponType === WeaponType.SCRAP_SAW && amount > 0) {
@@ -576,6 +624,44 @@ export class EnemyManager {
         const now = performance.now();
         bAny._rgbGlitchUntil = now + 260;
         bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
+      }
+      // --- Boss knockback parity (minimal on Bio poison ticks) ---
+      const spec = WEAPON_SPECS[sourceWeaponType];
+      if (spec) {
+        const isBeam = sourceWeaponType === WeaponType.BEAM;
+        const isBioTick = sourceWeaponType === WeaponType.BIO_TOXIN;
+        // choose origin
+        let sx: number; let sy: number;
+        if (isBeam) { sx = this.player.x; sy = this.player.y; }
+        else if (typeof sourceX === 'number' && typeof sourceY === 'number') { sx = sourceX; sy = sourceY; }
+        else { sx = this.player.x; sy = this.player.y; }
+        // per-frame knockback
+        let perFrame = spec.knockback ?? this.knockbackMinPerFrame;
+        if (isBioTick) {
+          perFrame = this.knockbackBioTickPerFrame;
+        } else if (!isBeam) {
+          if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
+          if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25;
+        } else {
+          if (perFrame < 0) perFrame = 0;
+        }
+        const baseForcePerSec = perFrame * 60;
+        let dx = boss.x - sx, dy = boss.y - sy; let dist = Math.hypot(dx, dy); if (dist < 0.0001){ dx=1; dy=0; dist=1; }
+        const nx = dx/dist, ny = dy/dist;
+        const massScale = 24 / Math.max(12, (boss.radius || 48));
+        const dampen = isBeam ? 0.12 : (isBioTick ? 0.08 : 0.3);
+        let impulse = baseForcePerSec * massScale * dampen;
+        let existingRadial = 0;
+        if (bAny.knockbackTimer && bAny.knockbackTimer > 0 && (bAny.knockbackVx || bAny.knockbackVy)) {
+          existingRadial = (bAny.knockbackVx || 0) * nx + (bAny.knockbackVy || 0) * ny;
+          if (existingRadial < 0) existingRadial = 0;
+        }
+        const added = impulse * (existingRadial > 0 ? this.knockbackStackScale : 1);
+        let newMag = existingRadial + added;
+        if (newMag > this.knockbackMaxVelocity) newMag = this.knockbackMaxVelocity;
+        bAny.knockbackVx = nx * newMag; bAny.knockbackVy = ny * newMag;
+        const bonus = Math.min(180, (impulse / 2200) * 90);
+        bAny.knockbackTimer = Math.max(bAny.knockbackTimer || 0, this.knockbackBaseMs + bonus);
       }
     }
     // Emit particle + DPS event
@@ -611,6 +697,8 @@ export class EnemyManager {
       const dps = this.poisonDpsPerStack * levelMul * dmgMul * stacks;
       const perTick = dps * (this.poisonTickIntervalMs / 1000);
       this.takeBossDamage(boss, perTick, false, WeaponType.BIO_TOXIN, boss.x, boss.y);
+  // Progressive toxicity on boss: each tick adds +1 stack (up to cap)
+  this.applyBossPoison(boss, 1);
       // Visual: reuse green flash channel
       b._poisonFlashUntil = now + 120;
     }
@@ -642,6 +730,18 @@ export class EnemyManager {
         this.takeBossDamage(boss, b._burnTickDamage, false, WeaponType.LASER, boss.x, boss.y);
       }
     }
+  }
+
+  /** Apply Neural Threader primer debuff to the boss (short DoT + debuff window). */
+  public applyBossNeuralDebuff(boss: any) {
+    if (!boss || !boss.active || boss.hp <= 0) return;
+    const now = performance.now();
+    const bAny: any = boss as any;
+    const lvl = (() => { try { return (this.player as any)?.activeWeapons?.get(WeaponType.NOMAD_NEURAL) || 1; } catch { return 1; } })();
+    const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+    const perTick = Math.max(2, Math.round((6 + lvl * 4) * gdm));
+    bAny._neuralDebuffUntil = now + 2000;
+    bAny._neuralDot = { next: now + 500, left: 3, dmg: perTick };
   }
 
   /** Apply or refresh poison on an enemy, increasing stacks up to cap and refreshing expiration. */
@@ -680,12 +780,39 @@ export class EnemyManager {
       const dps = perStackBase * levelMul * dmgMul * stacks;
           const perTick = dps * (this.poisonTickIntervalMs / 1000);
           this.takeDamage(e as Enemy, perTick, false, false, WeaponType.BIO_TOXIN);
+          // Progressive toxicity: each tick increases stacks by +1 (up to cap)
+          this.applyPoison(e as Enemy, 1);
           // Visual feedback: brief green flash + micro-shake
           e._poisonFlashUntil = now + 120;
           if (!e._shakePhase) e._shakePhase = Math.random() * 10;
           e._shakeAmp = Math.min(2.2, 0.12 * stacks + 0.6);
           e._shakeUntil = now + 120;
         }
+      }
+    }
+    // Outbreak contagion: once per poison tick interval, grant +1 poison stack to all enemies within radius of player
+    if (this.bioOutbreakUntil > now && this.bioOutbreakRadius > 0) {
+      if (now - (this.bioOutbreakLastTickMs || 0) >= this.poisonTickIntervalMs) {
+        this.bioOutbreakLastTickMs = now;
+        const px = this.player.x, py = this.player.y;
+        const r2 = this.bioOutbreakRadius * this.bioOutbreakRadius;
+        for (let j = 0; j < this.activeEnemies.length; j++) {
+          const o = this.activeEnemies[j];
+          if (!o.active || o.hp <= 0) continue;
+          const dx = o.x - px, dy = o.y - py;
+          if (dx*dx + dy*dy <= r2) {
+            this.applyPoison(o, 1);
+          }
+        }
+        // Affect boss too if within radius
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+          if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+            const dxB = boss.x - px, dyB = boss.y - py;
+            if (dxB*dxB + dyB*dyB <= r2) this.applyBossPoison(boss, 1);
+          }
+        } catch { /* ignore */ }
       }
     }
   }
@@ -763,11 +890,34 @@ export class EnemyManager {
         const dy = enemy.y - puddle.y;
         const dist = Math.hypot(dx, dy);
         if (dist < puddle.radius + enemy.radius) {
-      // Emphasize stacking over flat damage: no direct damage, apply stacks
-      this.applyPoison(enemy, 1);
+          // Seed poison if not present; otherwise, refresh duration while standing in the puddle
+          const eAny: any = enemy as any;
+          if (!eAny._poisonStacks || eAny._poisonStacks <= 0) {
+            this.applyPoison(enemy, 1);
+          } else {
+            eAny._poisonExpire = performance.now() + this.poisonDurationMs;
+          }
           didDamage = true; // Still track if damage was dealt for visual feedback
         }
       }
+      // Boss can also be affected by puddles
+      try {
+        const bm: any = (window as any).__bossManager;
+        const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+          const dxB = boss.x - puddle.x; const dyB = boss.y - puddle.y;
+          const rBoss = (boss.radius || 160);
+          if (dxB*dxB + dyB*dyB <= (puddle.radius + rBoss) * (puddle.radius + rBoss)) {
+            const bAny: any = boss as any;
+            if (!bAny._poisonStacks || bAny._poisonStacks <= 0) {
+              this.applyBossPoison(boss, 1);
+            } else {
+              bAny._poisonExpire = performance.now() + this.poisonDurationMs;
+            }
+            didDamage = true;
+          }
+        }
+      } catch { /* ignore */ }
       // Visual feedback if puddle is damaging
       if (didDamage && this.particleManager) {
         this.particleManager.spawn(puddle.x, puddle.y, 1, '#00FF00');
@@ -804,6 +954,81 @@ export class EnemyManager {
   // Psionic Weaver Lattice: draw a large pulsing slow zone around the player while active (behind enemies)
   try {
     const until = (window as any).__weaverLatticeActiveUntil || 0;
+  // Bio Outbreak visual: radioactive biohazard styling (layered glow ring + hazard stripes + trefoil arcs + floating spores)
+  try {
+    const now2 = performance.now();
+    if (this.bioOutbreakUntil > now2 && this.bioOutbreakRadius > 0) {
+      const px = this.player.x, py = this.player.y;
+      if (!(px < minX - 400 || px > maxX + 400 || py < minY - 400 || py > maxY + 400)) {
+        const pulse = 1 + Math.sin(now2 * 0.009) * 0.06;
+        const r = this.bioOutbreakRadius * pulse;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        // Outer neon glow ring (toxic green -> yellow)
+        ctx.globalAlpha = 0.22;
+        ctx.shadowColor = '#8CFF3B';
+        ctx.shadowBlur = 24;
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#B6FF00';
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Hazard stripe ring: alternating arc dashes around the circle
+        ctx.shadowBlur = 0;
+        const segs = 24; // keep small for perf
+        const baseA = (now2 * 0.002) % (Math.PI * 2);
+        for (let s = 0; s < segs; s++) {
+          // Alternate bright lime and yellow-green
+          const on = (s & 1) === 0;
+          ctx.strokeStyle = on ? '#73FF00' : '#ADFF2F';
+          ctx.globalAlpha = on ? 0.26 : 0.16;
+          ctx.lineWidth = on ? 3 : 2;
+          const a0 = baseA + (s / segs) * Math.PI * 2;
+          const a1 = a0 + (Math.PI * 2) / segs * 0.66; // leave gaps
+          ctx.beginPath();
+          ctx.arc(px, py, r * 0.98, a0, a1);
+          ctx.stroke();
+        }
+
+        // Trefoil biohazard arcs rotating slowly
+        const triRInner = r * 0.46;
+        const triROuter = r * 0.76;
+        const triW = 5;
+        const triBase = now2 * 0.0015; // slow rotation
+        ctx.lineWidth = triW;
+        ctx.shadowBlur = 14;
+        ctx.shadowColor = '#73FF00';
+        for (let k = 0; k < 3; k++) {
+          const ang = triBase + k * (Math.PI * 2 / 3);
+          const a0 = ang - 0.85;
+          const a1 = ang + 0.85;
+          ctx.globalAlpha = 0.20;
+          ctx.strokeStyle = '#66FF66';
+          ctx.beginPath();
+          ctx.arc(px, py, (triRInner + triROuter) * 0.5, a0, a1);
+          ctx.stroke();
+        }
+
+        // Floating spores along the ring (tiny glowing motes drifting clockwise)
+        ctx.shadowBlur = 10;
+        const moteCount = 14;
+        const motSpeed = 0.0007; // radians/ms
+        for (let m = 0; m < moteCount; m++) {
+          const ang = baseA + now2 * motSpeed + (m * (Math.PI * 2 / moteCount));
+          const rr = r * (0.97 + ((m & 1) ? -0.015 : 0.015));
+          const mx = px + Math.cos(ang) * rr;
+          const my = py + Math.sin(ang) * rr;
+          ctx.globalAlpha = 0.22 + 0.10 * ((m & 1) ^ 1);
+          ctx.fillStyle = (m % 3 === 0) ? '#C8FF00' : '#66FF88';
+          ctx.beginPath();
+          ctx.arc(mx, my, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+  } catch {}
     if (until > now) {
       const px = this.player.x, py = this.player.y;
       // Cull if fully off-screen
@@ -1721,6 +1946,28 @@ export class EnemyManager {
       }
     }
 
+    // Neural Threader primer DoT ticking (enables tether linking via debuff presence)
+    {
+      const now = nowFrame;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e: any = this.activeEnemies[i] as any;
+        const ndot = e._neuralDot as { next: number; left: number; dmg: number } | undefined;
+        if (!ndot || e.hp <= 0) continue;
+        let guard = 4;
+        while (ndot.left > 0 && now >= ndot.next && guard-- > 0) {
+          ndot.left--;
+          ndot.next += 500;
+          this.takeDamage(e as Enemy, ndot.dmg, false, false, WeaponType.NOMAD_NEURAL);
+          // teal flash channel reuse
+          e._rgbGlitchUntil = now + 200;
+          e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
+        }
+        if (ndot.left <= 0 || (e._neuralDebuffUntil || 0) < now) {
+          e._neuralDot = undefined;
+        }
+      }
+    }
+
     // Void Sniper DoT ticking (applied by Shadow Operative beam): 3 ticks over 3s by default
     {
   const now = nowFrame;
@@ -1752,6 +1999,20 @@ export class EnemyManager {
     // Tick generic boss DoTs (poison/burn) similar to enemies
     this.updateBossPoisons(now, boss);
     this.updateBossBurn(now, boss);
+          // Neural Threader primer DoT on boss
+          const ndot = bAny._neuralDot as { next: number; left: number; dmg: number } | undefined;
+          if (ndot) {
+            let guard = 4;
+            while (ndot.left > 0 && now >= ndot.next && guard-- > 0) {
+              ndot.left--;
+              ndot.next += 500;
+              this.takeBossDamage(boss, ndot.dmg, false, WeaponType.NOMAD_NEURAL, boss.x, boss.y);
+              bAny._rgbGlitchUntil = now + 200; bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
+            }
+            if (ndot.left <= 0 || (bAny._neuralDebuffUntil || 0) < now) {
+              bAny._neuralDot = undefined;
+            }
+          }
         // Hacker DoT on boss: nextTick/ticksLeft/perTick at 500ms cadence
         const hdot = bAny._hackerDot as { nextTick: number; ticksLeft: number; perTick: number } | undefined;
         if (hdot && hdot.ticksLeft > 0) {

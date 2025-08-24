@@ -1,5 +1,7 @@
 # Leaderboards (Upstash Redis, no backend)
 
+> See CHANGELOG: Refer to `CHANGELOG.md` for recent gameplay and system updates.
+
 Integrované online žebříčky přímo ve hře (bez vlastního backendu) využívající Upstash Redis REST. **Pozor:** token je v klientu, proto *není 100% bezpečné* – používej **allow‑list příkazů** a **rate‑limit** v Upstash.
 
 ## Nastavení
@@ -72,6 +74,15 @@ Před produkcí nastav env proměnné v hostingu (např. Vercel / Render). Nepub
 - [x] Rate-limit řešen přes Upstash (nutno nastavit v UI)
 
 Poznámka: Historicky existoval duplikovaný root `index.html` pro Electron vs. dev server. Konsolidováno do jednoho (`src/index.html`) aby se předešlo driftu a přehlédnutým změnám.
+
+## Gameplay Updates (0.2.9+)
+
+- Bio Engineer: New class ability “Outbreak!” (Spacebar) — 5s duration, 15s cooldown; forces 100% poison virality within 300px (Area-scaled). HUD bar and in-world ring included.
+- Bio Toxin: Puddle radius and lifetime now scale with weapon level and Area, both on impact and on expiry.
+	- Note: Bio Toxin projectiles now deal no impact damage; they only spawn puddles (DoT handles damage).
+- Neural Nomad: Threads shared per player; prioritizes psionic-marked targets.
+- Heavy Gunner + Smart Rifle: Overdrive buff and exponential speed ramp.
+- Beam Weapon: Disabled for now.
 
 ### Rotace tokenu
 

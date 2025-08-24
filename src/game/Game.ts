@@ -189,6 +189,8 @@ export class Game {
 
     // Initialize player and managers in correct dependency order
     this.player = new Player(this.worldW / 2, this.worldH / 2);
+  // Ensure player has a stable instance id for scoping shared effects
+  try { if ((this.player as any)._instanceId == null) { (this.player as any)._instanceId = Math.floor(Math.random()*1e9); } } catch {}
     // Scale base radius by character scale (Tech Warrior +25%, others 1.0)
     try {
       const scale = (this.player as any).getCharacterScale ? (this.player as any).getCharacterScale() : 1.0;
@@ -549,6 +551,7 @@ export class Game {
     }
     // Ensure we always pass a character dataset when available; prevents Player constructor fallback warnings
     this.player = new Player(this.worldW / 2, this.worldH / 2, selectedCharacterData || this.player?.characterData);
+  try { if ((this.player as any)._instanceId == null) { (this.player as any)._instanceId = Math.floor(Math.random()*1e9); } } catch {}
     try {
       const scale = (this.player as any).getCharacterScale ? (this.player as any).getCharacterScale() : 1.0;
       this.player.radius = Math.round(18 * scale);
@@ -606,6 +609,10 @@ export class Game {
   // Clear flag so cinematic completion will trigger offering
   this.initialUpgradeOffered = false;
   this.pendingInitialUpgrade = true; // arm for post-cinematic/gameplay
+  // Notify UI systems (e.g., UpgradePanel) that a fresh run has started so they can reset session counters like rerolls
+  try { window.dispatchEvent(new CustomEvent('startGame')); } catch {}
+  // Reset environment visual state to avoid oversaturated gradients on second run
+  try { this.environment?.reset?.(); } catch {}
   }
 
   public setMainMenu(mainMenu: MainMenu) {
@@ -805,7 +812,7 @@ export class Game {
       if (bullet.active) this.bulletSpatialGrid.insert(bullet);
     }
 
-    // --- Boss bullet collision ---
+  // --- Boss bullet collision ---
     const boss = this.bossManager.getActiveBoss();
     if (boss) {
       // Use spatial grid to find potential bullets near boss
@@ -814,8 +821,11 @@ export class Game {
       for (let i = 0; i < potentialBullets.length; i++) {
         const b = potentialBullets[i];
         if (!b.active) continue;
-        // Do not collide orbiting bullets here (Quantum Halo / Grinder), they handle contact internally with cooldown
-        if ((b as any).isOrbiting) continue;
+    // Absolutely collisionless weapons: do not process boss collision here.
+    //  - Quantum Halo / Industrial Grinder: flagged as isOrbiting and handle contact internally.
+    //  - Scrap-Saw melee sweep: flagged via isMeleeSweep and handled in BulletManager sweep logic.
+    if ((b as any).isOrbiting) continue;
+    if ((b as any).isMeleeSweep || (b as any).weaponType === (window as any).WeaponType?.SCRAP_SAW) continue;
         const dx = b.x - boss.x;
         const dy = b.y - boss.y;
         const r = bossRadSumSqBase + b.radius;
@@ -1063,11 +1073,11 @@ export class Game {
                 this.ctx.strokeStyle = this.lowFX ? `rgba(255,255,255,${0.3 * fadeEase})` : `rgba(255,255,255,${0.7 * fadeEase})`;
               }
             } else if (beam.type === 'melter') {
-              // Melter beam: tight core, RGB hue-cycling rim while intensifying; draws only up to visLen
+              // Melter beam: tight core, RGB hue-cycling rim while intensifying; draws only up to visLen (subtle glow)
               const visLen = Math.min(len, beam.visLen || len);
               const fadeEase = fade * fade;
-              const coreT = Math.max(6, (beam.thickness || 12) * 0.6);
-              const rimT = coreT * 1.8;
+              const coreT = Math.max(6, (beam.thickness || 12) * 0.55);
+              const rimT = coreT * 1.6;
               // Compute intensity-ramp t based on beam duration for color cycle (0..1)
               const elapsedBeam = Math.max(0, Math.min(beam.duration, (performance.now() - beam.start)));
               const tRamp = beam.duration > 0 ? (elapsedBeam / beam.duration) : 0;
@@ -1076,13 +1086,13 @@ export class Game {
               if (!this.lowFX && !debugNoAdd) {
                 this.ctx.globalCompositeOperation = 'lighter';
                 // Core (white)
-                this.ctx.fillStyle = `rgba(255,255,255,${0.85 * fadeEase})`;
+                this.ctx.fillStyle = `rgba(255,255,255,${0.72 * fadeEase})`;
                 this.ctx.fillRect(0, -coreT/2, visLen, coreT);
                 // Rim (RGB gradient along beam length)
                 const grad = this.ctx.createLinearGradient(0, 0, visLen, 0);
                 // Use HSL for smooth spectrum; convert via CSS hsl()
-                const rimA1 = (0.55 * fadeEase).toFixed(3);
-                const rimA2 = (0.35 * fadeEase).toFixed(3);
+                const rimA1 = (0.42 * fadeEase).toFixed(3);
+                const rimA2 = (0.28 * fadeEase).toFixed(3);
                 grad.addColorStop(0.00, `hsla(${hue}, 100%, 70%, ${rimA1})`);
                 grad.addColorStop(0.25, `hsla(${(hue+60)%360}, 100%, 65%, ${rimA2})`);
                 grad.addColorStop(0.50, `hsla(${(hue+120)%360}, 100%, 60%, ${rimA2})`);
@@ -1092,8 +1102,8 @@ export class Game {
                 this.ctx.fillRect(0, -rimT/2, visLen, rimT);
                 // Impact bloom tinted by current hue
                 const impact = this.ctx.createRadialGradient(visLen, 0, 0, visLen, 0, 18);
-                impact.addColorStop(0, `hsla(${hue}, 100%, 85%, ${0.8 * fadeEase})`);
-                impact.addColorStop(0.5, `hsla(${(hue+40)%360}, 100%, 70%, ${0.45 * fadeEase})`);
+                impact.addColorStop(0, `hsla(${hue}, 100%, 80%, ${0.62 * fadeEase})`);
+                impact.addColorStop(0.5, `hsla(${(hue+40)%360}, 100%, 65%, ${0.35 * fadeEase})`);
                 impact.addColorStop(1, 'rgba(0,0,0,0)');
                 this.ctx.fillStyle = impact;
                 this.ctx.beginPath();
@@ -1102,13 +1112,13 @@ export class Game {
               } else {
                 this.ctx.globalCompositeOperation = 'source-over';
                 // Low FX: single color band based on hue
-                this.ctx.fillStyle = `hsla(${hue}, 100%, 70%, ${0.6 * fadeEase})`;
+                this.ctx.fillStyle = `hsla(${hue}, 100%, 70%, ${0.45 * fadeEase})`;
                 this.ctx.fillRect(0, -rimT/2, visLen, rimT);
               }
               // Subtle outline that follows the hue at low opacity
-              this.ctx.strokeStyle = this.lowFX ? `hsla(${hue}, 100%, 80%, ${0.3 * fadeEase})` : `hsla(${hue}, 100%, 90%, ${0.6 * fadeEase})`;
+              this.ctx.strokeStyle = this.lowFX ? `hsla(${hue}, 100%, 80%, ${0.22 * fadeEase})` : `hsla(${hue}, 100%, 90%, ${0.44 * fadeEase})`;
             } else {
-              // Railgun: twin parallel rails + animated crossbar rungs (distinct from sniper beams)
+              // Railgun: tuned to avoid brightening the background (no global additive blending)
               const fadeEase = fade * (0.7 + 0.3 * Math.min(1, fade));
               // Rail layout
               const railGap = 7;            // half-distance from center to each rail
@@ -1118,21 +1128,21 @@ export class Game {
               const rungSpeed = 220;        // px/sec travel speed to the right
               const offset = (elapsed * (rungSpeed / 1000)) % rungSpacing;
 
+              // Keep compositing neutral to avoid washing out the environment
+              this.ctx.globalCompositeOperation = 'source-over';
+              // Very soft local glow only
               if (!this.lowFX && !debugNoAdd) {
-                this.ctx.globalCompositeOperation = 'lighter';
-                // Outer glow around rails (cyan/teal)
-                this.ctx.shadowColor = 'rgba(0,255,220,0.9)';
-                this.ctx.shadowBlur = 18 * (0.7 + 0.3 * fadeEase);
+                this.ctx.shadowColor = 'rgba(0,255,220,0.28)';
+                this.ctx.shadowBlur = 8 * (0.6 + 0.4 * fadeEase);
               } else {
-                this.ctx.globalCompositeOperation = 'source-over';
                 this.ctx.shadowBlur = 0;
               }
 
-              // Draw two rails with subtle gradient
+              // Draw two rails with a restrained gradient and capped alpha
               const railGrad = this.ctx.createLinearGradient(0, 0, len, 0);
-              railGrad.addColorStop(0, `rgba(180,255,255,${0.85 * fadeEase})`);
-              railGrad.addColorStop(0.2, `rgba(0,240,255,${0.75 * fadeEase})`);
-              railGrad.addColorStop(0.7, `rgba(0,160,255,${0.35 * fadeEase})`);
+              railGrad.addColorStop(0, `rgba(180,255,255,${0.38 * fadeEase})`);
+              railGrad.addColorStop(0.25, `rgba(0,220,255,${0.28 * fadeEase})`);
+              railGrad.addColorStop(0.75, `rgba(0,150,255,${0.16 * fadeEase})`);
               railGrad.addColorStop(1, 'rgba(0,0,0,0)');
               this.ctx.fillStyle = railGrad;
 
@@ -1140,36 +1150,39 @@ export class Game {
               this.ctx.fillRect(0, -railGap - railThickness/2, len, railThickness);
               this.ctx.fillRect(0,  railGap - railThickness/2, len, railThickness);
 
-              // Animated crossbar rungs bridging rails
+              // Animated crossbar rungs bridging rails (reduced alpha)
               const rungWidth = 12; // visual thickness along x
               const maxRungs = Math.ceil((len + rungSpacing) / rungSpacing);
-              const alphaBase = this.lowFX ? 0.35 : 0.7;
+              const alphaBase = this.lowFX ? 0.18 : 0.32;
               for (let i = 0; i < maxRungs; i++) {
                 const rx = i * rungSpacing + (rungSpacing - offset);
                 if (rx < 0 || rx > len) continue;
                 const a = Math.max(0, Math.min(1, 1 - Math.abs(rx/len)));
-                this.ctx.fillStyle = `rgba(255,255,255,${alphaBase * a * fadeEase})`;
+                this.ctx.fillStyle = `rgba(255,255,255,${(alphaBase * a * fadeEase).toFixed(3)})`;
                 this.ctx.fillRect(rx - rungWidth/2, -rungHeight/2, rungWidth, rungHeight);
               }
 
-              // Capacitor muzzle flash at origin for unique identity
-              if (!this.lowFX) {
-                const muzzle = this.ctx.createRadialGradient(0, 0, 0, 0, 0, 22);
-                muzzle.addColorStop(0, `rgba(255,255,255,${0.9 * fadeEase})`);
-                muzzle.addColorStop(0.35, `rgba(0,255,230,${0.65 * fadeEase})`);
+              // Capacitor muzzle flash at origin with screened micro-bloom only at the source
+              if (!this.lowFX && !debugNoAdd) {
+                this.ctx.save();
+                this.ctx.globalCompositeOperation = 'screen';
+                const muzzle = this.ctx.createRadialGradient(0, 0, 0, 0, 0, 18);
+                muzzle.addColorStop(0, `rgba(255,255,255,${0.32 * fadeEase})`);
+                muzzle.addColorStop(0.5, `rgba(0,255,230,${0.22 * fadeEase})`);
                 muzzle.addColorStop(1, 'rgba(0,0,0,0)');
                 this.ctx.fillStyle = muzzle;
                 this.ctx.beginPath();
-                this.ctx.arc(0, 0, 22, 0, Math.PI * 2);
+                this.ctx.arc(0, 0, 18, 0, Math.PI * 2);
                 this.ctx.fill();
+                this.ctx.restore();
               }
 
               // Subtle central filament
-              const filamentAlpha = 0.35 * (this.lowFX ? 0.6 : 1) * fadeEase;
-              this.ctx.fillStyle = `rgba(180,255,255,${filamentAlpha})`;
+              const filamentAlpha = 0.18 * (this.lowFX ? 0.6 : 1) * fadeEase;
+              this.ctx.fillStyle = `rgba(180,255,255,${filamentAlpha.toFixed(3)})`;
               this.ctx.fillRect(0, -1, len, 2);
               // Outline hint
-              this.ctx.strokeStyle = this.lowFX ? `rgba(200,240,255,${0.25 * fadeEase})` : `rgba(200,255,255,${0.5 * fadeEase})`;
+              this.ctx.strokeStyle = this.lowFX ? `rgba(200,240,255,${(0.18 * fadeEase).toFixed(3)})` : `rgba(200,255,255,${(0.36 * fadeEase).toFixed(3)})`;
             }
             this.ctx.lineWidth = 2.5;
             this.ctx.beginPath();
