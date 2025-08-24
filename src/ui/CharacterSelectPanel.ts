@@ -291,14 +291,37 @@ export class CharacterSelectPanel {
         `;
         break; }
 
-      case 'lore':
+      case 'lore': {
+        // Improve readability: larger font, higher contrast, comfortable line-height
+        // Add soft cross-class hinting based on weapon synergies
+        const synergyHint = this.buildLoreSynergyHint(character);
         tabContent.innerHTML = `
-          <div class="lore-text">${character.lore}</div>
-          <div class="lore-quote">
-            "In the cyberpunk wasteland, only the strongest survive. This operative has proven their worth in countless missions."
+          <div class="lore-pane">
+            <div class="lore-text" style="font-size: 1.05rem; line-height: 1.5; color: #E8F1F2; letter-spacing: 0.2px;">
+              ${this.escapeHtml(character.lore)}
+            </div>
+            ${synergyHint ? `<div class="lore-synergy" style="margin-top: 12px; font-size: 0.95rem; color: #C9E4FF;">${synergyHint}</div>` : ''}
+            <div class="lore-quote" style="margin-top: 16px; font-style: italic; color: #99AAB5;">
+              "In the cyberpunk wasteland, only the strongest survive. This operative has proven their worth in countless missions."
+            </div>
           </div>
         `;
-        break;
+        break; }
+    }
+  }
+  private buildLoreSynergyHint(c: CharacterData): string | '' {
+    // Lightweight cross-class callouts by default weapon
+    switch (c.defaultWeapon) {
+      case WeaponType.HACKER_VIRUS:
+        return 'Synergy: Tag bosses with Rogue Hacker zones, then let Psionic Weaver or Data Sorcerer capitalize on the debuff window.';
+      case WeaponType.QUANTUM_HALO:
+        return 'Synergy: Quantum Halo keeps chip damage rolling—pair with Scavenger’s Scrap‑Saw for reliable boss contact.';
+      case WeaponType.SCRAP_SAW:
+        return 'Synergy: Scrap‑Saw primes targets; Neural Nomad threads or Data Sigils will finish clustered packs.';
+      case WeaponType.NOMAD_NEURAL:
+        return 'Synergy: Primer tethers love marked enemies—combine with Psionic marks or Rogue Hacker glitch for fast anchors.';
+      default:
+        return '';
     }
   }
 

@@ -344,7 +344,7 @@ export class BulletManager {
         // Boss contact
         {
           const bossMgr: any = (window as any).__bossManager;
-          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+          const boss = bossMgr && bossMgr.getActiveBoss ? bossMgr.getActiveBoss() : null;
           if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
             const dxB = boss.x - b.x; const dyB = boss.y - b.y;
             const rsB = (boss.radius || 160) + (b.radius * 0.55);
@@ -412,7 +412,7 @@ export class BulletManager {
         // Boss contact for grinder
         {
           const bossMgr: any = (window as any).__bossManager;
-          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+          const boss = bossMgr && bossMgr.getActiveBoss ? bossMgr.getActiveBoss() : null;
           if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
             const dxB = boss.x - b.x; const dyB = boss.y - b.y;
             const rsB = (boss.radius || 160) + (b.radius * 0.55);

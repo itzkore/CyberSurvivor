@@ -113,8 +113,19 @@ export class EnemyManager {
   // We'll store transient fields directly on Enemy object via symbol-like keys to avoid changing type globally.
   private readonly burnTickIntervalMs: number = 500; // 4 ticks over 2s
   private readonly burnDurationMs: number = 2000; // total duration per stack refresh
-  // Pre-rendered enemy sprites (normal / flash) keyed by type
-  private enemySprites: Record<string, { normal: HTMLCanvasElement; flash: HTMLCanvasElement; normalFlipped?: HTMLCanvasElement; flashFlipped?: HTMLCanvasElement } > = Object.create(null);
+  // Pre-rendered enemy sprites (normal / flash) keyed by type + pre-tinted RGB ghost variants for glitch effect
+  private enemySprites: Record<string, {
+    normal: HTMLCanvasElement;
+    flash: HTMLCanvasElement;
+    normalFlipped?: HTMLCanvasElement;
+    flashFlipped?: HTMLCanvasElement;
+    redGhost?: HTMLCanvasElement;
+    greenGhost?: HTMLCanvasElement;
+    blueGhost?: HTMLCanvasElement;
+    redGhostFlipped?: HTMLCanvasElement;
+    greenGhostFlipped?: HTMLCanvasElement;
+    blueGhostFlipped?: HTMLCanvasElement;
+  }> = Object.create(null);
   private sharedEnemyImageLoaded = false; // indicates enemy_default.png processed
   private usePreRenderedSprites: boolean = true;
   // Weaver Lattice tick scheduler
@@ -366,6 +377,25 @@ export class EnemyManager {
       { type: 'medium', radius: 28, color: '#d40000', flashColor: '#ff9090' },
       { type: 'large', radius: 36, color: '#b00000', flashColor: '#ff9999' }
     ];
+    // Helper: build a tinted single-channel ghost canvas (simulate RGB split) once per type
+    const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
+      const cv = document.createElement('canvas');
+      cv.width = base.width; cv.height = base.height;
+      const cctx = cv.getContext('2d')!;
+      // Draw base
+      cctx.drawImage(base, 0, 0);
+      // Overlay a solid tint using multiply to avoid per-frame ctx.filter cost
+      cctx.globalCompositeOperation = 'multiply';
+      cctx.fillStyle = tint === 'red' ? 'rgba(255,0,0,0.85)'
+                       : tint === 'green' ? 'rgba(0,255,0,0.85)'
+                       : 'rgba(0,128,255,0.85)';
+      cctx.fillRect(0,0,cv.width,cv.height);
+      cctx.globalCompositeOperation = 'destination-in';
+      // Mask to preserve original alpha
+      cctx.drawImage(base, 0, 0);
+      cctx.globalCompositeOperation = 'source-over';
+      return cv;
+    };
     for (let i=0;i<defs.length;i++) {
       const d = defs[i];
       const size = d.radius * 2 + 4; // small padding to avoid clipping stroke
@@ -385,8 +415,14 @@ export class EnemyManager {
         cctx.strokeStyle = '#fff';
         cctx.stroke();
       }
-  // Circles are horizontally symmetric; reuse same canvas for flipped to simplify draw path
-  this.enemySprites[d.type] = { normal, flash, normalFlipped: normal, flashFlipped: flash } as any;
+      // Build pre-tinted RGB ghost canvases (reduce per-frame filter changes)
+      const redGhost = makeGhost(normal, 'red');
+      const greenGhost = makeGhost(normal, 'green');
+      const blueGhost = makeGhost(normal, 'blue');
+      // Circles are horizontally symmetric; reuse same canvas for flipped to simplify draw path
+      this.enemySprites[d.type] = { normal, flash, normalFlipped: normal, flashFlipped: flash,
+        redGhost, greenGhost, blueGhost,
+        redGhostFlipped: redGhost, greenGhostFlipped: greenGhost, blueGhostFlipped: blueGhost } as any;
     }
   }
 
@@ -400,6 +436,22 @@ export class EnemyManager {
         { type: 'medium', radius: 28 },
         { type: 'large', radius: 36 }
       ];
+      // Helper for ghosts
+      const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
+        const cv = document.createElement('canvas');
+        cv.width = base.width; cv.height = base.height;
+        const cctx = cv.getContext('2d')!;
+        cctx.drawImage(base, 0, 0);
+        cctx.globalCompositeOperation = 'multiply';
+        cctx.fillStyle = tint === 'red' ? 'rgba(255,0,0,0.85)'
+                         : tint === 'green' ? 'rgba(0,255,0,0.85)'
+                         : 'rgba(0,128,255,0.85)';
+        cctx.fillRect(0,0,cv.width,cv.height);
+        cctx.globalCompositeOperation = 'destination-in';
+        cctx.drawImage(base, 0, 0);
+        cctx.globalCompositeOperation = 'source-over';
+        return cv;
+      };
       for (let i=0;i<defs.length;i++) {
         const d = defs[i];
         const size = d.radius * 2;
@@ -427,7 +479,15 @@ export class EnemyManager {
         flashFlipped.width = size; flashFlipped.height = size;
         const ffctx = flashFlipped.getContext('2d')!;
         ffctx.translate(size,0); ffctx.scale(-1,1); ffctx.drawImage(flash,0,0);
-        this.enemySprites[d.type] = { normal, flash, normalFlipped, flashFlipped } as any; // overwrite circle fallback
+        // RGB ghosts
+        const redGhost = makeGhost(normal, 'red');
+        const greenGhost = makeGhost(normal, 'green');
+        const blueGhost = makeGhost(normal, 'blue');
+        const redGhostFlipped = makeGhost(normalFlipped, 'red');
+        const greenGhostFlipped = makeGhost(normalFlipped, 'green');
+        const blueGhostFlipped = makeGhost(normalFlipped, 'blue');
+        this.enemySprites[d.type] = { normal, flash, normalFlipped, flashFlipped,
+          redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any; // overwrite circle fallback
       }
       this.sharedEnemyImageLoaded = true;
     };
@@ -1247,6 +1307,11 @@ export class EnemyManager {
     }
   } catch {}
   // Draw enemies (cached sprite images if enabled)
+    // Compute heavy FX budget per frame: start at 32 and scale down under load
+    const frameMsForBudget = this.avgFrameMs || 16;
+    let heavyBudget = frameMsForBudget > 55 ? 8 : frameMsForBudget > 40 ? 16 : 32;
+    // Cap to a fraction of visible enemies to avoid worst-case storms
+    heavyBudget = Math.min(heavyBudget, Math.ceil(this.activeEnemies.length * 0.25));
     if (this.usePreRenderedSprites) {
   for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
         const enemy = this.activeEnemies[i];
@@ -1317,54 +1382,59 @@ export class EnemyManager {
             }
           }
         }
-        // RGB glitch effect: intensified visibility with stronger ghosts, more slices, and brief jitter
+        // RGB glitch effect: use cached-tint ghosts; cap heavy work per frame
         if ((eAny._rgbGlitchUntil || 0) > now) {
           const tLeft = Math.max(0, Math.min(1, (eAny._rgbGlitchUntil - now) / 220));
           const phase = (eAny._rgbGlitchPhase || 0);
           ctx.save();
-          // Slight positional jitter during glitch window
           const jx = ((phase * 31) % 3) - 1; // -1..+1
           const jy = (((phase * 47) >> 1) % 3) - 1; // -1..+1
-          // Color-bleed ghost copies with stronger offsets
-          const ghostOffset = 2 + Math.round(6 * tLeft); // up to ~8 px
+          const ghostOffset = 2 + Math.round(6 * tLeft);
           ctx.globalCompositeOperation = 'lighter';
+          // Use pre-tinted ghosts instead of ctx.filter
+          const rGhost = flipLeft ? (bundle.redGhostFlipped || bundle.redGhost) : bundle.redGhost;
+          const gGhost = flipLeft ? (bundle.greenGhostFlipped || bundle.greenGhost) : bundle.greenGhost;
+          const bGhost = flipLeft ? (bundle.blueGhostFlipped || bundle.blueGhost) : bundle.blueGhost;
+          // Red left, Blue right, faint Green center
           ctx.globalAlpha = 0.35 + 0.35 * tLeft;
-          // Red-ish ghost (left)
-          try { ctx.filter = 'hue-rotate(330deg) saturate(2.0) brightness(1.2)'; } catch {}
-          ctx.drawImage(baseImg, drawX - ghostOffset + jx, drawY + jy, size, size);
-          // Blue-ish ghost (right)
-          try { ctx.filter = 'hue-rotate(210deg) saturate(2.0) brightness(1.2)'; } catch {}
-          ctx.drawImage(baseImg, drawX + ghostOffset + jx, drawY + jy, size, size);
-          // Green-ish mid ghost (optional center)
-          try { ctx.filter = 'hue-rotate(120deg) saturate(1.8) brightness(1.15)'; } catch {}
+          if (rGhost) ctx.drawImage(rGhost, drawX - ghostOffset + jx, drawY + jy, size, size);
+          if (bGhost) ctx.drawImage(bGhost, drawX + ghostOffset + jx, drawY + jy, size, size);
           ctx.globalAlpha = 0.22 + 0.28 * tLeft;
-          ctx.drawImage(baseImg, drawX + Math.sign(ghostOffset), drawY, size, size);
-          // Reset filter
-          try { ctx.filter = 'none'; } catch {}
-          // Slice glitch: increased slices and stronger horizontal offsets
+          if (gGhost) ctx.drawImage(gGhost, drawX + Math.sign(ghostOffset), drawY, size, size);
           ctx.globalCompositeOperation = 'source-over';
           ctx.globalAlpha = 1;
-          const sliceCount = 6 + (phase % 5); // 6..10 slices
-          for (let s = 0; s < sliceCount; s++) {
-            const rng = ((phase * 73856093) ^ (s * 19349663)) >>> 0;
-            const sy = (rng % (size - 8));
-            const sh = 4 + (rng % Math.min(22, size - sy));
-            const baseOff = ((rng >> 5) % 25) - 12; // -12..+12 px
-            const off = Math.max(-16, Math.min(16, Math.round(baseOff * (0.8 + 0.8 * tLeft))));
-            const h = Math.min(sh, size - sy);
-            try {
-              ctx.drawImage(baseImg, 0, sy, size, h, drawX + off, drawY + sy, size, h);
-            } catch {}
-          }
-          // Enhanced scanlines/tearing
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.globalAlpha = 0.18 + 0.22 * tLeft;
-          ctx.strokeStyle = '#66ccff';
-          ctx.lineWidth = 1;
-          const lines = 3 + (phase % 4);
-          for (let li = 0; li < lines; li++) {
-            const y = drawY + ((phase * 13 + li * 11) % (size - 2)) + 1;
-            ctx.beginPath(); ctx.moveTo(drawX, y); ctx.lineTo(drawX + size, y); ctx.stroke();
+          // Heavy slices only while budget remains; otherwise draw a single shifted copy
+          const doHeavy = heavyBudget > 0;
+          if (doHeavy) {
+            heavyBudget--;
+            const sliceBase = frameMsForBudget > 40 ? 4 : 6; // reduce under load
+            const sliceVar = frameMsForBudget > 40 ? 2 : 4;
+            const sliceCount = sliceBase + (phase % sliceVar); // 4..10
+            for (let s = 0; s < sliceCount; s++) {
+              const rng = ((phase * 73856093) ^ (s * 19349663)) >>> 0;
+              const sy = (rng % (size - 8));
+              const sh = 4 + (rng % Math.min(22, size - sy));
+              const baseOff = ((rng >> 5) % 25) - 12; // -12..+12 px
+              const off = Math.max(-12, Math.min(12, Math.round(baseOff * (0.7 + 0.7 * tLeft))));
+              const h = Math.min(sh, size - sy);
+              try { ctx.drawImage(baseImg, 0, sy, size, h, drawX + off, drawY + sy, size, h); } catch {}
+            }
+            // Scanlines reduced under load
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = 0.16 + 0.18 * tLeft;
+            ctx.strokeStyle = '#66ccff';
+            ctx.lineWidth = 1;
+            const lines = frameMsForBudget > 40 ? 2 : 3 + (phase % 2);
+            for (let li = 0; li < lines; li++) {
+              const y = drawY + ((phase * 13 + li * 11) % (size - 2)) + 1;
+              ctx.beginPath(); ctx.moveTo(drawX, y); ctx.lineTo(drawX + size, y); ctx.stroke();
+            }
+          } else {
+            // Lightweight fallback: one shifted blit for a tearing hint
+            const off = ((phase * 13) % 9) - 4; // -4..4
+            const sy = ((phase * 23) % (size - 10)) | 0;
+            const h = Math.min(8, size - sy);
+            try { ctx.drawImage(baseImg, 0, sy, size, h, drawX + off, drawY + sy, size, h); } catch {}
           }
           ctx.restore();
         }
@@ -1885,7 +1955,7 @@ export class EnemyManager {
     }
 
     // Rogue Hacker zones: apply one-time paralysis + schedule DoT on first contact per zone
-    if (this.hackerZones.length && this.activeEnemies.length) {
+    if (this.hackerZones.length) {
       const nowHz = nowFrame;
       // Precompute weapon level and damage multiplier once
       let lvl = 1;
@@ -1902,25 +1972,48 @@ export class EnemyManager {
         if (nowHz - z.created > z.lifeMs) continue;
   const rEff = z.radius; // enemy radius will be added per-enemy
         const stamp = z.stamp;
-        for (let i = 0; i < this.activeEnemies.length; i++) {
-          const e = this.activeEnemies[i];
-          if (!e.active || e.hp <= 0) continue;
-          const anyE: any = e as any;
-          // Skip if this enemy already processed for this zone
-          if (anyE._lastHackerStamp === stamp) continue;
-          const dx = e.x - z.x; const dy = e.y - z.y;
-          // Quick circle-circle with sum radii: (r+re)^2
-          const rr = rEff + (e.radius || 0);
-          if (dx*dx + dy*dy <= rr * rr) {
-            anyE._lastHackerStamp = stamp;
-            // Apply paralysis and schedule DoT
-            anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowHz + 1500);
-            anyE._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
-            anyE._rgbGlitchUntil = nowHz + 260;
-            anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 1) % 7;
-            (e as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
+        if (this.activeEnemies.length) {
+          for (let i = 0; i < this.activeEnemies.length; i++) {
+            const e = this.activeEnemies[i];
+            if (!e.active || e.hp <= 0) continue;
+            const anyE: any = e as any;
+            // Skip if this enemy already processed for this zone
+            if (anyE._lastHackerStamp === stamp) continue;
+            const dx = e.x - z.x; const dy = e.y - z.y;
+            // Quick circle-circle with sum radii: (r+re)^2
+            const rr = rEff + (e.radius || 0);
+            if (dx*dx + dy*dy <= rr * rr) {
+              anyE._lastHackerStamp = stamp;
+              // Apply paralysis and schedule DoT
+              anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowHz + 1500);
+              anyE._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
+              anyE._rgbGlitchUntil = nowHz + 260;
+              anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 1) % 7;
+              (e as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
+            }
           }
         }
+        // Boss parity: zones also affect boss within radius
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+          if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+            const bAny: any = boss as any;
+            if (bAny._lastHackerStamp !== stamp) {
+              const dxB = boss.x - z.x; const dyB = boss.y - z.y;
+              const rBoss = (boss.radius || 160);
+              if (dxB*dxB + dyB*dyB <= (rEff + rBoss) * (rEff + rBoss)) {
+                bAny._lastHackerStamp = stamp;
+                bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, nowHz + 1200);
+                bAny._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
+                bAny._rgbGlitchUntil = nowHz + 260;
+                bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
+                // Tag last-hit for FX routing
+                bAny._lastHitByWeapon = WeaponType.HACKER_VIRUS;
+              }
+            }
+          }
+        } catch { /* ignore boss zone errors */ }
       }
     }
 
