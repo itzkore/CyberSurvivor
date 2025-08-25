@@ -23,6 +23,10 @@ export interface CharacterData {
   critChance?: number;
   /** Effective EHP proxy (hp * (1 + defense/50)) */
   survivability?: number;
+  /** Offense proxy: damage scaled by STR+INT (display-only) */
+  damageIndex?: number;
+  /** Mobility proxy: speed scaled by AGI (display-only) */
+  movementIndex?: number;
   };
   shape: 'circle' | 'square' | 'triangle';
   color: string;
@@ -349,4 +353,11 @@ for (const c of CHARACTERS) {
     s.defense * 0.8 +
     (s.speed * 3) // speed has high influence on overall power
   );
+  // Damage index: quick offensive proxy similar to survivability (display only)
+  // Emphasize weapon damage with contributions from STR and INT.
+  // Formula: round(damage * (1 + (strength*0.6 + intelligence*0.8)/50))
+  s.damageIndex = Math.round(s.damage * (1 + ((s.strength * 0.6 + s.intelligence * 0.8) / 50)));
+  // Movement index: mobility proxy combining base speed and agility.
+  // Formula: round(speed * (1 + agility/20))
+  s.movementIndex = Math.round(s.speed * (1 + s.agility / 20));
 }

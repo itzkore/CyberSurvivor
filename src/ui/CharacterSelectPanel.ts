@@ -2,7 +2,7 @@ import { WeaponType } from '../game/WeaponType';
 import { Logger } from '../core/Logger';
 import { CHARACTERS } from '../data/characters';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
-import { SPEED_SCALE } from '../game/Balance';
+// Speed scale no longer shown in Basic tab; keep gameplay usage elsewhere
 import { matrixBackground } from './MatrixBackground';
 
 interface CharacterStats {
@@ -242,14 +242,14 @@ export class CharacterSelectPanel {
 
     switch(this.currentTab) {
       case 'basic': {
-  const s = character.stats as any; // Allow derived fields (critChance, survivability, powerScore)
+  const s = character.stats as any; // Allow derived fields (critChance, survivability, powerScore, damageIndex, movementIndex)
         tabContent.innerHTML = `
           <h3>Character Statistics</h3>
           <div class="stats-grid cols-3 compact-text">
             <div class="stat-box"><div class="stat-label">HP</div><div class="stat-value">${s.hp}</div></div>
             <div class="stat-box"><div class="stat-label">Max HP</div><div class="stat-value">${s.maxHp}</div></div>
-            <div class="stat-box"><div class="stat-label">Damage</div><div class="stat-value">${s.damage}</div></div>
-            <div class="stat-box"><div class="stat-label">Speed</div><div class="stat-value" title="Effective in-game speed after global scaling applies">${(s.speed * SPEED_SCALE).toFixed(2)}</div></div>
+            <div class="stat-box"><div class="stat-label">Damage</div><div class="stat-value" title="Offense index (display only)">${s.damageIndex ?? s.damage}</div></div>
+            <div class="stat-box"><div class="stat-label">Movement</div><div class="stat-value" title="Mobility index (display only)">${s.movementIndex ?? s.speed}</div></div>
             <div class="stat-box"><div class="stat-label">Defense</div><div class="stat-value">${s.defense}</div></div>
             <div class="stat-box"><div class="stat-label">Luck</div><div class="stat-value">${s.luck}</div></div>
             <div class="stat-box"><div class="stat-label">Intelligence</div><div class="stat-value">${s.intelligence}</div></div>
