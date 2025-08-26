@@ -269,6 +269,8 @@ export class Player {
 
   /** Alternating side toggle for Titan Mech's Mech Mortar barrels (-1 left, 1 right) */
   private mechMortarSide: number = -1;
+  /** Alternating side for Akimbo Deagle (-1 left, +1 right) */
+  private akimboSide: number = -1;
 
   constructor(x: number, y: number, characterData?: any) {
     this.x = x;
@@ -1086,6 +1088,28 @@ export class Player {
           return;
         }
 
+        // Akimbo Deagle: quick staggered left-right shots for zig-zag feel (faster than mortar)
+        if (weaponType === WeaponType.DUAL_PISTOLS && toShoot > 1) {
+          const gapMs = 35; // tight stagger (~2 frames)
+          for (let i = 0; i < toShoot; i++) {
+            const delay = i * gapMs;
+            if (delay === 0) {
+              this.spawnSingleProjectile(bm, weaponType, bulletDamage, weaponLevel, baseAngle, i, toShoot, spread, target);
+            } else {
+              const start = performance.now();
+              const schedule = () => {
+                if (performance.now() - start >= delay) {
+                  this.spawnSingleProjectile(bm, weaponType, bulletDamage, weaponLevel, baseAngle, i, toShoot, spread, target);
+                } else {
+                  requestAnimationFrame(schedule);
+                }
+              };
+              requestAnimationFrame(schedule);
+            }
+          }
+          return; // avoid simultaneous spawn below
+        }
+
         // Special handling: Railgun uses charge then single beam; defer actual spawn
   if (weaponType === WeaponType.RAILGUN) {
           this.handleRailgunFire(baseAngle, target, spec, weaponLevel);
@@ -1134,6 +1158,17 @@ export class Player {
             const sideSign = centeredIndex < 0 ? -1 : 1;
             originX += perpX * sideOffsetBase * sideSign;
             originY += perpY * sideOffsetBase * sideSign;
+          } else if (weaponType === WeaponType.DUAL_PISTOLS) {
+            // Akimbo Deagle: two barrels left/right simultaneously (no zig-zag across bursts)
+            const sideOffsetBase = 18;
+            const perpX = -Math.sin(baseAngle);
+            const perpY =  Math.cos(baseAngle);
+            const centeredIndex = (i - (toShoot - 1) / 2);
+            const sideSign = centeredIndex < 0 ? -1 : 1;
+            originX += perpX * sideOffsetBase * sideSign;
+            originY += perpY * sideOffsetBase * sideSign;
+            originX += Math.cos(baseAngle) * 10;
+            originY += Math.sin(baseAngle) * 10;
           } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
             // Titan Mech dual heavy cannons: alternate each shot left/right
             // Determine perpendicular to firing direction
@@ -1151,6 +1186,11 @@ export class Player {
           // Converging fire: if Runner Gun, recompute angle so each barrel aims exactly at target (covers middle)
           let finalAngle = angle;
           if (weaponType === WeaponType.RUNNER_GUN) {
+            const tdx = target.x - originX;
+            const tdy = target.y - originY;
+            finalAngle = Math.atan2(tdy, tdx);
+          } else if (weaponType === WeaponType.DUAL_PISTOLS) {
+            // Converging aim per barrel (like Runner Gun) for Akimbo
             const tdx = target.x - originX;
             const tdy = target.y - originY;
             finalAngle = Math.atan2(tdy, tdx);
@@ -1285,6 +1325,15 @@ export class Player {
       const sideSign = centeredIndex < 0 ? -1 : 1;
       originX += perpX * sideOffsetBase * sideSign;
       originY += perpY * sideOffsetBase * sideSign;
+    } else if (weaponType === WeaponType.DUAL_PISTOLS) {
+      const sideOffset = 18;
+      const perpX = -Math.sin(baseAngle);
+      const perpY = Math.cos(baseAngle);
+      originX += perpX * sideOffset * this.akimboSide;
+      originY += perpY * sideOffset * this.akimboSide;
+      originX += Math.cos(baseAngle) * 10;
+      originY += Math.sin(baseAngle) * 10;
+      this.akimboSide *= -1;
     } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
       const perpX = -Math.sin(baseAngle);
       const perpY = Math.cos(baseAngle);
@@ -1296,7 +1345,7 @@ export class Player {
       this.mechMortarSide *= -1;
     }
     let finalAngle = angle;
-    if (weaponType === WeaponType.RUNNER_GUN || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
+  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.DUAL_PISTOLS || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
       const tdx = target.x - originX;
       const tdy = target.y - originY;
       finalAngle = Math.atan2(tdy, tdx);

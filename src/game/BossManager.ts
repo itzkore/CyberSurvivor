@@ -35,6 +35,31 @@ export class BossManager {
   // Dash fairness controls
   private dashDidHitOnce: boolean = false; // limit dash contact to a single hit
   private postDashRecoverUntilMs: number = 0; // brief recovery where boss can't body-check
+  // Frame->ms migration helpers
+  private readonly MS_PER_FRAME = 1000 / 60; // fixed-timestep baseline
+  private telegraphFxAccMs: number = 0;
+  // Telegraph consistency helpers
+  private readonly novaChargeMs: number = 900;
+  private readonly specialWindupMs: number = 3000;
+  private readonly novaHitBand: number = 12; // exact hit band thickness used in both draw and damage
+
+  /** Compute exact special (overcharge) AoE radius used for both draw and damage. */
+  private getSpecialRadius(): number {
+    const r = this.boss?.radius || 80;
+    return r + 120;
+  }
+
+  /** Inner radius where nova starts expanding from. */
+  private getNovaInnerRadius(): number {
+    const r = this.boss?.radius || 80;
+    return r + 60;
+  }
+
+  /** Nova radius at normalized time t in [0,1]. */
+  private getNovaRadiusAt(t: number): number {
+    const inner = this.getNovaInnerRadius();
+    return inner + (this.novaMaxRadius - inner) * Math.min(1, Math.max(0, t));
+  }
 
   constructor(player: Player, particleManager?: ParticleManager, difficulty = 1, assetLoader?: AssetLoader) {
     this.player = player;
@@ -45,6 +70,15 @@ export class BossManager {
     this.loadBossImage();
   // Expose globally for systems that need boss reference
   try { (window as any).__bossManager = this; } catch {}
+    // Sandbox hook: allow forced boss spawn even in SANDBOX
+    try {
+      window.addEventListener('sandboxSpawnBoss', (e: Event) => {
+        const ce = e as CustomEvent<{ x?: number; y?: number; cinematic?: boolean }>;
+        const dx = ce?.detail?.x;
+        const dy = ce?.detail?.y;
+        this.spawnBoss(typeof dx === 'number' && typeof dy === 'number' ? { x: dx, y: dy, cinematic: ce.detail?.cinematic !== false } : undefined);
+      });
+    } catch {}
   }
 
   private loadBossImage() {
@@ -56,6 +90,12 @@ export class BossManager {
   }
 
   public update(deltaTime: number, gameTime: number) { // Added gameTime parameter
+    // Suppress boss logic entirely in Sandbox mode
+    try {
+      const gm = (window as any).__gameInstance?.gameMode;
+  // In sandbox, still update if a boss was explicitly spawned
+  if (gm === 'SANDBOX' && !this.boss) return;
+    } catch {}
     if (!this.boss) {
       // Spawn boss on paced interval (default 180s) to stretch run length
       if (gameTime - this.lastBossSpawnTime >= BOSS_SPAWN_INTERVAL_SEC) {
@@ -63,13 +103,21 @@ export class BossManager {
         this.lastBossSpawnTime = gameTime;
       }
     } else if (this.boss.state === 'TELEGRAPH') {
-      this.boss.telegraph--;
-      // Throttle telegraph particles to every 3rd frame to reduce GPU pressure
-      if (this.particleManager && this.boss.telegraph % 3 === 0) this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#f55');
+      // Telegraph counts down in ms
+      this.boss.telegraph -= deltaTime;
+      // Particle throttle ~ every 50ms
+      if (this.particleManager) {
+        this.telegraphFxAccMs += deltaTime;
+        while (this.telegraphFxAccMs >= 50) {
+          this.particleManager.spawn(this.boss.x, this.boss.y, 1, '#f55');
+          this.telegraphFxAccMs -= 50;
+        }
+      }
       if (this.boss.telegraph <= 0) {
         this.boss.state = 'ACTIVE';
-  const haste = Math.min(12, (this.bossSpawnCount - 1) * 2);
-  this.boss.attackTimer = 60 - haste;
+        const hasteFrames = Math.min(12, (this.bossSpawnCount - 1) * 2);
+        const nextFrames = 60 - hasteFrames;
+        this.boss.attackTimer = nextFrames * this.MS_PER_FRAME;
       }
     } else if (this.boss && this.boss.state === 'ACTIVE') {
       const dx = this.player.x - this.boss.x;
@@ -79,7 +127,7 @@ export class BossManager {
       // Special attack logic
       if (this.boss.specialCharge == null) this.boss.specialCharge = 0;
       if (this.boss.specialReady == null) this.boss.specialReady = false;
-      if (!this.boss.specialReady) {
+  if (!this.boss.specialReady) {
         // Move slower
         if (!isSpellActive && dist > 0) {
           const stepX = (dx / dist) * 0.7;
@@ -99,20 +147,28 @@ export class BossManager {
             }
           }
         }
-        this.boss.specialCharge++;
-        if (this.boss.specialCharge > 360) { // Charge for 6 seconds
+        // Build charge over time (ms). Ready after ~6000ms
+        this.boss.specialCharge = (this.boss.specialCharge || 0) + deltaTime;
+        if (this.boss.specialCharge > 6000) { // Charge for 6 seconds
           this.boss.specialReady = true;
           this.boss.specialCharge = 0;
         }
       } else {
         // Telegraph special attack: stop and charge for 3 seconds
-        this.boss.specialCharge++;
-        if (this.boss.specialCharge < 180) {
+        this.boss.specialCharge = (this.boss.specialCharge || 0) + deltaTime;
+        if (this.boss.specialCharge < this.specialWindupMs) {
           // Show telegraph effect (spawn particles less frequently)
-          if (this.particleManager && this.boss.specialCharge % 5 === 0) this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#FF00FF'); // Spawn fewer particles every 5 frames
+          if (this.particleManager) {
+            // piggyback on telegraph FX cadence: drop a pulse every 120ms during special charge
+            this.telegraphFxAccMs += deltaTime;
+            while (this.telegraphFxAccMs >= 120) {
+              this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#FF00FF');
+              this.telegraphFxAccMs -= 120;
+            }
+          }
         } else {
           // Unleash special attack (e.g., massive area damage)
-          if (dist < this.boss.radius + 120) {
+          if (dist < this.getSpecialRadius()) {
             const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
             this.player.hp -= Math.round(80 * specialScale); // Scaled special damage
             if (this.particleManager) this.particleManager.spawn(this.player.x, this.player.y, 2, '#FF0000'); // Reduced particles
@@ -128,11 +184,13 @@ export class BossManager {
         const c = rm.clampToWalkable(this.boss.x, this.boss.y, this.boss.radius || 80);
         this.boss.x = c.x; this.boss.y = c.y;
       }
-      this.boss.attackTimer--;
+      // Attack wave timer in ms
+      this.boss.attackTimer -= deltaTime;
       if (this.boss.attackTimer <= 0) {
         this.launchAttackWave();
-  const spawnHaste = Math.min(15, (this.bossSpawnCount - 1) * 1.5);
-  this.boss.attackTimer = Math.max(30, 60 - (this.difficulty - 1) * 10 - spawnHaste);
+        const spawnHasteFrames = Math.min(15, (this.bossSpawnCount - 1) * 1.5);
+        const nextFrames = Math.max(30, 60 - (this.difficulty - 1) * 10 - spawnHasteFrames);
+        this.boss.attackTimer = nextFrames * this.MS_PER_FRAME;
       }
       // Decide and advance spells when not in boss special telegraph
       if (!this.boss.specialReady) {
@@ -187,11 +245,11 @@ export class BossManager {
       const hpPct = this.boss.hp / this.boss.maxHp;
       if (hpPct < 0.4 && (this.boss as any)._phase < 3) {
         (this.boss as any)._phase = 3;
-        this.boss.attackTimer = 30; // faster
+  this.boss.attackTimer = 30 * this.MS_PER_FRAME; // faster (~500ms)
         if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#FF00FF');
       } else if (hpPct < 0.7 && (this.boss as any)._phase < 2) {
         (this.boss as any)._phase = 2;
-        this.boss.attackTimer = 45;
+  this.boss.attackTimer = 45 * this.MS_PER_FRAME; // (~750ms)
         if (this.particleManager) this.particleManager.spawn(this.boss.x, this.boss.y, 2, '#C400FF');
       }
       if (this.boss.hp <= 0) {
@@ -201,6 +259,18 @@ export class BossManager {
         window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 500, intensity: 15 } })); // Stronger shake on boss defeat
         // Vacuum gems QoL
         window.dispatchEvent(new CustomEvent('bossGemVacuum'));
+        // Special drops: guaranteed Magnet item and a destructible treasure that yields a random special
+        try {
+          // Magnet near player
+          const px = this.player.x, py = this.player.y;
+          const ang = Math.random() * Math.PI * 2;
+          const r = 80;
+          window.dispatchEvent(new CustomEvent('spawnSpecialItem', { detail: { x: px + Math.cos(ang) * r, y: py + Math.sin(ang) * r, type: 'MAGNET' } }));
+        } catch {}
+        try {
+          // Treasure at boss death spot
+          window.dispatchEvent(new CustomEvent('spawnTreasure', { detail: { x: this.boss.x, y: this.boss.y, hp: 250 } }));
+        } catch {}
         // Notify game systems for reward handling (double upgrade)
         window.dispatchEvent(new CustomEvent('bossDefeated'));
         // Despawn immediately and start interval timer for next spawn
@@ -215,18 +285,24 @@ export class BossManager {
     }
   }
 
-  private spawnBoss() {
+  private spawnBoss(pos?: { x: number; y: number; cinematic?: boolean }) {
     // Spawn boss close to player
     const px = this.player.x;
     const py = this.player.y;
-    const angle = Math.random() * Math.PI * 2;
-  const dist = 300 + Math.random() * 160; // spawn slightly farther to reduce immediate crowding
-    const bx = px + Math.cos(angle) * dist;
-    const by = py + Math.sin(angle) * dist;
+    let bx = px, by = py;
+    if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+      bx = pos.x; by = pos.y;
+    } else {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = 300 + Math.random() * 160; // spawn slightly farther to reduce immediate crowding
+      bx = px + Math.cos(angle) * dist;
+      by = py + Math.sin(angle) * dist;
+    }
     // Oppenheimer-style cinematic entrance: screen shake, slow-motion, flash, sound event
     if (window && window.dispatchEvent) {
-      window.dispatchEvent(new CustomEvent('bossSpawn', { detail: { x: bx, y: by, cinematic: true } }));
-      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 200, intensity: 8 } })); // Initial shake on boss spawn
+      const cinematic = pos?.cinematic !== false; // default true if not provided
+      window.dispatchEvent(new CustomEvent('bossSpawn', { detail: { x: bx, y: by, cinematic } }));
+      if (cinematic) window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 200, intensity: 8 } })); // Initial shake on boss spawn
     }
   const bossHp = 1500; // Base boss HP (scaled per spawn)
     let spawnX = bx, spawnY = by;
@@ -249,17 +325,20 @@ export class BossManager {
   maxHp: scaledHp, // Set maxHp for HP bar drawing
       radius: 80, // half previous size
       active: true,
-      telegraph: 180,
+      telegraph: 3000, // ms (was 180 frames)
       state: 'TELEGRAPH',
-      attackTimer: 0,
+      attackTimer: 0, // ms
       _damageFlash: 0
     };
+  // Mark identity for codex and future multi-boss support
+  try { (this.boss as any).id = 'phase1'; } catch {}
   (this.boss as any)._phase = 1;
   // Prime spells after brief delay to let player orient
   this.nextSpellAtMs = performance.now() + 2500;
   this.spellState = 'IDLE';
   this.spellTimerMs = 0;
   this.novaHitApplied = false;
+  this.telegraphFxAccMs = 0;
     // Immediately activate boss fight overlay
     if (window && window.dispatchEvent) {
       window.dispatchEvent(new CustomEvent('bossFightStart', { detail: { boss: this.boss } }));
@@ -383,22 +462,64 @@ export class BossManager {
         ctx.restore();
       }
       // Spell telegraphs and effects
+      // Overcharge special telegraph (3s): visualize exact AoE when charging
+      if (this.boss.specialReady) {
+        const sc = this.boss.specialCharge || 0;
+        const t = Math.min(1, sc / 180);
+        const r = (this.boss.radius || 80) + 120;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.18 + 0.32 * t;
+        // Fill glow
+        const grad = ctx.createRadialGradient(this.boss.x, this.boss.y, r * 0.75, this.boss.x, this.boss.y, r);
+        grad.addColorStop(0, 'rgba(255,0,255,0.05)');
+        grad.addColorStop(1, 'rgba(255,0,255,0.15)');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(this.boss.x, this.boss.y, r, 0, Math.PI * 2); ctx.fill();
+        // Edge ring
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = '#FF00FF';
+        ctx.shadowColor = '#FF66FF';
+        ctx.shadowBlur = 24;
+        ctx.beginPath(); ctx.arc(this.boss.x, this.boss.y, r, 0, Math.PI * 2); ctx.stroke();
+        // Countdown ticks around ring
+        const ticks = 12;
+        for (let i = 0; i < Math.floor(t * ticks); i++) {
+          const ang = (i / ticks) * Math.PI * 2;
+          const ix = this.boss.x + Math.cos(ang) * (r - 14);
+          const iy = this.boss.y + Math.sin(ang) * (r - 14);
+          const ox = this.boss.x + Math.cos(ang) * (r + 6);
+          const oy = this.boss.y + Math.sin(ang) * (r + 6);
+          ctx.beginPath();
+          ctx.moveTo(ix, iy);
+          ctx.lineTo(ox, oy);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
       if (this.spellState === 'NOVA_CHARGE' || this.spellState === 'NOVA_RELEASE') {
-        const t = this.spellState === 'NOVA_CHARGE' ? Math.min(1, this.spellTimerMs / 900) : Math.min(1, this.spellTimerMs / 900);
+        const tRaw = this.spellTimerMs / this.novaChargeMs;
+        const t = Math.min(1, Math.max(0, tRaw));
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         // Charge glow
         ctx.globalAlpha = 0.18 + 0.22 * t;
         ctx.fillStyle = '#B266FF';
         ctx.beginPath(); ctx.arc(this.boss.x, this.boss.y, this.boss.radius + 40 + 10 * Math.sin(performance.now()*0.02), 0, Math.PI*2); ctx.fill();
-        // Ring
-        const r = (this.spellState === 'NOVA_RELEASE') ? this.novaRadius : (this.boss.radius + 50 + 120 * t);
-        ctx.globalAlpha = 0.35;
-        ctx.lineWidth = 6;
+        // Exact damage ring at true radius (center of hit band). Use thicker lineWidth to visualize full band.
+        const r = (this.spellState === 'NOVA_RELEASE') ? this.novaRadius : this.getNovaRadiusAt(t);
+        ctx.globalAlpha = 0.38;
+        ctx.lineWidth = this.novaHitBand * 2; // match band thickness
         ctx.strokeStyle = '#CC66FF';
         ctx.shadowColor = '#CC66FF';
-        ctx.shadowBlur = 24;
+        ctx.shadowBlur = 14;
         ctx.beginPath(); ctx.arc(this.boss.x, this.boss.y, r, 0, Math.PI*2); ctx.stroke();
+        // Crisp core edge to reduce perception mismatch
+        ctx.globalAlpha = 0.85;
+        ctx.lineWidth = 2;
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.beginPath(); ctx.arc(this.boss.x, this.boss.y, r + this.novaHitBand, 0, Math.PI*2); ctx.stroke();
         ctx.restore();
       }
       if (this.spellState === 'LINEUP' || this.spellState === 'DASH') {
@@ -447,12 +568,12 @@ export class BossManager {
     switch (this.spellState) {
       case 'NOVA_CHARGE': {
         this.spellTimerMs += dtMs;
-        if (this.spellTimerMs >= 900) {
+        if (this.spellTimerMs >= this.novaChargeMs) {
           this.spellState = 'NOVA_RELEASE';
           this.spellTimerMs = 0;
           // Inner blast damage near boss center
           const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
-          if (d <= this.boss.radius + 60) {
+          if (d <= this.getNovaInnerRadius()) {
             const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
             this.player.hp -= Math.round(45 * specialScale); // reduced inner blast damage
             window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 180, intensity: 6 } }));
@@ -462,11 +583,11 @@ export class BossManager {
       }
       case 'NOVA_RELEASE': {
         this.spellTimerMs += dtMs;
-        const t = Math.min(1, this.spellTimerMs / 900);
-        const inner = this.boss.radius + 60;
-        this.novaRadius = inner + (this.novaMaxRadius - inner) * t;
+        const t = Math.min(1, this.spellTimerMs / this.novaChargeMs);
+        const inner = this.getNovaInnerRadius();
+        this.novaRadius = this.getNovaRadiusAt(t);
         const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
-        const band = 12; // narrower hit band
+        const band = this.novaHitBand; // exact same band used for draw
         if (!this.novaHitApplied && d >= this.novaRadius - band && d <= this.novaRadius + band) {
           this.novaHitApplied = true;
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);

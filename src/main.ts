@@ -2,9 +2,11 @@
 import { Game } from './game/Game';
 import { MainMenu } from './ui/MainMenu';
 import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import CharacterSelectPanel
+import { Codex } from './ui/Codex';
 import { Logger } from './core/Logger'; // Import Logger
 import { ensurePauseOverlay } from './ui/PauseOverlay';
 import { ensureGameOverOverlay } from './ui/GameOverOverlay';
+import { ensureSandboxOverlay } from './ui/SandboxOverlay';
 
 /** Lightweight frame snapshot for worker (packed minimal fields). */
 interface WorkerFrame {
@@ -143,6 +145,8 @@ window.onload = async () => {
   const pauseOverlay = ensurePauseOverlay(game);
   // Instantiate game over overlay early so event will show it instantly
   const gameOverOverlay = ensureGameOverOverlay(game);
+  // Instantiate sandbox overlay helper (lazy show only in SANDBOX)
+  const sandboxOverlay = ensureSandboxOverlay(game);
   // Auto-aim: initialize from persisted setting and expose globally
   try {
     const savedAim = localStorage.getItem('cs-aimMode');
@@ -178,6 +182,26 @@ window.onload = async () => {
     const detail = (e as CustomEvent).detail || {};
     pauseOverlay.show(!!detail.auto);
     Logger.info('[main.ts] Pause overlay shown (auto=' + (!!detail.auto) + ')');
+  });
+
+  // Sandbox helpers: press T to spawn 1 dummy, Shift+T to spawn 5; press Y to clear dummies
+  window.addEventListener('keydown', (e) => {
+    const gm = (game as any).gameMode;
+    if (gm !== 'SANDBOX') return;
+    const st = game.getState ? game.getState() : (game as any).state;
+    if (st !== 'GAME') return;
+    if (e.key === 't' || e.key === 'T') {
+      const count = e.shiftKey ? 5 : 1;
+      window.dispatchEvent(new CustomEvent('sandboxSpawnDummy', { detail: { count, radius: 32, hp: 5000 } }));
+    } else if (e.key === 'y' || e.key === 'Y') {
+      window.dispatchEvent(new CustomEvent('sandboxClearDummies'));
+    } else if (e.key === 'o' || e.key === 'O') {
+      // Open character select to switch operative mid-sandbox
+      window.dispatchEvent(new CustomEvent('showCharacterSelect'));
+    } else if (e.key === 'u' || e.key === 'U') {
+      // Toggle sandbox overlay
+      try { ensureSandboxOverlay(game).toggle(); } catch {}
+    }
   });
   window.addEventListener('hidePauseOverlay', () => pauseOverlay.hide());
 
@@ -276,6 +300,7 @@ window.onload = async () => {
   // Instantiate CharacterSelectPanel after assets are loaded
   const characterSelectPanel = new CharacterSelectPanel();
   game.setCharacterSelectPanel(characterSelectPanel);
+  const codex = new Codex();
 
   // Instantiate UpgradePanel after player is initialized
   import('./ui/UpgradePanel').then(({ UpgradePanel }) => {
@@ -372,6 +397,45 @@ window.onload = async () => {
     canvas.style.display = 'block';
     canvas.style.zIndex = '10';
     game.startCinematicAndGame(); // Start cinematic and then game
+    // Auto-show sandbox overlay when launching SANDBOX and spawn a few targets
+    if ((game as any).gameMode === 'SANDBOX') {
+      try {
+        // delay to ensure state advanced to GAME
+        setTimeout(() => {
+          // Ensure canvas is visible
+          canvas.style.display = 'block';
+          canvas.style.zIndex = '10';
+          ensureSandboxOverlay(game).show();
+          window.dispatchEvent(new CustomEvent('sandboxSpawnDummy', { detail: { count: 3, radius: 32, hp: 5000 } }));
+        }, 0);
+      } catch {}
+    } else {
+      try { ensureSandboxOverlay(game).hide(); } catch {}
+    }
+  });
+
+  // If a character is selected while in Sandbox, immediately restart in Sandbox with the new operative
+  window.addEventListener('characterSelected', (e: Event) => {
+    const gm = (game as any).gameMode;
+    if (gm !== 'SANDBOX') return; // normal flow handles non-sandbox
+    const st = game.getState ? game.getState() : (game as any).state;
+    // Allow switching from GAME or PAUSE
+    const detail = (e as CustomEvent).detail;
+    if (!detail) return;
+    Logger.info('[main.ts] Sandbox operative switch -> restarting with new character');
+    // Hide menu/selector and relaunch
+    try { mainMenu.hide(); } catch {}
+    try { (game as any).selectedCharacterData = detail; } catch {}
+    (game as any).gameMode = 'SANDBOX';
+    game.resetGame(detail); // Player.resetState clears weapons, Game wiring re-adds class default
+    game.startCinematicAndGame();
+    // Re-show overlay after switching operatives (spawn a couple of targets again)
+    try {
+      setTimeout(() => {
+        ensureSandboxOverlay(game).show();
+        window.dispatchEvent(new CustomEvent('sandboxSpawnDummy', { detail: { count: 2, radius: 32, hp: 5000 } }));
+      }, 0);
+    } catch {}
   });
 
   window.addEventListener('showCharacterSelect', () => {
@@ -380,6 +444,22 @@ window.onload = async () => {
     characterSelectPanel.show();
     canvas.style.display = 'block';
     canvas.style.zIndex = '10';
+  try { ensureSandboxOverlay(game).hide(); } catch {}
+  });
+
+  window.addEventListener('showCodex', () => {
+    Logger.info('[main.ts] showCodex event received');
+    mainMenu.hide();
+    characterSelectPanel.hide();
+  try { ensureSandboxOverlay(game).hide(); } catch {}
+    codex.show();
+    // Keep canvas behind to allow UI focus
+    canvas.style.zIndex = '-1';
+  });
+
+  window.addEventListener('hideCodex', () => {
+    Logger.info('[main.ts] hideCodex event received');
+    codex.hide();
   });
 
   window.addEventListener('showMainMenu', () => {
@@ -387,7 +467,9 @@ window.onload = async () => {
   characterSelectPanel.hide(); // Hide character select if coming from there
   try { game.stopToMainMenu(); } catch {}
     mainMenu.show();
+  codex.hide();
     canvas.style.zIndex = '-1';
+  try { ensureSandboxOverlay(game).hide(); } catch {}
   try { game.onReturnToMainMenu(); } catch { /* ignore if not yet defined */ }
   });
 
@@ -396,6 +478,7 @@ window.onload = async () => {
     characterSelectPanel.hide();
     mainMenu.show();
     canvas.style.zIndex = '-1';
+  try { ensureSandboxOverlay(game).hide(); } catch {}
   });
 
   window.addEventListener('pauseGame', () => {

@@ -11,6 +11,8 @@ export type Enemy = { x: number; y: number; hp: number; maxHp: number; radius: n
 };
 
 export type Chest = { x: number; y: number; radius: number; active: boolean; }; // New Chest type
+export type SpecialItem = { x: number; y: number; radius: number; active: boolean; type: 'HEAL' | 'MAGNET' | 'NUKE'; ttlMs: number };
+export type SpecialTreasure = { x: number; y: number; radius: number; active: boolean; hp: number; maxHp: number; seed: number };
 
 import { Player } from './Player';
 import type { Bullet } from './Bullet';
@@ -49,6 +51,10 @@ export class EnemyManager {
   private vacuumElapsedMs: number = 0; // elapsed time during current vacuum
   private chests: Chest[] = []; // Active chests
   private chestPool: Chest[] = []; // Chest pool
+  private specialItems: SpecialItem[] = []; // Active special items (heal/magnet/nuke)
+  private specialItemPool: SpecialItem[] = []; // Pool for special items
+  private treasures: SpecialTreasure[] = []; // Destructible treasures that drop a random special item
+  private treasurePool: SpecialTreasure[] = []; // Pool for treasures
   private assetLoader: AssetLoader | null = null;
   private waves: Wave[]; // legacy static waves (will phase out)
   private dynamicWaveAccumulator: number = 0; // ms accumulator for dynamic spawner
@@ -69,6 +75,12 @@ export class EnemyManager {
   private avgFrameMs: number = 16; // exponential moving average of frame time (ms)
   private lastPerfSample: number = performance.now();
   private spawnIntervalDynamic: number = 300; // base spawn cadence in ms (can stretch under load)
+  // Random special item/treasure spawns (real games)
+  private nextSpecialSpawnAtMs: number = 0;
+  private specialSpawnMinMs: number = 45000; // 45s ..
+  private specialSpawnMaxMs: number = 80000; // ..80s between spawns
+  private maxActiveSpecialItems: number = 3;
+  private maxActiveTreasures: number = 2;
   // Knockback configuration
   private knockbackDecayTauMs: number = 220; // exponential decay time constant (larger = longer slide)
   private readonly knockbackBaseMs: number = 140;
@@ -150,7 +162,9 @@ export class EnemyManager {
     this.assetLoader = assetLoader || null;
     this.preallocateEnemies(difficulty);
     this.preallocateGems();
-    this.preallocateChests();
+  this.preallocateChests();
+  this.preallocateSpecialItems();
+  this.preallocateTreasures();
   this.waves = []; // legacy disabled; dynamic system takes over
     // Listen for spawnChest event from BossManager
     window.addEventListener('spawnChest', (e: Event) => {
@@ -170,6 +184,15 @@ export class EnemyManager {
       this.spawnChest(customEvent.detail.x, customEvent.detail.y);
     });
     window.addEventListener('bossGemVacuum', () => this.vacuumGemsToPlayer());
+    // Listen for explicit spawns of special items and treasures
+    window.addEventListener('spawnSpecialItem', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      this.spawnSpecialItem(d.x ?? this.player.x, d.y ?? this.player.y, d.type as SpecialItem['type'] | undefined);
+    });
+    window.addEventListener('spawnTreasure', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      this.spawnTreasure(d.x ?? this.player.x + 40, d.y ?? this.player.y + 40, d.hp ?? 200);
+    });
     // Listen for Bio Engineer Outbreak events (force contagion radius around player)
     window.addEventListener('bioOutbreakStart', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
@@ -254,6 +277,88 @@ export class EnemyManager {
     if (this.usePreRenderedSprites) this.preRenderEnemySprites();
   // Attempt to load shared enemy image and build size variants
   this.loadSharedEnemyImage();
+  // Schedule first special spawn for real games
+  try { this.scheduleNextSpecialSpawn(); } catch {}
+    // Sandbox: Spawn/Clear dummy targets for testing
+    window.addEventListener('sandboxSpawnDummy', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      const count = Math.max(1, Math.min(12, d.count || 1));
+      const radius = Math.max(10, Math.min(80, d.radius || 32));
+      const hp = Math.max(1, d.hp || 1500);
+      const spacing = Math.max(radius * 3, 90);
+      const baseAngle = 0; // in front of player
+      for (let i = 0; i < count; i++) {
+        const ang = baseAngle;
+        const dist = 240 + i * spacing;
+        const x = this.player.x + Math.cos(ang) * dist;
+        const y = this.player.y + Math.sin(ang) * dist;
+        this.spawnDummyEnemy(x, y, radius, hp);
+      }
+    });
+    window.addEventListener('sandboxClearDummies', () => {
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e: any = this.enemies[i];
+        if (e && e.active && e._isDummy) {
+          e.active = false;
+          this.enemyPool.push(e);
+        }
+      }
+      // Compact active list on next update naturally
+    });
+    // Scatter XP gems within the current viewport
+    window.addEventListener('sandboxScatterGems', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      const count = Math.max(1, Math.min(200, d.count || 30));
+      const camX = (window as any).__camX || 0;
+      const camY = (window as any).__camY || 0;
+      const vw = (window as any).__designWidth || 1280;
+      const vh = (window as any).__designHeight || 720;
+      for (let i = 0; i < count; i++) {
+        const x = camX + Math.random() * vw;
+        const y = camY + Math.random() * vh;
+        this.spawnGem(x, y, 1);
+      }
+    });
+    // Clear XP gems within the current viewport
+    window.addEventListener('sandboxClearGemsInView', () => {
+      const camX = (window as any).__camX || 0;
+      const camY = (window as any).__camY || 0;
+      const vw = (window as any).__designWidth || 1280;
+      const vh = (window as any).__designHeight || 720;
+      const minX = camX, maxX = camX + vw, minY = camY, maxY = camY + vh;
+      for (let i = 0; i < this.gems.length; i++) {
+        const g = this.gems[i]; if (!g.active) continue;
+        if (g.x >= minX && g.x <= maxX && g.y >= minY && g.y <= maxY) { g.active = false; this.gemPool.push(g); }
+      }
+    });
+    // Spawn regular enemies within the current viewport (for NUKE tests)
+    window.addEventListener('sandboxSpawnViewEnemies', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      const count = Math.max(1, Math.min(100, d.count || 10));
+      const radius = Math.max(10, Math.min(80, d.radius || 28));
+      const hp = Math.max(1, d.hp || 1500);
+      const camX = (window as any).__camX || 0;
+      const camY = (window as any).__camY || 0;
+      const vw = (window as any).__designWidth || 1280;
+      const vh = (window as any).__designHeight || 720;
+      for (let i = 0; i < count; i++) {
+        const x = camX + Math.random() * vw;
+        const y = camY + Math.random() * vh;
+        this.spawnDummyEnemy(x, y, radius, hp);
+      }
+    });
+    // Clear enemies within the current viewport
+    window.addEventListener('sandboxClearViewEnemies', () => {
+      const camX = (window as any).__camX || 0;
+      const camY = (window as any).__camY || 0;
+      const vw = (window as any).__designWidth || 1280;
+      const vh = (window as any).__designHeight || 720;
+      const minX = camX, maxX = camX + vw, minY = camY, maxY = camY + vh;
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e: any = this.enemies[i]; if (!e.active) continue;
+        if (e.x >= minX && e.x <= maxX && e.y >= minY && e.y <= maxY) { e.active = false; this.enemyPool.push(e); }
+      }
+    });
   }
   /** Plant a Data Sigil at position with radius and a limited number of pulses. */
   private plantDataSigil(x:number, y:number, radius:number, pulseCount:number, pulseDamage:number, follow:boolean=false, cadenceMs?: number, initialDelayMs?: number){
@@ -514,6 +619,18 @@ export class EnemyManager {
     }
   }
 
+  private preallocateSpecialItems(): void {
+    for (let i = 0; i < 24; i++) {
+      this.specialItemPool.push({ x: 0, y: 0, radius: 14, active: false, type: 'HEAL', ttlMs: 0 });
+    }
+  }
+
+  private preallocateTreasures(): void {
+    for (let i = 0; i < 8; i++) {
+      this.treasurePool.push({ x: 0, y: 0, radius: 22, active: false, hp: 0, maxHp: 0, seed: 0 });
+    }
+  }
+
   public getEnemies() {
   return this.activeEnemies;
   }
@@ -544,6 +661,85 @@ export class EnemyManager {
 
   public getChests() {
     return this.chests.filter(c => c.active);
+  }
+  public getSpecialItems() { return this.specialItems.filter(i => i.active); }
+  public getTreasures() { return this.treasures.filter(t => t.active); }
+
+  /** Schedule the next random special spawn window. */
+  private scheduleNextSpecialSpawn() {
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const span = this.specialSpawnMinMs + Math.random() * (this.specialSpawnMaxMs - this.specialSpawnMinMs);
+    this.nextSpecialSpawnAtMs = now + span;
+  }
+
+  /** Pick a reasonable spawn point far from player, clamped to walkable if available. */
+  private pickSpecialSpawnPoint(): { x: number; y: number } {
+    const px = this.player.x, py = this.player.y;
+    let sx = px, sy = py;
+    try {
+      const rm: any = (window as any).__roomManager;
+      // Prefer far, unvisited room center if structure exists
+      if (rm && typeof rm.getFarthestRoom === 'function') {
+        const far = rm.getFarthestRoom(px, py, true);
+        if (far) { sx = far.x + far.w/2; sy = far.y + far.h/2; }
+        else {
+          // Fallback: random ring 1200..1800 away
+          const ang = Math.random() * Math.PI * 2;
+          const dist = 1200 + Math.random() * 600;
+          sx = px + Math.cos(ang) * dist; sy = py + Math.sin(ang) * dist;
+        }
+        // Clamp to walkable interior if available
+        if (typeof rm.clampToWalkable === 'function') {
+          const c = rm.clampToWalkable(sx, sy, 18);
+          sx = c.x; sy = c.y;
+        }
+      } else {
+        // Open world: random ring 1200..1800 away
+        const ang = Math.random() * Math.PI * 2;
+        const dist = 1200 + Math.random() * 600;
+        sx = px + Math.cos(ang) * dist; sy = py + Math.sin(ang) * dist;
+      }
+    } catch { /* ignore, use px/py fallback */ }
+    // Ensure not too close; if so, push outward along ray
+    const dx = sx - px, dy = sy - py;
+    const d2 = dx*dx + dy*dy; const minD = 800;
+    if (d2 < minD*minD) {
+      const d = Math.sqrt(d2) || 1; const nx = dx/d, ny = dy/d;
+      sx = px + nx * minD; sy = py + ny * minD;
+    }
+    return { x: sx, y: sy };
+  }
+
+  /** Try to spawn a random treasure or special item in non-sandbox modes on schedule. */
+  private tryScheduledSpecialSpawns(nowMs: number) {
+    // Only in real gameplay (SHOWDOWN/DUNGEON)
+    const gm = (window as any).__gameInstance?.gameMode;
+    if (gm === 'SANDBOX') return;
+    if (!this.nextSpecialSpawnAtMs) this.scheduleNextSpecialSpawn();
+    if (nowMs < this.nextSpecialSpawnAtMs) return;
+    // Capacity checks
+    const activeItems = this.getSpecialItems().length;
+    const activeTreasures = this.getTreasures().length;
+    if (activeItems >= this.maxActiveSpecialItems && activeTreasures >= this.maxActiveTreasures) {
+      this.scheduleNextSpecialSpawn();
+      return;
+    }
+    // Choose spawn type: 60% direct item, 40% treasure (if capacity allows)
+    const roll = Math.random();
+    const canItem = activeItems < this.maxActiveSpecialItems;
+    const canTreasure = activeTreasures < this.maxActiveTreasures;
+    const spawnTreasure = canTreasure && (!canItem ? true : roll >= 0.60);
+    const pos = this.pickSpecialSpawnPoint();
+    if (spawnTreasure) {
+      // Scaled HP mildly over time could be added later; keep flat for now
+      this.spawnTreasure(pos.x, pos.y, 220);
+    } else if (canItem) {
+      // Random type; slight bias toward MAGNET for fun: H:30%, M:40%, N:30%
+      const r = Math.random();
+      const t = (r < 0.30) ? 'HEAL' : (r < 0.70) ? 'MAGNET' : 'NUKE';
+      this.spawnSpecialItem(pos.x, pos.y, t as SpecialItem['type']);
+    }
+    this.scheduleNextSpecialSpawn();
   }
 
   /**
@@ -581,8 +777,9 @@ export class EnemyManager {
        * - For all other sources: if impact coordinates are provided, use those (feels more physical);
        *   otherwise fall back to radial-from-player.
        */
-      const spec = WEAPON_SPECS[sourceWeaponType];
-      if (spec) {
+  const spec = WEAPON_SPECS[sourceWeaponType];
+  // Do not apply knockback to Sandbox dummy targets
+  if (spec && !(enemy as any)._isDummy) {
         // Choose knockback origin per weapon type
         const isBeam = sourceWeaponType === WeaponType.BEAM;
         const isBioTick = sourceWeaponType === WeaponType.BIO_TOXIN; // DoT ticks only; direct impact is zeroed elsewhere
@@ -1011,6 +1208,47 @@ export class EnemyManager {
   const minY = camY - pad;
   const maxY = camY + viewH + pad;
   const now = performance.now();
+  // Sandbox low-FX detection
+  const __gm = (window as any).__gameInstance?.gameMode;
+  const __sandbox = __gm === 'SANDBOX';
+  const forceLow = !!((window as any).__sandboxForceLowFX);
+  const lowFX = __sandbox && (forceLow || this.avgFrameMs > 18);
+  // In SANDBOX, render a spawn pad at a fixed world position for item tests (degraded in low-FX)
+  try {
+    if (__sandbox) {
+      const gp: any = (window as any);
+      const pad = gp.__sandboxPad as {x:number;y:number}|undefined;
+      const padX = pad?.x ?? (this.player.x);
+      const padY = pad?.y ?? (this.player.y - 140); // fallback on first frames
+      if (!(padX < minX || padX > maxX || padY < minY || padY > maxY)) {
+        ctx.save();
+        if (!lowFX) {
+          ctx.globalCompositeOperation = 'screen';
+          const r = 22 + Math.sin(now * 0.006) * 2;
+          // Outer glow ring
+          ctx.globalAlpha = 0.25;
+          ctx.beginPath(); ctx.arc(padX, padY, r * 1.25, 0, Math.PI * 2);
+          ctx.strokeStyle = '#5EEBFF'; ctx.lineWidth = 3; ctx.shadowColor = '#5EEBFF'; ctx.shadowBlur = 12; ctx.stroke();
+          // Inner disk
+          ctx.globalAlpha = 0.18;
+          const grad = ctx.createRadialGradient(padX, padY, 4, padX, padY, r);
+          grad.addColorStop(0, 'rgba(0,180,220,0.55)');
+          grad.addColorStop(1, 'rgba(0,180,220,0)');
+          ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(padX, padY, r, 0, Math.PI * 2); ctx.fill();
+          // Label
+          ctx.globalAlpha = 0.9; ctx.shadowBlur = 6; ctx.shadowColor = '#5EEBFF';
+          ctx.fillStyle = '#CFFFFF'; ctx.font = '10px Orbitron, sans-serif';
+          ctx.textAlign = 'center'; ctx.fillText('ITEM PAD', padX, padY - r - 8);
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#5EEBFF';
+          ctx.beginPath(); ctx.arc(padX, padY, 8, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+  } catch {}
   // Psionic Weaver Lattice: draw a large pulsing slow zone around the player while active (behind enemies)
   try {
     const until = (window as any).__weaverLatticeActiveUntil || 0;
@@ -1309,7 +1547,9 @@ export class EnemyManager {
   // Draw enemies (cached sprite images if enabled)
     // Compute heavy FX budget per frame: start at 32 and scale down under load
     const frameMsForBudget = this.avgFrameMs || 16;
-    let heavyBudget = frameMsForBudget > 55 ? 8 : frameMsForBudget > 40 ? 16 : 32;
+  let heavyBudget = ( (window as any).__gameInstance?.gameMode === 'SANDBOX' && ((window as any).__sandboxForceLowFX || this.avgFrameMs > 18) )
+      ? 0
+      : (frameMsForBudget > 55 ? 8 : frameMsForBudget > 40 ? 16 : 32);
     // Cap to a fraction of visible enemies to avoid worst-case storms
     heavyBudget = Math.min(heavyBudget, Math.ceil(this.activeEnemies.length * 0.25));
     if (this.usePreRenderedSprites) {
@@ -1383,7 +1623,7 @@ export class EnemyManager {
           }
         }
         // RGB glitch effect: use cached-tint ghosts; cap heavy work per frame
-        if ((eAny._rgbGlitchUntil || 0) > now) {
+  if (!(((window as any).__gameInstance?.gameMode) === 'SANDBOX' && (((window as any).__sandboxForceLowFX) || this.avgFrameMs > 18)) && (eAny._rgbGlitchUntil || 0) > now) {
           const tLeft = Math.max(0, Math.min(1, (eAny._rgbGlitchUntil - now) / 220));
           const phase = (eAny._rgbGlitchPhase || 0);
           ctx.save();
@@ -1633,6 +1873,110 @@ export class EnemyManager {
       ctx.arc(chest.x, chest.y, chest.radius, 0, Math.PI*2);
       ctx.fill();
     }
+    // Draw special treasures (distinctive crystal with HP bar)
+    for (let i = 0; i < this.treasures.length; i++) {
+      const t = this.treasures[i]; if (!t.active) continue; if (t.x < minX || t.x > maxX || t.y < minY || t.y > maxY) continue;
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      const pulse = 0.9 + 0.1 * Math.sin((now + t.seed) * 0.008);
+      const r = t.radius * pulse;
+      // Hex crystal body
+      ctx.beginPath();
+      for (let k = 0; k < 6; k++) {
+        const a = k * Math.PI / 3;
+        const vx = t.x + Math.cos(a) * r;
+        const vy = t.y + Math.sin(a) * r;
+        if (k === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#66CCFF';
+      ctx.shadowColor = '#66CCFF';
+      ctx.shadowBlur = 16;
+      ctx.globalAlpha = 0.85;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#E6F7FF';
+      ctx.stroke();
+      // HP bar
+      const pct = Math.max(0, Math.min(1, t.hp / t.maxHp));
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#222';
+      ctx.fillRect(t.x - 20, t.y - r - 10, 40, 5);
+      ctx.fillStyle = '#0F0';
+      ctx.fillRect(t.x - 20, t.y - r - 10, 40 * pct, 5);
+      ctx.restore();
+    }
+    // Draw special items with distinctive icons
+    for (let i = 0; i < this.specialItems.length; i++) {
+      const it = this.specialItems[i]; if (!it.active) continue; if (it.x < minX || it.x > maxX || it.y < minY || it.y > maxY) continue;
+      const type = it.type;
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      if (type === 'HEAL') {
+        // Red cross with cyan glowing lightning bolt overlay
+        // Soft cyan glow backdrop
+        ctx.globalAlpha = 0.22;
+        ctx.beginPath(); ctx.arc(it.x, it.y, it.radius * 1.15, 0, Math.PI * 2);
+        ctx.fillStyle = '#33E6FF'; ctx.shadowColor = '#33E6FF'; ctx.shadowBlur = 16; ctx.fill();
+        // Red cross
+        ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+        ctx.fillStyle = '#FF2A2A';
+        const arm = Math.max(6, it.radius * 0.55);
+        const thick = Math.max(5, it.radius * 0.40);
+        ctx.fillRect(it.x - thick * 0.5, it.y - arm, thick, arm * 2);
+        ctx.fillRect(it.x - arm, it.y - thick * 0.5, arm * 2, thick);
+        // Cyan lightning bolt (simple zig-zag)
+        ctx.strokeStyle = '#66F9FF'; ctx.lineWidth = 3; ctx.shadowColor = '#66F9FF'; ctx.shadowBlur = 10; ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        const b = it.radius * 0.95; // bolt extent
+        ctx.moveTo(it.x + b * 0.15, it.y - b * 0.65);
+        ctx.lineTo(it.x - b * 0.10, it.y - b * 0.10);
+        ctx.lineTo(it.x + b * 0.05, it.y - b * 0.10);
+        ctx.lineTo(it.x - b * 0.20, it.y + b * 0.60);
+        ctx.stroke();
+      } else if (type === 'MAGNET') {
+        // Classic horseshoe magnet with white poles
+        ctx.globalAlpha = 0.95;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        // Red U-shape
+        ctx.beginPath();
+        ctx.arc(it.x, it.y, it.radius, Math.PI * 0.2, Math.PI * 1.8);
+        ctx.strokeStyle = '#FF3344'; ctx.shadowColor = '#FF8899'; ctx.shadowBlur = 12; ctx.lineWidth = Math.max(8, it.radius * 0.6); ctx.stroke();
+        // White pole tips
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = Math.max(6, it.radius * 0.38);
+        ctx.beginPath(); ctx.arc(it.x, it.y, it.radius, Math.PI * 0.18, Math.PI * 0.34); ctx.stroke();
+        ctx.beginPath(); ctx.arc(it.x, it.y, it.radius, Math.PI * 1.66, Math.PI * 1.82); ctx.stroke();
+      } else {
+        // NUKE: skull icon
+        // Soft glow
+        ctx.globalAlpha = 0.22; ctx.beginPath(); ctx.arc(it.x, it.y, it.radius * 1.2, 0, Math.PI * 2);
+        ctx.fillStyle = '#FFFFFF'; ctx.shadowColor = '#CFE9FF'; ctx.shadowBlur = 14; ctx.fill();
+        // Skull head
+        ctx.globalAlpha = 1; ctx.shadowBlur = 0; ctx.fillStyle = '#FFFFFF';
+        ctx.beginPath(); ctx.arc(it.x, it.y - it.radius * 0.15, it.radius * 0.85, 0, Math.PI * 2); ctx.fill();
+        // Jaw
+        ctx.fillRect(it.x - it.radius * 0.45, it.y + it.radius * 0.35, it.radius * 0.9, it.radius * 0.35);
+        // Eyes
+        ctx.fillStyle = '#111';
+        ctx.beginPath(); ctx.arc(it.x - it.radius * 0.35, it.y - it.radius * 0.20, it.radius * 0.22, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(it.x + it.radius * 0.35, it.y - it.radius * 0.20, it.radius * 0.22, 0, Math.PI * 2); ctx.fill();
+        // Nose (inverted triangle)
+        ctx.beginPath();
+        ctx.moveTo(it.x, it.y - it.radius * 0.02);
+        ctx.lineTo(it.x - it.radius * 0.10, it.y + it.radius * 0.18);
+        ctx.lineTo(it.x + it.radius * 0.10, it.y + it.radius * 0.18);
+        ctx.closePath(); ctx.fill();
+        // Teeth bars
+        ctx.fillStyle = '#DDD';
+        const tY = it.y + it.radius * 0.38; const tW = it.radius * 0.10; const tH = it.radius * 0.22;
+        for (let k = -2; k <= 2; k++) {
+          ctx.fillRect(it.x + k * (tW * 1.2) - tW * 0.5, tY, tW, tH);
+        }
+      }
+      ctx.restore();
+    }
     // Draw poison puddles
     for (let i = 0; i < this.poisonPuddles.length; i++) {
       const puddle = this.poisonPuddles[i];
@@ -1670,13 +2014,20 @@ export class EnemyManager {
   const targetInterval = severeLoad ? 600 : highLoad ? 450 : 300;
   // Ease toward target to avoid abrupt shifts
   this.spawnIntervalDynamic += (targetInterval - this.spawnIntervalDynamic) * 0.15;
-    // Wave-based spawning
-    // Dynamic spawning (every 300ms)
-    this.dynamicWaveAccumulator += deltaTime;
-    if (this.dynamicWaveAccumulator >= this.spawnIntervalDynamic) {
-      this.dynamicWaveAccumulator -= this.spawnIntervalDynamic;
-      this.runDynamicSpawner(gameTime);
-    }
+  // Wave-based spawning
+    // Dynamic spawning (every 300ms) – disabled in Sandbox mode
+    const gm = (window as any).__gameInstance?.gameMode;
+    const isSandbox = gm === 'SANDBOX';
+    if (!isSandbox) {
+      this.dynamicWaveAccumulator += deltaTime;
+      if (this.dynamicWaveAccumulator >= this.spawnIntervalDynamic) {
+        this.dynamicWaveAccumulator -= this.spawnIntervalDynamic;
+        this.runDynamicSpawner(gameTime);
+      }
+  }
+
+  // Timed special spawns (items/treasures) in real games
+  this.tryScheduledSpecialSpawns(nowFrame);
 
     // Rogue Hacker: auto-cast a paralysis/DoT zone every 1.5s, but only one active zone at a time.
     try {
@@ -1866,8 +2217,10 @@ export class EnemyManager {
         const clamped = rm.clampToWalkable(enemy.x, enemy.y, enemy.radius || 20);
         enemy.x = clamped.x; enemy.y = clamped.y;
       }
-      // Player-enemy collision
+      // Player-enemy collision (do not apply for Sandbox dummies)
       if (dist < enemy.radius + this.player.radius) {
+        const isDummy = (enemy as any)._isDummy === true;
+        if (!isDummy) {
         // Hit cooldown: enemies can damage player at most once per second
         const now = performance.now();
         const lastHit = (enemy as any)._lastPlayerHitTime || 0;
@@ -1884,12 +2237,16 @@ export class EnemyManager {
           this.player.x += (kdx / kd) * kb;
           this.player.y += (kdy / kd) * kb;
         }
+        }
       }
   // Bullet collisions handled centrally in BulletManager.update now (removed duplicate per-enemy pass)
       // Death handling
       if (enemy.hp <= 0 && enemy.active) {
+        const isDummy = (enemy as any)._isDummy === true;
         enemy.active = false;
-        // Poison contagion: on death with significant stacks, spread a portion to nearby enemies
+        // Skip on dummy targets
+        if (!isDummy) {
+          // Poison contagion: on death with significant stacks, spread a portion to nearby enemies
         const eAny: any = enemy as any;
   const stacks = eAny._poisonStacks | 0;
   if (stacks >= 3) {
@@ -1904,21 +2261,22 @@ export class EnemyManager {
             }
           }
         }
-        // XP orb drop chance per enemy type (fewer total orbs to smooth pacing)
-        let dropChance = 0.5;
-        switch (enemy.type) {
-          case 'small': dropChance = XP_DROP_CHANCE_SMALL; break;
-          case 'medium': dropChance = XP_DROP_CHANCE_MEDIUM; break;
-          case 'large': dropChance = XP_DROP_CHANCE_LARGE; break;
+          // XP orb drop chance per enemy type (fewer total orbs to smooth pacing)
+          let dropChance = 0.5;
+          switch (enemy.type) {
+            case 'small': dropChance = XP_DROP_CHANCE_SMALL; break;
+            case 'medium': dropChance = XP_DROP_CHANCE_MEDIUM; break;
+            case 'large': dropChance = XP_DROP_CHANCE_LARGE; break;
+          }
+          if (Math.random() < dropChance) {
+            const baseTier = this.enemyXpBaseTier[enemy.type] || 1;
+            // Gate high-tier upgrades: only elite ("large") enemies can reach tier 4; small/medium cap at tier 3
+            const maxTier = (enemy.type === 'large') ? 4 : 3;
+            this.spawnGem(enemy.x, enemy.y, baseTier, maxTier);
+          }
+          // Removed on-kill explosion effect for Mech Mortar (Titan Mech)
+          this.killCount++;
         }
-        if (Math.random() < dropChance) {
-          const baseTier = this.enemyXpBaseTier[enemy.type] || 1;
-          // Gate high-tier upgrades: only elite ("large") enemies can reach tier 4; small/medium cap at tier 3
-          const maxTier = (enemy.type === 'large') ? 4 : 3;
-          this.spawnGem(enemy.x, enemy.y, baseTier, maxTier);
-        }
-  // Removed on-kill explosion effect for Mech Mortar (Titan Mech)
-  this.killCount++;
         // Scavenger scrap stacks: increment when kill happened and last hit was Scrap-Saw
         if (enemy._lastHitByWeapon === WeaponType.SCRAP_SAW) {
           const pAny: any = this.player as any;
@@ -1930,7 +2288,7 @@ export class EnemyManager {
         }
         // Passive: AOE On Kill
         const playerAny: any = this.player as any;
-        if (playerAny.hasAoeOnKill) {
+        if (playerAny.hasAoeOnKill && !isDummy) {
           const gdm = playerAny.getGlobalDamageMultiplier?.() ?? (playerAny.globalDamageMultiplier ?? 1);
           const dmg = (this.player.bulletDamage || 10) * gdm * 0.4; // 40% scaled
           const areaMul = playerAny.getGlobalAreaMultiplier?.() ?? (playerAny.globalAreaMultiplier ?? 1);
@@ -2267,6 +2625,10 @@ export class EnemyManager {
 
     // Update chests
     this.updateChests(deltaTime);
+  // Update treasures (bullet collision + death -> drop special)
+  this.updateTreasures(deltaTime, bullets);
+  // Update special items (magnet drift + pickup + TTL)
+  this.updateSpecialItems(deltaTime);
 
   // Poison puddle update (ensure this runs every frame; now ms-based)
   this.updatePoisonPuddles(deltaTime);
@@ -2438,6 +2800,139 @@ export class EnemyManager {
     Logger.info(`Chest spawned at ${x}, ${y}`);
   }
 
+  /** Spawn a special item at x,y; type optional -> random. */
+  private spawnSpecialItem(x: number, y: number, type?: SpecialItem['type']) {
+    let it = this.specialItemPool.pop();
+    if (!it) it = { x: 0, y: 0, radius: 14, active: false, type: 'HEAL', ttlMs: 0 };
+    it.x = x; it.y = y; it.radius = 14; it.active = true; it.type = type || (Math.random() < 0.34 ? 'HEAL' : Math.random() < 0.5 ? 'MAGNET' : 'NUKE');
+    it.ttlMs = performance.now() + 30000; // 30s lifetime
+    this.specialItems.push(it);
+  }
+
+  /** Spawn a destructible treasure that drops a random special item. */
+  private spawnTreasure(x: number, y: number, hp: number = 200) {
+    let t = this.treasurePool.pop();
+    if (!t) t = { x: 0, y: 0, radius: 22, active: false, hp: 0, maxHp: 0, seed: 0 };
+    t.x = x; t.y = y; t.radius = 22; t.active = true; t.hp = hp; t.maxHp = hp; t.seed = Math.floor(Math.random()*1e6);
+    this.treasures.push(t);
+  }
+
+  /** Update treasures: take bullet damage; on destroy, drop a random special item. */
+  private updateTreasures(deltaTime: number, bullets: Bullet[]) {
+    // Clamp to walkable and handle bullet collisions
+    const rm = (window as any).__roomManager;
+    for (let i = 0; i < this.treasures.length; i++) {
+      const t = this.treasures[i]; if (!t.active) continue;
+      if (rm && typeof rm.clampToWalkable === 'function') {
+        const c = rm.clampToWalkable(t.x, t.y, t.radius);
+        t.x = c.x; t.y = c.y;
+      }
+      // Bullet collisions (simple loop; low counts typical). Use squared distances.
+      for (let b = 0; b < bullets.length; b++) {
+        const bullet = bullets[b]; if (!bullet.active) continue;
+        const dx = bullet.x - t.x; const dy = bullet.y - t.y;
+        const rr = (t.radius + bullet.radius); if (dx*dx + dy*dy > rr*rr) continue;
+        // Hit!
+        t.hp -= bullet.damage;
+        bullet.active = false;
+        if (this.particleManager) this.particleManager.spawn(t.x, t.y, 1, '#B3E5FF');
+        if (t.hp <= 0) {
+          t.active = false; this.treasurePool.push(t);
+          // Drop random special item at treasure location
+          const roll = Math.random();
+          const type: SpecialItem['type'] = roll < 0.34 ? 'HEAL' : roll < 0.67 ? 'MAGNET' : 'NUKE';
+          this.spawnSpecialItem(t.x, t.y, type);
+          // Small burst
+          try { this.particleManager?.spawn(t.x, t.y, 10, '#66CCFF', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.5, speedMax: 3.5 }); } catch {}
+          break;
+        }
+      }
+    }
+    // Compact active list
+    {
+      let w = 0; for (let r = 0; r < this.treasures.length; r++) { const t = this.treasures[r]; if (t.active) this.treasures[w++] = t; }
+      this.treasures.length = w;
+    }
+  }
+
+  /** Update items: magnet drift to player, pickup handling, TTL expiry. */
+  private updateSpecialItems(deltaTime: number) {
+    const px = this.player.x, py = this.player.y;
+    const magnetR = Math.max(0, this.player.magnetRadius || 0);
+    const magnetR2 = magnetR * magnetR;
+    const pickupR = Math.max(28, this.player.radius + 10);
+    const now = performance.now();
+    for (let i = 0; i < this.specialItems.length; i++) {
+      const it = this.specialItems[i]; if (!it.active) continue;
+      // TTL
+      if (it.ttlMs && now >= it.ttlMs) { it.active = false; this.specialItemPool.push(it); continue; }
+      // Gentle magnet
+      const dx = px - it.x; const dy = py - it.y; const d2 = dx*dx + dy*dy;
+      if (magnetR > 0 && d2 < magnetR2 && d2 > 0.0001) {
+        const d = Math.sqrt(d2);
+        const t = 1 - Math.min(1, d / magnetR);
+        const pull = (0.06 + t * 0.20);
+        const frameFactor = pull * (deltaTime / 16.6667);
+        it.x += dx * frameFactor; it.y += dy * frameFactor;
+      }
+      // Pickup
+      if (d2 < pickupR * pickupR) {
+        this.applySpecialItemEffect(it.type);
+        it.active = false; this.specialItemPool.push(it);
+      }
+    }
+    // Compact
+    {
+      let w = 0; for (let r = 0; r < this.specialItems.length; r++) { const it = this.specialItems[r]; if (it.active) this.specialItems[w++] = it; }
+      this.specialItems.length = w;
+    }
+  }
+
+  /** Apply special item effects. */
+  private applySpecialItemEffect(type: SpecialItem['type']) {
+    if (type === 'HEAL') {
+      const amount = Math.max(1, Math.round(this.player.maxHp * 0.10));
+      this.player.hp = Math.min(this.player.maxHp, this.player.hp + amount);
+      try { this.particleManager?.spawn(this.player.x, this.player.y, 8, '#66FF99', { sizeMin: 1, sizeMax: 3, lifeMs: 380, speedMin: 1.2, speedMax: 2.2 }); } catch {}
+    } else if (type === 'MAGNET') {
+      // Instantly collect all active XP orbs (gems) on the board
+      let collected = 0;
+      for (let i = 0; i < this.gems.length; i++) {
+        const g = this.gems[i]; if (!g.active) continue;
+        this.player.gainExp(g.value); g.active = false; this.gemPool.push(g); collected++;
+      }
+      // Small pulse FX + mild screenshake
+      try {
+        this.particleManager?.spawn(this.player.x, this.player.y, 12, '#66F9FF', { sizeMin: 1, sizeMax: 2.5, lifeMs: 320, speedMin: 1.5, speedMax: 3 });
+        window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+      } catch {}
+    } else if (type === 'NUKE') {
+      // Destroy enemies only within current viewport
+      const camX = (window as any).__camX || 0;
+      const camY = (window as any).__camY || 0;
+      const vw = (window as any).__designWidth || (this as any).designWidth || 1280;
+      const vh = (window as any).__designHeight || (this as any).designHeight || 720;
+      const minX = camX, maxX = camX + vw, minY = camY, maxY = camY + vh;
+      const nukeDmg = 99999;
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e = this.enemies[i]; if (!e.active) continue;
+        if (e.x >= minX && e.x <= maxX && e.y >= minY && e.y <= maxY) {
+          this.takeDamage(e, nukeDmg);
+        }
+      }
+      try {
+        const bm: any = (window as any).__bossManager;
+        const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+        // Don’t auto-damage boss via nuke; viewport-only enemy clear per request
+      } catch {}
+      // Big FX burst
+      try {
+        this.particleManager?.spawn(this.player.x, this.player.y, 16, '#FFD700', { sizeMin: 2, sizeMax: 4, lifeMs: 520, speedMin: 2, speedMax: 5 });
+        window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 280, intensity: 10 } }));
+      } catch {}
+    }
+  }
+
   // Merge lower tier gems into higher if enough cluster
   private handleGemMerging(): void {
     // We require merges to be spatially local: a cluster of N same-tier gems within a small radius.
@@ -2576,6 +3071,20 @@ export class EnemyManager {
       }
       this.chests.length = write;
     }
+  }
+
+  /** Spawn a stationary Sandbox dummy as an enemy-like target. */
+  private spawnDummyEnemy(x: number, y: number, radius: number, hp: number) {
+  let e = this.enemyPool.pop() as Enemy | undefined;
+  if (!e) e = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'large', damage: 0, id: '' } as Enemy;
+  const enemy = e as Enemy;
+  const anyE: any = enemy as any;
+  enemy.x = x; enemy.y = y; enemy.radius = radius; enemy.active = true; enemy.type = 'large';
+  enemy.hp = hp; enemy.maxHp = hp; enemy.speed = 0; enemy.damage = 0; enemy.id = 'dummy-' + Math.floor(Math.random()*1e9);
+    anyE._isDummy = true; // mark for special handling
+    // Clear statuses
+    anyE._poisonStacks = 0; anyE._burnStacks = 0; anyE._poisonExpire = 0; anyE._burnExpire = 0; anyE._burnTickDamage = 0;
+  this.enemies.push(enemy);
   }
 }
 

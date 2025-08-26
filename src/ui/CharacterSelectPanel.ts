@@ -369,8 +369,12 @@ export class CharacterSelectPanel {
     }));
     
     this.hide();
-  // Return to main menu so user can start mission (prevent white screen where both panels are hidden)
-  window.dispatchEvent(new CustomEvent('showMainMenu'));
+  // In normal runs, return to main menu so user can start mission.
+  // In Sandbox, main.ts handles immediate restart with the selected operative; avoid menu bounce.
+  const gm = (window as any).__game?.gameMode;
+  if (gm !== 'SANDBOX') {
+    window.dispatchEvent(new CustomEvent('showMainMenu'));
+  }
   }
 
   public show(): void {

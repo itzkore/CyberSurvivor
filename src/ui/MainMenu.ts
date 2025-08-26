@@ -288,6 +288,7 @@ export class MainMenu {
   <main class="mm-main">
           <section class="panel left nav-panel">
             <button class="main-cta" id="start-mission-btn">START RUN</button>
+            <button class="main-cta secondary" id="start-sandbox-btn" title="Instant test arena (no sign-in)">START SANDBOX</button>
             <div class="mode-select-block">
               <label for="game-mode-select">MODE</label>
               <select id="game-mode-select" class="mode-select">
@@ -299,6 +300,7 @@ export class MainMenu {
             <div class="nav-buttons">
               <button class="nav-btn" id="character-select-btn">Operatives</button>
               <button class="nav-btn" id="upgrades-btn">Upgrades ${this.playerProfile.currency > 0 ? '<span class="notification-dot"></span>' : ''}</button>
+              <button class="nav-btn" id="codex-btn">Codex</button>
                  <!-- Statistics button removed -->
             </div>
             <div class="patch-notes-container" id="patch-notes">
@@ -674,8 +676,10 @@ export class MainMenu {
 
   private setupEventListeners(): void {
     const startBtn = document.getElementById('start-mission-btn');
+  const startSandboxBtn = document.getElementById('start-sandbox-btn');
     const characterBtn = document.getElementById('character-select-btn');
     const upgradesBtn = document.getElementById('upgrades-btn');
+  const codexBtn = document.getElementById('codex-btn');
     // statistics button removed
 
     startBtn?.addEventListener('click', async () => {
@@ -717,12 +721,43 @@ export class MainMenu {
       }, 550);
     });
 
+    // Start SANDBOX: no auth required, always resets loadout via resetGame path
+    startSandboxBtn?.addEventListener('click', () => {
+      // Subtle SFX
+      SoundManager.playUiClick({ volume: 0.16, durationMs: 90, freq: 980 });
+      const btn = document.getElementById('start-sandbox-btn');
+      if (btn) {
+        btn.classList.add('glitch');
+        (btn as HTMLButtonElement).disabled = true;
+        setTimeout(() => { btn.classList.remove('glitch'); (btn as HTMLButtonElement).disabled = false; }, 700);
+      }
+      const menuRoot = document.getElementById('main-menu-adaptive');
+      if (menuRoot && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        (menuRoot as HTMLElement).style.transition = 'opacity .35s ease';
+        (menuRoot as HTMLElement).style.opacity = '0';
+      }
+      setTimeout(() => {
+        if (this.gameInstance.selectedCharacterData) {
+          this.hide();
+          window.dispatchEvent(new CustomEvent('startGame', { detail: { character: this.gameInstance.selectedCharacterData, mode: 'SANDBOX' } }));
+        } else {
+          // If no operative chosen yet, open selector, and a follow-up selection can be started via the SANDBOX button again
+          this.showCharacterSelect();
+        }
+      }, 420);
+    });
+
     characterBtn?.addEventListener('click', () => {
       this.showCharacterSelect();
     });
 
     upgradesBtn?.addEventListener('click', () => {
       this.showUpgrades();
+    });
+
+    codexBtn?.addEventListener('click', () => {
+      this.hide();
+      window.dispatchEvent(new CustomEvent('showCodex'));
     });
 
     // statistics listener removed
@@ -950,13 +985,17 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
     const spec = WEAPON_SPECS[defaultType as keyof typeof WEAPON_SPECS];
     if (!spec) { container.innerHTML = '<div style="opacity:.6">No class weapon spec found.</div>'; return; }
     const lifetime = spec.lifetime ?? (spec.range && spec.speed ? (spec.range / spec.speed / 60).toFixed(2)+'s' : '—');
+    // Prefer milliseconds if available; display as seconds with 2 decimals
+    const cdSeconds = (typeof (spec as any).cooldownMs === 'number')
+      ? ((spec as any).cooldownMs / 1000)
+      : (typeof spec.cooldown === 'number' ? (spec.cooldown / 60) : undefined);
     const traits = spec.traits?.length ? `<div style='margin-top:4px;font-size:10px;opacity:.75'>Traits: ${spec.traits.map(t=>`<span style="margin-right:4px">${this.escapeHtml(t)}</span>`).join('')}</div>` : '';
     container.innerHTML = `<div class='weapon-block'>
       <div class='w-name'>${spec.name} <span style='font-weight:400;opacity:.55;font-size:10px'>&#x2022; class</span></div>
       <div class='w-desc'>${this.escapeHtml(spec.description||'No description')}</div>
       <div class='w-stats'>
         <span>DMG ${spec.damage}</span>
-        <span>CD ${spec.cooldown}f</span>
+        <span>CD ${typeof cdSeconds === 'number' ? cdSeconds.toFixed(2)+'s' : (typeof spec.cooldown === 'number' ? spec.cooldown+'f' : '—')}</span>
         <span>SPD ${spec.speed}</span>
         <span>RANGE ${spec.range}</span>
         <span>LVL ${spec.maxLevel}</span>

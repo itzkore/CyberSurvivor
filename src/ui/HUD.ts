@@ -426,7 +426,7 @@ export class HUD {
       ctx.fill();
     }
 
-    // XP Orbs (yellow) above enemy dots with last-10s flicker/pulse
+  // XP Orbs (yellow) above enemy dots with last-10s flicker/pulse
     try {
       const em: any = (window as any).__gameInstance?.getEnemyManager?.();
       const gems = em?.getGems ? em.getGems() : [];
@@ -463,6 +463,66 @@ export class HUD {
           ctx.fill();
           ctx.restore();
         }
+      }
+    } catch { /* ignore */ }
+
+    // Special item markers (Heal/Magnet/Nuke) and Treasures
+    try {
+      const em: any = (window as any).__gameInstance?.getEnemyManager?.();
+      const items = em?.getSpecialItems ? em.getSpecialItems() : [];
+      const treasures = em?.getTreasures ? em.getTreasures() : [];
+      // Draw items with TTL-based flicker/pulse (last 10s)
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]; if (!it?.active) continue;
+        const dx = it.x - viewLeft; const dy = it.y - viewTop;
+        if (dx < 0 || dx > viewSize || dy < 0 || dy > viewSize) continue;
+        const sx = minimapX + dx * mapScale; const sy = minimapY + dy * mapScale;
+        let r = 3; // base size
+        let a = 0.95;
+        // TTL flicker similar to XP gems
+        try {
+          const now = performance.now();
+          const ttl = (it as any).ttlMs as number | undefined;
+          if (typeof ttl === 'number') {
+            const rem = ttl - now;
+            if (rem <= 10000) {
+              const prog = Math.max(0, 1 - (rem / 10000));
+              r *= 1 + 0.3 * prog;
+              a = ((Math.floor(now / 120) & 1) === 0) ? 1 : 0.55;
+            }
+          }
+        } catch { /* ignore */ }
+        // Color per type
+        let col = '#66F9FF';
+        if (it.type === 'HEAL') col = '#FF3344';
+        else if (it.type === 'MAGNET') col = '#66F9FF';
+        else if (it.type === 'NUKE') col = '#FFFFFF';
+        ctx.save();
+        ctx.globalAlpha = a;
+        ctx.fillStyle = col;
+        ctx.shadowColor = col; ctx.shadowBlur = 6;
+        ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+      }
+      // Draw treasures as cyan diamonds
+      for (let i = 0; i < treasures.length; i++) {
+        const t = treasures[i]; if (!t?.active) continue;
+        const dx = t.x - viewLeft; const dy = t.y - viewTop;
+        if (dx < 0 || dx > viewSize || dy < 0 || dy > viewSize) continue;
+        const sx = minimapX + dx * mapScale; const sy = minimapY + dy * mapScale;
+        const s = 3.5; // half size of diamond
+        ctx.save();
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = '#66CCFF';
+        ctx.shadowColor = '#66CCFF'; ctx.shadowBlur = 6;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - s);
+        ctx.lineTo(sx + s, sy);
+        ctx.lineTo(sx, sy + s);
+        ctx.lineTo(sx - s, sy);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
       }
     } catch { /* ignore */ }
 

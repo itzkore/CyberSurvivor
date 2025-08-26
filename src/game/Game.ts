@@ -130,7 +130,7 @@ export class Game {
   private environment: EnvironmentManager; // biome + ambient background
   private roomManager: RoomManager; // random rooms structure
   private showRoomDebug: boolean = false;
-  public gameMode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN'; // game mode selection
+  public gameMode: 'SHOWDOWN' | 'DUNGEON' | 'SANDBOX' = 'SHOWDOWN'; // game mode selection
   // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
@@ -228,7 +228,7 @@ export class Game {
   });
   this.environment = new EnvironmentManager();
   this.roomManager = new RoomManager(this.worldW, this.worldH);
-  // Generate structure only for Dungeon mode (default Showdown = open field)
+  // Generate structure only for Dungeon mode (default Showdown/Sandbox = open field)
   if (this.gameMode === 'DUNGEON') {
     this.roomManager.generate(60);
     (this.roomManager as any).setOpenWorld(false);
@@ -296,6 +296,7 @@ export class Game {
 
     // Listen for level up and chest upgrade events to show UpgradePanel
     window.addEventListener('levelup', () => {
+  if (this.gameMode === 'SANDBOX') return; // Disable upgrade panel in sandbox
       if (!this.upgradePanel) {
         Logger.error('[Game] UpgradePanel instance missing on levelup!');
         return;
@@ -309,6 +310,7 @@ export class Game {
       }
     });
     window.addEventListener('forceUpgradeOption', (e: Event) => {
+  if (this.gameMode === 'SANDBOX') return; // Disable forced upgrade panel in sandbox
       if (!this.upgradePanel) {
         Logger.error('[Game] UpgradePanel instance missing on forceUpgradeOption!');
         return;
@@ -583,7 +585,7 @@ export class Game {
     if (!this.roomManager) {
       this.roomManager = new RoomManager(this.worldW, this.worldH);
     }
-    if (this.gameMode === 'DUNGEON') {
+  if (this.gameMode === 'DUNGEON') {
       this.roomManager.generate(60);
   (this.roomManager as any).setOpenWorld(false);
     } else {
@@ -601,16 +603,23 @@ export class Game {
     this.shakeIntensity = 0;
     this.currentShakeTime = 0;
   this.state = 'GAME'; // Set state to GAME after reset
+  // Ensure loop is running when entering GAME directly via reset
+  try { if (this.gameLoop) this.gameLoop.start(); } catch {}
+  try { window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); } catch {}
 
     // Restart upgrade offering: on a fresh run (e.g. after GAME_OVER Enter) the original
     // interval-based free upgrade watcher no longer exists (it was cleared after first run),
     // and initialUpgradeOffered remained true, preventing a new opening panel. Reset the flag
     // and proactively show the UpgradePanel once the state is GAME and the panel is wired.
   // Clear flag so cinematic completion will trigger offering
-  this.initialUpgradeOffered = false;
-  this.pendingInitialUpgrade = true; // arm for post-cinematic/gameplay
-  // Notify UI systems (e.g., UpgradePanel) that a fresh run has started so they can reset session counters like rerolls
-  try { window.dispatchEvent(new CustomEvent('startGame')); } catch {}
+  // In Sandbox, block auto initial upgrade and any upgrade panel
+  if (this.gameMode === 'SANDBOX') {
+    this.initialUpgradeOffered = true;
+    this.pendingInitialUpgrade = false;
+  } else {
+    this.initialUpgradeOffered = false;
+    this.pendingInitialUpgrade = true; // arm for post-cinematic/gameplay
+  }
   // Reset environment visual state to avoid oversaturated gradients on second run
   try { this.environment?.reset?.(); } catch {}
   }
@@ -709,10 +718,9 @@ export class Game {
   }
 
   public startCinematicAndGame() {
-  this.setState('CINEMATIC');
-  // If player switched mode in menu after Game constructed, ensure structures align now
+  const isSandbox = this.gameMode === 'SANDBOX';
+  // Ensure world structure matches current mode
   if (this.gameMode === 'DUNGEON') {
-    // Regenerate fresh dungeon each run
     this.roomManager.clear?.();
     this.roomManager.generate(60);
     (this.roomManager as any).setOpenWorld(false);
@@ -720,9 +728,23 @@ export class Game {
     this.roomManager.clear?.();
     (this.roomManager as any).setOpenWorld(true);
   }
+  if (isSandbox) {
+    // Skip cinematic entirely for Sandbox; ensure loop is running
+    const was = this.state;
+    if (was !== 'GAME') {
+      this.setState('GAME');
+    } else {
+      // If already GAME (e.g., resetGame set it), make sure loop is started
+      if (this.gameLoop) this.gameLoop.start();
+      try { window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); } catch {}
+    }
+    return;
+  }
+  // Default path: play cinematic, then enter gameplay
+  this.setState('CINEMATIC');
   this.cinematic.start(this.gameMode, () => {
     this.setState('GAME');
-  // pendingInitialUpgrade logic in setState will pick this up
+    // pendingInitialUpgrade logic in setState will pick this up
   });
   }
 
@@ -1006,6 +1028,8 @@ export class Game {
   // Optimized background: cached gradient + grid/noise pattern composited with camera offset.
   // Draw dynamic environment (biome aware)
   this.environment.setLowFX(this.lowFX);
+  // In SANDBOX, keep environment bright and avoid darkening overlays
+  if (this.gameMode === 'SANDBOX') (this as any).brightenMode = true;
   this.environment.draw(this.ctx, this.camX, this.camY, this.canvas.width, this.canvas.height);
   // Light biome pocket tint overlay (not part of debug) for visual variety
   if (!this.showRoomDebug) {
@@ -1219,6 +1243,13 @@ export class Game {
         if (canvasElem) canvasElem.style.zIndex = '-1';
         break;
       case 'CINEMATIC':
+        // No cinematic is shown for SANDBOX (guarded in startCinematicAndGame),
+        // but if reached due to an external call, draw a plain environment frame.
+        if (this.gameMode === 'SANDBOX') {
+          this.environment.setLowFX(this.lowFX);
+          this.environment.draw(this.ctx, this.camX, this.camY, this.canvas.width, this.canvas.height);
+          break;
+        }
         this.cinematic.draw(this.ctx, this.canvas);
         break;
     }

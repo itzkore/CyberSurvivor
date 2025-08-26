@@ -140,11 +140,10 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   const speed = 12 + idx * 1.0; // slower baseline and growth
   // Smaller, lighter core for ethereal vibe
   const projectileSize = 9 + idx * 1.0;
-      const explosionRadius = 110 + idx * 15; // earlier AoE presence
       const recoil = 1 + idx * 0.2;
   // Add base pierce that grows slowly with level: L1 starts at 1
   const pierce = 1 + Math.max(0, Math.min(2, Math.floor((idx) / 3))); // 1 at L1-3, 2 at L4-6, 3 at L7
-  return { damage, speed, recoil, cooldown: cd, projectileSize, explosionRadius, pierce };
+  return { damage, speed, recoil, cooldown: cd, projectileSize, pierce };
     },
     projectileVisual: {
       type: 'bullet',
@@ -157,16 +156,63 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       trailColor: 'rgba(255,180,100,0.14)',
       trailLength: 8
     },
-    explosionRadius: 100,
     traits: ['Heavy', 'High Damage', 'Strong Recoil', 'Large Caliber'],
     usageTips: [
       'Pick straight corridors: single shots land best at range.',
       'Time shots on elites—knockback buys safety between volleys.',
       'Upgrade cooldown early to smooth damage rhythm.'
     ],
-    evolution: { evolvedWeaponType: WeaponType.SHOTGUN, requiredPassive: 'Bullet Velocity' },
+  evolution: { evolvedWeaponType: WeaponType.DUAL_PISTOLS, requiredPassive: 'Crit' },
     isClassWeapon: false,
     knockback: 32 // Desert Eagle: strong knockback
+  },
+  /** Evolution: Akimbo Deagle — slow, heavy two-round bursts; higher knockback and damage. */
+  [WeaponType.DUAL_PISTOLS]: {
+    id: WeaponType.DUAL_PISTOLS,
+    name: 'Akimbo Deagle',
+    icon: AssetLoader.normalizePath('/assets/ui/icons/upgrade_speed.png'),
+    description: 'Twin hand cannons. Alternating left/right heavy rounds; slow cadence, brutal stagger.',
+    cooldown: 18, // frames between individual shots in the burst; overall cadence set via getLevelStats
+    salvo: 2,     // two bullets per trigger
+    // Runner Gun style initial spread; converging aim recalculates per-barrel
+    spread: 0.12,
+    projectile: 'bullet_cyan',
+    speed: 12,
+    range: 640,
+    maxLevel: 7,
+    damage: 36,
+    // Bigger bullets for Akimbo Deagle
+    projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_deagle.png'), color: '#FFD6A3', size: 13, glowColor: '#FFB066', glowRadius: 16, trailColor: 'rgba(255,180,100,0.18)', trailLength: 12 },
+    traits: ['Burst x2','Heavy','High Knockback'],
+    isClassWeapon: false,
+    knockback: 40,
+    usageTips: [
+      'Stutter-step between bursts to keep both shots on-line.',
+      'Use corridors—dual recoil control matters at range.',
+      'Crit builds shine; two hits quickly stack multipliers.'
+    ],
+    /**
+     * Slow-and-heavy, with a rhythm similar to Runner Gun (2-shot pattern) but much slower, higher impact.
+     * Target single-trigger DPS (both bullets land): ~55, 85, 120, 170, 230, 300, 380.
+     * Implemented by reducing burst cooldown and increasing per-bullet damage.
+     */
+    getLevelStats(level: number) {
+      const idx = Math.min(Math.max(level,1),7) - 1;
+  // Level 1 must be 1000 DPS (per request); maintain ascending curve afterward
+  const dpsTargets = [1000,1200,1500,1800,2200,2600,3000];
+      // Slightly slower cadence than before for heavier feel
+      const burstCd = [36,34,32,30,28,26,24][idx];
+      const salvo = 2;
+      // Per-bullet damage from DPS ≈ (damage * salvo * 60) / burstCd
+      const damage = Math.max(1, Math.round(dpsTargets[idx] * burstCd / (salvo * 60)));
+      const recoil = 1.2 + idx * 0.15;
+      const speed = 12 + idx * 0.6;
+      // Runner-style spread baseline, mild tighten with level
+      const spread = Math.max(0.06, 0.12 - idx * 0.006);
+      // Slightly larger projectile size feedback as levels rise
+      const projectileSize = 13 + Math.min(6, idx * 0.8);
+      return { cooldown: burstCd, salvo, damage, speed, spread, projectileSize, knockback: 40 + idx * 4 } as any;
+    }
   },
   [WeaponType.SHOTGUN]:  {
     id: WeaponType.SHOTGUN,
@@ -564,6 +610,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     heatPerFullCharge: 0.42,
     heatDecayPerSec: 0.35,
   fragmentCount: 0,
+    // Explicit detonation radius so Codex can surface AoE (ExplosionManager uses 120 by default)
+    explosionRadius: 120,
     ionFieldDamageFrac: 0.12, // per tick (5 ticks)
     ionFieldDurationMs: 600,
     overchargedMultiplier: 2.2,
@@ -572,7 +620,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   const dmg = [38,52,68,86,108,125,142][level-1] || 38;
   const cd  = [90,84,78,72,66,62,58][level-1] || 90;
   const fragments = [3,3,4,4,5,5,6][level-1] || 3;
-      return { damage: dmg, cooldown: cd, fragments };
+      // Keep explosion radius constant in gameplay; expose for Codex tables
+      return { damage: dmg, cooldown: cd, fragments, explosionRadius: 120 };
     }
   },
   // Rebalanced Runner Gun: base damage set for ~60 DPS (damage * salvo * 60 / cooldown)
@@ -874,3 +923,40 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
 };
 
 // (Path normalization now handled at declaration via AssetLoader.normalizePath)
+
+/**
+ * Cooldown normalization shim (non-breaking):
+ * - Ensures every WeaponSpec has cooldownMs derived from frames when absent.
+ * - Wraps getLevelStats to always include both cooldown (frames) and cooldownMs (ms).
+ *   This is UI-only and does not change gameplay logic that still consumes frames.
+ */
+(() => {
+  const MS_PER_FRAME = 1000 / 60;
+  const toMs = (frames?: number) => (typeof frames === 'number' ? Math.round(frames * MS_PER_FRAME) : undefined);
+  const toFrames = (ms?: number) => (typeof ms === 'number' ? Math.round(ms / MS_PER_FRAME) : undefined);
+
+  for (const k in WEAPON_SPECS) {
+    if (!Object.prototype.hasOwnProperty.call(WEAPON_SPECS, k)) continue;
+    const spec = (WEAPON_SPECS as any)[k] as WeaponSpec;
+    // Base spec: fill cooldownMs if missing
+    if (spec && typeof spec.cooldownMs !== 'number') {
+      const ms = toMs(spec.cooldown);
+      if (typeof ms === 'number') spec.cooldownMs = ms;
+    }
+    // Wrap getLevelStats to ensure both cooldown and cooldownMs are present on returned map
+    if (spec && typeof spec.getLevelStats === 'function') {
+      const orig = spec.getLevelStats.bind(spec);
+      spec.getLevelStats = (level: number) => {
+        const out = orig(level) || {};
+        const hasMs = typeof (out as any).cooldownMs === 'number';
+        const hasFrames = typeof (out as any).cooldown === 'number';
+        if (!hasMs && hasFrames) {
+          (out as any).cooldownMs = toMs((out as any).cooldown);
+        } else if (hasMs && !hasFrames) {
+          (out as any).cooldown = toFrames((out as any).cooldownMs);
+        }
+        return out;
+      };
+    }
+  }
+})();

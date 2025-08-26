@@ -27,5 +27,6 @@ export enum WeaponType {
   TACHYON_SPEAR = 25,
   SINGULARITY_SPEAR = 26,
   DATA_SIGIL = 27,
-  VOID_SNIPER = 28
+  VOID_SNIPER = 28,
+  DUAL_PISTOLS = 29
 }
