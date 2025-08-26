@@ -566,13 +566,27 @@ export class EnemyManager {
         const nctx = normal.getContext('2d')!;
         nctx.imageSmoothingEnabled = true;
         nctx.drawImage(img, 0, 0, size, size);
+        // Give 'large' a cooler tint to stand out (no harsh aura)
+        if (d.type === 'large') {
+          // Multiply tint for base coloration
+          nctx.globalCompositeOperation = 'multiply';
+          // Softer teal wash (reduced alpha to avoid visible "aura")
+          nctx.fillStyle = 'rgba(0, 180, 255, 0.18)';
+          nctx.fillRect(0, 0, size, size);
+          nctx.globalCompositeOperation = 'source-over';
+        }
         // Flash variant (tinted)
         const flash = document.createElement('canvas');
         flash.width = size; flash.height = size;
         const fctx = flash.getContext('2d')!;
         fctx.drawImage(img, 0, 0, size, size);
         fctx.globalCompositeOperation = 'lighter';
-        fctx.fillStyle = 'rgba(255,128,128,0.6)';
+        // Large uses a cooler flash tint; others use warm (slightly reduced intensity)
+        if (d.type === 'large') {
+          fctx.fillStyle = 'rgba(128, 220, 255, 0.50)';
+        } else {
+          fctx.fillStyle = 'rgba(255,128,128,0.6)';
+        }
         fctx.fillRect(0,0,size,size);
         fctx.globalCompositeOperation = 'source-over';
         // Flipped variants (precomputed to avoid per-enemy save/scale)
@@ -595,6 +609,49 @@ export class EnemyManager {
           redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any; // overwrite circle fallback
       }
       this.sharedEnemyImageLoaded = true;
+      // Try to override the 'small' type with enemy_spider.png if present
+      try {
+        const spiderPath = (location.protocol === 'file:' ? './assets/enemies/enemy_spider.png' : '/assets/enemies/enemy_spider.png');
+        const simg = new Image();
+        simg.onload = () => {
+          const radius = 20; // match 'small' enemy radius
+          const size = radius * 2;
+          // Normal
+          const normal = document.createElement('canvas');
+          normal.width = size; normal.height = size;
+          const nctx2 = normal.getContext('2d')!;
+          nctx2.imageSmoothingEnabled = true;
+          nctx2.drawImage(simg, 0, 0, size, size);
+          // Flash variant
+          const flash = document.createElement('canvas');
+          flash.width = size; flash.height = size;
+          const fctx2 = flash.getContext('2d')!;
+          fctx2.drawImage(simg, 0, 0, size, size);
+          fctx2.globalCompositeOperation = 'lighter';
+          fctx2.fillStyle = 'rgba(255,128,128,0.6)';
+          fctx2.fillRect(0,0,size,size);
+          fctx2.globalCompositeOperation = 'source-over';
+          // Flipped variants
+          const normalFlipped = document.createElement('canvas');
+          normalFlipped.width = size; normalFlipped.height = size;
+          const fn2 = normalFlipped.getContext('2d')!;
+          fn2.translate(size,0); fn2.scale(-1,1); fn2.drawImage(normal,0,0);
+          const flashFlipped = document.createElement('canvas');
+          flashFlipped.width = size; flashFlipped.height = size;
+          const ff2 = flashFlipped.getContext('2d')!;
+          ff2.translate(size,0); ff2.scale(-1,1); ff2.drawImage(flash,0,0);
+          // RGB ghosts
+          const redGhost = makeGhost(normal, 'red');
+          const greenGhost = makeGhost(normal, 'green');
+          const blueGhost = makeGhost(normal, 'blue');
+          const redGhostFlipped = makeGhost(normalFlipped, 'red');
+          const greenGhostFlipped = makeGhost(normalFlipped, 'green');
+          const blueGhostFlipped = makeGhost(normalFlipped, 'blue');
+          this.enemySprites['small'] = { normal, flash, normalFlipped, flashFlipped, redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any;
+        };
+        simg.onerror = () => { /* keep default 'small' */ };
+        simg.src = spiderPath;
+      } catch { /* ignore */ }
     };
     img.onerror = () => { /* fallback circles already exist */ };
     img.src = path;
@@ -765,8 +822,8 @@ export class EnemyManager {
     if (sourceWeaponType !== undefined) {
       enemy._lastHitByWeapon = sourceWeaponType;
   // Bio Toxin no longer applies direct impact damage; stacks are applied via puddles/outbreak only
-      // Apply armor shred on Scrap-Saw hits: short 0.6s window
-      if (sourceWeaponType === WeaponType.SCRAP_SAW && amount > 0) {
+  // Apply armor shred on Scrap Lash hits: short 0.6s window
+  if (sourceWeaponType === WeaponType.SCRAP_LASH && amount > 0) {
         const now = performance.now();
         anyE._armorShredExpire = now + 600;
       }
@@ -862,8 +919,8 @@ export class EnemyManager {
     // Side-effects based on source weapon (limited for boss to avoid runaway)
   if (sourceWeaponType !== undefined) {
       bAny._lastHitByWeapon = sourceWeaponType;
-      // Apply short shred on Scrap-Saw
-      if (sourceWeaponType === WeaponType.SCRAP_SAW && amount > 0) {
+  // Apply short shred on Scrap-Saw and Scrap Lash
+  if ((sourceWeaponType === WeaponType.SCRAP_SAW || sourceWeaponType === WeaponType.SCRAP_LASH) && amount > 0) {
         const now = performance.now();
         bAny._armorShredExpire = now + 600;
       }
@@ -2277,8 +2334,8 @@ export class EnemyManager {
           // Removed on-kill explosion effect for Mech Mortar (Titan Mech)
           this.killCount++;
         }
-        // Scavenger scrap stacks: increment when kill happened and last hit was Scrap-Saw
-        if (enemy._lastHitByWeapon === WeaponType.SCRAP_SAW) {
+  // Scavenger scrap stacks: increment when kill happened and last hit was Scrap-Saw or Scrap Lash
+  if (enemy._lastHitByWeapon === WeaponType.SCRAP_SAW || enemy._lastHitByWeapon === WeaponType.SCRAP_LASH) {
           const pAny: any = this.player as any;
           pAny._scrapStacks = (pAny._scrapStacks || 0) + 1;
           // Cap at 3 stacks

@@ -26,6 +26,8 @@ export class BulletManager {
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid reference
   // Monotonic id to tag bullets for scoping behaviors (like Neural Threads)
   private nextBulletId: number = 1;
+  // Debug: enable extra logs for Quantum Halo orbit maintenance
+  private debugHalo: boolean = false;
   // Guard to prevent recursive lattice secondary spawns from re-entering spawnBullet
   private suppressWeaverSecondary: boolean = false;
   // Neural Threader threads (Nomad): lightweight state objects managed here
@@ -52,6 +54,10 @@ export class BulletManager {
     this.enemyManager = enemyManager; // Assign enemy manager
     this.player = player;
     this.preallocateBullets();
+    // Expose a simple toggle in runtime for Halo debugging without recompiling
+    try {
+      (window as any).setHaloDebug = (v: boolean) => { this.debugHalo = !!v; Logger.info('HaloDebug set', v); };
+    } catch { /* ignore */ }
     // One-shot Overmind Overload: detonate all neural threads with amplified burst, then clear
     try {
       window.addEventListener('nomadOverload', ((ev: any) => {
@@ -110,9 +116,31 @@ export class BulletManager {
     (b as any)._hitOnce = undefined;
     (b as any).tetherCooldownMap = undefined;
     (b as any).displayAngle = undefined;
+  // Scrap Lash specific runtime fields
+  (b as any)._lashInit = undefined;
+  (b as any)._lashPhase = undefined;
+  (b as any)._lashHit = undefined;
+  (b as any)._lashBaseSpeed = undefined;
+  (b as any)._lashPierce = undefined;
+  (b as any)._srcX = undefined;
+  (b as any)._srcY = undefined;
+  (b as any)._spin = undefined;
+  // Per-throw scrap credit gating (Scrap Lash): clear so next throw can award again
+  (b as any)._scrapCredited = undefined;
+  (b as any).lastX = undefined;
+  (b as any).lastY = undefined;
+  // Generic cached speed/turn fields that could leak across pooled bullets
+  (b as any).baseSpeed = undefined;
+  (b as any)._baseSpeed = undefined;
+  (b as any)._turnRate = undefined;
+  (b as any)._curvePhase = undefined;
+  (b as any).speed = undefined;
     // Misc
-    b.projectileImageKey = undefined;
-    // Leave projectileVisual as-is; it will be reassigned by spawners as needed
+  b.projectileImageKey = undefined;
+  // Clear visuals to avoid any chance of cross-weapon leakage (e.g., halo hue bleeding into saw)
+  b.projectileVisual = undefined as any;
+  // Clear any visual/identity lock used to hard-enforce weapon-specific rendering
+  (b as any).visualLock = undefined;
   }
   /** Spawn a radial shrapnel burst for Scrap-Saw. Uses simple small bullets with short/medium range.
    *  Optional range/speed let callers align with the triggering explosion/sweep radius.
@@ -140,80 +168,78 @@ export class BulletManager {
     this.spawnShrapnelBurst(cx, cy, count, damage, range, speed);
   }
 
-  /** Ensure Quantum Halo orbit bullets exist & reflect current player weapon level. */
+  /** Ensure Quantum Halo orbit bullets exist & reflect current player weapon level.
+   *  Avoids full deactivation/rebuild to prevent visible resets/flicker when counts change.
+   */
   private ensureQuantumHaloOrbs(deltaTime:number){
     const player: any = this.player; if (!player || !player.activeWeapons) return;
     const level = player.activeWeapons.get(WeaponType.QUANTUM_HALO); if (!level) return;
     const spec: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO]; if (!spec) return;
     const scaled = spec.getLevelStats ? spec.getLevelStats(level) : {};
-                const needed = scaled.orbCount || 1; // Ensure we have the correct number of orbs
+                // Robust: in case scaled.orbCount is missing, default to a minimum of 2 orbs for a proper ring
+                let needed = Number((scaled as any).orbCount);
+                if (!Number.isFinite(needed) || needed <= 0) needed = 2;
   // Only consider HALO-tagged orbit bullets; grinder uses a separate tag and branch
-  const current = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO && (b as any).orbitKind === 'HALO');
+  const current = this.bullets.filter(b => b && b.active && b.isOrbiting === true && b.weaponType === WeaponType.QUANTUM_HALO && (b as any).orbitKind === 'HALO');
     if (current.length !== needed) {
-      // If we are short, rebuild clean to avoid partial states during unlocks
       if (current.length < needed) {
-        // Deactivate all existing HALO orbs and recreate the full set
-        for (let i = 0; i < current.length; i++) { current[i].active = false; }
-        for (let i = 0; i < needed; i++) {
+        // Grow: add the missing orbs without touching existing ones
+        const missing = needed - current.length;
+        for (let add = 0; add < missing; add++) {
+          const idx = current.length + add;
           const bFromPool = this.bulletPool.pop();
-          const b: Bullet = bFromPool || { 
-            x: player.x, 
-            y: player.y, 
-            vx: 0, 
-            vy: 0, 
-            radius: spec?.projectileVisual?.size || 18, 
-            life: 0, 
-            active: false, 
-            damage: scaled.damage || 22, 
-            weaponType: WeaponType.QUANTUM_HALO 
+          const b: Bullet = bFromPool || {
+            x: player.x,
+            y: player.y,
+            vx: 0,
+            vy: 0,
+            radius: spec?.projectileVisual?.size || 18,
+            life: 0,
+            active: false,
+            damage: scaled.damage || 22,
+            weaponType: WeaponType.QUANTUM_HALO
           } as Bullet;
-          // Ensure clean state if reused from pool
           if (bFromPool) this.resetPooledBullet(b);
-          b.x = player.x; 
-          b.y = player.y; 
-          b.vx = 0; 
-          b.vy = 0; 
-          b.damage = scaled.damage || 22; 
-          b.weaponType = WeaponType.QUANTUM_HALO; 
-          b.active = true; 
-          b.isOrbiting = true; 
-      (b as any).orbitKind = 'HALO';
+          b.x = player.x; b.y = player.y; b.vx = 0; b.vy = 0;
+          b.damage = scaled.damage || 22;
+          b.weaponType = WeaponType.QUANTUM_HALO;
+          b.active = true; b.isOrbiting = true; (b as any).orbitKind = 'HALO';
           (b as any).level = level;
-          b.orbitIndex = i; 
-          b.orbitCount = needed; 
-          b.orbitRadiusBase = scaled.orbitRadius || 90; 
-          b.spinSpeed = scaled.spinSpeed || 1; 
-          b.angleOffset = (Math.PI * 2 * i) / needed; 
-          b.orbitAngle = b.angleOffset; 
-          b.projectileVisual = { ...(spec.projectileVisual || {}), size: (spec?.projectileVisual?.size || 12) }; 
+          // Lock identity for draw: this orb must render as HALO visuals regardless of pool history
+          (b as any).visualLock = 'HALO';
+          b.orbitIndex = idx; b.orbitCount = needed;
+          b.orbitRadiusBase = scaled.orbitRadius || 90;
+          b.angleOffset = (Math.PI * 2 * idx) / Math.max(1, needed);
+          b.orbitAngle = b.angleOffset;
+          b.projectileVisual = { ...(spec.projectileVisual || {}), size: (spec?.projectileVisual?.size || 12) } as any;
           b.contactCooldownMap = {};
           this.bullets.push(b);
         }
       } else {
-        // Deactivate extras
-        let removed = 0; 
-        for (let i = 0; i < current.length && removed < current.length - needed; i++) { 
-          current[i].active = false; 
-          removed++; 
+        // Shrink: deactivate extras from the tail to preserve earlier indices
+        const halos = current.slice().sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
+        for (let i = halos.length - 1; i >= needed; i--) {
+          halos[i].active = false; this.bulletPool.push(halos[i]);
         }
       }
-      // Reassign indices & offsets to all halo bullets for even distribution
-    const halos = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO && (b as any).orbitKind === 'HALO');
-      halos.sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
-      for (let i = 0; i < halos.length; i++) { 
-        const hb = halos[i]; 
-        hb.orbitIndex = i; 
-        hb.orbitCount = halos.length; 
-        hb.angleOffset = (Math.PI * 2 * i) / halos.length; 
-        hb.orbitAngle = hb.angleOffset; 
+      // Normalize indices & offsets so orbs are evenly distributed after any add/remove
+      const halosNow = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO && (b as any).orbitKind === 'HALO').sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
+      for (let i = 0; i < halosNow.length; i++) {
+        const hb = halosNow[i];
+        hb.orbitIndex = i; hb.orbitCount = halosNow.length;
+        hb.angleOffset = (Math.PI * 2 * i) / Math.max(1, halosNow.length);
+        // Preserve current angular position relative to new offset if possible
+        hb.orbitAngle = (hb.orbitAngle != null) ? hb.orbitAngle : hb.angleOffset;
+        // Clear legacy spin speed so per-tick update uses scaled value only
+        hb.spinSpeed = undefined;
       }
-    } else {
-      // Update damage/spin if level changed (level kept in b.level)
-      for (const hb of current) { 
-        hb.damage = scaled.damage || hb.damage; 
-        hb.spinSpeed = scaled.spinSpeed || hb.spinSpeed; 
-        hb.orbitRadiusBase = scaled.orbitRadius || hb.orbitRadiusBase; 
-        (hb as any).level = level; 
+    }
+  // Update damage and base orbit radius every tick to follow level-up changes (spin uses scaled inside update)
+    for (const hb of this.bullets) {
+      if (hb.active && hb.isOrbiting && hb.weaponType === WeaponType.QUANTUM_HALO && (hb as any).orbitKind === 'HALO') {
+    hb.damage = scaled.damage || hb.damage;
+        hb.orbitRadiusBase = scaled.orbitRadius || hb.orbitRadiusBase;
+        (hb as any).level = level;
       }
     }
   }
@@ -281,6 +307,52 @@ export class BulletManager {
   // Update any active Grinder (evolved scavenger) orbit sessions: store as bullets with isOrbiting=true and a finite duration
   // They reuse the Quantum Halo path but expire by endTime.
     const activeBullets: Bullet[] = [];
+  // Precompute friendly hazard "safe zone" around player (halo / grinder / saw sweep) once per tick.
+  // Plasma will ignore collisions while within this radius to prevent friendly interference.
+  let friendlySafeR2 = 0;
+  try {
+    const p: any = this.player;
+    if (p) {
+      // Quantum Halo orbit radius
+      const haloLvl = p.activeWeapons?.get(WeaponType.QUANTUM_HALO) || 0;
+      if (haloLvl > 0) {
+        const haloSpec: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO];
+        const haloStats = haloSpec?.getLevelStats ? haloSpec.getLevelStats(haloLvl) : {};
+        const r = (haloStats?.orbitRadius ?? 90) + 18; // small margin outside the ring
+        const r2 = r * r; if (r2 > friendlySafeR2) friendlySafeR2 = r2;
+      }
+      // Active Industrial Grinder orbit radius (only when actually orbiting)
+      let grinderActive = false; let grinderR = 0;
+      for (let ii = 0; ii < this.bullets.length; ii++) {
+        const bb = this.bullets[ii];
+        if (bb.active && (bb as any).isOrbiting && bb.weaponType === WeaponType.INDUSTRIAL_GRINDER) { grinderActive = true; break; }
+      }
+      if (grinderActive) {
+        const grSpec: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];
+        const grLvl = p.activeWeapons?.get(WeaponType.INDUSTRIAL_GRINDER) || 1;
+        const grStats = grSpec?.getLevelStats ? grSpec.getLevelStats(grLvl) : {};
+        grinderR = (grStats?.orbitRadius ?? 140) + 18;
+        const r2 = grinderR * grinderR; if (r2 > friendlySafeR2) friendlySafeR2 = r2;
+      }
+  // Scrap-Saw sweep reach (only when a sweep bullet exists this frame)
+  // Include saw sweep in plasma "friendly safe zone" so Plasma ignores collisions while inside the melee arc,
+  // preventing perceived interference between the saw and freshly fired Plasma near the player.
+  const FRIENDLY_SAFE_INCLUDE_SAW = true;
+  let sawActive = false; let sawReach = 0;
+      for (let ii = 0; ii < this.bullets.length; ii++) {
+        const bb = this.bullets[ii];
+        if (bb.active && (bb as any).isMeleeSweep && bb.weaponType === WeaponType.SCRAP_SAW) { sawActive = true; break; }
+      }
+  if (FRIENDLY_SAFE_INCLUDE_SAW && sawActive) {
+        const sawSpec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
+        // Use configured range as proxy for blade reach
+        sawReach = (sawSpec?.range ?? 120) + 12; // tighter margin
+        const r2 = sawReach * sawReach; if (r2 > friendlySafeR2) friendlySafeR2 = r2;
+      }
+    }
+  } catch { /* non-fatal */ }
+  // Bump a global frame id used by per-bullet once-per-frame guards
+  (window as any).__frameId = ((window as any).__frameId || 0) + 1;
   const camX = (window as any).__camX || 0;
   const camY = (window as any).__camY || 0;
   const viewW = (window as any).__designWidth || 1920;
@@ -290,19 +362,27 @@ export class BulletManager {
   const minY = camY - pad, maxY = camY + viewH + pad;
   for (let i = 0; i < this.bullets.length; i++) {
       const b = this.bullets[i];
-      if (!b.active) {
-        this.bulletPool.push(b); // Return to pool if inactive
-        continue;
-      }
+  if (!b.active) { this.bulletPool.push(b); continue; }
 
       // Quantum Halo orbit handling: isolated branch
       if (b.isOrbiting && b.weaponType === WeaponType.QUANTUM_HALO) {
-        const specHalo: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO];
-        const level = (b as any).level || 1;
-        const scaled = specHalo?.getLevelStats ? specHalo.getLevelStats(level) : {};
-        const playerRef = this.player;
-        const spinBase = (b.spinSpeed || scaled.spinSpeed || 1);
-        const spin = spinBase * (deltaTime/1000);
+  // Reassert HALO orbit identity in case pooled flags leaked (but do not resurrect deactivated extras)
+  if ((b as any).orbitKind !== 'HALO') (b as any).orbitKind = 'HALO';
+  const specHalo: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO];
+  const level = (b as any).level || 1;
+  const scaled = specHalo?.getLevelStats ? specHalo.getLevelStats(level) : {};
+  const playerRef = this.player;
+  // Stabilize rotation: derive from level stats only, and step by real time so it's independent of fixed-step count
+  const spinBase = (scaled.spinSpeed || 1);
+  const haloNow = performance.now();
+  const lastT = (b as any)._lastOrbitTimeMs ?? haloNow;
+  const dtMs = Math.min(Math.max(0, haloNow - lastT), 34); // clamp to avoid spikes
+  (b as any)._lastOrbitTimeMs = haloNow;
+  const spin = spinBase * (dtMs / 1000);
+  // Ensure we only rotate each orb once per frame
+  const fid = (window as any).__frameId || 0;
+  if ((b as any)._lastHaloFrameId === fid) { activeBullets.push(b); continue; }
+  (b as any)._lastHaloFrameId = fid;
         b.orbitAngle = (b.orbitAngle || (b.angleOffset||0)) + spin;
         if (b.orbitAngle > Math.PI*2) {
           b.orbitAngle -= Math.PI*2;
@@ -310,7 +390,7 @@ export class BulletManager {
             window.dispatchEvent(new CustomEvent('quantumHaloPulse', { detail: { x: playerRef.x, y: playerRef.y, damage: scaled.pulseDamage, radius: scaled.orbitRadius + 40 } }));
           }
         }
-        const radius = (scaled.orbitRadius || 90);
+  const radius = (b.orbitRadiusBase != null ? b.orbitRadiusBase : (scaled.orbitRadius || 90));
         const angleTotal = b.orbitAngle;
         b.x = playerRef.x + Math.cos(angleTotal) * radius;
         b.y = playerRef.y + Math.sin(angleTotal) * radius;
@@ -319,6 +399,8 @@ export class BulletManager {
         const hue = (performance.now()*0.05 + (b.orbitIndex||0)*70) % 360;
         if (!b.projectileVisual) b.projectileVisual = { type:'plasma', size: b.radius } as any;
         (b.projectileVisual as any)._dynamicHue = hue;
+  // Ensure halo visual is locked regardless of any prior sprite on the pooled object
+  (b as any).visualLock = 'HALO';
         b.lifeMs = 9999999; // persistent
         // Contact damage with per-enemy cooldown
         const potential = this.enemySpatialGrid.query(b.x, b.y, Math.max(28, b.radius + 8));
@@ -440,8 +522,181 @@ export class BulletManager {
         continue;
       }
 
+      // Scrap Lash: returning boomerang blade (Scavenger replacement)
+      if (b.active && b.weaponType === WeaponType.SCRAP_LASH) {
+        // Initialize return parameters on first tick
+        if ((b as any)._lashInit !== true) {
+          (b as any)._lashInit = true;
+          // Remember launch origin to compute turn-back distance; if player exists, prefer player position
+          const pl = this.player;
+          (b as any)._srcX = pl ? pl.x : (b.startX ?? b.x);
+          (b as any)._srcY = pl ? pl.y : (b.startY ?? b.y);
+          // Allow pierces from spec level
+          // Infinite pierce: do not limit by spec; trajectory will never change due to hits
+          (b as any)._lashPierce = Number.POSITIVE_INFINITY;
+          // Slight spin visual via displayAngle
+          (b as any)._spin = 0;
+          // Capture a per-shot base speed and normalize current velocity to it to avoid speed ratcheting
+          try {
+            const lvl = ((b as any).level || 1);
+            let baseSpeed = Math.hypot(b.vx, b.vy) || 8;
+            const specL: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_LASH];
+            if (specL && specL.getLevelStats) {
+              const scaled = specL.getLevelStats(lvl);
+              if (scaled && typeof scaled.speed === 'number') baseSpeed = scaled.speed;
+            }
+            (b as any)._lashBaseSpeed = baseSpeed;
+            const m = Math.hypot(b.vx, b.vy) || 1;
+            b.vx = (b.vx / m) * baseSpeed;
+            b.vy = (b.vy / m) * baseSpeed;
+          } catch { /* ignore */ }
+        }
+        // Update spin
+        (b as any)._spin = ((b as any)._spin || 0) + (deltaTime * 0.02);
+        (b as any).displayAngle = (b as any)._spin;
+        // Flight and turn-back logic: return only after hitting max distance
+        const pl = this.player;
+        if ((b as any)._lashPhase == null) (b as any)._lashPhase = 'OUT';
+        if ((b as any)._lashPhase === 'OUT' && b.maxDistanceSq !== undefined && b.startX !== undefined && b.startY !== undefined) {
+          const dxR = b.x - b.startX; const dyR = b.y - b.startY;
+          if ((dxR*dxR + dyR*dyR) >= b.maxDistanceSq) (b as any)._lashPhase = 'RETURN';
+        }
+        if ((b as any)._lashPhase === 'RETURN' && pl) {
+          const dx = pl.x - b.x; const dy = pl.y - b.y; const dist = Math.hypot(dx, dy) || 1;
+          // Return at half the base throw speed
+          const base = (b as any)._lashBaseSpeed ?? (Math.hypot(b.vx, b.vy) || 8);
+          const speed = base * 0.5;
+          b.vx = (dx / dist) * speed;
+          b.vy = (dy / dist) * speed;
+          if (dist < Math.max(22, (b.radius||12) * 1.1)) {
+            // Kill on hero touch: despawn and do NOT relaunch
+            // Reset per-throw scrap credit map so next throw starts fresh
+            (b as any)._scrapCredited = undefined;
+            b.active = false;
+            this.bulletPool.push(b);
+            continue;
+          }
+        }
+  // Integrate position (custom branch bypasses generic integrator)
+  // Keep last position for relaunch angle fallback
+  (b as any).lastX = b.x; (b as any).lastY = b.y;
+  b.x += b.vx;
+  b.y += b.vy;
+  // No time/distance expiry for Lash; return/catch handles end-of-life
+  // Contact damage with limited pierce and armor shred debuff
+    const near = this.enemySpatialGrid.query(b.x, b.y, Math.max(28, b.radius + 8));
+    // Resolve boss once to avoid double-processing in generic loop
+    let bossRef: any = null;
+    try {
+      const bm: any = (window as any).__bossManager;
+      bossRef = bm && bm.getBoss ? bm.getBoss() : null;
+    } catch { /* ignore */ }
+        for (let ei = 0; ei < near.length; ei++) {
+          const e = near[ei]; if (!e.active || e.hp <= 0) continue;
+          // Skip boss here; handled in explicit boss block below to avoid double damage/credit
+          if (bossRef && e === bossRef) continue;
+          const rs = (e.radius||16) + (b.radius||10);
+          const dx = e.x - b.x; const dy = e.y - b.y;
+          if (dx*dx + dy*dy <= rs*rs) {
+            // Avoid multi-hit per frame via simple per-id gate
+            // Resolve a stable enemy id for per-throw/per-enemy gating
+            let eid = (e as any).id || (e as any)._gid;
+            if (!eid) {
+              // Assign a persistent scrap id on first sight if enemy lacks id/_gid
+              if (!(e as any)._scrapId) {
+                const seqProp = '_scrapSeq';
+                if ((this as any)[seqProp] == null) (this as any)[seqProp] = 1;
+                (e as any)._scrapId = 'sc' + ((this as any)[seqProp]++);
+              }
+              eid = (e as any)._scrapId;
+            }
+      if (!(b as any)._lashHit) (b as any)._lashHit = Object.create(null);
+      const nowHit = performance.now();
+      const nextOk = (b as any)._lashHit[eid] || 0;
+      if (nowHit < nextOk) continue;
+      (b as any)._lashHit[eid] = nowHit + 500; // 0.5s per-target cooldown
+            const p:any = this.player; const critChance=Math.min(0.6,(((p?.agility||0)*0.5+(p?.luck||0)*0.7)/100 + 0.08));
+            const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
+            const dmg = (b.damage||28) * (isCrit?critMult:1);
+            this.enemyManager.takeDamage(e, dmg, isCrit, false, b.weaponType, b.x, b.y, (b as any).level||1);
+            // Increment scrap meter and trigger class explosion on threshold
+            // Constraints:
+            // - Per shot: only 1 stack per enemy (covers both outbound and return hits)
+            // - Per enemy lifetime: max 2 stacks total (enforced in Player.addScrapHitFromEnemy)
+            if (p) {
+              if (!(b as any)._scrapCredited) (b as any)._scrapCredited = Object.create(null);
+              if ((b as any)._scrapCredited[eid] !== 1) {
+                (b as any)._scrapCredited[eid] = 1;
+                const trig = (p as any).addScrapHitFromEnemy ? (p as any).addScrapHitFromEnemy(eid) : ((p as any).addScrapHits ? (p as any).addScrapHits(1) : false);
+              if (trig) {
+                // Mirror Scrap-Saw explosion behavior: big blast centered on player + heal
+                const pl: any = this.player;
+                const reach2 = ((WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120);
+                const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+                const gdm = (p.getGlobalDamageMultiplier?.() ?? (p.globalDamageMultiplier ?? 1));
+                const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
+                try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
+                // Heal player by 5 HP (clamped to max) for consistency with Scrap-Saw
+                p.hp = Math.min(p.hp + 5, p.maxHp || p.hp);
+              }
+              }
+            }
+            // Pierce handling: infinite penetration, do not alter velocity or path on hit
+          }
+        }
+        // Boss contact: allow Scrap Lash to hit boss with per-contact cooldown
+        try {
+          const bossMgr: any = (window as any).__bossManager;
+          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+            const dxB = boss.x - b.x; const dyB = boss.y - b.y;
+            const rsB = (boss.radius || 160) + (b.radius || 10);
+            if (dxB*dxB + dyB*dyB <= rsB*rsB) {
+              const key = 'boss';
+              if (!(b as any).contactCooldownMap) (b as any).contactCooldownMap = Object.create(null);
+              const nextOk = (b as any).contactCooldownMap[key] || 0;
+              const nowB = performance.now();
+              if (nowB >= nextOk) {
+                const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.08); }
+                const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
+                const dmg = (b.damage||28) * (isCrit?critMult:1);
+                if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_LASH, b.x, b.y, (b as any).level||1);
+                else boss.hp -= dmg;
+                (b as any).contactCooldownMap[key] = nowB + 500; // 0.5s per-boss hit cooldown
+                if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#F6E27F');
+                // Lash also contributes to scrap meter on boss hit
+                const pAny: any = this.player;
+                if (pAny) {
+                  if (!(b as any)._scrapCredited) (b as any)._scrapCredited = Object.create(null);
+                  const bossKeyCred = 'boss';
+                  if ((b as any)._scrapCredited[bossKeyCred] !== 1) {
+                    (b as any)._scrapCredited[bossKeyCred] = 1;
+                    const trig2 = pAny.addScrapHitFromEnemy ? pAny.addScrapHitFromEnemy('boss') : (pAny.addScrapHits ? pAny.addScrapHits(1) : false);
+                  if (trig2) {
+                    const pl2: any = this.player;
+                    const reach2 = ((WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120);
+                    const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+                    const gdm2 = (pAny.getGlobalDamageMultiplier?.() ?? (pAny.globalDamageMultiplier ?? 1));
+                    const dmgRef2 = Math.round((b.damage || 20) * 1.25 * (gdm2 || 1));
+                    try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl2.x, y: pl2.y, damage: dmgRef2, radius: radius2, color: '#FFAA33' } })); } catch {}
+                    pAny.hp = Math.min(pAny.hp + 5, pAny.maxHp || pAny.hp);
+                  }
+                  }
+                }
+              }
+            }
+          }
+        } catch { /* ignore */ }
+        activeBullets.push(b);
+        continue;
+      }
+
   // Melee sweep (Scrap-Saw): ring-arc hitbox at blade distance + tether contact (half damage)
   if ((b as any).isMeleeSweep && b.weaponType === WeaponType.SCRAP_SAW) {
+  // Safety: make sure sweep bullets can never be considered orbits this frame
+  b.isOrbiting = false; (b as any).orbitKind = undefined;
+  // Lock visual identity to SAW for the whole sweep lifetime
+  (b as any).visualLock = 'SAW';
   const pl = this.player;
   const start = (b as any).sweepStart || performance.now();
   // Slightly slower and smoother sweep: apply a modest slowdown and easing
@@ -463,11 +718,20 @@ export class BulletManager {
         const angleBandScale = 0.5; // widen from 0.35 -> 0.5 for better feel
         b.x = pl.x + Math.cos(centerAng) * reach;
         b.y = pl.y + Math.sin(centerAng) * reach;
+        // Always enforce sawblade visual during sweep to avoid halo visual bleed
+        try {
+          const sawSpec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
+          const fallback: any = (sawSpec?.projectileVisual || {});
+          const size = (fallback.size ?? b.radius ?? 16);
+          b.projectileVisual = { ...fallback, size };
+        } catch { /* ignore */ }
         // Collision: query nearby and sector test
         const potential = this.enemySpatialGrid.query(pl.x, pl.y, reach + 40);
   const nowT = performance.now();
-        // One-hit-per-enemy per sweep: shared set for blade+tether
-        if (!(b as any)._hitOnce) (b as any)._hitOnce = Object.create(null);
+  // One-hit-per-enemy per sweep: shared set for blade+tether
+  if (!(b as any)._hitOnce) (b as any)._hitOnce = Object.create(null);
+  // Feature flag: disable saw tether collisions to avoid interfering with friendly projectiles (plasma/halo)
+  const SAW_TETHER_ENABLED = false;
   // Ensure contact cooldown map exists (used for boss continuous contact)
   if (!(b as any).contactCooldownMap) (b as any).contactCooldownMap = Object.create(null);
         const halfArc = arcRad/2;
@@ -481,7 +745,16 @@ export class BulletManager {
           ang = (ang + Math.PI) % (Math.PI*2) - Math.PI;
           const withinAngle = Math.abs(ang - curOffset) <= halfArc * angleBandScale;
           const withinRing = Math.abs(dist - reach) <= (bladeThickness + (e.radius||16));
-          const eid = (e as any).id || (e as any)._gid || 'e'+i2;
+          // Resolve a stable enemy id for this sweep
+          let eid = (e as any).id || (e as any)._gid;
+          if (!eid) {
+            if (!(e as any)._scrapId) {
+              const seqProp = '_scrapSeq';
+              if ((this as any)[seqProp] == null) (this as any)[seqProp] = 1;
+              (e as any)._scrapId = 'sc' + ((this as any)[seqProp]++);
+            }
+            eid = (e as any)._scrapId;
+          }
           // Skip if already hit by this sweep (blade or tether)
           if ((b as any)._hitOnce[eid]) continue;
           // Primary blade contact: ring-arc at blade distance
@@ -491,8 +764,8 @@ export class BulletManager {
             this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
             // Mark as hit for this sweep
             (b as any)._hitOnce[eid] = 1;
-            // Increment scrap meter per enemy hit; trigger secondary explosion at 10
-            const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+            // Increment scrap meter per enemy hit; one scrap per enemy per round
+            const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(eid) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
             if (triggered) {
               // Reworked Scrap ability: big explosion around player and heal 5 HP
               const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
@@ -507,35 +780,35 @@ export class BulletManager {
               (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
             }
           }
-          // Tether contact: segment from player to blade, half damage, separate cooldown
-          // Compute shortest distance from enemy center to segment (pl -> blade)
-          const ex = e.x, ey = e.y;
-          const x1 = pl.x, y1 = pl.y, x2 = b.x, y2 = b.y;
-          const vx = x2 - x1, vy = y2 - y1;
-          const segLen2 = vx*vx + vy*vy || 1;
-          const tSeg = Math.max(0, Math.min(1, ((ex - x1)*vx + (ey - y1)*vy) / segLen2));
-          const cx = x1 + vx * tSeg, cy = y1 + vy * tSeg;
-          const dSeg = Math.hypot(ex - cx, ey - cy);
-          const tetherWidth = 10; // collision thickness for tether line
-          if (dSeg <= tetherWidth + (e.radius||16)) {
-            // Skip if already hit by this sweep
-            if ((b as any)._hitOnce[eid]) continue;
-            const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-            // Buff tether contribution to 65% of blade damage
-            const base = (b.damage||32) * 0.65; // 65% damage on tether contact
-            const dmg = base * (isCrit ? critMult : 1);
-            this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
-            (b as any)._hitOnce[eid] = 1; // mark as hit for this sweep
-            const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
-            if (triggered) {
-              const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-              const radius2 = Math.max(220, Math.round(reach2 * 1.6));
-              const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
-              const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
-              try {
-                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } }));
-              } catch {}
-              (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
+          // Tether contact: disabled (retained behind SAW_TETHER_ENABLED for quick toggle)
+          if (SAW_TETHER_ENABLED) {
+            // Compute shortest distance from enemy center to segment (pl -> blade)
+            const ex = e.x, ey = e.y;
+            const x1 = pl.x, y1 = pl.y, x2 = b.x, y2 = b.y;
+            const vx = x2 - x1, vy = y2 - y1;
+            const segLen2 = vx*vx + vy*vy || 1;
+            const tSeg = Math.max(0, Math.min(1, ((ex - x1)*vx + (ey - y1)*vy) / segLen2));
+            const cx = x1 + vx * tSeg, cy = y1 + vy * tSeg;
+            const dSeg = Math.hypot(ex - cx, ey - cy);
+            const tetherWidth = 10; // collision thickness for tether line
+            if (dSeg <= tetherWidth + (e.radius||16)) {
+              // Skip if already hit by this sweep
+              if ((b as any)._hitOnce[eid]) continue;
+              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
+              // 65% damage on tether contact
+              const base = (b.damage||32) * 0.65;
+              const dmg = base * (isCrit ? critMult : 1);
+              this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
+              (b as any)._hitOnce[eid] = 1; // mark as hit for this sweep
+              const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(eid) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
+              if (triggered) {
+                const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
+                const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+                const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
+                const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
+                try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
+                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
+              }
             }
           }
         }
@@ -557,7 +830,7 @@ export class BulletManager {
               const dmg = (b.damage||32) * (isCrit ? critMult : 1);
               if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
               (b as any).contactCooldownMap[bossKey] = nowT + bossCooldownMs;
-              const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+              const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(bossKey) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
               if (triggered) {
                 const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
                 const radius2 = Math.max(220, Math.round(reach2 * 1.6));
@@ -567,8 +840,8 @@ export class BulletManager {
                 (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
               }
             }
-            // Tether vs boss (half damage)
-            {
+            // Tether vs boss (half damage) – disabled via SAW_TETHER_ENABLED
+            if (SAW_TETHER_ENABLED) {
               const x1 = pl.x, y1 = pl.y, x2 = b.x, y2 = b.y;
               const vx = x2 - x1, vy = y2 - y1; const segLen2 = vx*vx + vy*vy || 1;
               const tSeg = Math.max(0, Math.min(1, ((boss.x - x1)*vx + (boss.y - y1)*vy) / segLen2));
@@ -583,7 +856,7 @@ export class BulletManager {
                 const base = (b.damage||32) * 0.65; const dmg = base * (isCrit ? critMult : 1);
                 if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
                 (b as any).contactCooldownMap[bossKey] = nowT + bossCooldownMs2;
-                const triggered = (this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false;
+                const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(bossKey) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
                 if (triggered) {
                   const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
                   const radius2 = Math.max(220, Math.round(reach2 * 1.6));
@@ -598,6 +871,8 @@ export class BulletManager {
         } catch { /* ignore boss checks */ }
         // End sweep
         if (t >= 1) {
+          // End sweep; ensure no orbit flags remain before pooling to avoid cross-contamination
+          (b as any).isMeleeSweep = false; b.isOrbiting = false; (b as any).orbitKind = undefined; b.orbitIndex = undefined; b.orbitCount = undefined;
           // End sweep; no extra shrapnel burst on completion in rework
           b.active = false; this.bulletPool.push(b);
         }
@@ -607,7 +882,7 @@ export class BulletManager {
   // Store previous position for swept-sphere collision
   const prevX = b.x;
   const prevY = b.y;
-  // Track last position for orientation (drone facing)
+  // Record last position for systems that need it (e.g., drone facing, lash relaunch angle)
   (b as any).lastX = prevX;
   (b as any).lastY = prevY;
 
@@ -622,13 +897,14 @@ export class BulletManager {
         // Resolve current locked target if any
         let target: any = null;
         if (b.targetId) {
-          if (b.targetId === 'boss' && boss && boss.active && boss.hp > 0) {
-            target = boss; // direct boss reference (not in spatial grid)
+          if (b.targetId === 'boss') {
+            if (boss && boss.active && boss.hp > 0) target = boss;
           } else {
             const near = this.enemySpatialGrid.query(b.x, b.y, 400);
             for (let i2 = 0; i2 < near.length; i2++) {
               const e = near[i2];
-              if (((e as any).id === b.targetId) && e.active && e.hp > 0) { target = e; break; }
+              const eid = (e as any).id || (e as any)._gid;
+              if (eid === b.targetId && e.active && e.hp > 0) { target = e; break; }
             }
           }
         }
@@ -636,7 +912,11 @@ export class BulletManager {
         if (!target) {
           b.targetId = undefined;
           const reacq = this.selectSmartRifleTarget(b.x, b.y, 900);
-          if (reacq) { target = reacq; b.targetId = (reacq as any).id || (reacq as any)._gid || 'boss'; }
+          if (reacq) {
+            const isBoss = (boss && reacq === boss);
+            b.targetId = isBoss ? 'boss' : ((reacq as any).id || (reacq as any)._gid);
+            target = reacq;
+          }
         }
         if (target) {
           // Angular steering clamp instead of direction lerp to avoid oscillation
@@ -750,6 +1030,9 @@ export class BulletManager {
             // Visual growth encoded via projectileVisual size (read in draw)
             if (t >= 1) {
               b.phase = 'TRAVEL';
+              // Mark travel start to support short arming window (ignores early collisions near player/hazards)
+              (b as any)._travelStartTime = performance.now();
+              (b as any)._travelStartX = b.x; (b as any)._travelStartY = b.y;
               // Apply full-charge heat
               try { const p:any = this.player; const add=spec?.heatPerFullCharge||0.42; p.plasmaHeat = Math.min(1,(p.plasmaHeat||0)+add); } catch {}
               window.dispatchEvent(new CustomEvent('plasmaPulse',{ detail:{ x:b.x, y:b.y, radius:(b.projectileVisual as any)?.size*1.9 } }));
@@ -1115,6 +1398,27 @@ export class BulletManager {
   // Use spatial grid to find potential enemies near the bullet
   // Query potential enemies near the bullet's current position
   const potentialEnemies = this.enemySpatialGrid.query(b.x, b.y, b.radius);
+  // Plasma friendly arming zone + minimal arming time/distance:
+  // While within the friendly hazard radius around the player OR within a small
+  // fixed arming distance/time from travel start, skip enemy collision checks.
+  if (b.weaponType === WeaponType.PLASMA && !(b as any).isPlasmaFragment) {
+        const px = (this.player?.x || 0); const py = (this.player?.y || 0);
+        const dxp = b.x - px; const dyp = b.y - py;
+        const dist2FromPlayer = dxp*dxp + dyp*dyp;
+        const MIN_ARM_DIST = 96; // px
+        const MIN_ARM_DIST2 = MIN_ARM_DIST * MIN_ARM_DIST;
+        const nowT = performance.now();
+        const travelStart = (b as any)._travelStartTime || 0;
+        const ARM_MS = 120; // ~0.12s
+        const withinFriendly = (friendlySafeR2 > 0) && (dist2FromPlayer <= friendlySafeR2);
+        const withinMinDist = dist2FromPlayer <= MIN_ARM_DIST2;
+        const withinMinTime = travelStart > 0 && (nowT - travelStart) <= ARM_MS;
+        if (withinFriendly || withinMinDist || withinMinTime) {
+          // Defer collision for this frame, keep traveling
+          activeBullets.push(b);
+          continue;
+        }
+  }
   for (const enemy of potentialEnemies) {
         if (!enemy.active || enemy.hp <= 0) continue; // Only check active, alive enemies
 
@@ -1283,13 +1587,17 @@ export class BulletManager {
               let dmgBase = b.damage;
               if (chargeT >= 1) dmgBase *= (spec?.chargedMultiplier||1.8);
               if (over) dmgBase *= (spec?.overchargedMultiplier||2.2);
+        // Determine explosion radius by level (fallback to spec/base)
+        const lvl = (b as any).level || 1;
+        const scaled = spec?.getLevelStats ? spec.getLevelStats(lvl) : undefined;
+        const baseRadius = (b as any).explosionRadius ?? (scaled?.explosionRadius) ?? spec?.explosionRadius ?? 120;
               if (over) {
                 p.plasmaHeat = Math.max(0, p.plasmaHeat * 0.6); // cooldown after overcharged
-                window.dispatchEvent(new CustomEvent('plasmaIonField', { detail: { x: b.x, y: b.y, damage: dmgBase, radius: 120 } }));
+    window.dispatchEvent(new CustomEvent('plasmaIonField', { detail: { x: b.x, y: b.y, damage: dmgBase, radius: baseRadius } }));
               } else {
         // Preserve explicit 0 fragments (no fallback)
         const frags = (spec && Object.prototype.hasOwnProperty.call(spec,'fragmentCount')) ? (spec.fragmentCount||0) : 3;
-        window.dispatchEvent(new CustomEvent('plasmaDetonation', { detail: { x: b.x, y: b.y, damage: dmgBase, fragments: frags, radius: 120 } }));
+  window.dispatchEvent(new CustomEvent('plasmaDetonation', { detail: { x: b.x, y: b.y, damage: dmgBase, fragments: frags, radius: baseRadius } }));
               }
               b.active = false; this.bulletPool.push(b); break; // consume plasma core
             }
@@ -1628,8 +1936,23 @@ export class BulletManager {
         }
         ctx.restore();
       }
-      let visual: any = b.projectileVisual ?? { type: 'bullet', color: '#0ff', size: b.radius, glowColor: '#0ff', glowRadius: 8 };
-      if (b.weaponType === WeaponType.QUANTUM_HALO && visual) {
+      // Clone visual per draw to avoid cross-bullet mutation leaks
+      let visual: any = b.projectileVisual ? { ...(b.projectileVisual as any) } : { type: 'bullet', color: '#0ff', size: b.radius, glowColor: '#0ff', glowRadius: 8 };
+      // Enforce visual identity locks first
+      const vLock = (b as any).visualLock;
+      if (vLock === 'SAW' || (b.weaponType === WeaponType.SCRAP_SAW && (b as any).isMeleeSweep)) {
+        const sawSpec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
+        const fallback = (sawSpec?.projectileVisual || {}) as any;
+        const forcedSize = Math.max(fallback.size ?? 0, visual?.size ?? 0, b.radius ?? 0);
+        visual = { ...fallback, type: 'bullet', size: forcedSize || 16 };
+      } else if (vLock === 'GRINDER' || (b.weaponType === WeaponType.INDUSTRIAL_GRINDER && (b as any).isOrbiting)) {
+        // Ensure grinder uses its sprite if available
+        const grSpec: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];
+        const fallback = (grSpec?.projectileVisual || {}) as any;
+        const forcedSize = Math.max(fallback.size ?? 0, visual?.size ?? 0, b.radius ?? 0);
+        visual = { ...fallback, type: 'bullet', size: forcedSize || 18 };
+      }
+  if ((vLock !== 'SAW' && vLock !== 'GRINDER') && (vLock === 'HALO' || b.weaponType === WeaponType.QUANTUM_HALO) && visual) {
         const hue = (visual._dynamicHue||0);
         visual.color = `hsl(${hue},100%,82%)`;
         visual.glowColor = `hsl(${(hue+45)%360},100%,65%)`;
@@ -2043,10 +2366,10 @@ export class BulletManager {
           const e: any = t.anchors[ai]; if (!e || !e.active || e.hp <= 0) continue;
           if ((e as any).isBoss) {
             (this.enemyManager as any).takeBossDamage?.(e, burst, false, WeaponType.NOMAD_NEURAL, e.x, e.y);
-            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 2, '#9ffcf6');
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 4, '#9ffcf6');
           } else {
             this.enemyManager.takeDamage(e, burst, false, false, WeaponType.NOMAD_NEURAL);
-            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 2, '#9ffcf6');
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 4, '#9ffcf6');
           }
           // Flag RGB glitch effect
           const anyE: any = e as any; anyE._rgbGlitchUntil = Math.max(anyE._rgbGlitchUntil||0, performance.now() + 220); anyE._rgbGlitchPhase = (anyE._rgbGlitchPhase||0) + 1;
@@ -2108,6 +2431,22 @@ export class BulletManager {
   }
 
   public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1): Bullet | undefined {
+    // One-at-a-time rule for Scrap Lash: if an active Lash exists, don't spawn another
+    if (weapon === WeaponType.SCRAP_LASH) {
+      for (let i = 0; i < this.bullets.length; i++) {
+        const bb = this.bullets[i];
+        if (bb && bb.active && bb.weaponType === WeaponType.SCRAP_LASH) return undefined;
+      }
+      // Do not fire Lash if no enemy is nearby
+      try {
+        const px = this.player ? this.player.x : x;
+        const py = this.player ? this.player.y : y;
+        const near = this.enemySpatialGrid.query(px, py, 900);
+        let found = false;
+        for (let i = 0; i < near.length; i++) { const e = near[i]; if (e.active && e.hp > 0) { found = true; break; } }
+        if (!found) return undefined;
+      } catch { /* if grid unavailable, allow spawn */ }
+    }
     const spec = (WEAPON_SPECS as any)[weapon] ?? (WEAPON_SPECS as any)[WeaponType.PISTOL];
     const dx = targetX - x;
     const dy = targetY - y;
@@ -2128,8 +2467,15 @@ export class BulletManager {
   // Reset and initialize bullet properties
     b.x = x;
     b.y = y;
-    b.vx = Math.cos(angle) * speed;
-    b.vy = Math.sin(angle) * speed;
+  b.vx = Math.cos(angle) * speed;
+  b.vy = Math.sin(angle) * speed;
+    // For Scrap Lash, cache a per-shot base speed to avoid ratcheting when returning/relaunching
+    if (weapon === WeaponType.SCRAP_LASH) {
+      (b as any)._lashBaseSpeed = speed;
+      const m = Math.hypot(b.vx, b.vy) || 1;
+      b.vx = (b.vx / m) * (b as any)._lashBaseSpeed;
+      b.vy = (b.vy / m) * (b as any)._lashBaseSpeed;
+    }
   // Assign unique id for this spawn (used to scope Neural Threads per-shot)
   (b as any)._id = this.nextBulletId++;
   (b as any)._spawnTime = performance.now(); // record spawn timestamp for time-based visuals
@@ -2168,6 +2514,14 @@ export class BulletManager {
       if ((scaled as any).explosionRadius != null) {
         (b as any).explosionRadius = (scaled as any).explosionRadius;
       }
+      // Ensure initial velocity matches the finalized per-level speed to keep range consistent
+      if (weapon !== WeaponType.SCRAP_LASH && typeof speed === 'number' && speed > 0) {
+        const m0 = Math.hypot(b.vx, b.vy) || 1;
+        if (Math.abs(m0 - speed) > 1e-3) {
+          b.vx = (b.vx / m0) * speed;
+          b.vy = (b.vy / m0) * speed;
+        }
+      }
     }
 
     // Slight pellet radius bump for Shotgun to reduce near-miss feel on clustered targets
@@ -2175,8 +2529,9 @@ export class BulletManager {
       b.radius = Math.max(b.radius || 0, 9);
     }
 
-    // Range & lifetime derivation (gentler compression of very large ranges)
-    if (spec && typeof spec.range === 'number' && speed > 0) {
+  // Range & lifetime derivation (gentler compression of very large ranges)
+  // Compute using the finalized current speed magnitude to keep distance consistent even if angle/velocity changed above.
+  if (spec && typeof spec.range === 'number') {
       const baseRange = spec.range;
       let scaledRange = baseRange;
       // Only compress if above thresholds so short-range weapons keep identity
@@ -2188,7 +2543,8 @@ export class BulletManager {
         scaledRange = 300 + (baseRange - 300) * 0.95; // retain 95% 300-600
       }
   // Removed former global +30% range boost (scaledRange *= 1.3) to tighten overall projectile ranges
-      const rawLife = scaledRange / speed;
+  const curSpeedForLife = Math.max(0.0001, Math.hypot(b.vx, b.vy));
+  const rawLife = scaledRange / curSpeedForLife;
       b.life = Math.min(Math.max(Math.round(rawLife), 8), 624); // 480 * 1.3 proportional cap
       b.startX = x;
       b.startY = y;
@@ -2199,6 +2555,22 @@ export class BulletManager {
     b.active = true;
     b.damage = appliedDamage; // leveled damage
     b.weaponType = weapon;
+  (b as any).level = level; // persist level on the bullet for per-shot logic
+    // Persist per-level base speed for Scrap Lash so the return phase and rethrows never scale from prior speed
+    if (weapon === WeaponType.SCRAP_LASH) {
+      const specL: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_LASH];
+      try {
+        const scaled = specL?.getLevelStats ? specL.getLevelStats(level) : undefined;
+        const lashSpeed = (scaled && typeof scaled.speed === 'number')
+          ? scaled.speed
+          : ((specL?.speed ?? Math.hypot(b.vx, b.vy)) || 8);
+        (b as any)._lashBaseSpeed = lashSpeed;
+        // Normalize initial velocity strictly to lashSpeed to avoid inheriting any prior pooled magnitude
+        const m = Math.hypot(b.vx, b.vy) || 1;
+        b.vx = (b.vx / m) * lashSpeed;
+        b.vy = (b.vy / m) * lashSpeed;
+      } catch { /* ignore */ }
+    }
     b.projectileImageKey = projectileImageKey;
     // If Heavy Gunner boost is active, tint bullets slightly more red
     try {
@@ -2477,6 +2849,8 @@ export class BulletManager {
       (b as any).isMeleeSweep = true;
       (b as any).sweepStart = performance.now();
       (b as any).sweepDurationMs = scaled.sweepDurationMs || 200;
+  // Lock visual identity to prevent any halo/grinder visuals from attaching to this pooled object during its lifetime
+  (b as any).visualLock = 'SAW';
   // Reset per-swing contact cooldowns so each sweep can hit a target at most once
   b.contactCooldownMap = Object.create(null);
   (b as any).tetherCooldownMap = Object.create(null);
@@ -2497,6 +2871,7 @@ export class BulletManager {
       const spec: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];
       const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {};
   b.isOrbiting = true; (b as any).orbitKind = 'GRINDER'; (b as any).level = level; b.orbitIndex = 0; b.orbitCount = 1; b.orbitAngle = Math.random()*Math.PI*2; b.spinSpeed = 4.2;
+  (b as any).visualLock = 'GRINDER';
       (b as any).endTime = performance.now() + (scaled.durationMs || 1200);
       b.contactCooldownMap = {};
       // Position initially at radius

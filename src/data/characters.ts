@@ -32,7 +32,7 @@ export interface CharacterData {
   color: string;
   weaponTypes: WeaponType[];
   specialAbility?: string;
-  playstyle: 'Aggressive' | 'Defensive' | 'Balanced' | 'Support' | 'Stealth';
+  playstyle: 'Aggressive' | 'Defensive' | 'Balanced' | 'Support' | 'Stealth' | 'Mobility';
 }
 
 export const CHARACTERS: CharacterData[] = [
@@ -42,7 +42,7 @@ export const CHARACTERS: CharacterData[] = [
   description: 'Turns ruin into salvation. Tethers a Scrap‑Saw and detonates scrap surges to endure.',
   lore: 'They were raised where the wind howls through hollowed towers and the ground cuts like glass. A length of cable, a motor, a blade—call it a weapon, call it a promise. The Scrap‑Saw hums like a heartbeat, tethered to a survivor who refuses to break. When the world closes in, they kindle a blast from the very wreckage underfoot and patch their wounds with the memory of those who didn’t make it. Nothing is wasted—not steel, not pain, not hope.',
   icon: (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : '/assets/player/wasteland_scavenger.png',
-  defaultWeapon: WeaponType.SCRAP_SAW,
+  defaultWeapon: WeaponType.SCRAP_LASH,
     stats: {
       hp: 100,
       maxHp: 100,
@@ -56,7 +56,7 @@ export const CHARACTERS: CharacterData[] = [
     },
     shape: 'square',
     color: '#808080',
-  weaponTypes: [WeaponType.SCRAP_SAW, WeaponType.SCAVENGER_SLING, WeaponType.RICOCHET, WeaponType.SHOTGUN],
+  weaponTypes: [WeaponType.SCRAP_LASH, WeaponType.RICOCHET, WeaponType.SHOTGUN],
   specialAbility: 'Scrap Surge — Build scrap, unleash a protective blast, and self‑repair +5 HP',
     playstyle: 'Balanced',
   },
@@ -80,7 +80,7 @@ export const CHARACTERS: CharacterData[] = [
     },
     shape: 'square',
     color: '#4169E1',
-  weaponTypes: [WeaponType.WARRIOR_CANNON, WeaponType.TRI_SHOT, WeaponType.PLASMA, WeaponType.TACHYON_SPEAR, WeaponType.SINGULARITY_SPEAR],
+  weaponTypes: [WeaponType.TRI_SHOT, WeaponType.PLASMA, WeaponType.TACHYON_SPEAR, WeaponType.SINGULARITY_SPEAR],
     specialAbility: 'Tech Sync - Faster reload and firing rates with advanced weapons',
     playstyle: 'Aggressive',
   },
@@ -130,7 +130,7 @@ export const CHARACTERS: CharacterData[] = [
     color: '#00FF41',
   weaponTypes: [WeaponType.RUNNER_GUN, WeaponType.RICOCHET, WeaponType.PLASMA],
   specialAbility: 'Vector Dash — Level‑scaled dash with brief i‑frames and afterimages',
-    playstyle: 'Stealth',
+    playstyle: 'Mobility',
   },
   {
     id: 'bio_engineer',
@@ -224,7 +224,7 @@ export const CHARACTERS: CharacterData[] = [
     },
     shape: 'circle',
     color: '#9370DB',
-  weaponTypes: [WeaponType.NOMAD_NEURAL, WeaponType.PLASMA, WeaponType.SCAVENGER_SLING],
+  weaponTypes: [WeaponType.NOMAD_NEURAL, WeaponType.PLASMA],
     specialAbility: 'Neural Storm - Area effect psychic blast',
     playstyle: 'Support',
   },
@@ -296,7 +296,7 @@ export const CHARACTERS: CharacterData[] = [
     },
     shape: 'triangle',
     color: '#2F4F4F',
-  weaponTypes: [WeaponType.VOID_SNIPER, WeaponType.SHADOW_DAGGER, WeaponType.RICOCHET, WeaponType.TRI_SHOT],
+  weaponTypes: [WeaponType.VOID_SNIPER, WeaponType.RICOCHET, WeaponType.TRI_SHOT],
   specialAbility: 'Ebon Bleed — Critical hits apply stacking void DoT with vicious effects',
     playstyle: 'Aggressive',
   },

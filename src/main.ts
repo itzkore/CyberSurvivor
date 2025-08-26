@@ -405,6 +405,8 @@ window.onload = async () => {
           // Ensure canvas is visible
           canvas.style.display = 'block';
           canvas.style.zIndex = '10';
+          // Seed/refresh sandbox spawn pad near current operative at session start
+          try { (window as any).__sandboxPad = { x: game.player.x, y: game.player.y - 140 }; } catch {}
           ensureSandboxOverlay(game).show();
           window.dispatchEvent(new CustomEvent('sandboxSpawnDummy', { detail: { count: 3, radius: 32, hp: 5000 } }));
         }, 0);
@@ -470,6 +472,8 @@ window.onload = async () => {
   codex.hide();
     canvas.style.zIndex = '-1';
   try { ensureSandboxOverlay(game).hide(); } catch {}
+  // Clear sandbox pad on returning to menu to avoid stale positions after relaunch
+  try { delete (window as any).__sandboxPad; } catch {}
   try { game.onReturnToMainMenu(); } catch { /* ignore if not yet defined */ }
   });
 
@@ -479,6 +483,8 @@ window.onload = async () => {
     mainMenu.show();
     canvas.style.zIndex = '-1';
   try { ensureSandboxOverlay(game).hide(); } catch {}
+  // Clear sandbox pad on manual back to menu
+  try { delete (window as any).__sandboxPad; } catch {}
   });
 
   window.addEventListener('pauseGame', () => {

@@ -454,14 +454,12 @@ export class SandboxOverlay {
     this.open = true;
     this.root.style.display = 'block';
     this.bg.style.display = 'block';
-    // Seed fixed spawn pad once
+    // Re-seed fixed spawn pad each time sandbox overlay is shown so it is always near the current operative
     try {
       const g: any = window as any;
-      if (!g.__sandboxPad) {
-        const px = this.game?.player?.x ?? 0;
-        const py = this.game?.player?.y ?? 0;
-        g.__sandboxPad = { x: px, y: py - 140 };
-      }
+      const px = this.game?.player?.x ?? 0;
+      const py = this.game?.player?.y ?? 0;
+      g.__sandboxPad = { x: px, y: py - 140 };
     } catch {}
   // Reflect current applied levels whenever shown
   this.syncFromPlayer();

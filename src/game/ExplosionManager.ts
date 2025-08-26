@@ -209,7 +209,7 @@ export class ExplosionManager {
     this.shockwaves = this.shockwaves.filter(sw => sw.life > 0);
 
     // Prune expired charge glows
-    if (this.chargeGlows.length) {
+  if (this.chargeGlows.length) {
       const now = performance.now();
       this.chargeGlows = this.chargeGlows.filter(g => now - g.start < g.duration);
     }
@@ -230,9 +230,9 @@ export class ExplosionManager {
       for (let i = 0; i < this.chargeGlows.length; i++) {
         const g = this.chargeGlows[i];
         const t = Math.max(0, Math.min(1, (now - g.start) / g.duration));
-        const ease = t * (0.6 + 0.4 * t); // ramps in, slightly faster at end
-        const alpha = 0.05 + 0.25 * ease; // 0.05 → 0.30
-        const r = g.radius * (0.9 + 0.1 * ease);
+  const ease = t * (0.6 + 0.4 * t); // ramps in, slightly faster at end
+  const alpha = 0.02 + 0.12 * ease; // softer: 0.02 → 0.14
+  const r = g.radius * (0.92 + 0.08 * ease);
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = alpha;
@@ -244,13 +244,7 @@ export class ExplosionManager {
         ctx.beginPath();
         ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
         ctx.fill();
-        // Thin rim hint
-        ctx.globalAlpha = alpha * 0.7;
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = `rgba(255,255,255,${0.5 * ease})`;
-        ctx.beginPath();
-        ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
-        ctx.stroke();
+  // Remove crisp white rim; keep only soft additive fill for a cleaner look
         ctx.restore();
       }
     }

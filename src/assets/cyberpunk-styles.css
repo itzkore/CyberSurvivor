@@ -1763,6 +1763,11 @@ html, body { font-family: 'Orbitron', sans-serif; }
 .upgrade-card.is-weapon { --border-color:#00e6d7; }
 /* Passive: slightly cooler green-blue */
 .upgrade-card.is-passive { --border-color:#00c0a0; }
+/* Evolved weapon: dark red neon frame */
+.upgrade-card.is-evolved { --border-color:#ff4d4d; box-shadow:0 0 0 1px #ff4d4d, 0 0 26px 6px rgba(255,77,77,0.35); }
+.upgrade-card.is-evolved .upgrade-key-indicator { border-color:#ff4d4d; color:#ff8080; text-shadow:0 0 6px #ff4d4d; }
+.upgrade-card.is-evolved .upgrade-title { color:#ffe3e3; text-shadow:0 0 10px rgba(255,77,77,.65); }
+.upgrade-card.is-evolved .upgrade-icon img { filter: drop-shadow(0 0 10px rgba(255,77,77,0.7)); }
 /* Class weapon: brighter cyan core + subtle animated pulse */
 .upgrade-card.is-class { --border-color:#26ffe9; animation: classPulse 2.4s ease-in-out infinite; box-shadow:0 0 0 1px #26ffe9, 0 0 26px 6px #26ffe94d; }
 @keyframes classPulse { 0%,100% { box-shadow:0 0 0 1px #26ffe9, 0 0 20px 4px #26ffe933; } 50% { box-shadow:0 0 0 1px #26ffe9, 0 0 34px 8px #26ffe977; } }

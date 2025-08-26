@@ -101,7 +101,7 @@ export class Player {
   public classWeaponType?: WeaponType; // Cache class weapon type
   // Scavenger Scrap meter (class-specific): fills on Scrap-Saw hits
   private scrapMeter: number = 0;
-  private scrapMeterMax: number = 8;
+  private scrapMeterMax: number = 25;
   private lastScrapTriggerMs: number = 0;
   // Tech Warrior Tachyon meter (class-specific): fills on spear hits, max 5, triggers triple-spear volley
   private techMeter: number = 0;
@@ -176,8 +176,8 @@ export class Player {
   private sorcererSigilPrevKey: boolean = false;
   public getSorcererSigilMeter() { return { value: this.sorcererSigilCdMaxMs - this.sorcererSigilCdMs, max: this.sorcererSigilCdMaxMs, ready: this.sorcererSigilCdMs <= 0 }; }
 
-  // Neural Nomad: Overmind Resonance (Spacebar) — 15s cooldown, 5s duration
-  private overmindCdMaxMs: number = 15000;
+  // Neural Nomad: Overmind Overload (Spacebar) — 2s cooldown, instant burst
+  private overmindCdMaxMs: number = 2000;
   private overmindCdMs: number = 0;
   private overmindActiveMs: number = 0;
   private overmindActive: boolean = false;
@@ -610,12 +610,13 @@ export class Player {
           }
           if (typeof baseCdMs === 'number') { effCd = baseCdMs / rateMulWithBoost; }
           else { const effCdFrames = (baseCdFrames as number) / rateMulWithBoost; effCd = effCdFrames * FRAME_MS; }
-          // Gate: only fire if target is within base range (no extra +10%).
-          // Scrap-Saw: ignore target requirement (can always sweep); other weapons require a target.
+      // Gate: only fire if target is within base range (no extra +10%).
+      // Scrap-Saw: ignore target requirement (can always sweep).
+      // For all other weapons: require a valid target — do not fire when no enemy/boss is in range.
           let canFire = true;
-          if (weaponType !== WeaponType.SCRAP_SAW) {
+          if (weaponType !== WeaponType.SCRAP_SAW && weaponType !== WeaponType.SCRAP_LASH) {
             if (!(target && spec && typeof spec.range === 'number' && spec.range > 0)) {
-              canFire = !!target; // no range or no target -> require target
+        canFire = !!target; // no range or no target -> require target
             }
             if (canFire && target && spec && typeof spec.range === 'number' && spec.range > 0) {
               const dx = target.x - this.x;
@@ -633,8 +634,9 @@ export class Player {
           }
           // Determine final target for this weapon.
           // For Scrap-Saw, always sweep even if no enemy/boss is in range: use a synthetic forward aim.
+          // For other weapons: fire only if a valid target is available and in range.
           let fireTarget: Enemy | null = canFire ? target : null;
-          if (weaponType === WeaponType.SCRAP_SAW) {
+          if (weaponType === WeaponType.SCRAP_SAW || weaponType === WeaponType.SCRAP_LASH) {
             if (!fireTarget) {
               try {
                 const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
@@ -803,6 +805,12 @@ export class Player {
     return false;
   }
 
+  /** Adds a scrap hit from a specific enemy. Returns true on threshold (explosion). Enforces one contribution per enemy per meter round. */
+  public addScrapHitFromEnemy(_enemyId: string): boolean {
+    // Per-throw gating handled in BulletManager; here we just add one stack
+    return this.addScrapHits(1);
+  }
+
   public getScrapMeter(): { value: number; max: number } {
     return { value: this.scrapMeter, max: this.scrapMeterMax };
   }
@@ -831,6 +839,36 @@ export class Player {
   // Rogue Hacker: allow other weapons; the class weapon is managed as an auto-cast zone spawner
     const spec = WEAPON_SPECS[type];
     if (!spec) return;
+    // If selecting an evolved weapon directly, and its base is owned, perform a swap
+    try {
+      // Find a base weapon that evolves into this 'type'
+      let baseForEvolved: WeaponType | undefined;
+      let requiredPassiveName: string | undefined;
+      for (const k in WEAPON_SPECS) {
+        const ws = (WEAPON_SPECS as any)[k];
+        if (ws && ws.evolution && ws.evolution.evolvedWeaponType === type) {
+          baseForEvolved = Number(k) as WeaponType;
+          requiredPassiveName = ws.evolution.requiredPassive;
+          break;
+        }
+      }
+      if (baseForEvolved !== undefined && this.activeWeapons.has(baseForEvolved)) {
+        // Verify passive >= 1 (eligible)
+        const req = requiredPassiveName ? this.activePassives.find(p => p.type === requiredPassiveName) : undefined;
+        if (!requiredPassiveName || (req && req.level >= 1)) {
+          const baseWeaponSpec = WEAPON_SPECS[baseForEvolved];
+          const evolvedWeaponSpec = WEAPON_SPECS[type];
+          // Swap: remove base, add evolved level 1 (ignore max weapon count)
+          this.activeWeapons.delete(baseForEvolved);
+          this.shootCooldowns.delete(baseForEvolved);
+          this.activeWeapons.set(type, 1);
+          this.shootCooldowns.set(type, 0);
+          this.upgrades.push(`Weapon Evolution: ${baseWeaponSpec?.name || String(baseForEvolved)} -> ${evolvedWeaponSpec?.name || String(type)}`);
+          try { window.dispatchEvent(new CustomEvent('weaponEvolved', { detail: { baseWeaponType: baseForEvolved, evolvedWeaponType: type } })); } catch {}
+          return;
+        }
+      }
+    } catch {}
     // Enforce max weapon limit
     if (!this.activeWeapons.has(type) && this.activeWeapons.size >= 5) {
       // Already at max weapons, do not add new weapon
@@ -840,10 +878,7 @@ export class Player {
     if (currentLevel < spec.maxLevel) {
       this.activeWeapons.set(type, currentLevel + 1);
       this.upgrades.push(`Weapon Upgrade: ${spec.name} Lv.${currentLevel + 1}`);
-      // Check for evolution if max level is reached
-      if (currentLevel + 1 === spec.maxLevel && spec.evolution) {
-        this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
-      }
+  // Do not auto-evolve on reach max; evolution is offered on next upgrade selection
     } else if (currentLevel === spec.maxLevel) {
       // Still check for evolution if it's at max level and hasn't evolved yet
       if (spec.evolution) {
@@ -868,7 +903,8 @@ export class Player {
     const passive = this.activePassives.find(p => p.type === requiredPassiveName);
     const requiredPassiveSpec = PASSIVE_SPECS.find(p => p.name === requiredPassiveName);
 
-    if (passive && requiredPassiveSpec && passive.level >= requiredPassiveSpec.maxLevel) {
+  // Evolution eligibility: base weapon at max level and required passive at level >= 1
+  if (passive && passive.level >= 1) {
       // Conditions met for evolution
       Logger.info(`Evolving ${baseWeaponSpec.name} to ${evolvedWeaponSpec.name}!`);
 
@@ -888,6 +924,7 @@ export class Player {
       // Dispatch an event for UI to react to evolution
       window.dispatchEvent(new CustomEvent('weaponEvolved', { detail: { baseWeaponType, evolvedWeaponType } }));
     } else {
+      // Not eligible yet or missing passive level >=1; defer
     }
   }
 
@@ -1015,8 +1052,18 @@ export class Player {
         if (d2 < bestD2) { bestD2 = d2; pick = e; }
       }
     } else {
-      // 'closest' mode unchanged
+      // 'closest' mode: include boss as a candidate too so it can be targeted
       let bestD2 = Number.POSITIVE_INFINITY;
+      // Consider boss (ACTIVE only)
+      try {
+        const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
+        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+          const dxB = (boss.x ?? 0) - (this.x ?? 0);
+          const dyB = (boss.y ?? 0) - (this.y ?? 0);
+          const d2B = dxB * dxB + dyB * dyB;
+          bestD2 = d2B; pick = boss as any;
+        }
+      } catch {}
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
         if (!e || !(e as any).active || e.hp <= 0) continue;
@@ -2316,7 +2363,7 @@ Player.prototype.activateAbility = function(this: Player & any) {
       break;
     }
     case 'neural_nomad': {
-      // Overmind Overload: fire a single, powerful thread overload burst; 15s cooldown
+      // Overmind Overload: fire a single, powerful thread overload burst; 2s cooldown
       if (this.overmindCdMs <= 0) {
         // Put ability on cooldown immediately (no sustained active window)
         this.overmindActive = false;
@@ -2326,8 +2373,11 @@ Player.prototype.activateAbility = function(this: Player & any) {
         const lvl = this.activeWeapons.get(WeaponType.NOMAD_NEURAL) ?? 1;
   const multiplier = 1 + 0.50 * (Math.max(1, Math.min(7, lvl)) - 1); // 1.0 -> 4.0x (stronger one-shot)
         try { window.dispatchEvent(new CustomEvent('nomadOverload', { detail: { multiplier } })); } catch {}
-        // Feedback
-        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } })); } catch {}
+        // Feedback FX: global teal shockwave + soft charge glow + modest shake
+        try {
+          window.dispatchEvent(new CustomEvent('overmindFX', { detail: { x: this.x, y: this.y, radius: 260 } }));
+          window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+        } catch {}
       }
       break;
     }

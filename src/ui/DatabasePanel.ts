@@ -213,16 +213,16 @@ export class DatabasePanel {
 
   private describePassive(name: string): string {
     switch (name) {
-      case 'Speed Boost': return '+0.5 movement per level (additive)';
-      case 'Max HP': return '+20 HP/level (L1–5), then +15 (L6–7); heal 55% of gained HP';
-      case 'Damage Up': return '+14% global damage per level';
-      case 'Fire Rate': return '+13% weapon fire rate per level';
+  case 'Speed Boost': return '+0.7 movement per level (cap 5)';
+  case 'Max HP': return '+26 HP per level; heal 55% of gained HP';
+  case 'Damage Up': return '+19.6% global damage per level (cap 5)';
+  case 'Fire Rate': return '+18.2% weapon fire rate per level (cap 5)';
       case 'AOE On Kill': return 'Gain small explosion on enemy death (fixed)';
       case 'Magnet': return '+36 pickup radius per level (to L5)';
-      case 'Shield': return '+5.5% block chance per level (cap 50%)';
-      case 'Crit': return '+3.75% crit chance and +0.095x crit multiplier per level (soft cap 3.1x)';
+  case 'Shield': return '+5.5% block chance per level (cap 50%)';
+  case 'Crit': return '+5.25% crit chance and +0.133x crit multiplier per level (soft cap 3.1x)';
       case 'Piercing': return 'Bullets pierce +1/+2/+3 enemies (levels 1–3)';
-      case 'Regen': return 'Regen per second: 0.125×level (to L5), then +0.09 each (L6–7)';
+  case 'Regen': return 'Regen per second: 0.161×level (cap 5)';
       default: return '';
     }
   }

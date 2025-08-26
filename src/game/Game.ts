@@ -294,6 +294,18 @@ export class Game {
       const d = (e as CustomEvent).detail; this.explosionManager?.triggerPlasmaIonField(d.x, d.y, d.damage, d.radius);
     });
 
+    // Neural Nomad Overmind VFX: teal shockwaves + brief charge glow burst
+    window.addEventListener('overmindFX', (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      const x = d.x ?? this.player.x, y = d.y ?? this.player.y;
+      const r = Math.max(140, d.radius ?? 240);
+      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r * 0.85), '#66F2FF'); } catch {}
+      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r * 1.15), '#A8FFFF'); } catch {}
+      try { this.explosionManager?.triggerChargeGlow(x, y, Math.round(r * 0.6), '#9FFFFF', 260); } catch {}
+      // Light energy flecks
+      try { this.particleManager.spawn(x, y, 18, '#9FFCF6', { sizeMin: 2, sizeMax: 4, lifeMs: 420, speedMin: 0.6, speedMax: 1.8 }); } catch {}
+    });
+
     // Listen for level up and chest upgrade events to show UpgradePanel
     window.addEventListener('levelup', () => {
   if (this.gameMode === 'SANDBOX') return; // Disable upgrade panel in sandbox

@@ -318,6 +318,7 @@ export class BossManager {
     const n = this.bossSpawnCount;
     const hpScale = Math.pow(1 + 0.40 * (n - 1), 1.12);
     const scaledHp = Math.round(bossHp * hpScale);
+    const isSandbox = (() => { try { return (window as any).__gameInstance?.gameMode === 'SANDBOX'; } catch { return false; } })();
     this.boss = {
       x: spawnX,
       y: spawnY,
@@ -325,7 +326,7 @@ export class BossManager {
   maxHp: scaledHp, // Set maxHp for HP bar drawing
       radius: 80, // half previous size
       active: true,
-      telegraph: 3000, // ms (was 180 frames)
+      telegraph: isSandbox ? 600 : 3000, // shorter delay in SANDBOX so boss becomes attackable quickly
       state: 'TELEGRAPH',
       attackTimer: 0, // ms
       _damageFlash: 0

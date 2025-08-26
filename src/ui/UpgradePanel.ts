@@ -236,10 +236,21 @@ export class UpgradePanel {
 
       // Build supplemental info rows: unlock hint for weapons on first pick; stat deltas for upgrades
   let infoHtml = '';
-  if (opt.type === 'weapon') {
+      if (opt.type === 'weapon') {
         const spec = WEAPON_SPECS[opt.id as WeaponType];
         if (spec) {
           const ownedLv = this.player.activeWeapons.get(opt.id as WeaponType) || 0;
+          // Evolution hint: if this card is an evolved weapon (maxLevel === 1), show combo tip
+          if ((spec.maxLevel || 1) === 1) {
+            const parent = Object.values(WEAPON_SPECS).find(s => s.evolution && s.evolution.evolvedWeaponType === spec.id);
+            const req = parent?.evolution?.requiredPassive;
+            const baseName = parent?.name;
+            if (baseName) {
+              infoHtml += `<div class="upgrade-info emph" style="color:#ff6666; text-shadow:0 0 8px rgba(255,0,0,.55)">`+
+                `<strong>Evolution:</strong> ${baseName} + ${req || 'Prereq'} → ${spec.name}`+
+              `</div>`;
+            }
+          }
           if (ownedLv === 0) {
             // Unlock-only brief info: clearer, bold label and no decimals concern here
             infoHtml = `<div class="upgrade-info emph" style="font-weight:700;letter-spacing:.2px;">`+
@@ -323,6 +334,15 @@ export class UpgradePanel {
       }
       if (titleLen > 32 || descLen > 200) {
         card.setAttribute('data-text-small','2');
+      }
+      // Mark evolved options for special styling (dark red neon frame)
+      if (opt.type === 'weapon') {
+        const spec = WEAPON_SPECS[opt.id as WeaponType];
+        if (spec && (spec.maxLevel || 1) === 1) {
+          card.classList.add('is-evolved');
+          card.setAttribute('data-evolved','1');
+          card.title = (card.title ? card.title + ' • ' : '') + 'Evolution option';
+        }
       }
       card.addEventListener('click', () => this.applyUpgrade(i));
       container.appendChild(card);
@@ -424,11 +444,39 @@ export class UpgradePanel {
         return !spec.isClassWeapon || wt === playerClassWeapon;
       });
     // Build weapon upgrade/unlock pool
+    // Exclude evolved weapon types from the general pool; they should only be offered via evolution logic
+    const evolvedTypeSet = new Set<number>();
+    for (const ws of Object.values(WEAPON_SPECS)) {
+      if (ws && ws.evolution && typeof ws.evolution.evolvedWeaponType === 'number') {
+        evolvedTypeSet.add(ws.evolution.evolvedWeaponType);
+      }
+    }
     const weaponOptions: UpgradeOption[] = [];
     for (const wt of allowedWeaponTypes) {
+      if (evolvedTypeSet.has(wt)) continue; // evolved weapons are gated and offered only when base is maxed and passive met
       const spec = WEAPON_SPECS[wt];
       if (!spec) continue;
       const owned = this.player.activeWeapons.get(wt) || 0;
+      // If this weapon has an evolution and is at max level, and the required passive is at least Lv1, offer the evolved weapon as an option
+      if (owned >= (spec.maxLevel || 1) && spec.evolution) {
+        const evoType = spec.evolution.evolvedWeaponType;
+        const evoSpec = WEAPON_SPECS[evoType];
+        const requiredPassiveName = spec.evolution.requiredPassive;
+        const reqPassive = this.player.activePassives.find(p => p.type === requiredPassiveName);
+        const alreadyEvolvedOwned = this.player.activeWeapons.has(evoType);
+        if (!alreadyEvolvedOwned && evoSpec && (!requiredPassiveName || (reqPassive && reqPassive.level >= 1))) {
+          weaponOptions.push({
+            type: 'weapon',
+            id: evoType,
+            name: `Evolve → ${evoSpec.name}`,
+            description: evoSpec.description || `Evolve ${spec.name} into ${evoSpec.name}.`,
+            icon: evoSpec.icon ?? '',
+            currentLevel: 0
+          });
+          // Skip offering further upgrades for the base weapon (it is maxed)
+          continue;
+        }
+      }
       // Only offer unlock if player has less than 5 weapons
       if (!owned && spec.maxLevel > 0 && this.player.activeWeapons.size < maxWeapons) {
         weaponOptions.push({

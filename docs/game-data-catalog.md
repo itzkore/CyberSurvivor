@@ -17,7 +17,7 @@ OPERATIVES
 - Wasteland Scavenger (id: wasteland_scavenger)
   - Playstyle: Balanced | Shape: square | Color: #808080 | Icon: /assets/player/wasteland_scavenger.png
   - Default Weapon: SCRAP_SAW
-  - Loadout: SCRAP_SAW, SCAVENGER_SLING, RICOCHET, SHOTGUN
+  - Loadout: SCRAP_SAW, RICOCHET, SHOTGUN
   - Base Stats: hp 100 | maxHp 100 | speed 8.0 | damage 23 | str 6 | int 6 | agi 7 | luck 8 | def 5
   - Derived: critChance ≈ 10 | survivability ≈ 110 | powerScore ≈ 117
   - Special: Scrap Surge — build scrap; blast + heal +5 HP
@@ -80,7 +80,7 @@ OPERATIVES
 - Neural Nomad (id: neural_nomad)
   - Playstyle: Support | Shape: circle | Color: #9370DB | Icon: /assets/player/neural_nomad.png
   - Default Weapon: NOMAD_NEURAL
-  - Loadout: NOMAD_NEURAL, PLASMA, SCAVENGER_SLING
+  - Loadout: NOMAD_NEURAL, PLASMA
   - Base Stats: hp 105 | maxHp 105 | speed 7.6 | damage 26 | str 5 | int 9 | agi 7 | luck 8 | def 6
   - Derived: critChance ≈ 11 | survivability ≈ 118 | powerScore ≈ 129
   - Special: Neural Storm — area effect psychic blast
@@ -249,10 +249,7 @@ Notes:
   - Traits: Pierces, Area, Slow, Scaling (class weapon)
   - getLevelStats(level): same base pattern with added bounces = level
 
-- SCAVENGER_SLING
-  - Base: cooldown 38f, salvo 1, speed 7, range 300, maxLevel 7, damage 38, knockback 24
-  - Traits: Bounces, Scaling (class weapon)
-  - getLevelStats(level): base pattern with baseDamage=38, baseCooldown=38
+
 
 - NOMAD_NEURAL (Neural Threader)
   - Base: cooldown 64f, salvo 1, speed 11.0, range 720, maxLevel 7, damage 26

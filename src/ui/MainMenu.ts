@@ -29,16 +29,32 @@ export class MainMenu {
   private authUnsub?: () => void;
   private authUser: import('../auth/AuthService').GoogleUserProfile | null = null;
   private incrementalEntries: any[] = [];
+  // Operative cycling state for main menu preview
+  private opList: any[] = CHARACTERS;
+  private currentOpIndex: number = 0;
   // Player id is always the Google account id; no local fallback
   // Read dynamically from googleAuthService when needed
   private currentBoard: string = 'global';
   /** Patch notes for current day only (auto-dated). Newest entries first in array. */
   private patchNotesHistory: { version: string; date: string; entries: { tag: 'NEW'|'UI'|'BAL'|'FX'|'QOL'|string; text: string }[] }[] = (() => {
-    const today = new Date().toISOString().slice(0,10);
+    // Use fixed release dates per version to avoid showing the same date for all entries
     return [
       {
+        version: '0.3.0',
+        date: new Date().toISOString().slice(0,10),
+        entries: [
+          { tag: 'FX', text: 'Neural Nomad — Overmind detonation now lands with bold teal shockwaves, a soft charge glow, and crisp energy flecks.' },
+          { tag: 'UI', text: 'Codex polish: clearer labels, fewer abbreviations, cleaner tables and stat pills across tabs.' },
+          { tag: 'UI', text: 'Operatives cards fit perfectly at all widths (auto‑fit stat grid, compact spacing, balanced icon sizing).' },
+          { tag: 'UI', text: 'Abilities tab is now second after Operatives for quick discovery.' },
+          { tag: 'FX', text: 'Enemies: unified look — small use spider; large units get a distinctive cyan/teal tint; Codex visuals match in‑game.' },
+          { tag: 'UI', text: 'Sound slider restyle: compact, themed, footer‑hosted.' },
+          { tag: 'FX', text: 'Main menu visuals buffed: background and hover/click details feel more alive.' }
+        ]
+      },
+      {
         version: '0.2.10',
-        date: today,
+        date: '2025-08-26',
         entries: [
           { tag: 'FIX', text: 'Quantum Halo and Industrial Grinder separated: independent logic branches with strict pooled state reset; no cross-behavior.' },
           { tag: 'FIX', text: 'Quantum Halo now maintained exclusively by orbit system; won’t fire as a standard projectile.' },
@@ -50,14 +66,14 @@ export class MainMenu {
       },
       {
         version: '0.2.9',
-        date: today,
+        date: '2025-08-25',
         entries: [
           { tag: 'BAL', text: 'Beam — temporarily disabled while we rework behavior and visuals.' }
         ]
       },
       {
         version: '0.2.8',
-        date: today,
+        date: '2025-08-24',
         entries: [
           { tag: 'UI', text: 'Main Menu: START RUN text centered; added cyberpunk glitch click effect with subtle SFX and fade-out.' },
           { tag: 'QOL', text: 'Reduced motion: glitch animation disabled when prefers-reduced-motion is set.' },
@@ -71,7 +87,7 @@ export class MainMenu {
       },
       {
         version: '0.2.7',
-        date: today,
+        date: '2025-08-22',
         entries: [
           { tag: 'UI', text: 'Minimap — XP orbs now appear as yellow markers above enemy dots.' },
           { tag: 'FX', text: 'XP orbs stutter and flicker in the last 10s of life (in‑world and on minimap).' },
@@ -90,7 +106,7 @@ export class MainMenu {
       },
       {
         version: '0.2.5',
-        date: today,
+        date: '2025-08-20',
         entries: [
           { tag: 'NEW', text: 'Passive — Area Up added: +10% radius per level across compatible area effects.' },
           { tag: 'SYS', text: 'Global area multiplier framework — AoE systems now scale consistently: Data Sigils, Titan Mortar, Shockwaves, Plasma Detonation, and On‑Kill pulses.' },
@@ -101,7 +117,7 @@ export class MainMenu {
       },
       {
         version: '0.2.4',
-        date: today,
+        date: '2025-08-18',
         entries: [
           { tag: 'FX', text: 'Umbral Surge — integrated MP4 overlay with auto-transparency, darker purple tint, and smoother, longer fade-out.' },
           { tag: 'UI', text: 'Upgrade choices — integer-only stat deltas with bold arrows/colors; class badge shows only on unlock.' },
@@ -115,7 +131,7 @@ export class MainMenu {
       },
       {
         version: '0.2.3',
-        date: today,
+        date: '2025-08-17',
         entries: [
           { tag: 'BAL', text: 'SNIPER PATCH — Charge bar is authoritative: Ghost and Shadow snipers fire the instant the bar fills (no cooldown waits or post-shot idle).'},
           { tag: 'FX', text: 'Shadow (Void Sniper): dark purple stack particles above tagged enemies; clearer visual feedback for DoT stacks.'},
@@ -125,7 +141,7 @@ export class MainMenu {
       },
       {
         version: '0.2.2',
-        date: today,
+        date: '2025-08-16',
         entries: [
           { tag: 'NEW', text: 'Rogue Hacker rework — System Hack ultimate added: a massive EMP-like hack that deals damage in a large radius and paralyzes enemies briefly.' },
           { tag: 'FX', text: 'RGB glitch visuals made far more visible on hacked enemies (stronger color ghosts, slices, scanlines, and duration).'},
@@ -134,7 +150,7 @@ export class MainMenu {
       },
       {
         version: '0.2.1',
-        date: today,
+        date: '2025-08-15',
         entries: [
           { tag: 'SYS', text: 'Leaderboard: time is the rank key; per‑board metadata now locks Kills/Level/Operative to the exact record run.' },
           { tag: 'UI', text: 'Highscores: “All Operatives” now shows one entry per name; consistent operative labels across all boards.' },
@@ -147,7 +163,7 @@ export class MainMenu {
       },
       {
         version: '0.2.0',
-        date: today,
+        date: '2025-08-12',
         entries: [
           { tag: 'MILESTONE', text: 'OPERATIVES PATCH — Full class pass complete: every operative reworked with unique active abilities and refreshed kits.' },
           { tag: 'OPS', text: 'Abilities: Phase Cloak (Ghost), Data Sigils (Sorcerer), Overdrive (Heavy), Surge Dash (Runner), Virus Zones (Hacker), Weaver Lattice (Psionic), Grinder Harness (Mech), Neural Threader (Nomad), and more.' },
@@ -160,7 +176,7 @@ export class MainMenu {
       },
       {
         version: '0.1.1',
-        date: today,
+        date: '2025-08-10',
         entries: [
           { tag: 'NEW', text: 'Quantum Halo weapon: small orbiting orbs rotate clockwise, pass-through hits with 1s per‑enemy cooldown, stronger knockback, and orbit radius scales +10%/level.' },
           { tag: 'BAL', text: 'Enemy chase speed capped to ≈120% of player speed to reduce runaway pressure while preserving difficulty.' },
@@ -170,12 +186,12 @@ export class MainMenu {
       },
       {
         version: '0.1.0',
-        date: today,
+        date: '2025-08-08',
         entries: [
           // Newest first (today only)
           { tag: 'BAL', text: 'Infinite boss scaling added: HP / special & contact damage grow each spawn; spawn every 180s (≈3 per 10m run).' },
           { tag: 'BAL', text: 'Extended weapon progression: most weapons +2 levels (to 7); Shotgun to 10; revised DPS + cooldown tables; smoother late taper.' },
-          { tag: 'BAL', text: 'Passive upgrades +2 levels (now up to 7) except Piercing (3) & AOE (1); adjusted per‑level bonuses to avoid runaway scaling.' },
+          { tag: 'BAL', text: 'Passive cap standardized to 5 levels (except Piercing 3 & AOE 3); per‑level values redistributed to keep prior max power at the new cap.' },
           { tag: 'BAL', text: 'Experience economy retuned: higher quadratic XP curve, reduced gem upgrade probability (60%), lowered medium/large gem tiers.' },
           { tag: 'BAL', text: 'Ricochet & Homing reworks: Ricochet 7 levels (up to 9 bounces, stronger scaling); Homing Drone geometric damage curve to L7.' },
           { tag: 'QOL', text: 'Boss defeat triggers gem vacuum + upgrade reward event; smoother late-run cleanup.' },
@@ -200,7 +216,7 @@ export class MainMenu {
     // Ensure Cyber Runner is the default selected operative if none chosen yet
     this.setDefaultCharacter();
     this.setupEventListeners();
-    this.initializeMatrix();
+  // Matrix rain background handled by shared singleton (see show/hide)
   }
 
   /**
@@ -261,7 +277,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.2.10 — PATCH NOTES</div>
+            <div class="version-tag">v0.3.0 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
@@ -312,22 +328,27 @@ export class MainMenu {
           <section class="panel middle-column" id="middle-column">
             <div class="preview-panel compact" id="character-preview">
               <div class="preview-upper">
-                <div class="preview-portrait small" id="preview-portrait">
-                  <img src="${(window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : (location.protocol==='file:'?'./assets/player/wasteland_scavenger.png':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/player/wasteland_scavenger.png':'/assets/player/wasteland_scavenger.png'))}" alt="Character" />
+                <div class="portrait-row">
+                  <button class="op-arrow left" id="prev-op-btn" aria-label="Previous operative" title="Previous">◄</button>
+                  <div class="preview-portrait small" id="preview-portrait">
+                    <img src="${(window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : (location.protocol==='file:'?'./assets/player/wasteland_scavenger.png':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/player/wasteland_scavenger.png':'/assets/player/wasteland_scavenger.png'))}" alt="Character" />
+                  </div>
+                  <button class="op-arrow right" id="next-op-btn" aria-label="Next operative" title="Next">►</button>
                 </div>
                 <div class="preview-meta">
                   <div class="preview-name" id="preview-name">Select Character</div>
                   <div class="preview-stats" id="preview-stats"></div>
                 </div>
+                <div class="stat-chips" id="stat-chips">
+                  <div class="chip"><span>HEALTH</span><b id="chip-hp">—</b></div>
+                  <div class="chip"><span>DAMAGE</span><b id="chip-dmg">—</b></div>
+                  <div class="chip alt" id="chip-role">ROLE —</div>
+                </div>
               </div>
-              <div class="weapon-info-combined" id="weapon-info-section">
-                <div class="wic-header">CLASS WEAPON</div>
-                <div class="wic-body" id="weapon-info-body">Select an operative…</div>
+              <div class="briefing-panel" id="briefing-panel">
+                <div class="briefing-header">OPERATIVE BRIEFING</div>
+                <div class="briefing-body" id="briefing-body">Select an operative to view kit, tactics, and key details.</div>
               </div>
-            </div>
-            <div class="mode-info-panel" id="mode-info-panel">
-              <div class="mode-info-header">MODE INFO</div>
-              <div class="mode-info-body" id="mode-info-body">Loading…</div>
             </div>
             <!-- spacer removed; mode info now stretches to panel bottom -->
           </section>
@@ -513,6 +534,10 @@ export class MainMenu {
   style.textContent = `/* Layout grid */
   /* Make the main menu fill the viewport and allow scrolling when cramped */
   #main-menu{position:fixed;inset:0;overflow:auto;display:flex;flex-direction:column}
+    /* Match loading screen background */
+    #main-menu .main-menu-shell{position:relative}
+    #main-menu .matrix-bg-overlay{position:absolute;inset:0;background:radial-gradient(circle at 50% 40%, #062025 0%, #020a0c 80%);z-index:0;pointer-events:none}
+    .mm-header,.mm-main,.mm-footer{position:relative;z-index:1}
   .mm-footer{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;padding:6px 0;pointer-events:none;z-index:5}
   .status-line{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:1px}
   .status-line .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;box-shadow:0 0 8px currentColor}
@@ -551,15 +576,41 @@ export class MainMenu {
   #highscores-panel{grid-area:hs;display:flex;flex-direction:column;height:100%;min-height:0;overflow:auto;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:10px 12px}
     #highscores-panel .hs-header{font-size:22px;margin-bottom:6px;letter-spacing:1px}
   .middle-column{grid-area:middle;display:flex;flex-direction:column;height:100%;min-height:0;gap:10px;overflow:hidden;}
-  #character-preview.compact{display:flex;flex-direction:column;gap:10px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.28);padding:10px 12px 10px;backdrop-filter:blur(4px);flex:0 0 auto;overflow:hidden}
+  #character-preview.compact{display:flex;flex-direction:column;gap:10px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.28);padding:10px 12px 10px;backdrop-filter:blur(4px);flex:1 1 auto;overflow:auto}
   #character-preview .preview-upper{display:flex;flex-direction:column;align-items:center;gap:10px}
-  #character-preview .preview-portrait.small{display:flex;align-items:center;justify-content:center;border:2px solid rgba(0,255,255,0.55);border-radius:50%;padding:8px;width:180px;height:180px;box-shadow:0 0 14px rgba(0,255,255,0.35) inset,0 0 12px rgba(0,255,255,0.25)}
-  #character-preview .preview-portrait.small img{max-width:150px;image-rendering:pixelated;filter:drop-shadow(0 0 6px #0ff)}
+  #character-preview .portrait-row{display:flex;align-items:center;justify-content:center;gap:10px;position:relative}
+  #character-preview .preview-portrait.small{display:flex;align-items:center;justify-content:center;border:2px solid rgba(0,255,255,0.55);border-radius:50%;padding:6px;width:160px;height:160px;box-shadow:0 0 14px rgba(0,255,255,0.35) inset,0 0 12px rgba(0,255,255,0.25)}
+  #character-preview .preview-portrait.small img{max-width:135px;image-rendering:pixelated;filter:drop-shadow(0 0 6px #0ff)}
+  /* Smooth swap animation */
+  #character-preview .preview-portrait.small img{transition:opacity .18s ease, transform .24s ease}
+  #character-preview .preview-portrait.small img.swap-out-left{opacity:0;transform:translateX(-18px)}
+  #character-preview .preview-portrait.small img.swap-out-right{opacity:0;transform:translateX(18px)}
+  #character-preview .preview-portrait.small img.swap-in-left{opacity:0;transform:translateX(18px)}
+  #character-preview .preview-portrait.small img.swap-in-right{opacity:0;transform:translateX(-18px)}
+  #character-preview .preview-portrait.small img.swap-in-apply{opacity:1;transform:translateX(0)}
+  /* Arrow buttons */
+  .op-arrow{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;border:1px solid rgba(0,255,255,0.45);background:rgba(0,45,60,0.35);color:#9adfff;cursor:pointer;user-select:none;transition:transform .12s ease, box-shadow .12s ease, background .12s ease}
+  .op-arrow:hover{background:rgba(0,80,100,0.45);box-shadow:0 0 10px rgba(0,255,255,0.25) inset}
+  .op-arrow:active{transform:scale(0.94)}
+  .op-arrow.left{order:0}
+  .op-arrow.right{order:2}
   #character-preview .preview-name{font-size:32px;font-weight:600;color:#5EEBFF;text-shadow:0 0 8px #0ff,0 0 15px rgba(0,255,255,0.6);letter-spacing:1px;margin-top:6px}
   #character-preview .preview-stats{display:flex;justify-content:center;gap:48px;margin-top:10px;font-size:11px;letter-spacing:1px;color:#b8faff}
   #character-preview .preview-stats .stat-item{text-align:center}
   #character-preview .preview-stats .stat-label{display:block;font-size:10px;opacity:.7;margin-bottom:2px}
-  .weapon-info-combined{flex:0 0 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.22);background:rgba(0,45,60,0.28);padding:8px 10px;min-height:96px;max-height:140px;position:relative}
+  .stat-chips{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:6px}
+  .stat-chips .chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;letter-spacing:.6px;color:#b8faff;border:1px solid rgba(0,255,255,0.28);background:rgba(0,45,60,0.25);border-radius:10px;padding:4px 8px}
+  .stat-chips .chip span{opacity:.75}
+  .stat-chips .chip b{color:#5EEBFF}
+  .stat-chips .chip.alt{font-weight:600;color:#5EEBFF}
+  .briefing-panel{display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:10px 12px;min-height:180px}
+  /* Readability: use clean UI font in the briefing area */
+  #character-preview .briefing-panel, 
+  #character-preview .briefing-header, 
+  #character-preview .briefing-body {font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif}
+  .briefing-header{font-size:16px;font-weight:700;color:#5EEBFF;text-shadow:0 0 4px rgba(0,255,255,.7);letter-spacing:.6px;margin-bottom:6px}
+  .briefing-body{flex:1 1 auto;overflow:auto;font-size:14px;line-height:1.65;color:#c9f3ff;padding-right:4px;white-space:pre-line}
+  .weapon-info-combined{flex:0 0 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.22);background:rgba(0,45,60,0.28);padding:8px 10px;min-height:96px;max-height:160px;position:relative}
   .weapon-info-combined:before{content:'';position:absolute;inset:0;pointer-events:none;box-shadow:0 0 10px rgba(0,255,255,0.12) inset}
   .wic-header{font-size:16px;font-weight:700;color:#5EEBFF;letter-spacing:.8px;margin-bottom:6px;text-shadow:0 0 6px #0ff}
   .wic-body{flex:1;overflow:auto;font-size:12px;line-height:1.55;color:#b8faff;padding-right:4px}
@@ -570,34 +621,38 @@ export class MainMenu {
   .weapon-block .w-desc{font-size:10px;opacity:.75;margin:2px 0 6px}
   .weapon-block .w-stats{font-size:9.5px;display:flex;flex-wrap:wrap;gap:4px;color:#9adfff}
   .weapon-block .w-stats span{background:rgba(0,255,255,0.08);padding:2px 5px;border:1px solid rgba(0,255,255,0.25);border-radius:4px}
-  .mode-info-panel{flex:1 1 auto;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:12px 14px;min-height:0}
-  .column-spacer{display:none}
-  .mode-info-header{font-size:20px;font-weight:700;color:#5EEBFF;text-shadow:0 0 8px #0ff;letter-spacing:1.2px;margin-bottom:8px}
-    .mode-info-body{flex:1;overflow:auto;font-size:14px;line-height:1.6;color:#b8faff;padding-right:4px;white-space:pre-line}
+  /* Scrollbars */
+  .briefing-body::-webkit-scrollbar{width:6px}
+  .briefing-body::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:3px}
       /* Responsive height adjustments */
   @media (max-height:800px){
     .middle-column{gap:10px}
-    #character-preview .preview-portrait.small{width:150px;height:150px;padding:6px}
-    #character-preview .preview-portrait.small img{max-width:128px}
+    #character-preview .preview-portrait.small{width:140px;height:140px;padding:5px}
+    #character-preview .preview-portrait.small img{max-width:118px}
+    .op-arrow{width:28px;height:28px}
     #character-preview .preview-name{font-size:24px}
     .weapon-info-combined{max-height:120px}
     .mode-info-body{font-size:13px}
   }
   @media (max-height:860px){
-        #character-preview .preview-portrait.small{width:160px;height:160px;padding:6px}
-        #character-preview .preview-portrait.small img{max-width:135px}
+        #character-preview .preview-portrait.small{width:150px;height:150px;padding:6px}
+        #character-preview .preview-portrait.small img{max-width:125px}
+        .op-arrow{width:30px;height:30px}
     #character-preview .preview-name{font-size:26px}
     .weapon-info-combined{max-height:140px}
     .mode-info-body{font-size:12px}
       }
   @media (max-height:740px){
-        #character-preview .preview-portrait.small{width:140px;height:140px;padding:4px}
-        #character-preview .preview-portrait.small img{max-width:118px}
+        #character-preview .preview-portrait.small{width:130px;height:130px;padding:4px}
+        #character-preview .preview-portrait.small img{max-width:110px}
+        .op-arrow{width:26px;height:26px}
     #character-preview .preview-name{font-size:22px}
         .weapon-info-combined{max-height:130px}
       }
-  .mode-info-body::-webkit-scrollbar{width:6px}
-  .mode-info-body::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:3px}
+  .howto-body::-webkit-scrollbar{width:6px}
+  .howto-body::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:3px}
+  .about-body::-webkit-scrollbar{width:6px}
+  .about-body::-webkit-scrollbar-thumb{background:linear-gradient(#00eaff,#007f99);border-radius:3px}
   .mode-tags{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}
   .mode-tag{font-size:9.5px;padding:3px 6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,255,255,0.08);border-radius:4px;letter-spacing:.5px;color:#9adfff}
     /* Highscores strict table */
@@ -621,6 +676,7 @@ export class MainMenu {
         .mm-main{grid-template-columns:1fr;grid-template-areas:'nav' 'middle' 'hs';gap:16px;padding:0 6px 16px 0}
         .nav-panel,.middle-column,#highscores-panel{height:auto;min-height:0}
         #highscores-panel{overflow:auto}
+  /* briefing is single-column already */
       }
       @media (max-height: 680px){
         .nav-panel .main-cta{font-size:16px}
@@ -721,30 +777,11 @@ export class MainMenu {
       }, 550);
     });
 
-    // Start SANDBOX: no auth required, always resets loadout via resetGame path
+    // Start SANDBOX gated behind suitcase lock (code 4444)
     startSandboxBtn?.addEventListener('click', () => {
       // Subtle SFX
       SoundManager.playUiClick({ volume: 0.16, durationMs: 90, freq: 980 });
-      const btn = document.getElementById('start-sandbox-btn');
-      if (btn) {
-        btn.classList.add('glitch');
-        (btn as HTMLButtonElement).disabled = true;
-        setTimeout(() => { btn.classList.remove('glitch'); (btn as HTMLButtonElement).disabled = false; }, 700);
-      }
-      const menuRoot = document.getElementById('main-menu-adaptive');
-      if (menuRoot && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        (menuRoot as HTMLElement).style.transition = 'opacity .35s ease';
-        (menuRoot as HTMLElement).style.opacity = '0';
-      }
-      setTimeout(() => {
-        if (this.gameInstance.selectedCharacterData) {
-          this.hide();
-          window.dispatchEvent(new CustomEvent('startGame', { detail: { character: this.gameInstance.selectedCharacterData, mode: 'SANDBOX' } }));
-        } else {
-          // If no operative chosen yet, open selector, and a follow-up selection can be started via the SANDBOX button again
-          this.showCharacterSelect();
-        }
-      }, 420);
+      this.showSandboxLock();
     });
 
     characterBtn?.addEventListener('click', () => {
@@ -762,12 +799,33 @@ export class MainMenu {
 
     // statistics listener removed
 
+    // Operative cycle arrow handlers
+    const prevBtn = document.getElementById('prev-op-btn');
+    const nextBtn = document.getElementById('next-op-btn');
+    const initIndex = () => {
+      const curId = this.gameInstance.selectedCharacterData?.id;
+      const idx = curId ? this.opList.findIndex(c => c.id === curId) : -1;
+      this.currentOpIndex = idx >= 0 ? idx : 0;
+    };
+    initIndex();
+    prevBtn?.addEventListener('click', () => this.cycleOperative(-1));
+    nextBtn?.addEventListener('click', () => this.cycleOperative(+1));
+    // Keyboard: left/right to cycle while menu visible
+    window.addEventListener('keydown', (e) => {
+      if (!this.mainMenuElement || this.mainMenuElement.style.display === 'none') return;
+      if ((e.key === 'ArrowLeft' || e.key === 'Left') && !e.altKey && !e.ctrlKey && !e.metaKey) { this.cycleOperative(-1); }
+      else if ((e.key === 'ArrowRight' || e.key === 'Right') && !e.altKey && !e.ctrlKey && !e.metaKey) { this.cycleOperative(+1); }
+    });
+
     // Listen for character selection
     window.addEventListener('characterSelected', (event: Event) => {
       const customEvent = event as CustomEvent;
       this.gameInstance.selectedCharacterData = customEvent.detail;
-      this.updateCharacterPreview(customEvent.detail);
-  this.renderWeaponInfo();
+    this.updateCharacterPreview(customEvent.detail);
+  this.renderBriefing();
+  // Keep index in sync if external selector used
+  const idx = this.opList.findIndex(c => c.id === customEvent.detail?.id);
+  if (idx >= 0) this.currentOpIndex = idx;
     });
 
     // Listen for currency updates
@@ -785,20 +843,134 @@ export class MainMenu {
       if (!modeSelect || !modeDesc) return;
       const v = modeSelect.value as 'SHOWDOWN' | 'DUNGEON';
       this.selectedMode = v;
-      if (v === 'SHOWDOWN') {
-        modeDesc.textContent = 'Showdown: Vast open cyber expanse. No walls, enemies can surround from any direction.';
-  this.updateModeInfoPanel('SHOWDOWN');
-      } else {
-        modeDesc.textContent = 'Dungeon: Procedurally linked rooms & corridors. Funnel enemies, explore branches.';
-  this.updateModeInfoPanel('DUNGEON');
-      }
+      modeDesc.textContent = v === 'SHOWDOWN'
+        ? 'Showdown: Vast open cyber expanse. No walls; enemies can surround from any direction.'
+        : 'Dungeon: Procedurally linked rooms & corridors; funnel enemies and control routes.';
+      // Mode info panel removed; description only
     };
     if (modeSelect) {
       modeSelect.addEventListener('change', updateDesc);
       updateDesc();
     }
-  // Initial weapon panel population after main menu created
-  setTimeout(()=>this.renderWeaponInfo(),50);
+  // Initial panel population after main menu created
+  setTimeout(()=>{ this.renderBriefing(); },50);
+  }
+
+  /** Suitcase-style 4-digit tumbler lock modal for Sandbox access (code 4444) */
+  private showSandboxLock(): void {
+    const existing = document.getElementById('sandbox-lock-modal');
+    if (existing) { existing.remove(); }
+    const wrap = document.createElement('div');
+    wrap.id = 'sandbox-lock-modal';
+    wrap.innerHTML = `
+      <div class="slm-backdrop"></div>
+      <div class="slm-dialog" role="dialog" aria-modal="true" aria-label="Sandbox Access Lock">
+        <div class="slm-title">ACCESS LOCK</div>
+        <div class="slm-sub">Enter 4‑digit code</div>
+        <div class="slm-tumblers" role="group" aria-label="Tumbler Code">
+          <div class="tumbler" data-idx="0"><button class="t-up" aria-label="Up">▲</button><div class="t-val">0</div><button class="t-down" aria-label="Down">▼</button></div>
+          <div class="tumbler" data-idx="1"><button class="t-up" aria-label="Up">▲</button><div class="t-val">0</div><button class="t-down" aria-label="Down">▼</button></div>
+          <div class="tumbler" data-idx="2"><button class="t-up" aria-label="Up">▲</button><div class="t-val">0</div><button class="t-down" aria-label="Down">▼</button></div>
+          <div class="tumbler" data-idx="3"><button class="t-up" aria-label="Up">▲</button><div class="t-val">0</div><button class="t-down" aria-label="Down">▼</button></div>
+        </div>
+        <div class="slm-actions">
+          <button class="nav-btn mini" id="slm-cancel">Cancel</button>
+          <button class="nav-btn" id="slm-unlock">UNLOCK</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    this.installSandboxLockStyles();
+    const digits = [0,0,0,0];
+    const sync = () => {
+      const els = wrap.querySelectorAll('.t-val');
+      for (let i=0;i<4;i++) (els[i] as HTMLElement).textContent = String(digits[i]);
+    };
+    const rot = (idx:number, dir:1|-1) => {
+      digits[idx] = (10 + digits[idx] + dir) % 10;
+      sync();
+      SoundManager.playUiClick({ volume: 0.12, durationMs: 80, freq: dir>0? 1220:840 });
+    };
+    wrap.querySelectorAll('.t-up').forEach(btn => btn.addEventListener('click', (e)=>{
+      const t = (e.currentTarget as HTMLElement).closest('.tumbler') as HTMLElement; rot(parseInt(t.dataset.idx||'0',10), +1 as 1);
+    }));
+    wrap.querySelectorAll('.t-down').forEach(btn => btn.addEventListener('click', (e)=>{
+      const t = (e.currentTarget as HTMLElement).closest('.tumbler') as HTMLElement; rot(parseInt(t.dataset.idx||'0',10), -1 as -1);
+    }));
+    // Keyboard support: arrows to move active tumbler (focus ring simulated), numbers to set
+    let focused = 0; sync();
+    const tumblers = wrap.querySelectorAll('.tumbler');
+    const setFocus = (i:number)=>{
+      focused = (4 + i) % 4;
+      tumblers.forEach((el,idx)=>{
+        (el as HTMLElement).classList.toggle('focus', idx===focused);
+      });
+    };
+    setFocus(0);
+    wrap.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight') { setFocus(focused+1); e.preventDefault(); }
+      else if (e.key === 'ArrowLeft') { setFocus(focused-1); e.preventDefault(); }
+      else if (e.key === 'ArrowUp') { rot(focused, +1); e.preventDefault(); }
+      else if (e.key === 'ArrowDown') { rot(focused, -1); e.preventDefault(); }
+      else if (/^[0-9]$/.test(e.key)) { digits[focused] = parseInt(e.key,10); sync(); e.preventDefault(); }
+      else if (e.key === 'Enter') { (document.getElementById('slm-unlock') as HTMLButtonElement)?.click(); }
+      else if (e.key === 'Escape') { (document.getElementById('slm-cancel') as HTMLButtonElement)?.click(); }
+    });
+    (wrap.querySelector('.slm-dialog') as HTMLElement).tabIndex = 0;
+    (wrap.querySelector('.slm-dialog') as HTMLElement).focus();
+    document.getElementById('slm-cancel')?.addEventListener('click', ()=> wrap.remove());
+    document.getElementById('slm-unlock')?.addEventListener('click', ()=>{
+      if (digits.every(d=>d===4)) {
+        (wrap.querySelector('.slm-dialog') as HTMLElement).classList.add('unlocked');
+        SoundManager.playUiClick({ volume: 0.2, durationMs: 160, freq: 480 });
+        setTimeout(()=>{
+          wrap.remove();
+          // Proceed to Sandbox start
+          const menuRoot = document.getElementById('main-menu-adaptive');
+          if (menuRoot && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            (menuRoot as HTMLElement).style.transition = 'opacity .35s ease';
+            (menuRoot as HTMLElement).style.opacity = '0';
+          }
+          setTimeout(() => {
+            if (this.gameInstance.selectedCharacterData) {
+              this.hide();
+              window.dispatchEvent(new CustomEvent('startGame', { detail: { character: this.gameInstance.selectedCharacterData, mode: 'SANDBOX' } }));
+            } else {
+              this.showCharacterSelect();
+            }
+          }, 380);
+        }, 260);
+      } else {
+        (wrap.querySelector('.slm-dialog') as HTMLElement).classList.add('shake');
+        SoundManager.playUiClick({ volume: 0.18, durationMs: 120, freq: 220 });
+        setTimeout(()=> (wrap.querySelector('.slm-dialog') as HTMLElement).classList.remove('shake'), 360);
+      }
+    });
+  }
+
+  /** Injects styles for the sandbox lock modal */
+  private installSandboxLockStyles(): void {
+    if (document.getElementById('slm-styles')) return;
+    const s = document.createElement('style');
+    s.id = 'slm-styles';
+    s.textContent = `
+      #sandbox-lock-modal{position:fixed;inset:0;z-index:10050}
+      #sandbox-lock-modal .slm-backdrop{position:absolute;inset:0;background:rgba(0,10,14,.66);backdrop-filter:blur(2px)}
+      #sandbox-lock-modal .slm-dialog{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-width:420px;max-width:90vw;background:linear-gradient(180deg,#05171b,#071a20);border:1px solid rgba(0,255,255,.35);border-radius:12px;box-shadow:0 12px 40px rgba(0,255,255,.18), inset 0 0 30px rgba(0,255,255,.05);padding:16px;outline:none}
+      #sandbox-lock-modal .slm-title{font:700 15px Orbitron,sans-serif;color:#aef;letter-spacing:.2em;text-align:center}
+      #sandbox-lock-modal .slm-sub{font:600 12px Inter,system-ui;color:#9bd;text-align:center;opacity:.9;margin-top:2px}
+      #sandbox-lock-modal .slm-tumblers{display:flex;justify-content:center;gap:12px;margin:16px 0}
+      #sandbox-lock-modal .tumbler{display:flex;flex-direction:column;align-items:center;width:60px;padding:8px 6px;background:rgba(0,40,54,.65);border:1px solid rgba(0,255,255,.25);border-radius:10px;box-shadow:inset 0 0 12px rgba(0,255,255,.12)}
+      #sandbox-lock-modal .tumbler.focus{box-shadow:0 0 0 2px rgba(0,255,255,.35), inset 0 0 12px rgba(0,255,255,.18)}
+      #sandbox-lock-modal .tumbler .t-val{font:700 24px Orbitron,sans-serif;color:#dff;text-shadow:0 0 10px rgba(0,255,255,.35)}
+      #sandbox-lock-modal .tumbler .t-up,#sandbox-lock-modal .tumbler .t-down{width:100%;padding:4px 0;background:rgba(0,70,90,.55);border:1px solid rgba(0,255,255,.25);border-radius:6px;color:#bff;cursor:pointer}
+      #sandbox-lock-modal .slm-actions{display:flex;justify-content:flex-end;gap:8px}
+      #sandbox-lock-modal .slm-dialog.shake{animation:slm-shake .35s ease}
+      #sandbox-lock-modal .slm-dialog.unlocked{animation:slm-unlock .3s ease}
+      @keyframes slm-shake{0%,100%{transform:translate(-50%,-50%)}25%{transform:translate(calc(-50% - 6px),-50%)}75%{transform:translate(calc(-50% + 6px),-50%)}}
+      @keyframes slm-unlock{0%{box-shadow:0 12px 40px rgba(0,255,255,.18), inset 0 0 30px rgba(0,255,255,.05)}100%{box-shadow:0 12px 80px rgba(0,255,255,.35), inset 0 0 50px rgba(0,255,255,.12)}}
+      @media (max-width: 520px){ #sandbox-lock-modal .slm-dialog{min-width:unset;width:92vw} #sandbox-lock-modal .tumbler{width:54px} }
+    `;
+    document.head.appendChild(s);
   }
 
   private showCharacterSelect(): void {
@@ -806,46 +978,120 @@ export class MainMenu {
     window.dispatchEvent(new CustomEvent('showCharacterSelect'));
   }
 
+  /** Build a comprehensive pre-battle briefing for the selected operative */
+  private renderBriefing(): void {
+    const body = document.getElementById('briefing-body');
+    if (!body) return;
+    const char = this.gameInstance.selectedCharacterData;
+    if (!char) { body.textContent = 'Select an operative to view kit, tactics, and key details.'; return; }
+    // Weapon data
+    const spec = WEAPON_SPECS[char.defaultWeapon as keyof typeof WEAPON_SPECS];
+    const cdSeconds = (spec && (spec as any).cooldownMs != null)
+      ? ((spec as any).cooldownMs / 1000)
+      : (typeof spec?.cooldown === 'number' ? (spec!.cooldown / 60) : undefined);
+    const lifetime = spec?.lifetime ?? (spec?.range && spec?.speed ? (spec.range / spec.speed / 60).toFixed(2) + 's' : '—');
+    const statsLine = spec ? `DMG ${spec.damage}  •  CD ${typeof cdSeconds==='number'?cdSeconds.toFixed(2)+'s':(typeof spec.cooldown==='number'?spec.cooldown+'f':'—')}  •  RANGE ${spec.range ?? '—'}  •  LVL ${spec.maxLevel ?? '—'}  •  LIFE ${lifetime}` : 'No class weapon spec found.';
+    // Tips based on role + weapon
+    const tips: string[] = [];
+    switch (char.playstyle) {
+      case 'Aggressive': tips.push('Stay close for uptime; sidestep to avoid surround.'); break;
+      case 'Defensive': tips.push('Hold near lanes; kite in arcs and leverage CC.'); break;
+      case 'Balanced': tips.push('Push then reset; keep mid‑range for consistency.'); break;
+      case 'Support': tips.push('Place zones where enemies will be; herd through damage.'); break;
+      case 'Stealth': tips.push('Dash through gaps and re‑engage from angles.'); break;
+      case 'Mobility': tips.push('Use speed to set angles; rotate around packs and keep guns sweeping.'); break;
+    }
+    const w = char.defaultWeapon?.toString()?.toLowerCase() || '';
+    if (w.includes('shotgun')) tips.push('Point‑blank volleys delete elites; weave in/out to reset spread.');
+    if (w.includes('minigun') || w.includes('gun')) tips.push('Feather trigger to manage spread; strafe while firing.');
+    if (w.includes('spear')) tips.push('Lead targets and pierce lines; diagonal kiting rewards range.');
+    if (w.includes('toxin') || w.includes('bio')) tips.push('Tag many, move on—DoTs tick while repositioning.');
+    if (w.includes('sigil') || w.includes('orb')) tips.push('Pre‑place coverage on choke paths and rotate with movement.');
+    tips.push('Early: take survivability/coverage; then stack damage as density rises.');
+
+    // Briefing content
+    const lines: string[] = [];
+    if (spec) {
+      lines.push(`CLASS WEAPON — ${spec.name}  ·  class`);
+      if (spec.description) lines.push(spec.description);
+      lines.push(statsLine);
+      if (spec.traits?.length) lines.push('Traits: ' + spec.traits.join(', '));
+      lines.push('');
+    }
+    lines.push(`ROLE — ${char.playstyle}`);
+    lines.push(`BASE STATS — Health ${char.stats.hp}, Damage ${char.stats.damage}`);
+    lines.push('');
+    lines.push('HOW TO PLAY');
+    for (const t of tips) lines.push('• ' + t);
+
+    body.textContent = lines.join('\n');
+  }
+
   /**
    * Updates the MODE INFO panel with richer details about the selected game mode.
    */
-  private updateModeInfoPanel(mode: 'SHOWDOWN' | 'DUNGEON'): void {
-    const panel = document.getElementById('mode-info-body');
-    if (!panel) return;
-    if (mode === 'SHOWDOWN') {
-      panel.innerHTML = `
-<div class='mode-tags'>
-  <span class='mode-tag'>OPEN</span>
-  <span class='mode-tag'>SURROUND</span>
-  <span class='mode-tag'>SCALING INTENSITY</span>
-</div>
-<div style='font-size:12px;font-weight:600;letter-spacing:.5px;margin-bottom:4px;color:#5EEBFF'>SHOWDOWN (OPEN)</div>
-Large seamless arena with unconstrained spawn angles. Expect radial pressure and flanking.
+  // Mode info panel removed; guidance moved into operative guides
 
-STRATEGY:
-• Maintain circular or figure-8 paths to layer projectile coverage.
-• Prioritize mobility & wide-area damage early to avoid encirclement.
-• Use mortar / AoE detonations to carve escape lanes when density spikes.
+  /**
+   * Cycle to previous/next operative in CHARACTERS and update preview + selection.
+   * dir: -1 for previous, +1 for next
+   */
+  private cycleOperative(dir: -1 | 1): void {
+    if (!this.opList || !this.opList.length) return;
+    // Initialize index if not yet bound
+    if (this.currentOpIndex < 0 || this.currentOpIndex >= this.opList.length) {
+      const curId = this.gameInstance.selectedCharacterData?.id;
+      const idx = curId ? this.opList.findIndex(c => c.id === curId) : 0;
+      this.currentOpIndex = idx >= 0 ? idx : 0;
+    }
+    // Next index with wrap
+    const oldIdx = this.currentOpIndex;
+    const newIdx = (oldIdx + dir + this.opList.length) % this.opList.length;
+    if (newIdx === oldIdx) return;
+    this.currentOpIndex = newIdx;
+    const nextChar = this.opList[newIdx];
+    // Visual swap animation
+    this.animatePortraitSwap(dir, nextChar?.icon);
+  // Update selection state used by Start buttons
+  this.gameInstance.selectedCharacterData = nextChar;
+  this.updateCharacterPreview(nextChar);
+  this.renderBriefing();
+    // Optional: play a soft click
+    SoundManager.playUiClick({ volume: 0.12, durationMs: 80, freq: 1180 });
+  }
 
-TIP: Diagonal drift (slight strafe + forward) continually reorients enemy approach vectors, reducing direct stacking.
-`;
-    } else {
-      panel.innerHTML = `
-<div class='mode-tags'>
-  <span class='mode-tag'>ROOMS</span>
-  <span class='mode-tag'>FUNNELS</span>
-  <span class='mode-tag'>ROUTE CONTROL</span>
-</div>
-<div style='font-size:12px;font-weight:600;letter-spacing:.5px;margin-bottom:4px;color:#5EEBFF'>DUNGEON (ROOMS)</div>
-Modular chambers connected by corridors. Manage engagement width to neutralize swarm advantages.
-
-STRATEGY:
-• Scout adjacent doors before aggro stacking.
-• Fight near choke entrances to maximize multi-hit & DoT uptime.
-• Reset pressure by kiting into cleared rooms.
-
-TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them to trap trailing mobs in damage zones.
-`;
+  /** Animate portrait image swap with a short slide/fade to emphasize direction */
+  private animatePortraitSwap(dir: -1 | 1, nextSrc?: string): void {
+    const img = document.querySelector('#preview-portrait img') as HTMLImageElement | null;
+    if (!img) return;
+    // Out animation for current image
+    img.classList.remove('swap-in-left', 'swap-in-right', 'swap-in-apply');
+    img.classList.add(dir < 0 ? 'swap-out-left' : 'swap-out-right');
+    const finishOut = () => {
+      img.removeEventListener('transitionend', finishOut);
+      // Swap src
+      if (typeof nextSrc === 'string' && nextSrc) img.src = nextSrc;
+      // Prep incoming state on opposite side
+      img.classList.remove('swap-out-left', 'swap-out-right');
+      img.classList.add(dir < 0 ? 'swap-in-left' : 'swap-in-right');
+      // Next frame apply to animate towards center
+      requestAnimationFrame(() => {
+        img.classList.add('swap-in-apply');
+        // Clean up classes after transition
+        const finishIn = () => {
+          img.removeEventListener('transitionend', finishIn);
+          img.classList.remove('swap-in-left', 'swap-in-right', 'swap-in-apply');
+        };
+        img.addEventListener('transitionend', finishIn, { once: true });
+      });
+    };
+    img.addEventListener('transitionend', finishOut, { once: true });
+    // Trigger out transition now
+    // If no transition (prefers-reduced-motion) fallback to direct swap
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      img.classList.remove('swap-out-left', 'swap-out-right');
+      if (typeof nextSrc === 'string' && nextSrc) img.src = nextSrc;
+      return;
     }
   }
 
@@ -958,6 +1204,9 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
     const previewPortrait = document.getElementById('preview-portrait')?.querySelector('img') as HTMLImageElement;
     const previewName = document.getElementById('preview-name');
     const previewStats = document.getElementById('preview-stats');
+  const chipHp = document.getElementById('chip-hp');
+  const chipDmg = document.getElementById('chip-dmg');
+  const chipRole = document.getElementById('chip-role');
 
     if (previewPortrait) previewPortrait.src = characterData.icon;
     if (previewName) previewName.textContent = characterData.name;
@@ -973,6 +1222,9 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
         </div>
       `;
     }
+  if (chipHp) chipHp.textContent = String(characterData.stats.hp + (this.playerProfile.permanentUpgrades.healthBoost * 10));
+  if (chipDmg) chipDmg.textContent = String(characterData.stats.damage + (this.playerProfile.permanentUpgrades.damageBoost * 5));
+  if (chipRole) chipRole.textContent = `ROLE ${characterData.playstyle}`;
   }
 
   /** Render weapon info blocks for current operative (weaponTypes list) */
@@ -1005,6 +1257,44 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
       </div>
       ${traits}
     </div>`;
+  }
+
+  /** Populate HOW TO PLAY and ABOUT sections for the selected operative */
+  private renderOperativeGuides(): void {
+    const howto = document.getElementById('howto-body');
+    const about = document.getElementById('about-body');
+    if (!howto || !about) return;
+    const char = this.gameInstance.selectedCharacterData;
+    if (!char) {
+      howto.textContent = 'Pick an operative to see movement, ability, and early build tips.';
+      about.textContent = 'Select an operative to learn their role and strengths.';
+      return;
+    }
+    // How to Play: short actionable guidance based on playstyle and default weapon
+    const tips: string[] = [];
+    switch (char.playstyle) {
+      case 'Aggressive': tips.push('Stay close enough to keep damage uptime high, but sidestep to avoid full surrounds.'); break;
+      case 'Defensive': tips.push('Hold ground near open lanes; kite in arcs and leverage crowd control.'); break;
+      case 'Balanced': tips.push('Alternate short pushes with retreats; keep enemies at mid‑range for consistent hits.'); break;
+      case 'Support': tips.push('Place zones/orbs where enemies are headed, not where they are; herd mobs through damage.'); break;
+      case 'Stealth': tips.push('Dash through gaps and re‑engage from angles; avoid straight lines under pressure.'); break;
+      case 'Mobility': tips.push('Abuse speed to set angles: dash through gaps, rotate around packs, and keep guns sweeping.'); break;
+    }
+    // Weapon‑aware tip fragments
+    const w = char.defaultWeapon?.toString()?.toLowerCase() || '';
+    if (w.includes('shotgun')) tips.push('Point‑blank volleys delete elites; weave in/out to reset spread penalties.');
+    if (w.includes('minigun') || w.includes('gun')) tips.push('Feather the trigger to manage spread; strafe while firing to rake lines.');
+    if (w.includes('spear') || w.includes('spear')) tips.push('Lead targets and pierce lines; longer range rewards diagonal kiting.');
+    if (w.includes('toxin') || w.includes('bio')) tips.push('Tag many, move on; DoTs tick while you reposition.');
+    if (w.includes('sigil') || w.includes('orb')) tips.push('Pre‑place coverage on choke paths; rotate with your movement to layer pulses.');
+    // Ability‑style generic
+    tips.push('Spend early upgrades on survivability or coverage, then stack damage when density rises.');
+    howto.textContent = '• ' + tips.join('\n• ');
+
+    // About: use description + a light role summary
+    const role = `Role: ${char.playstyle}`;
+    const desc = char.description || 'A versatile operative ready for any scenario.';
+    about.textContent = `${desc}\n\n${role}`;
   }
 
   private updateCurrencyDisplay(): void {
@@ -1110,6 +1400,54 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   const top = await fetchTop(finalBoard, 10, 0).catch(()=>fetchTop(board,10,0));
   // Enforce descending ordering by timeSec (defensive if backend ever returns unsorted)
   const sorted = [...top].sort((a,b)=> (b.timeSec||0) - (a.timeSec||0));
+  // Try to complete missing run details by probing exact per-operative boards for the same time
+  {
+    const needsDetails = sorted.filter(e => !e.characterId || e.kills == null || e.level == null || (e as any).maxDps == null);
+    if (needsDetails.length) {
+      const cache = new Map<string, any>(); // key: perBoard|playerId
+      const charIds = CHARACTERS.map(c=>c.id);
+      // Allow enough probes to resolve all visible rows, but keep a hard cap
+      const MAX_PROBES = Math.min(200, charIds.length * needsDetails.length);
+      let probes = 0;
+      const tryProbe = async (perBoard: string, playerId: string) => {
+        const key = perBoard + '|' + playerId;
+        if (cache.has(key)) return cache.get(key);
+        if (probes >= MAX_PROBES) return null;
+        probes++;
+        const v = await fetchPlayerEntry(perBoard, playerId).catch(()=>null);
+        cache.set(key, v);
+        return v;
+      };
+      for (let i = 0; i < needsDetails.length && probes < MAX_PROBES; i++) {
+        const row = needsDetails[i];
+        // Build candidate char list: if we already have a char, try that first; otherwise try all
+        const candidates = row.characterId ? [row.characterId, ...charIds.filter(id=>id!==row.characterId)] : charIds;
+        if (selectedOp) {
+          // Per-operative view: only probe the selected one
+          const perBoard = `${board}:op:${selectedOp}`;
+          const pe = await tryProbe(perBoard, row.playerId);
+          if (pe && pe.timeSec === row.timeSec) {
+            row.characterId = selectedOp;
+            if (row.kills == null && pe.kills != null) row.kills = pe.kills;
+            if (row.level == null && pe.level != null) row.level = pe.level;
+            if ((row as any).maxDps == null && (pe as any).maxDps != null) (row as any).maxDps = (pe as any).maxDps;
+          }
+        } else {
+          for (let c = 0; c < candidates.length && probes < MAX_PROBES; c++) {
+            const perBoard = `${board}:op:${candidates[c]}`;
+            const pe = await tryProbe(perBoard, row.playerId);
+            if (pe && pe.timeSec === row.timeSec) {
+              row.characterId = candidates[c];
+              if (row.kills == null && pe.kills != null) row.kills = pe.kills;
+              if (row.level == null && pe.level != null) row.level = pe.level;
+              if ((row as any).maxDps == null && (pe as any).maxDps != null) (row as any).maxDps = (pe as any).maxDps;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
   this.incrementalEntries = sorted;
   const me = googleAuthService.getCurrentUser()?.id || '';
       const fmt = (t:number)=>{
@@ -1133,20 +1471,24 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
           const kills = e.kills ?? 0;
           // Approx DPS estimation: (kills * avgDamagePerKill) / time; assume 50 dmg per kill fallback
           const estDps = Math.round((kills * 50) / timeSec);
+          const maxDps = (e as any).maxDps as number | undefined;
+          const dps = (typeof maxDps === 'number' && isFinite(maxDps)) ? Math.round(maxDps) : estDps;
+          // Operative name strictly from the entry metadata (or per-op board); no UI fallback
+          const opLabel = this.opName((e as any).characterId);
           return `<div class='hs-row data ${e.playerId===me?'me':''}'>
             <span class='hs-cell rank'>${i+1}</span>
             <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
-            <span class='hs-cell op'>${this.opName((e as any).characterId)}</span>
+            <span class='hs-cell op'>${opLabel}</span>
             <span class='hs-cell time'>${fmt(e.timeSec)}</span>
             <span class='hs-cell kills'>${kills}</span>
             <span class='hs-cell lvl'>${e.level ?? '-'}</span>
-            <span class='hs-cell dps'>${isFinite(estDps)?estDps:'-'}</span>
+            <span class='hs-cell dps'>${isFinite(dps)?dps:'-'}</span>
           </div>`;}).join('');
         let tableHtml = header + bodyHtml + '</div>';
         // If I'm not in visible list, append my row (will be appended again later if not careful)
         // We'll defer own-rank fetch below to preserve accuracy, not here.
         const newHtml = tableHtml; // already closed
-  const hash = `${selectedOp||'all'}|` + sorted.map(e=>`${e.playerId}:${e.timeSec}:${e.kills}:${e.level}`).join('|');
+  const hash = `${selectedOp||'all'}|` + sorted.map(e=>`${e.playerId}:${e.timeSec}:${e.kills}:${e.level}:${(e as any).maxDps ?? ''}:${e.characterId ?? ''}`).join('|');
         const prevHash = (remotePanel as HTMLElement).getAttribute('data-hash');
         if (prevHash !== hash) {
           remotePanel.innerHTML = newHtml;
@@ -1160,6 +1502,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
               const timeSec = meEntry.timeSec || 1;
               const kills = meEntry.kills ?? 0;
               const estDps = Math.round((kills * 50) / timeSec);
+              const dps = (typeof (meEntry as any).maxDps === 'number' && isFinite((meEntry as any).maxDps)) ? Math.round((meEntry as any).maxDps) : estDps;
               // Append inside existing table just before closing tag
               const table = remotePanel.querySelector('.hs-table');
               if (table) {
@@ -1170,7 +1513,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
                 <span class='hs-cell time'>${fmt(meEntry.timeSec)}</span>
                 <span class='hs-cell kills'>${kills}</span>
                 <span class='hs-cell lvl'>${meEntry.level ?? '-'}</span>
-                <span class='hs-cell dps'>${isFinite(estDps)?estDps:'-'}</span>
+                <span class='hs-cell dps'>${isFinite(dps)?dps:'-'}</span>
               </div>`);
               }
             }
@@ -1268,56 +1611,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   })();
   }
 
-  private initializeMatrix(): void {
-    const canvas = document.createElement('canvas');
-    canvas.id = 'matrix-canvas';
-    canvas.style.position = 'fixed';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.pointerEvents = 'none';
-    canvas.style.zIndex = '-1';
-    canvas.style.opacity = '0.1';
-
-    document.body.appendChild(canvas);
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const resizeCanvas = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
-
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-
-    const matrixChars = '01アカサタナハマヤラワ'.split('');
-    const fontSize = 10;
-    const columns = canvas.width / fontSize;
-    const drops: number[] = Array(Math.floor(columns)).fill(1);
-
-    const draw = () => {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      ctx.fillStyle = '#0F3';
-      ctx.font = `${fontSize}px monospace`;
-
-      for (let i = 0; i < drops.length; i++) {
-        const text = matrixChars[Math.floor(Math.random() * matrixChars.length)];
-        ctx.fillText(text, i * fontSize, drops[i] * fontSize);
-
-        if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
-          drops[i] = 0;
-        }
-        drops[i]++;
-      }
-    };
-
-    setInterval(draw, 35);
-  }
+  // Legacy matrix background removed; now using shared matrixBackground for consistency
 
   public show(): void {
     if (this.mainMenuElement) {
@@ -1381,7 +1675,7 @@ TIP: Pull elites through a narrow corridor, then deploy burst / AoE behind them 
   }
 
   public drawMatrixBackground(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
-    // Matrix background is now handled by initializeMatrix() method
-    // This method is kept for compatibility but does nothing since we have canvas-based matrix
+  // Matrix background is handled by MatrixBackground singleton (matrixBackground.start/stop)
+  // This method remains for compatibility only and does nothing.
   }
 }

@@ -34,7 +34,7 @@ Each character has a default class weapon, curated weapon pool, and a unique sta
 - Wasteland Scavenger (default: Scrap‑Saw)
   - Base: HP 100, Speed 8.0, Damage 23, Str 6, Int 6, Agi 7, Luck 8, Def 5
   - Ability: Scrap Surge—build scrap with hits; trigger a defensive blast, heal +5 HP
-  - Pool: Scrap‑Saw, Scavenger Sling, Ricochet, Shotgun
+  - Pool: Scrap‑Saw, Ricochet, Shotgun
   - Style: Balanced
 - Tech Warrior (default: Tachyon Spear)
   - Base: HP 125, Speed 7.2, Damage 25, Str 8, Int 8, Agi 6, Luck 6, Def 8
@@ -69,7 +69,7 @@ Each character has a default class weapon, curated weapon pool, and a unique sta
 - Neural Nomad (default: Neural Threader)
   - Base: HP 105, Speed 7.6, Damage 26, Str 5, Int 9, Agi 7, Luck 8, Def 6
   - Ability: Neural Storm—area‑effect psychic blast
-  - Pool: Neural Threader, Plasma, Scavenger Sling
+  - Pool: Neural Threader, Plasma
   - Style: Support
 - Psionic Weaver (default: Psionic Wave)
   - Base: HP 115, Speed 7.4, Damage 28, Str 6, Int 9, Agi 6, Luck 7, Def 7
@@ -170,9 +170,7 @@ Legend: cooldown (frames unless “ms”), salvo (projectiles per shot), range (
 - Psionic Wave (PSIONIC_WAVE)
   - Base: cd 28, dmg 28; sweep beam; pierce+slow; marks target
   - Scaling: damage↑, cd↓; “mark” windows for burst
-- Scavenger Sling (SCAVENGER_SLING)
-  - Base: cd 38, dmg 38; bouncing rocks
-  - Scaling: damage↑, cd↓
+// NOTE: Legacy weapon "Scavenger Sling" has been removed. Scavenger class uses Scrap‑Saw → Industrial Grinder evolution.
 - Neural Threader (NOMAD_NEURAL)
   - Base: cd 64, dmg 26, range 720; anchors threads that pulse
   - Scaling: anchors 2→8, thread life↑, pulse interval↓, pulse %↑

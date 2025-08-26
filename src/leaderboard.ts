@@ -299,6 +299,8 @@ export async function submitScore(opts: {
       await redis(['HSET', `name:${pid}`, 'name', name]);
       // Per‑board meta: field=pid, value=JSON(meta), so each board locks metadata to its best run
       await redis(['HSET', metaKey, pid, JSON.stringify(meta)]);
+  // Cleanup: remove legacy global meta field if present to avoid stale reads by older clients
+  await redis(['HDEL', `name:${pid}`, 'meta']).catch(()=>{});
     } catch {/* ignore meta persist errors */}
   } else {
     // Always keep nickname fresh even when not improving score
@@ -400,15 +402,20 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
           try {
             const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
             if (fetchedName) name = fetchedName;
-            // Prefer per‑board meta first; fallback to legacy global meta
+            // Use only per‑board meta to lock data to the best run on this board (no legacy fallback to avoid stale char)
             let metaStr = await redis(['HGET', metaKey, playerId]).catch(()=>null);
-            if (!metaStr) metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
             if (metaStr) {
               const meta = JSON.parse(metaStr);
-              if (typeof meta.kills === 'number') kills = meta.kills;
-              if (typeof meta.level === 'number') level = meta.level;
-              if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
-              if (typeof meta.char === 'string') characterId = meta.char;
+              const matches = (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
+              if (matches) {
+                if (typeof meta.kills === 'number') kills = meta.kills;
+                if (typeof meta.level === 'number') level = meta.level;
+                if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
+                if (typeof meta.char === 'string') characterId = meta.char;
+              } else {
+                // Do not read fields from a different run
+                characterId = undefined;
+              }
             }
           } catch {/* ignore per-player meta errors */}
           const effectiveCharId = boardOpId || characterId;
@@ -471,17 +478,21 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
   let name = playerId;
   let kills: number | undefined; let level: number | undefined; let maxDps: number | undefined; let characterId: string | undefined;
     try {
-      const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
+  const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
       if (fetchedName) name = fetchedName;
-      // Prefer per‑board meta first; fallback to legacy global meta
-      let metaStr = await redis(['HGET', metaKey, playerId]).catch(()=>null);
-      if (!metaStr) metaStr = await redis(['HGET', `name:${playerId}`, 'meta']).catch(()=>null);
+  // Use only per‑board meta (best-run locked) to avoid stale operative from legacy global meta
+  let metaStr = await redis(['HGET', metaKey, playerId]).catch(()=>null);
       if (metaStr) {
         const meta = JSON.parse(metaStr);
-        if (typeof meta.kills === 'number') kills = meta.kills;
-        if (typeof meta.level === 'number') level = meta.level;
-        if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
-        if (typeof meta.char === 'string') characterId = meta.char;
+        const matches = (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
+        if (matches) {
+          if (typeof meta.kills === 'number') kills = meta.kills;
+          if (typeof meta.level === 'number') level = meta.level;
+          if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
+          if (typeof meta.char === 'string') characterId = meta.char;
+        } else {
+          characterId = undefined;
+        }
       }
     } catch {/* ignore meta errors */}
   // Prefer board-derived operative id on per-operative boards to guarantee consistent labeling.
