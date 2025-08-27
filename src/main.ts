@@ -345,6 +345,43 @@ window.onload = async () => {
   mainMenu.show(); // Show the main menu initially
   Logger.info('[main.ts] Main menu shown');
 
+  // F9: Run a 20s stress test (SHOWDOWN mode). Spawns dense waves, enables low VFX, and prints summary.
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'F9') return;
+    const gm = (game as any).gameMode;
+    if (gm !== 'SHOWDOWN' && gm !== 'SANDBOX') return;
+    Logger.info('[perf] Stress test starting: spawning dense waves for 20s; enabling low VFX');
+    // Enable global low VFX flag
+    try { (window as any).__vfxLowMode = true; } catch {}
+    // Spawn batches near player
+    const player = game.player;
+    const EM = game.getEnemyManager() as any;
+    const start = performance.now();
+    let spawned = 0;
+    const spawnTick = () => {
+      const now = performance.now();
+      if (now - start > 20000) {
+        // Stop and print summary
+        try { (window as any).__vfxLowMode = false; } catch {}
+        const fps = (window as any).__frameJitterP95;
+        Logger.info('[perf] Stress test done. p95 frame delta = ' + fps + 'ms; enemies=' + EM.getEnemies()?.length + ' bullets=' + (game.getBulletManager() as any).bullets?.length);
+        return;
+      }
+      const px = player.x, py = player.y;
+      const ring = 480;
+      for (let i=0;i<40;i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const r = ring + Math.random()*140;
+        const x = px + Math.cos(ang) * r;
+        const y = py + Math.sin(ang) * r;
+        EM.spawnEnemyAt?.(x, y, { type: 'medium', hp: 120 });
+        spawned++;
+      }
+      setTimeout(spawnTick, 250);
+    };
+    spawnTick();
+  });
+
   // --- Sound Settings Panel & Music ---
   // Sound settings now only accessible via Pause -> Options; no auto panel on gameplay start
   // Hudba se spustí až po startu hry (po interakci uživatele)

@@ -568,27 +568,14 @@ export class EnemyManager {
         const nctx = normal.getContext('2d')!;
         nctx.imageSmoothingEnabled = true;
         nctx.drawImage(img, 0, 0, size, size);
-        // Give 'large' a cooler tint to stand out (no harsh aura)
-        if (d.type === 'large') {
-          // Multiply tint for base coloration
-          nctx.globalCompositeOperation = 'multiply';
-          // Softer teal wash (reduced alpha to avoid visible "aura")
-          nctx.fillStyle = 'rgba(0, 180, 255, 0.18)';
-          nctx.fillRect(0, 0, size, size);
-          nctx.globalCompositeOperation = 'source-over';
-        }
         // Flash variant (tinted)
         const flash = document.createElement('canvas');
         flash.width = size; flash.height = size;
         const fctx = flash.getContext('2d')!;
         fctx.drawImage(img, 0, 0, size, size);
-        fctx.globalCompositeOperation = 'lighter';
-        // Large uses a cooler flash tint; others use warm (slightly reduced intensity)
-        if (d.type === 'large') {
-          fctx.fillStyle = 'rgba(128, 220, 255, 0.50)';
-        } else {
-          fctx.fillStyle = 'rgba(255,128,128,0.6)';
-        }
+  fctx.globalCompositeOperation = 'lighter';
+  // Use a consistent warm flash tint for all sizes (no cyan tint on large)
+  fctx.fillStyle = 'rgba(255,128,128,0.6)';
         fctx.fillRect(0,0,size,size);
         fctx.globalCompositeOperation = 'source-over';
         // Flipped variants (precomputed to avoid per-enemy save/scale)
@@ -653,6 +640,65 @@ export class EnemyManager {
         };
         simg.onerror = () => { /* keep default 'small' */ };
         simg.src = spiderPath;
+      } catch { /* ignore */ }
+    // Try to override the 'large' type with enemy_eye.png if present
+      try {
+        const eyePath = (location.protocol === 'file:' ? './assets/enemies/enemy_eye.png' : '/assets/enemies/enemy_eye.png');
+        const eimg = new Image();
+        eimg.onload = () => {
+          const radius = 36; // match 'large' enemy radius
+          const size = radius * 2;
+          // Normal
+          const normal = document.createElement('canvas');
+          normal.width = size; normal.height = size;
+          const nctx2 = normal.getContext('2d')!;
+          nctx2.imageSmoothingEnabled = true;
+          nctx2.drawImage(eimg, 0, 0, size, size);
+          // Flash variant (cooler tint for large)
+          const flash = document.createElement('canvas');
+          flash.width = size; flash.height = size;
+          const fctx2 = flash.getContext('2d')!;
+          fctx2.drawImage(eimg, 0, 0, size, size);
+      fctx2.globalCompositeOperation = 'lighter';
+      // Warm flash to match other enemies (disable cyan effect)
+      fctx2.fillStyle = 'rgba(255,128,128,0.6)';
+          fctx2.fillRect(0,0,size,size);
+          fctx2.globalCompositeOperation = 'source-over';
+          // Flipped variants
+          const normalFlipped = document.createElement('canvas');
+          normalFlipped.width = size; normalFlipped.height = size;
+          const fn2 = normalFlipped.getContext('2d')!;
+          fn2.translate(size,0); fn2.scale(-1,1); fn2.drawImage(normal,0,0);
+          const flashFlipped = document.createElement('canvas');
+          flashFlipped.width = size; flashFlipped.height = size;
+          const ff2 = flashFlipped.getContext('2d')!;
+          ff2.translate(size,0); ff2.scale(-1,1); ff2.drawImage(flash,0,0);
+          // RGB ghosts using helper from above scope
+          const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
+            const cv = document.createElement('canvas');
+            cv.width = base.width; cv.height = base.height;
+            const cctx = cv.getContext('2d')!;
+            cctx.drawImage(base, 0, 0);
+            cctx.globalCompositeOperation = 'multiply';
+            cctx.fillStyle = tint === 'red' ? 'rgba(255,0,0,0.85)'
+                             : tint === 'green' ? 'rgba(0,255,0,0.85)'
+                             : 'rgba(0,128,255,0.85)';
+            cctx.fillRect(0,0,cv.width,cv.height);
+            cctx.globalCompositeOperation = 'destination-in';
+            cctx.drawImage(base, 0, 0);
+            cctx.globalCompositeOperation = 'source-over';
+            return cv;
+          };
+          const redGhost = makeGhost(normal, 'red');
+          const greenGhost = makeGhost(normal, 'green');
+          const blueGhost = makeGhost(normal, 'blue');
+          const redGhostFlipped = makeGhost(normalFlipped, 'red');
+          const greenGhostFlipped = makeGhost(normalFlipped, 'green');
+          const blueGhostFlipped = makeGhost(normalFlipped, 'blue');
+          this.enemySprites['large'] = { normal, flash, normalFlipped, flashFlipped, redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any;
+        };
+        eimg.onerror = () => { /* keep default 'large' */ };
+        eimg.src = eyePath;
       } catch { /* ignore */ }
     };
     img.onerror = () => { /* fallback circles already exist */ };

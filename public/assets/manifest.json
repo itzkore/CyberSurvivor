@@ -12,6 +12,20 @@
       "w": 64,
       "h": 64,
       "frames": 1
+    },
+    "eye": {
+      "file": "assets/enemies/enemy_eye.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "optional": true
+    },
+    "spider": {
+      "file": "assets/enemies/enemy_spider.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "optional": true
     }
   },
   "player": {
