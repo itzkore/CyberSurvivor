@@ -24,5 +24,6 @@ export enum WeaponType {
   TACHYON_SPEAR = 22,
   SINGULARITY_SPEAR = 23,
   DATA_SIGIL = 24,
-  SCRAP_LASH = 25
+  SCRAP_LASH = 25,
+  RESONANT_WEB = 26
 }

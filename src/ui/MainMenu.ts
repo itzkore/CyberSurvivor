@@ -538,7 +538,8 @@ export class MainMenu {
     #main-menu .main-menu-shell{position:relative}
     #main-menu .matrix-bg-overlay{position:absolute;inset:0;background:radial-gradient(circle at 50% 40%, #062025 0%, #020a0c 80%);z-index:0;pointer-events:none}
     .mm-header,.mm-main,.mm-footer{position:relative;z-index:1}
-  .mm-footer{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;padding:6px 0;pointer-events:none;z-index:5}
+  /* Enable pointer events so the sound slider (hosted in the footer status line) is interactive even when signed out */
+  .mm-footer{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;padding:6px 0;pointer-events:auto;z-index:5}
   .status-line{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:1px}
   .status-line .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;box-shadow:0 0 8px currentColor}
   .status-line.online{color:#59ff87}

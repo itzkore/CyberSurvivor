@@ -108,6 +108,8 @@ export class EnemyManager {
   private hackerAutoCooldownUntil: number = 0;
   // Monotonic counter for Rogue Hacker zone stamps
   private hackerZoneStampCounter: number = 1;
+  // Spawn freeze window (e.g., on boss spawn). When now < spawnFreezeUntilMs, dynamic spawner is paused.
+  private spawnFreezeUntilMs: number = 0;
 
   // Poison puddle system
   private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean }[] = [];
@@ -116,6 +118,40 @@ export class EnemyManager {
   private bioOutbreakRadius: number = 0;
   private bioOutbreakLastTickMs: number = 0;
   // Poison (Bio Engineer) status: stacking DoT with movement slow and contagion
+
+  // Cached sprites for psionic mark aura to avoid per-enemy shadowBlur cost
+  private psionicGlowCache: Map<number, HTMLCanvasElement> = new Map();
+  /** Returns a cached pre-rendered glow sprite for the given radius (quantized). */
+  private getPsionicGlowSprite(radius: number): HTMLCanvasElement {
+    const step = 4; // quantize to reduce cache cardinality
+    const rQ = Math.max(6, Math.round(radius / step) * step);
+    const cached = this.psionicGlowCache.get(rQ);
+    if (cached) return cached;
+    // Build offscreen sprite with baked ring + soft aura (no per-frame shadowBlur)
+    const margin = Math.ceil(Math.max(6, rQ * 0.18));
+    const size = (rQ + margin) * 2;
+    const cnv = document.createElement('canvas');
+    cnv.width = size; cnv.height = size;
+    const ctx = cnv.getContext('2d');
+    if (!ctx) { this.psionicGlowCache.set(rQ, cnv); return cnv; }
+    const cx = size / 2, cy = size / 2;
+    // Outer soft aura using radial gradient (baked, cheap to draw)
+  const grad = ctx.createRadialGradient(cx, cy, Math.max(1, rQ * 0.70), cx, cy, rQ + margin - 1);
+  grad.addColorStop(0.0, 'rgba(204,102,255,0.06)');
+  grad.addColorStop(0.55, 'rgba(170, 80,255,0.04)');
+  grad.addColorStop(1.0, 'rgba(170, 80,255,0.00)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(cx, cy, rQ + margin - 1, 0, Math.PI * 2); ctx.fill();
+    // Core neon ring (two strokes with slight variance for punch)
+    ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = '#cc66ff';
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.22; ctx.beginPath(); ctx.arc(cx, cy, rQ, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.12; ctx.lineWidth = 2.0; ctx.beginPath(); ctx.arc(cx, cy, rQ * 0.96, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1.0;
+    this.psionicGlowCache.set(rQ, cnv);
+    return cnv;
+  }
   private readonly poisonTickIntervalMs: number = 500; // damage application cadence
   private readonly poisonDurationMs: number = 4000; // duration refreshed per stack add
   private readonly poisonDpsPerStack: number = 3.2; // increased DPS per stack to emphasize DoT over impact
@@ -168,6 +204,14 @@ export class EnemyManager {
   this.preallocateSpecialItems();
   this.preallocateTreasures();
   this.waves = []; // legacy disabled; dynamic system takes over
+    // Freeze spawns and clear enemies on boss spawn (15s calm before the storm)
+    window.addEventListener('bossSpawn', () => {
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      this.spawnFreezeUntilMs = now + 15000; // 15 seconds
+      this.clearAllEnemies();
+      // Reset dynamic accumulator so we don't burst-spawn when freeze ends
+      this.dynamicWaveAccumulator = 0;
+    });
     // Listen for spawnChest event from BossManager
     window.addEventListener('spawnChest', (e: Event) => {
       const customEvent = e as CustomEvent;
@@ -281,6 +325,16 @@ export class EnemyManager {
   this.loadSharedEnemyImage();
   // Schedule first special spawn for real games
   try { this.scheduleNextSpecialSpawn(); } catch {}
+    // On game start, scatter a few treasures well away from the player to encourage exploration
+    window.addEventListener('startGame', () => {
+      try {
+        const count = 3;
+        for (let i = 0; i < count; i++) {
+          const pos = this.pickSpecialSpawnPoint();
+          this.spawnTreasure(pos.x, pos.y, 220);
+        }
+      } catch { /* ignore */ }
+    });
     // Sandbox: Spawn/Clear dummy targets for testing
     window.addEventListener('sandboxSpawnDummy', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
@@ -348,6 +402,15 @@ export class EnemyManager {
         const y = camY + Math.random() * vh;
         this.spawnDummyEnemy(x, y, radius, hp);
       }
+    });
+    // Spawn one of each enemy type near the player (Sandbox convenience)
+    window.addEventListener('sandboxSpawnAllTypes', () => {
+      const px = this.player.x, py = this.player.y;
+      const dist = 320; // place slightly away from player
+      // small (up), medium (right), large (down)
+      this.spawnEnemyAt(px, py - dist, { type: 'small' });
+      this.spawnEnemyAt(px + dist, py, { type: 'medium' });
+      this.spawnEnemyAt(px, py + dist, { type: 'large' });
     });
     // Clear enemies within the current viewport
     window.addEventListener('sandboxClearViewEnemies', () => {
@@ -462,15 +525,15 @@ export class EnemyManager {
   const nowPar = performance.now();
   if (eAny._paralyzedUntil && eAny._paralyzedUntil > nowPar) return 0;
     if (eAny._poisonStacks) slow = Math.max(slow, Math.min(this.poisonSlowCap, (eAny._poisonStacks | 0) * this.poisonSlowPerStack));
-    // Psionic mark slow: flat 25% while active
+    // Psionic mark slow: flat 28% while active (buffed)
   const now = performance.now();
-  if (eAny._psionicMarkUntil && eAny._psionicMarkUntil > now) slow = Math.max(slow, 0.25);
+  if (eAny._psionicMarkUntil && eAny._psionicMarkUntil > now) slow = Math.max(slow, 0.28);
     // Weaver Lattice slow: 70% slow to all enemies currently within lattice radius around player
     try {
       const until = (window as any).__weaverLatticeActiveUntil || 0;
       if (until > now) {
         const dx = e.x - this.player.x; const dy = e.y - this.player.y;
-        const r = 320; // match draw/update radius
+  const r = 352; // match draw/update radius (buffed)
         if (dx*dx + dy*dy <= r*r) slow = Math.max(slow, 0.70);
       }
     } catch {}
@@ -1064,7 +1127,11 @@ export class EnemyManager {
     }
   }
 
-  /** Apply or refresh a burn stack on boss. */
+  /** Apply or refresh a burn stack on boss.
+   * Laser Blaster burn policy: cap stacks at 3 and keep per-tick damage minimal.
+   * We compute a small per-stack baseline and clamp total tick damage to baseline*stacks,
+   * avoiding accumulation from rapid hits.
+   */
   private applyBossBurn(boss: any, tickDamage: number) {
     const now = performance.now();
     const b: any = boss as any;
@@ -1075,7 +1142,13 @@ export class EnemyManager {
       b._burnExpire = now + this.burnDurationMs;
     }
     if (b._burnStacks < 3) b._burnStacks++;
-    b._burnTickDamage = (b._burnTickDamage || 0) + tickDamage;
+    // Minimal per-stack baseline (scales lightly with Laser level and global damage)
+    let laserLevel = 1; try { laserLevel = this.player?.activeWeapons?.get(WeaponType.LASER) ?? 1; } catch {}
+    const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+    const perStackBase = Math.max(1, Math.round((3 + 1.0 * Math.max(0, laserLevel - 1)) * dmgMul));
+    const stacks = b._burnStacks | 0;
+    // Clamp total per-tick damage to baseline * stacks (no accumulation from repeated hits)
+    b._burnTickDamage = perStackBase * stacks;
     b._burnExpire = now + this.burnDurationMs;
   }
 
@@ -1084,10 +1157,11 @@ export class EnemyManager {
     const b: any = boss as any;
     if (!b._burnStacks) return;
     if (now >= b._burnExpire) { b._burnStacks = 0; b._burnTickDamage = 0; return; }
-    if (now >= b._burnNextTick) {
+  if (now >= b._burnNextTick) {
       b._burnNextTick += this.burnTickIntervalMs;
       if (b._burnTickDamage > 0) {
-        this.takeBossDamage(boss, b._burnTickDamage, false, WeaponType.LASER, boss.x, boss.y);
+    // Apply damage without tagging as LASER to avoid reapplying/refreshing burn from its own tick
+    this.takeBossDamage(boss, b._burnTickDamage, false, undefined, boss.x, boss.y);
       }
     }
   }
@@ -1177,7 +1251,10 @@ export class EnemyManager {
     }
   }
 
-  /** Apply or refresh a burn stack (max 3). Each stack deals storedTickDamage every burnTickIntervalMs for burnDurationMs. */
+  /** Apply or refresh a burn stack (max 3).
+   * Laser Blaster burn policy: cap stacks at 3 and keep per-tick damage minimal.
+   * Compute a small per-stack baseline and set per-tick damage = baseline*stacks (no accumulation).
+   */
   private applyBurn(enemy: Enemy, tickDamage: number) {
     if (!enemy.active || enemy.hp <= 0) return;
     const now = performance.now();
@@ -1190,9 +1267,12 @@ export class EnemyManager {
     }
     // Increase stacks up to 3
     if (eAny._burnStacks < 3) eAny._burnStacks++;
-    // Recompute per-tick damage as average to avoid runaway scaling when rapidly stacking; could also sum.
-    // We'll sum contributions: base existing tickDamage + new tickDamage (capped by stacks count times base tickDamage maybe). Simpler: accumulate.
-    eAny._burnTickDamage = (eAny._burnTickDamage || 0) + tickDamage;
+    // Minimal per-stack baseline (scales lightly with Laser level and global damage)
+    let laserLevel = 1; try { laserLevel = this.player?.activeWeapons?.get(WeaponType.LASER) ?? 1; } catch {}
+    const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+    const perStackBase = Math.max(1, Math.round((3 + 1.0 * Math.max(0, laserLevel - 1)) * dmgMul));
+    const stacks = eAny._burnStacks | 0;
+    eAny._burnTickDamage = perStackBase * stacks;
     // Refresh expiration
     eAny._burnExpire = now + this.burnDurationMs;
   }
@@ -1209,11 +1289,11 @@ export class EnemyManager {
         e._burnTickDamage = 0;
         continue;
       }
-      if (now >= e._burnNextTick) {
+    if (now >= e._burnNextTick) {
         e._burnNextTick += this.burnTickIntervalMs;
         if (e._burnTickDamage > 0) {
-          // Apply damage without recursion side-effects (ignoreActiveCheck true to ensure processing; pass source weapon for consistency)
-          this.takeDamage(e as Enemy, e._burnTickDamage, false, false, WeaponType.LASER);
+      // Apply damage without tagging as LASER to avoid reapplying/refreshing burn from its own tick
+      this.takeDamage(e as Enemy, e._burnTickDamage, false, false, undefined);
           // Optionally spawn a tiny ember particle (future enhancement)
         }
       }
@@ -1311,6 +1391,10 @@ export class EnemyManager {
   const minY = camY - pad;
   const maxY = camY + viewH + pad;
   const now = performance.now();
+  // Adaptive per-frame budget for costly overlays (psionic glows)
+  const frameMsBudget = this.avgFrameMs || 16;
+  const psionicGlowBudgetMax = frameMsBudget > 40 ? 6 : frameMsBudget > 28 ? 12 : frameMsBudget > 18 ? 24 : Number.POSITIVE_INFINITY;
+  let psionicGlowBudget = psionicGlowBudgetMax;
   // Sandbox low-FX detection
   const __gm = (window as any).__gameInstance?.gameMode;
   const __sandbox = __gm === 'SANDBOX';
@@ -1650,11 +1734,20 @@ export class EnemyManager {
   // Draw enemies (cached sprite images if enabled)
     // Compute heavy FX budget per frame: start at 32 and scale down under load
     const frameMsForBudget = this.avgFrameMs || 16;
-  let heavyBudget = ( (window as any).__gameInstance?.gameMode === 'SANDBOX' && ((window as any).__sandboxForceLowFX || this.avgFrameMs > 18) )
+    // Global low-FX detection (not just SANDBOX) and load guard
+  const sandboxLow = !!((window as any).__gameInstance?.gameMode === 'SANDBOX' && (window as any).__sandboxForceLowFX);
+  const globalLow = !!((window as any).__lowFX);
+  const underLoad = this.avgFrameMs > 18; // adaptive threshold used elsewhere
+  const fxLow = sandboxLow || globalLow || underLoad;
+    // Heavy FX slice budget scales down under load; zero when lowFX
+  let heavyBudget = fxLow
       ? 0
       : (frameMsForBudget > 55 ? 8 : frameMsForBudget > 40 ? 16 : 32);
     // Cap to a fraction of visible enemies to avoid worst-case storms
     heavyBudget = Math.min(heavyBudget, Math.ceil(this.activeEnemies.length * 0.25));
+    // Per-frame budget for RGB glitch ghost overlays (expensive overdraw)
+  let glitchBudget = fxLow ? 0 : (frameMsForBudget > 55 ? 4 : frameMsForBudget > 40 ? 8 : 12);
+    glitchBudget = Math.min(glitchBudget, Math.ceil(this.activeEnemies.length * 0.15));
     if (this.usePreRenderedSprites) {
   for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
         const enemy = this.activeEnemies[i];
@@ -1725,8 +1818,9 @@ export class EnemyManager {
             }
           }
         }
-        // RGB glitch effect: use cached-tint ghosts; cap heavy work per frame
-  if (!(((window as any).__gameInstance?.gameMode) === 'SANDBOX' && (((window as any).__sandboxForceLowFX) || this.avgFrameMs > 18)) && (eAny._rgbGlitchUntil || 0) > now) {
+        // RGB glitch effect: use cached-tint ghosts; cap heavy work per frame (globally gated)
+  if (glitchBudget > 0 && !fxLow && (eAny._rgbGlitchUntil || 0) > now) {
+          glitchBudget--;
           const tLeft = Math.max(0, Math.min(1, (eAny._rgbGlitchUntil - now) / 220));
           const phase = (eAny._rgbGlitchPhase || 0);
           ctx.save();
@@ -1739,10 +1833,12 @@ export class EnemyManager {
           const gGhost = flipLeft ? (bundle.greenGhostFlipped || bundle.greenGhost) : bundle.greenGhost;
           const bGhost = flipLeft ? (bundle.blueGhostFlipped || bundle.blueGhost) : bundle.blueGhost;
           // Red left, Blue right, faint Green center
-          ctx.globalAlpha = 0.35 + 0.35 * tLeft;
+          // Slightly reduce alpha when frame time is high (less overdraw cost)
+          const alphaScale = frameMsForBudget > 40 ? 0.8 : 1;
+          ctx.globalAlpha = (0.35 + 0.35 * tLeft) * alphaScale;
           if (rGhost) ctx.drawImage(rGhost, drawX - ghostOffset + jx, drawY + jy, size, size);
           if (bGhost) ctx.drawImage(bGhost, drawX + ghostOffset + jx, drawY + jy, size, size);
-          ctx.globalAlpha = 0.22 + 0.28 * tLeft;
+          ctx.globalAlpha = (0.22 + 0.28 * tLeft) * alphaScale;
           if (gGhost) ctx.drawImage(gGhost, drawX + Math.sign(ghostOffset), drawY, size, size);
           ctx.globalCompositeOperation = 'source-over';
           ctx.globalAlpha = 1;
@@ -1781,18 +1877,18 @@ export class EnemyManager {
           }
           ctx.restore();
         }
-        // Psionic mark aura (visible slow indicator)
-        if ((eAny._psionicMarkUntil || 0) > now) {
+        // Psionic mark aura (visible slow indicator) — optimized using cached sprite + load-based budget
+        if ((eAny._psionicMarkUntil || 0) > now && psionicGlowBudget > 0) {
+          psionicGlowBudget--;
+          const baseR = enemy.radius * 1.15; // slightly smaller than before
+          const sprite = this.getPsionicGlowSprite(baseR);
+          const alphaScale = frameMsBudget > 40 ? 0.45 : frameMsBudget > 28 ? 0.6 : frameMsBudget > 18 ? 0.75 : 0.9;
           ctx.save();
           ctx.globalCompositeOperation = 'screen';
-          ctx.globalAlpha = 0.35;
-          ctx.shadowColor = '#cc66ff';
-          ctx.shadowBlur = 18;
-          ctx.beginPath();
-          ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.25, 0, Math.PI*2);
-          ctx.strokeStyle = '#cc66ff';
-          ctx.lineWidth = 2;
-          ctx.stroke();
+          ctx.globalAlpha = 0.22 * alphaScale; // toned down visibility
+          const dx = (enemy.x + shakeX) - (sprite.width >> 1);
+          const dy = (enemy.y + shakeY) - (sprite.height >> 1);
+          try { ctx.drawImage(sprite, dx, dy); } catch {}
           ctx.restore();
         }
         // Status flash overlay: poison (green), sigil (magenta), or void sniper tick (unique dark void purple)
@@ -2130,10 +2226,17 @@ export class EnemyManager {
     const gm = (window as any).__gameInstance?.gameMode;
     const isSandbox = gm === 'SANDBOX';
     if (!isSandbox) {
+      // Skip dynamic spawns while a freeze window is active
+      const nowMs = nowFrame;
+      if (nowMs < this.spawnFreezeUntilMs) {
+        // Drain any accumulated budget to avoid post-freeze burst
+        this.dynamicWaveAccumulator = 0;
+      } else {
       this.dynamicWaveAccumulator += deltaTime;
       if (this.dynamicWaveAccumulator >= this.spawnIntervalDynamic) {
         this.dynamicWaveAccumulator -= this.spawnIntervalDynamic;
         this.runDynamicSpawner(gameTime);
+      }
       }
   }
 
@@ -2196,7 +2299,7 @@ export class EnemyManager {
   const nowMs = nowFrame;
   const latticeUntil = (window as any).__weaverLatticeActiveUntil || 0;
   const latticeActive = latticeUntil > nowMs;
-  const latticeR = latticeActive ? 320 : 0;
+  const latticeR = latticeActive ? 352 : 0;
   const latticeR2 = latticeR * latticeR;
   // Lattice periodic damage: every ~0.5s (adaptive), deal 50% of Psionic Wave damage to enemies inside the zone
   if (latticeActive) {
@@ -2236,6 +2339,7 @@ export class EnemyManager {
     const tickInterval = severeLoad ? 700 : highLoad ? 600 : this.latticeTickIntervalMs;
     this.latticeNextTickMs = nowMs + tickInterval;
   }
+
   // Rebuild active enemy cache while updating (single pass)
     this.activeEnemies.length = 0;
   // Hoist globals used inside the loop
@@ -2755,8 +2859,40 @@ export class EnemyManager {
   // Data Sigils updates
   this.updateDataSigils(deltaTime);
 }
+  /** Clear all currently active enemies immediately (used on boss spawn). */
+  private clearAllEnemies() {
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      if (e && e.active) {
+        e.active = false;
+        this.enemyPool.push(e);
+      }
+    }
+    // Active cache rebuilt next update
+  }
   /** Total enemies killed this run. */
   public getKillCount() { return this.killCount; }
+
+  /**
+   * Spawn a basic enemy of the given type at world coordinates.
+   * For Sandbox/testing use. HP can be overridden; other stats derive from type defaults.
+   */
+  public spawnEnemyAt(x: number, y: number, opts: { type: Enemy['type']; hp?: number }): Enemy {
+    let e = this.enemyPool.pop() as Enemy | undefined;
+    if (!e) e = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '' } as Enemy;
+    const enemy = e as Enemy;
+    const type = opts.type;
+    enemy.type = type;
+    // Defaults match spawnEnemy type presets (early game values)
+    if (type === 'small') { enemy.radius = 20; enemy.speed = 0.30 * this.enemySpeedScale; enemy.damage = 4; enemy.hp = opts.hp ?? 100; }
+    else if (type === 'medium') { enemy.radius = 30; enemy.speed = 0.65 * 0.30 * this.enemySpeedScale; enemy.damage = 7; enemy.hp = opts.hp ?? 220; }
+    else { enemy.radius = 38; enemy.speed = 0.42 * 0.28 * this.enemySpeedScale; enemy.damage = 10; enemy.hp = opts.hp ?? 480; }
+    enemy.maxHp = enemy.hp; enemy.active = true; enemy.x = x; enemy.y = y; enemy.id = 'sb-' + Math.floor(Math.random() * 1e9);
+    // Clear status flags likely present on pooled instance
+    const anyE: any = enemy as any; anyE._isDummy = false; anyE._poisonStacks = 0; anyE._burnStacks = 0; anyE._poisonExpire = 0; anyE._burnExpire = 0; anyE._burnTickDamage = 0;
+    this.enemies.push(enemy);
+    return enemy;
+  }
 
   private spawnEnemy(type: 'small' | 'medium' | 'large', gameTime: number, pattern: 'normal' | 'ring' | 'cone' | 'surge' = 'normal') {
     let enemy = this.enemyPool.pop();
@@ -2934,6 +3070,25 @@ export class EnemyManager {
     this.treasures.push(t);
   }
 
+  /**
+   * Public API: Apply damage to a treasure object and handle destruction side-effects.
+   * Used by systems that deal non-bullet damage (e.g., AoE pulses) so we don't rely solely on bullet overlap.
+   */
+  public damageTreasure(t: SpecialTreasure, amount: number): void {
+    if (!t || !t.active || amount <= 0) return;
+    t.hp -= amount;
+    if (this.particleManager) this.particleManager.spawn(t.x, t.y, 1, '#B3E5FF');
+    if (t.hp <= 0) {
+      t.active = false;
+      this.treasurePool.push(t);
+      // Drop random special item at treasure location (mirror updateTreasures behavior)
+      const roll = Math.random();
+      const type: SpecialItem['type'] = roll < 0.34 ? 'HEAL' : roll < 0.67 ? 'MAGNET' : 'NUKE';
+      this.spawnSpecialItem(t.x, t.y, type);
+      try { this.particleManager?.spawn(t.x, t.y, 10, '#66CCFF', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.5, speedMax: 3.5 }); } catch {}
+    }
+  }
+
   /** Update treasures: take bullet damage; on destroy, drop a random special item. */
   private updateTreasures(deltaTime: number, bullets: Bullet[]) {
     // Clamp to walkable and handle bullet collisions
@@ -2947,6 +3102,11 @@ export class EnemyManager {
       // Bullet collisions (simple loop; low counts typical). Use squared distances.
       for (let b = 0; b < bullets.length; b++) {
         const bullet = bullets[b]; if (!bullet.active) continue;
+        // Allow Resonant Web orbiting orbs to pass through treasures without being destroyed or dealing contact damage
+        if ((bullet as any).isOrbiting && (bullet as any).weaponType === WeaponType.RESONANT_WEB) {
+          // Explicitly skip WEB orbiters; their damage comes from pulses/auto-casts, not contact
+          continue;
+        }
         const dx = bullet.x - t.x; const dy = bullet.y - t.y;
         const rr = (t.radius + bullet.radius); if (dx*dx + dy*dy > rr*rr) continue;
         // Hit!
@@ -3192,16 +3352,19 @@ export class EnemyManager {
 
   /** Spawn a stationary Sandbox dummy as an enemy-like target. */
   private spawnDummyEnemy(x: number, y: number, radius: number, hp: number) {
-  let e = this.enemyPool.pop() as Enemy | undefined;
-  if (!e) e = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'large', damage: 0, id: '' } as Enemy;
-  const enemy = e as Enemy;
-  const anyE: any = enemy as any;
-  enemy.x = x; enemy.y = y; enemy.radius = radius; enemy.active = true; enemy.type = 'large';
-  enemy.hp = hp; enemy.maxHp = hp; enemy.speed = 0; enemy.damage = 0; enemy.id = 'dummy-' + Math.floor(Math.random()*1e9);
+    let e = this.enemyPool.pop() as Enemy | undefined;
+    if (!e) e = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '' } as Enemy;
+    const enemy = e as Enemy;
+    const anyE: any = enemy as any;
+    // Classify type by radius so Sandbox can spawn all archetypes easily
+    const type: Enemy['type'] = (radius >= 34) ? 'large' : (radius >= 24) ? 'medium' : 'small';
+    enemy.type = type;
+    enemy.x = x; enemy.y = y; enemy.radius = radius; enemy.active = true;
+    enemy.hp = hp; enemy.maxHp = hp; enemy.speed = 0; enemy.damage = 0; enemy.id = 'dummy-' + Math.floor(Math.random()*1e9);
     anyE._isDummy = true; // mark for special handling
     // Clear statuses
     anyE._poisonStacks = 0; anyE._burnStacks = 0; anyE._poisonExpire = 0; anyE._burnExpire = 0; anyE._burnTickDamage = 0;
-  this.enemies.push(enemy);
+    this.enemies.push(enemy);
   }
 }
 

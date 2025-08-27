@@ -1230,7 +1230,7 @@ export class Game {
         this.player.draw(this.ctx);
         this.particleManager.draw(this.ctx);
         this.explosionManager?.draw(this.ctx);
-        this.bossManager.draw(this.ctx);
+    this.bossManager.draw(this.ctx);
   this.ctx.restore();
   // (Removed post-entity drawWalkableMask; underlay already applied beneath entities)
   this.damageTextManager.draw(this.ctx, this.camX, this.camY, this.renderScale);
@@ -1240,8 +1240,12 @@ export class Game {
   // Prefer 'screen' blending with an even lower base alpha to keep visibility clear.
   overlay.draw(this.ctx, this.designWidth, this.designHeight, 'screen', 0.6);
   }
+  // Draw boss screen-space FX (e.g., Supernova darken) before HUD so UI stays readable on top
+  this.bossManager.drawScreenFX(this.ctx, this.designWidth, this.designHeight);
   // Removed full-screen additive overlay to prevent global flash; enemy hit feedback now strictly per-entity.
         this.hud.draw(this.ctx, this.gameTime, this.enemyManager.getEnemies(), this.worldW, this.worldH, this.player.upgrades);
+    // Draw cinematic alerts LAST so they remain visible even during bright spells/HUD
+    this.bossManager.drawAlerts(this.ctx, this.designWidth, this.designHeight);
 
         if (this.state === 'PAUSE') {
           // Pause overlay handled via DOM; no canvas rendering

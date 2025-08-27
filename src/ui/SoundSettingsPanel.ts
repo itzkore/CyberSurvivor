@@ -37,7 +37,7 @@ export class SoundSettingsPanel {
     this.panel.appendChild(this.slider);
     // Prefer embedding into main menu footer status bar; fallback to header, then floating
     const footerHost = document.querySelector('.mm-footer .status-line') as HTMLElement | null;
-    if (footerHost) {
+  if (footerHost) {
       this.panel.classList.add('inline');
       this.panel.classList.add('footer');
       footerHost.appendChild(this.panel);
@@ -84,14 +84,14 @@ export class SoundSettingsPanel {
     style.id = 'sound-settings-styles';
     style.textContent = `
       /* Inline (menu header) pill */
-  #sound-settings-panel.inline{display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:2px 6px;background:rgba(0,25,38,.6);border:1px solid rgba(0,255,255,.35);border-radius:999px}
+  #sound-settings-panel.inline{display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:2px 6px;background:rgba(0,25,38,.6);border:1px solid rgba(0,255,255,.35);border-radius:999px;pointer-events:auto}
   #sound-settings-panel.inline.footer{margin-left:12px}
       #sound-settings-panel.inline .sound-icon{color:#9fe;font-family:Orbitron,sans-serif;font-size:12px}
       /* Floating fallback */
       #sound-settings-panel.floating{position:absolute;top:8px;right:8px;z-index:10001;display:flex;align-items:center;gap:8px;padding:6px 10px;background:rgba(0,18,24,.9);border:1px solid rgba(0,255,255,.45);border-radius:10px;box-shadow:0 2px 10px rgba(0,255,255,.25)}
   #sound-settings-panel .sound-range{appearance:none;-webkit-appearance:none;width:90px;height:4px;background:rgba(0,255,255,.12);border:1px solid rgba(0,255,255,.18);border-radius:999px;outline:none;box-shadow:inset 0 0 6px rgba(0,255,255,.12)}
       #sound-settings-panel .sound-range::-webkit-slider-runnable-track{height:4px;background:rgba(0,255,255,.12);border-radius:999px}
-      #sound-settings-panel .sound-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;border-radius:50%;background:#3ED1E4;border:1px solid rgba(0,255,255,.55);box-shadow:0 0 6px rgba(62,209,228,.55);margin-top:-5px}
+  #sound-settings-panel .sound-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:12px;height:12px;border-radius:50%;background:#3ED1E4;border:1px solid rgba(0,255,255,.55);box-shadow:0 0 6px rgba(62,209,228,.55);margin-top:-5px}
       #sound-settings-panel .sound-range::-moz-range-track{height:4px;background:rgba(0,255,255,.12);border-radius:999px;border:1px solid rgba(0,255,255,.18)}
       #sound-settings-panel .sound-range::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:#3ED1E4;border:1px solid rgba(0,255,255,.55);box-shadow:0 0 6px rgba(62,209,228,.55)}
     `;

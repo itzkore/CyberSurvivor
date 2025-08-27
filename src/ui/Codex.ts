@@ -994,7 +994,20 @@ export class Codex {
       return '<div class="cdx-note">Loading bosses…</div>';
     }
 
-    const list = this.bossItems.filter(b => !q || b.name.toLowerCase().includes(q) || b.key.toLowerCase().includes(q));
+    // Augment with known four-boss roster if present assets exist
+    let items = this.bossItems.slice();
+    try {
+      const known: Array<{ key: string; name: string; file: string }> = [
+        { key: 'alpha', name: 'Alpha (Balanced)', file: AssetLoader.normalizePath('/assets/boss/boss_phase1.png') },
+        { key: 'beta',  name: 'Beta (Nova)',      file: AssetLoader.normalizePath('/assets/boss/boss_2.png') },
+        { key: 'gamma', name: 'Gamma (Summoner)', file: AssetLoader.normalizePath('/assets/boss/boss_3.png') },
+        { key: 'omega', name: 'Omega (Dasher)',   file: AssetLoader.normalizePath('/assets/boss/boss_4.png') }
+      ];
+      // Prefer unique by key
+      const have = new Set(items.map(it => it.key));
+      for (let i = 0; i < known.length; i++) { const k = known[i]; if (!have.has(k.key)) items.push({ key: k.key, name: k.name, file: k.file }); }
+    } catch {}
+    const list = items.filter(b => !q || b.name.toLowerCase().includes(q) || b.key.toLowerCase().includes(q));
     if (!list.length) return '<div class="cdx-note">No bosses match your search.</div>';
     const parts: string[] = ['<div class="cdx-grid">'];
     for (let i = 0; i < list.length; i++) {
@@ -1045,7 +1058,7 @@ export class Codex {
   /** Stats used for Boss codex; keep in sync with BossManager. */
   private getBossSpecs() {
     return {
-      baseHp: 1500,
+  baseHp: 4000,
       radius: 80,
       contactBase: 30,
       contactScalePerSpawn: 0.18, // 30 * (1 + 0.18*(n-1))
@@ -1053,10 +1066,10 @@ export class Codex {
       shockInner: 45,
       shockRing: 35,
       specialBlast: 80,
-      dashHit: 25,
+  dashHit: 40,
       novaMaxRadius: 320,
-      hpScaleBase: 1.40, // (1 + 0.40*(n-1))^1.12
-      hpScalePow: 1.12
+  hpScaleBase: 1.55, // (1 + 0.55*(n-1))^1.18
+  hpScalePow: 1.18
     };
   }
 
@@ -1066,7 +1079,7 @@ export class Codex {
     rows[0] = '<table class="cdx-table"><thead><tr><th>Spawn</th><th>HP</th><th>Contact</th><th>Shock Inner</th><th>Shock Ring</th><th>Special</th><th>Dash</th></tr></thead><tbody>';
     let r = 1;
     for (let n = 1; n <= 5; n++) {
-      const hpScale = Math.pow(1 + 0.40 * (n - 1), specs.hpScalePow);
+  const hpScale = Math.pow(1 + 0.55 * (n - 1), specs.hpScalePow);
       const hp = Math.round(specs.baseHp * hpScale);
       const contact = Math.round(specs.contactBase * (1 + specs.contactScalePerSpawn * (n - 1)));
       const scale = Math.pow(specs.specialScaleBase, n - 1);
@@ -1082,15 +1095,18 @@ export class Codex {
 
   /** Describe boss abilities, timings, and mechanics. */
   private renderBossAbilities(specs: ReturnType<Codex['getBossSpecs']>): string {
-    return `
+  return `
       <div class="cdx-note" style="margin-top:8px">
         Abilities:
         <ul style="margin:6px 0 0 16px;padding:0;color:#c8f7ff">
-          <li><b>Shock Nova</b>: 900ms charge, then expanding ring to ~${specs.novaMaxRadius}px. Inner blast deals ${specs.shockInner} (scaled), ring deals ${specs.shockRing} (scaled). One hit per cast.</li>
-          <li><b>Line Dash</b>: 750ms lineup telegraph along a line, then ${specs.dashHit} contact damage during a ~420ms dash at 0.75 px/ms. Post-dash short recovery reduces body-checks.</li>
-          <li><b>Overcharge Special</b>: Builds for 6s, telegraphs for 3s, then deals ${specs.specialBlast} (scaled) if you’re within boss radius + 120px.</li>
-          <li><b>Contact Damage</b>: Base ${specs.contactBase} with per-spawn scaling; 1s cooldown between hits.</li>
-          <li><b>Attack Waves</b>: Periodic attack waves with a chance to spawn minions; XP sprays at 20% HP intervals.</li>
+      <li><b>Shock Nova</b>: 1.8s charge, then expanding ring to ~${specs.novaMaxRadius}px. Inner blast deals ${specs.shockInner} (scaled), ring deals ${specs.shockRing} (scaled). One hit per cast.</li>
+      <li><b>Multi‑Nova (Beta)</b>: Multiple nova rings launch in sequence after a charge; one potential hit per ring.</li>
+      <li><b>Cone Slam (Alpha)</b>: 1.2s windup then a wide 120° cone slam out to ~420px that knocks back.</li>
+      <li><b>Summon Rifts (Gamma)</b>: Telegraphed circles spawn around the player; each pops with an AoE and summons minions.</li>
+      <li><b>Line Dash (Omega)</b>: 1.0s lineup telegraph along a line, then contact damage during a ~600ms dash at 0.6 px/ms; may chain up to two extra dashes and leaves a brief hazard trail.</li>
+      <li><b>Overcharge Special</b>: Builds for 6s, telegraphs for 3s, then deals ${specs.specialBlast} (scaled) if you’re within boss radius + 120px.</li>
+      <li><b>Contact Damage</b>: Base ${specs.contactBase} with per‑spawn scaling; 1s cooldown between hits.</li>
+      <li><b>Attack Waves</b>: Periodic waves with a chance to spawn minions; XP sprays at 20% HP intervals.</li>
         </ul>
       </div>`;
   }

@@ -298,6 +298,8 @@ export class Player {
   private mechMortarSide: number = -1;
   /** Alternating side for Akimbo Deagle (-1 left, +1 right) */
   private akimboSide: number = -1;
+  /** Alternating side for Runner Gun when firing a single shot per trigger (-1 left, +1 right) */
+  private runnerSide: number = -1;
 
   constructor(x: number, y: number, characterData?: any) {
     this.x = x;
@@ -684,7 +686,7 @@ export class Player {
       }
     }
 
-  // Fire weapons when off cooldown. Most weapons require a target; Scrap-Saw can self-swing.
+  // Fire weapons when off cooldown. Most weapons require a target; Scrap-Saw and Drone can self-spawn.
   const isRogueHacker = this.characterData?.id === 'rogue_hacker';
   for (const [weaponType, level] of this.activeWeapons) {
         // Quantum Halo: persistent orbs are managed by BulletManager; never fire like a normal weapon
@@ -726,12 +728,31 @@ export class Player {
           if (typeof baseCdMs === 'number') { effCd = baseCdMs / rateMulWithBoost; }
           else { const effCdFrames = (baseCdFrames as number) / rateMulWithBoost; effCd = effCdFrames * FRAME_MS; }
       // Gate: only fire if target is within base range (no extra +10%).
-      // For all weapons: require a valid target — do not fire when no enemy/boss is in range.
+          // Default: require a valid target. Exceptions: homing drone can spawn with no target and ignores range.
           let canFire = true;
           if (!(target && spec && typeof spec.range === 'number' && spec.range > 0)) {
-        canFire = !!target; // no range or no target -> require target
-            }
-            if (canFire && target && spec && typeof spec.range === 'number' && spec.range > 0) {
+            canFire = !!target;
+          }
+          // Exception: Kamikaze Drone (HOMING) may spawn without any target nearby.
+          if (weaponType === WeaponType.HOMING) {
+            canFire = true;
+            // Enforce per-level drone cap: check current hovering (ASCEND/HOVER) drones
+            try {
+              const bm = this.gameContext?.bulletManager;
+              const lvl = Math.max(1, Math.min(7, Math.floor(level)));
+              const cap = (lvl >= 7) ? 4 : (lvl >= 4 ? 3 : 2);
+              let hovering = 0;
+              const bullets = bm?.bullets || [];
+              for (let bi = 0; bi < bullets.length; bi++) {
+                const bb = bullets[bi];
+                if (!bb || !bb.active) continue;
+                if (bb.weaponType !== WeaponType.HOMING) continue;
+                const ph = (bb as any).phase;
+                if (ph === 'ASCEND' || ph === 'HOVER') { hovering++; if (hovering >= cap) { canFire = false; break; } }
+              }
+            } catch {}
+          }
+            if (canFire && target && spec && typeof spec.range === 'number' && spec.range > 0 && weaponType !== WeaponType.HOMING) {
               const dx = target.x - this.x;
               const dy = target.y - this.y;
               const dist = Math.hypot(dx, dy);
@@ -747,6 +768,16 @@ export class Player {
           // Determine final target for this weapon.
           // For other weapons: fire only if a valid target is available and in range.
           let fireTarget: Enemy | null = canFire ? target : null;
+          // If no target but this is a homing drone, synthesize a forward dummy target so we can spawn.
+          if (!fireTarget && canFire && weaponType === WeaponType.HOMING) {
+            const dirAng = (Math.hypot(this.vx || 0, this.vy || 0) > 0.01) ? Math.atan2(this.vy, this.vx) : (this.rotation || 0);
+            const tx = this.x + Math.cos(dirAng) * 150;
+            const ty = this.y + Math.sin(dirAng) * 150;
+            const dummy = { x: tx, y: ty } as unknown as Enemy;
+            this.shootAt(dummy, weaponType);
+            this.shootCooldowns.set(weaponType, effCd);
+            continue;
+          }
           if (fireTarget) {
             // Neural Nomad: fire to multiple nearest enemies per attack (2 at L1 → up to 5 at L7)
             if (this.characterData?.id === 'neural_nomad' && weaponType === WeaponType.NOMAD_NEURAL) {
@@ -1088,6 +1119,38 @@ export class Player {
     } catch { maxRange = Infinity; }
     const maxRangeSq = Number.isFinite(maxRange) ? (maxRange * maxRange) : Infinity;
 
+    // Priority targets: treasures (destructible) and then chests (if present). Prefer nearest within range.
+    try {
+      const em = (this.gameContext as any)?.enemyManager;
+      if (em && typeof em.getTreasures === 'function') {
+        const treasures = em.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number;radius:number }>;
+        let bestT: any = null; let bestD2T = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i];
+          if (!t || !t.active || (t as any).hp <= 0) continue;
+          const dx = (t.x ?? 0) - (this.x ?? 0);
+          const dy = (t.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy;
+          if (d2 <= maxRangeSq && d2 < bestD2T) { bestD2T = d2; bestT = t; }
+        }
+        if (bestT) return (bestT as unknown as Enemy); // Cast to Enemy for aiming (x,y used)
+      }
+      // If no treasure in range, consider chests as secondary priority
+      if (em && typeof em.getChests === 'function') {
+        const chests = em.getChests() as Array<{ x:number;y:number;active:boolean;radius:number }>;
+        let bestC: any = null; let bestD2C = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < chests.length; i++) {
+          const c = chests[i];
+          if (!c || !c.active) continue;
+          const dx = (c.x ?? 0) - (this.x ?? 0);
+          const dy = (c.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy;
+          if (d2 <= maxRangeSq && d2 < bestD2C) { bestD2C = d2; bestC = c; }
+        }
+        if (bestC) return (bestC as unknown as Enemy);
+      }
+    } catch {}
+
     // Prefer boss first only in 'toughest' mode and when within effective range
     if (aimMode === 'toughest') {
       try {
@@ -1277,10 +1340,17 @@ export class Player {
             // Perpendicular vector to firing direction
             const perpX = -Math.sin(baseAngle);
             const perpY =  Math.cos(baseAngle);
-            // Index centered around 0: for 2-shot salvo -> -0.5, +0.5
-            const centeredIndex = (i - (toShoot - 1) / 2);
-            // Convert to sign (-1 or 1) to anchor fully at each side
-            const sideSign = centeredIndex < 0 ? -1 : 1;
+            // Alternate barrels when firing a single shot per trigger; for multi-shot, use index-based sides
+            let sideSign: number;
+            if (toShoot <= 1) {
+              sideSign = this.runnerSide;
+              this.runnerSide *= -1; // flip for next shot
+            } else {
+              // Index centered around 0: for 2-shot salvo -> -0.5, +0.5
+              const centeredIndex = (i - (toShoot - 1) / 2);
+              // Convert to sign (-1 or 1) to anchor fully at each side
+              sideSign = centeredIndex < 0 ? -1 : 1;
+            }
             originX += perpX * sideOffsetBase * sideSign;
             originY += perpY * sideOffsetBase * sideSign;
           } else if (weaponType === WeaponType.DUAL_PISTOLS) {
@@ -1446,8 +1516,14 @@ export class Player {
       const sideOffsetBase = 22;
       const perpX = -Math.sin(baseAngle);
       const perpY = Math.cos(baseAngle);
-      const centeredIndex = (index - (total - 1) / 2);
-      const sideSign = centeredIndex < 0 ? -1 : 1;
+      let sideSign: number;
+      if (total <= 1) {
+        sideSign = this.runnerSide;
+        this.runnerSide *= -1;
+      } else {
+        const centeredIndex = (index - (total - 1) / 2);
+        sideSign = centeredIndex < 0 ? -1 : 1;
+      }
       originX += perpX * sideOffsetBase * sideSign;
       originY += perpY * sideOffsetBase * sideSign;
     } else if (weaponType === WeaponType.DUAL_PISTOLS) {

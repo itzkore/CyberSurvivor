@@ -241,8 +241,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     range: 640,
   maxLevel: 1,
     damage: 36,
-    // Bigger bullets for Akimbo Deagle
-    projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_deagle.png'), color: '#FFD6A3', size: 13, glowColor: '#FFB066', glowRadius: 16, trailColor: 'rgba(255,180,100,0.18)', trailLength: 12 },
+  // Bigger bullets for Akimbo Deagle (sprite rotated 180° to match travel direction)
+  projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_deagle.png'), color: '#FFD6A3', size: 13, glowColor: '#FFB066', glowRadius: 16, trailColor: 'rgba(255,180,100,0.18)', trailLength: 12, rotationOffset: Math.PI },
     traits: ['Burst x2','Heavy','High Knockback'],
     isClassWeapon: false,
     knockback: 40,
@@ -616,10 +616,10 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     }
   },
   // Rebalanced Runner Gun: base damage set for ~60 DPS (damage * salvo * 60 / cooldown)
-  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), description: 'Two‑round burst spray built for motion. Effective only within 360 range—bullets converge from twin barrels for reliable mid‑range clears.', cooldown: 12, salvo: 2, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 360, maxLevel: 7, damage: 6, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12, glowColor: '#66F2FF', glowRadius: 10 }, traits: ['Spray', 'Fast', 'Scaling'], usageTips: [
+  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), description: 'Single‑round spray built for motion. Effective only within 360 range—tight spread for reliable mid‑range clears.', cooldown: 12, salvo: 1, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 360, maxLevel: 7, damage: 6, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12, glowColor: '#66F2FF', glowRadius: 10 }, traits: ['Spray', 'Fast', 'Scaling'], usageTips: [
     'Stay inside 360 range: weapons won\'t fire beyond it.',
     'Strafe while firing—barrels auto‑converge toward target for tighter hits.',
-    'Dash through gaps and keep pressure; salvo ×2 maintains DPS while repositioning.'
+  'Dash through gaps and keep pressure; maintain DPS while repositioning.'
   ], isClassWeapon: true, knockback: 5, getLevelStats(level: number) { const baseDamage=6, baseCooldown=12, mult=7.5; const dmg=Math.round(baseDamage*(1+ (level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1- (level-1)*0.32/6)); return { damage:dmg, cooldown:cd }; } },
   
   
@@ -711,13 +711,45 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Knockback and slows help hold targets in the stream.'
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=10, baseCooldown=10, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   // Sustained pressure—think lawnmower, not sniper.
-  [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 28, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.1, range: 500, maxLevel: 7, damage: 28, 
+  [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 24, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.4, range: 540, maxLevel: 7, damage: 30, 
     description: 'Sweeping psionic beam that pierces and briefly marks foes, slowing them and boosting follow-up damage during the mark.',
-    projectileVisual: { type: 'beam', color: '#FFC0CB', thickness: 14, length: 120, glowColor: '#FF00FF', glowRadius: 40, trailColor: '#FFD700', trailLength: 40 }, traits: ['Pierces','Area','Slow','Scaling'], usageTips: [
+  projectileVisual: { type: 'beam', color: '#FFC0CB', thickness: 12, length: 132, glowColor: '#FF00FF', glowRadius: 38, trailColor: '#FFD700', trailLength: 40 }, traits: ['Pierces','Area','Slow','Scaling'], usageTips: [
     'Sweep perpendicular to enemy flow—pierce maximizes coverage.',
     'Tag elites/bosses, then pour damage while the psionic mark is active.',
     'Slows, pulls, or chokepoints extend beam uptime and stack marks safely.'
-  ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=28, baseCooldown=28, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); const bounces = Math.max(0, level); return {damage:dmg, cooldown:cd, bounces}; } },
+  ], isClassWeapon: true, evolution: { evolvedWeaponType: WeaponType.RESONANT_WEB, requiredPassive: 'Area Up' }, getLevelStats(level:number){
+      // Slightly higher growth and innate pierce scaling
+      const idx = Math.min(Math.max(level,1),7)-1;
+      const damageTbl   = [30,38,48,60,75,92,112][idx];
+      const cooldownTbl = [24,23,22,21,20,19,18][idx];
+      const bounceTbl   = [1,2,3,4,5,6,7][idx];
+      const pierceTbl   = [1,1,1,2,2,2,3][idx];
+      const lenTbl      = [132,136,140,144,148,152,156][idx];
+      const thickTbl    = [12,12,12,12,11,11,10][idx];
+      return { damage: damageTbl, cooldown: cooldownTbl, bounces: bounceTbl, pierce: pierceTbl, length: lenTbl, thickness: thickTbl } as any;
+    } },
+
+  /** Evolution for Psionic Weaver: Resonant Web — orbiting strands that pulse and apply marks */
+  [WeaponType.RESONANT_WEB]: {
+    id: WeaponType.RESONANT_WEB,
+    name: 'Resonant Web',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'Orbiting psionic strands that weave a web, pulsing damage and amplifying marked targets.',
+    cooldown: 160,
+    salvo: 0,
+    spread: 0,
+    projectile: 'orb_purple',
+    speed: 0,
+    range: 0,
+    maxLevel: 1,
+    damage: 24,
+    projectileVisual: { type: 'plasma', color: '#FF66FF', size: 10, glowColor: '#FF99FF', glowRadius: 28, trailColor: 'rgba(255,102,255,0.25)', trailLength: 10 },
+    traits: ['Orbit','Pulses','Mark Synergy','Evolution'],
+    isClassWeapon: true,
+    knockback: 6,
+    // Single-level evolve: handled by BulletManager runtime (orbit strands + pulses)
+    getLevelStats(level: number){ return { damage: 24, cooldown: 160 } as any; }
+  },
   
   /** Neural Nomad class weapon: Neural Threader — pierce to anchor enemies into a threaded link that pulses. */
   [WeaponType.NOMAD_NEURAL]: {

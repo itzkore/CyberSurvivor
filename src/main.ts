@@ -445,7 +445,8 @@ window.onload = async () => {
           // Seed/refresh sandbox spawn pad near current operative at session start
           try { (window as any).__sandboxPad = { x: game.player.x, y: game.player.y - 140 }; } catch {}
           ensureSandboxOverlay(game).show();
-          window.dispatchEvent(new CustomEvent('sandboxSpawnDummy', { detail: { count: 3, radius: 32, hp: 5000 } }));
+          // Seed with one of each archetype for quick testing
+          try { window.dispatchEvent(new CustomEvent('sandboxSpawnAllTypes')); } catch {}
         }, 0);
       } catch {}
     } else {

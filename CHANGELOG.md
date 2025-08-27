@@ -10,6 +10,20 @@ Format: Keep a Changelog style with semantic, grouped bullets. Dates are in YYYY
 - ui(hud): Add Bio Engineer Outbreak class bar (shows READY/ACTIVE/CD). 🎛️
 - fix(bio): Bio Toxin puddles now scale with weapon level and Area multiplier on both impact and expiry for consistent size and lifetime.
 - bal(bio): Bio Toxin projectiles no longer deal impact damage; they only spawn puddles on hit/expiry. DoT carries all damage.
+- tweak(psionic): Dimmed psionic debuff (mark) glow—smaller radius, thinner ring, and lower alpha for less visual noise.
+- fix(weapon): Akimbo Deagle bullets rendered with 180° wrong sprite rotation—added rotationOffset so art faces travel direction.
+
+## [0.3.1] - 2025-08-27
+
+- feat(weaver): Resonant Web implemented as persistent orbitals with radial pulses, mark refresh, and polygon web rendering. Orbs are collisionless like Quantum Halo.
+- feat(weaver): Each web orb auto-casts Level 7 Psionic Wave, prefers psionic‑marked targets; normal ricochet behavior restored.
+- feat(weaver): Firing is gated to nearby threats—auto-casts only occur if an enemy or boss is within 800px of the player; boss is considered in targeting and proximity.
+- feat(weaver+ui): Lattice triples web auto-cast fire rate for the duration and applies a dark‑purple theme: web orbs, connecting polygon, and web‑fired waves are tinted.
+- ui(hud): During Lattice, Psionic Weaver’s left stats panel and class bar adopt a dark‑purple accent theme.
+- fix(weaver): Prevent standard projectile spawn for Resonant Web (managed by orbit system) and ensure orbs don’t collide.
+- fix(treasure): Resonant Web orbiting orbs now pass through treasures without colliding. Web pulses and web‑fired waves deal damage to treasures as intended.
+- fix(evolution): Corrected Psionic Wave → Resonant Web evolution requirement to 'Area Up' (previously mislabeled 'AoE'). Evolution now offers correctly when Wave is maxed and Area Up ≥ Lv1.
+- perf: Orbit updates use per‑frame guards and avoid allocations in inner loops.
 
 ## [0.2.9] - 2025-08-24
 
@@ -24,9 +38,6 @@ Format: Keep a Changelog style with semantic, grouped bullets. Dates are in YYYY
 ---
 
 Older changes prior to 0.2.9 were informal and are not listed here.
-# Changelog
-
-All notable changes to this project will be documented in this file.
 
 ## 0.2.0 — 2025-08-22
 

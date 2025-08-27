@@ -219,8 +219,45 @@ export class UpgradePanel {
 
   // Decide icon markup: weapons keep their image; passives use neon green arrow SVG
       let iconHtml = '';
-      if (opt.type === 'weapon' && opt.icon) {
-        iconHtml = `<img src="${opt.icon}" alt="${opt.name}" />`;
+      if (opt.type === 'weapon') {
+        // Prefer projectile sprite if defined to avoid mismatched generic icons
+        try {
+          const spec = WEAPON_SPECS[opt.id as WeaponType];
+          const pv: any = spec?.projectileVisual;
+          const bv: any = (spec as any)?.beamVisual;
+          if (pv && pv.sprite) {
+            const src = pv.sprite;
+            iconHtml = `<img src="${src}" alt="${opt.name}" />`;
+          } else if (bv || (pv && (pv.type === 'laser' || pv.type === 'beam'))) {
+            // Render an inline SVG beam icon when no sprite is available (e.g., Railgun)
+            const beamColor = (bv?.color || pv?.color || '#FFFFFF');
+            const thickness = Math.max(4, Math.min(18, (bv?.thickness || pv?.thickness || 12)));
+            const orbColor = pv?.color || '#00FFFF';
+            const fid = `glow-${String(opt.id)}-${i}`;
+            // Simple centered beam with a small charge orb at the left
+            iconHtml = (
+              `<svg viewBox="0 0 64 64" width="52" height="52" role="img" aria-label="${opt.name}" class="weapon-beam-icon">`+
+                `<defs>`+
+                  `<filter id="${fid}" x="-50%" y="-50%" width="200%" height="200%">`+
+                    `<feGaussianBlur stdDeviation="2.5" result="coloredBlur" />`+
+                    `<feMerge>`+
+                      `<feMergeNode in="coloredBlur"/>`+
+                      `<feMergeNode in="SourceGraphic"/>`+
+                    `</feMerge>`+
+                  `</filter>`+
+                `</defs>`+
+                `<circle cx="10" cy="32" r="6" fill="${orbColor}" opacity="0.9" filter="url(#${fid})"/>`+
+                `<rect x="16" y="${32 - thickness/2}" width="40" height="${thickness}" fill="${beamColor}" rx="${Math.min(8, thickness/2)}" filter="url(#${fid})"/>`+
+              `</svg>`
+            );
+          } else {
+            const fallback = spec?.icon || opt.icon || '/assets/projectiles/bullet_cyan.png';
+            if (fallback) iconHtml = `<img src="${fallback}" alt="${opt.name}" />`;
+          }
+        } catch {
+          const fallback = opt.icon || '/assets/projectiles/bullet_cyan.png';
+          iconHtml = fallback ? `<img src="${fallback}" alt="${opt.name}" />` : '';
+        }
       } else if (opt.type === 'passive') {
   iconHtml = `<svg viewBox='0 0 64 64' width='52' height='52' role='img' aria-label='Passive Upgrade' class='passive-arrow'>
           <defs>
@@ -451,13 +488,27 @@ export class UpgradePanel {
         evolvedTypeSet.add(ws.evolution.evolvedWeaponType);
       }
     }
-    const weaponOptions: UpgradeOption[] = [];
+    // If the player already owns an evolved weapon, do not offer its base weapon again (blocks Lv.1 re-offer post-evolution)
+    const ownedEvolved = new Set<number>(
+      ownedWeapons.filter(w => evolvedTypeSet.has(w)).map(w => Number(w))
+    );
+    const blockBaseTypes = new Set<number>();
+    for (const ws of Object.values(WEAPON_SPECS)) {
+      if (ws && ws.evolution && typeof ws.id === 'number') {
+        const evoType = ws.evolution.evolvedWeaponType as number;
+        if (ownedEvolved.has(evoType)) blockBaseTypes.add(ws.id as number);
+      }
+    }
+  const weaponOptions: UpgradeOption[] = [];
+  const evolveOptions: UpgradeOption[] = [];
     for (const wt of allowedWeaponTypes) {
+      // Skip base weapon if evolved form is owned
+      if (blockBaseTypes.has(wt)) continue;
       if (evolvedTypeSet.has(wt)) continue; // evolved weapons are gated and offered only when base is maxed and passive met
       const spec = WEAPON_SPECS[wt];
       if (!spec) continue;
       const owned = this.player.activeWeapons.get(wt) || 0;
-      // If this weapon has an evolution and is at max level, and the required passive is at least Lv1, offer the evolved weapon as an option
+    // If this weapon has an evolution and is at max level, and the required passive is at least Lv1, collect the evolved weapon option
       if (owned >= (spec.maxLevel || 1) && spec.evolution) {
         const evoType = spec.evolution.evolvedWeaponType;
         const evoSpec = WEAPON_SPECS[evoType];
@@ -465,7 +516,7 @@ export class UpgradePanel {
         const reqPassive = this.player.activePassives.find(p => p.type === requiredPassiveName);
         const alreadyEvolvedOwned = this.player.activeWeapons.has(evoType);
         if (!alreadyEvolvedOwned && evoSpec && (!requiredPassiveName || (reqPassive && reqPassive.level >= 1))) {
-          weaponOptions.push({
+      evolveOptions.push({
             type: 'weapon',
             id: evoType,
             name: `Evolve → ${evoSpec.name}`,
@@ -498,7 +549,8 @@ export class UpgradePanel {
         });
       }
     }
-    this.shuffle(weaponOptions);
+  this.shuffle(weaponOptions);
+  this.shuffle(evolveOptions);
     // Build passive upgrade/unlock pool
     const passiveOptions: UpgradeOption[] = [];
     const MAX_PASSIVES = 5;
@@ -531,7 +583,10 @@ export class UpgradePanel {
     let option1: UpgradeOption | undefined;
     const ownedWeaponCount = ownedWeapons.length;
     const allWeaponsMaxxed = ownedWeaponCount === maxWeapons && weaponOptions.length === 0;
-    if (!allWeaponsMaxxed && weaponOptions.length > 0) {
+    if (evolveOptions.length > 0) {
+      // Guarantee that an eligible evolution is offered
+      option1 = evolveOptions.shift();
+    } else if (!allWeaponsMaxxed && weaponOptions.length > 0) {
       option1 = weaponOptions.shift();
     } else if (passiveOptions.length > 0) {
       option1 = passiveOptions.shift();
@@ -561,7 +616,8 @@ export class UpgradePanel {
     }
 
     // Option 3: Unique random from both pools, or skip if none
-    const combinedPool = [...weaponOptions, ...passiveOptions].filter(opt => !options.some(o => o && o.id === opt.id && o.type === opt.type));
+    const combinedPool = [...evolveOptions, ...weaponOptions, ...passiveOptions]
+      .filter(opt => !options.some(o => o && o.id === opt.id && o.type === opt.type));
     let option3: UpgradeOption | undefined;
     if (combinedPool.length > 0) {
       option3 = combinedPool[Math.floor(Math.random() * combinedPool.length)];

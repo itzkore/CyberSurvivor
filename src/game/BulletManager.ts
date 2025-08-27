@@ -30,6 +30,8 @@ export class BulletManager {
   private debugHalo: boolean = false;
   // Guard to prevent recursive lattice secondary spawns from re-entering spawnBullet
   private suppressWeaverSecondary: boolean = false;
+  // Guard to prevent Harmonic Echo from being scheduled by non-primary shots (e.g., lattice secondaries or echoes themselves)
+  private suppressPsionicEcho: boolean = false;
   // Neural Threader threads (Nomad): lightweight state objects managed here
   private neuralThreads: Array<{
     anchors: Enemy[]; // ordered enemies forming the polyline
@@ -143,6 +145,72 @@ export class BulletManager {
   (b as any).visualLock = undefined;
   }
 
+  /** Ensure Resonant Web orbit strands exist & reflect current player weapon state. */
+  private ensureResonantWebStrands(deltaTime: number) {
+    const player: any = this.player; if (!player || !player.activeWeapons) return;
+    const level = player.activeWeapons.get(WeaponType.RESONANT_WEB); if (!level) return;
+    const spec: any = (WEAPON_SPECS as any)[WeaponType.RESONANT_WEB]; if (!spec) return;
+    const scaled = spec.getLevelStats ? spec.getLevelStats(level) : { damage: 24 } as any;
+  // Default to 4 strands to form a readable web polygon
+  let needed = 4;
+    if (!Number.isFinite(needed) || needed <= 0) needed = 4;
+    const current = this.bullets.filter(b => b && b.active && b.isOrbiting === true && b.weaponType === WeaponType.RESONANT_WEB && (b as any).orbitKind === 'WEB');
+  if (current.length !== needed) {
+      if (current.length < needed) {
+        const missing = needed - current.length;
+        for (let add = 0; add < missing; add++) {
+          const idx = current.length + add;
+          const bFromPool = this.bulletPool.pop();
+          const b: Bullet = bFromPool || {
+            x: player.x,
+            y: player.y,
+            vx: 0,
+            vy: 0,
+            radius: spec?.projectileVisual?.size || 10,
+            life: 0,
+            active: false,
+            damage: scaled.damage || 24,
+            weaponType: WeaponType.RESONANT_WEB
+          } as Bullet;
+          if (bFromPool) this.resetPooledBullet(b);
+          b.x = player.x; b.y = player.y; b.vx = 0; b.vy = 0;
+          b.damage = scaled.damage || 24;
+          b.weaponType = WeaponType.RESONANT_WEB;
+          b.active = true; b.isOrbiting = true; (b as any).orbitKind = 'WEB';
+          (b as any).level = level;
+          (b as any).visualLock = 'WEB';
+          b.orbitIndex = idx; b.orbitCount = needed;
+          b.orbitRadiusBase = (spec?.getLevelStats ? (spec.getLevelStats(level) as any).orbitRadius : undefined) || 120;
+          b.angleOffset = (Math.PI * 2 * idx) / Math.max(1, needed);
+          b.orbitAngle = b.angleOffset;
+          b.projectileVisual = { ...(spec.projectileVisual || {}), size: (spec?.projectileVisual?.size || 10) } as any;
+          b.contactCooldownMap = {};
+          this.bullets.push(b);
+        }
+      } else {
+        const webs = current.slice().sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
+        for (let i = webs.length - 1; i >= needed; i--) { webs[i].active = false; this.bulletPool.push(webs[i]); }
+      }
+      // Normalize indices & offsets so strands are evenly distributed
+      const websNow = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.RESONANT_WEB && (b as any).orbitKind === 'WEB').sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
+      for (let i = 0; i < websNow.length; i++) {
+        const wb = websNow[i];
+        wb.orbitIndex = i; wb.orbitCount = websNow.length;
+        wb.angleOffset = (Math.PI * 2 * i) / Math.max(1, websNow.length);
+        wb.orbitAngle = (wb.orbitAngle != null) ? wb.orbitAngle : wb.angleOffset;
+        wb.spinSpeed = undefined; // clear legacy
+      }
+    }
+    // Update damage and base orbit radius every tick to follow changes
+    for (const wb of this.bullets) {
+      if (wb.active && wb.isOrbiting && wb.weaponType === WeaponType.RESONANT_WEB && (wb as any).orbitKind === 'WEB') {
+        wb.damage = scaled.damage || wb.damage;
+        wb.orbitRadiusBase = wb.orbitRadiusBase != null ? wb.orbitRadiusBase : 120;
+        (wb as any).level = level;
+      }
+    }
+  }
+
 
   /** Ensure Quantum Halo orbit bullets exist & reflect current player weapon level.
    *  Avoids full deactivation/rebuild to prevent visible resets/flicker when counts change.
@@ -153,7 +221,7 @@ export class BulletManager {
     const spec: any = (WEAPON_SPECS as any)[WeaponType.QUANTUM_HALO]; if (!spec) return;
     const scaled = spec.getLevelStats ? spec.getLevelStats(level) : {};
                 // Robust: in case scaled.orbCount is missing, default to a minimum of 2 orbs for a proper ring
-                let needed = Number((scaled as any).orbCount);
+         let needed = Math.max(2, Number((scaled as any).orbCount)); // Ensure at least 2 orbs
                 if (!Number.isFinite(needed) || needed <= 0) needed = 2;
   // Only consider HALO-tagged orbit bullets; grinder uses a separate tag and branch
   const current = this.bullets.filter(b => b && b.active && b.isOrbiting === true && b.weaponType === WeaponType.QUANTUM_HALO && (b as any).orbitKind === 'HALO');
@@ -280,6 +348,8 @@ export class BulletManager {
   public update(deltaTime: number) {
   // Maintain Quantum Halo orbit bullets (persistent) before normal update advances
   try { this.ensureQuantumHaloOrbs(deltaTime); } catch(e){ /* ignore to avoid breaking main loop */ }
+  // Maintain Resonant Web orbit strands (persistent)
+  try { this.ensureResonantWebStrands(deltaTime); } catch(e){ /* ignore to avoid breaking main loop */ }
   // Update any active Grinder (evolved scavenger) orbit sessions: store as bullets with isOrbiting=true and a finite duration
   // They reuse the Quantum Halo path but expire by endTime.
     const activeBullets: Bullet[] = [];
@@ -297,6 +367,14 @@ export class BulletManager {
         const r = (haloStats?.orbitRadius ?? 90) + 18; // small margin outside the ring
         const r2 = r * r; if (r2 > friendlySafeR2) friendlySafeR2 = r2;
       }
+      // Resonant Web orbit radius
+      const webLvl = p.activeWeapons?.get(WeaponType.RESONANT_WEB) || 0;
+      if (webLvl > 0) {
+        const webSpec: any = (WEAPON_SPECS as any)[WeaponType.RESONANT_WEB];
+        const webStats = webSpec?.getLevelStats ? webSpec.getLevelStats(webLvl) : {};
+        const r = (webStats?.orbitRadius ?? 120) + 18;
+        const r2 = r * r; if (r2 > friendlySafeR2) friendlySafeR2 = r2;
+      }
       // Active Industrial Grinder orbit radius (only when actually orbiting)
       let grinderActive = false; let grinderR = 0;
       for (let ii = 0; ii < this.bullets.length; ii++) {
@@ -312,6 +390,20 @@ export class BulletManager {
       }
     }
   } catch { /* non-fatal */ }
+    // Passive cleanup: decay Resonance stacks if timer elapsed (cheap scan around player)
+    try {
+      const nowR = performance.now();
+      const px = this.player ? this.player.x : ((window as any).player?.x || 0);
+      const py = this.player ? this.player.y : ((window as any).player?.y || 0);
+      const near = this.enemySpatialGrid.query(px, py, 900);
+      for (let i = 0; i < near.length; i++) {
+        const e: any = near[i];
+        if (!e.active) continue;
+        if (e._resonanceStacks && e._resonanceExpire && nowR > e._resonanceExpire) {
+          e._resonanceStacks = 0; e._resonanceExpire = 0;
+        }
+      }
+    } catch { /* ignore */ }
   // Bump a global frame id used by per-bullet once-per-frame guards
   (window as any).__frameId = ((window as any).__frameId || 0) + 1;
   const camX = (window as any).__camX || 0;
@@ -411,6 +503,238 @@ export class BulletManager {
             }
           }
         }
+        activeBullets.push(b);
+        continue;
+      }
+
+      // Resonant Web orbit handling: isolated branch
+      if (b.isOrbiting && b.weaponType === WeaponType.RESONANT_WEB) {
+        const specWeb: any = (WEAPON_SPECS as any)[WeaponType.RESONANT_WEB];
+        const level = (b as any).level || 1;
+        const scaled = specWeb?.getLevelStats ? specWeb.getLevelStats(level) : {};
+        const playerRef = this.player;
+        // Moderate rotation speed, step by real time
+        const spinBase = 2.6;
+        const nowMs = performance.now();
+        const lastT = (b as any)._lastOrbitTimeMs ?? nowMs;
+        const dtMs = Math.min(Math.max(0, nowMs - lastT), 34);
+        (b as any)._lastOrbitTimeMs = nowMs;
+        const spin = spinBase * (dtMs / 1000);
+        // Guard once-per-frame
+        const fid = (window as any).__frameId || 0;
+        if ((b as any)._lastWebFrameId === fid) { activeBullets.push(b); continue; }
+        (b as any)._lastWebFrameId = fid;
+        b.orbitAngle = (b.orbitAngle || (b.angleOffset||0)) + spin;
+        if (b.orbitAngle > Math.PI*2) {
+          b.orbitAngle -= Math.PI*2;
+          // Pulse on index 0 wrap: radial AoE that amplifies marked targets
+          if (b.orbitIndex === 0) {
+            try {
+              const px = playerRef.x, py = playerRef.y;
+              const baseR = (b.orbitRadiusBase != null ? b.orbitRadiusBase : (scaled.orbitRadius || 120)) + 60;
+              const near = this.enemySpatialGrid.query(px, py, baseR + 40);
+              const baseDmg = Math.max(1, Math.round((scaled.damage || b.damage || 24) * 1.15));
+              const nowP = performance.now();
+              for (let ei = 0; ei < near.length; ei++) {
+                const e: any = near[ei]; if (!e.active || e.hp <= 0) continue;
+                const dx = e.x - px, dy = e.y - py; const d2 = dx*dx + dy*dy; const r2 = baseR * baseR;
+                if (d2 <= r2) {
+                  const marked = (e._psionicMarkUntil || 0) > nowP;
+                  const dmg = Math.round(baseDmg * (marked ? 1.6 : 1.0));
+                  this.enemyManager.takeDamage(e, dmg, false, false, WeaponType.RESONANT_WEB, e.x, e.y, level);
+                  // Refresh mark slightly to sustain synergy
+                  e._psionicMarkUntil = Math.max(e._psionicMarkUntil || 0, nowP + 1000);
+                  if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#FF99FF');
+                }
+              }
+              // Also damage treasures within pulse radius (no mark amplification)
+              try {
+                const emAny: any = this.enemyManager as any;
+                if (emAny && typeof emAny.getTreasures === 'function') {
+                  const treasures = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number;radius:number }>;
+                  for (let ti = 0; ti < treasures.length; ti++) {
+                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const dxT = (t.x ?? 0) - px; const dyT = (t.y ?? 0) - py; const d2T = dxT*dxT + dyT*dyT; const r2T = baseR * baseR;
+                    if (d2T <= r2T && typeof emAny.damageTreasure === 'function') {
+                      emAny.damageTreasure(t, baseDmg);
+                    }
+                  }
+                }
+              } catch { /* ignore treasure pulse errors */ }
+              // Boss pulse
+              const bossMgr: any = (window as any).__bossManager;
+              const boss = bossMgr && bossMgr.getActiveBoss ? bossMgr.getActiveBoss() : null;
+              if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+                const dxB = boss.x - px, dyB = boss.y - py; const d2B = dxB*dxB + dyB*dyB; const r2B = baseR * baseR;
+                if (d2B <= r2B) {
+                  const anyB: any = boss as any;
+                  const marked = (anyB._psionicMarkUntil || 0) > nowP;
+                  const dmg = Math.round(baseDmg * (marked ? 1.6 : 1.0));
+                  if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, false, WeaponType.RESONANT_WEB, px, py, level);
+                  else boss.hp -= dmg;
+                  anyB._psionicMarkUntil = Math.max(anyB._psionicMarkUntil || 0, nowP + 1000);
+                  if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#FF99FF');
+                }
+              }
+              // Optional: shake subtly
+              try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 60, intensity: 1 } })); } catch {}
+            } catch { /* ignore pulse errors */ }
+          }
+        }
+        const radius = (b.orbitRadiusBase != null ? b.orbitRadiusBase : (scaled.orbitRadius || 120));
+        const angleTotal = b.orbitAngle;
+        b.x = playerRef.x + Math.cos(angleTotal) * radius;
+        b.y = playerRef.y + Math.sin(angleTotal) * radius;
+        b.radius = (specWeb?.projectileVisual?.size || 10);
+        // Lattice tint for web orb visual
+        try {
+          const meter: any = (this.player as any)?.getWeaverLatticeMeter?.();
+          const latticeOn = !!(meter && meter.active);
+          const base = { color: '#FF66FF', glowColor: '#FF99FF', glowRadius: 28 };
+          const lat = { color: '#6B1FB3', glowColor: '#B37DFF', glowRadius: 34 };
+          const use = latticeOn ? lat : base;
+          if (!b.projectileVisual) b.projectileVisual = { type:'plasma', size: b.radius, ...use } as any;
+          else { (b.projectileVisual as any).color = use.color; (b.projectileVisual as any).glowColor = use.glowColor; (b.projectileVisual as any).glowRadius = use.glowRadius; }
+        } catch { if (!b.projectileVisual) b.projectileVisual = { type:'plasma', size: b.radius, color: '#FF66FF', glowColor: '#FF99FF', glowRadius: 28 } as any; }
+        (b as any).visualLock = 'WEB';
+        b.lifeMs = 9999999;
+        // Strand auto-cast: fire Level 7 Psionic Wave periodically, staggered by strand index
+        try {
+          const websNow = this.bullets.filter(x => x.active && x.isOrbiting && x.weaponType === WeaponType.RESONANT_WEB && (x as any).orbitKind === 'WEB');
+          const count = Math.max(1, websNow.length || (b.orbitCount || 1));
+          const webSpec: any = (WEAPON_SPECS as any)[WeaponType.RESONANT_WEB];
+          const intervalMsBase = (webSpec?.cooldownMs || 2600);
+          let intervalPerOrb = Math.max(300, Math.floor(intervalMsBase / count));
+          // Lattice: triple fire rate for the duration
+          try { const meter: any = (this.player as any)?.getWeaverLatticeMeter?.(); if (meter && meter.active) { intervalPerOrb = Math.max(120, Math.floor(intervalPerOrb / 3)); } } catch {}
+          const nowC = performance.now();
+          if ((b as any)._nextWeaverShotAt == null) {
+            // Stagger initial shots by index
+            (b as any)._nextWeaverShotAt = nowC + ((b.orbitIndex || 0) * Math.floor(intervalPerOrb / count));
+          }
+          if (nowC >= (b as any)._nextWeaverShotAt) {
+            // Gate: only fire if an enemy or boss is within 800px of the player
+            let hasEnemyNearPlayer = false;
+            try {
+              const pxG = playerRef?.x ?? b.x; const pyG = playerRef?.y ?? b.y;
+              const nearGate = this.enemySpatialGrid.query(pxG, pyG, 800) as any[];
+              for (let gi = 0; gi < nearGate.length; gi++) { const ge: any = nearGate[gi]; if (ge.active && ge.hp > 0) { hasEnemyNearPlayer = true; break; } }
+              // Also consider boss proximity
+              if (!hasEnemyNearPlayer) {
+                const bossMgr: any = (window as any).__bossManager;
+                const boss = bossMgr && bossMgr.getActiveBoss ? bossMgr.getActiveBoss() : null;
+                if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+                  const dxB = boss.x - pxG; const dyB = boss.y - pyG; if (dxB*dxB + dyB*dyB <= 800*800) hasEnemyNearPlayer = true;
+                }
+              }
+              // Consider treasures near the player as valid fire gate as well
+              if (!hasEnemyNearPlayer) {
+                const emAny: any = this.enemyManager as any;
+                if (emAny && typeof emAny.getTreasures === 'function') {
+                  const ts = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number }>;
+                  for (let ti = 0; ti < ts.length; ti++) {
+                    const t = ts[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const dxT = (t.x ?? 0) - pxG; const dyT = (t.y ?? 0) - pyG;
+                    if (dxT*dxT + dyT*dyT <= 800*800) { hasEnemyNearPlayer = true; break; }
+                  }
+                }
+              }
+            } catch { /* ignore gate errors; default false keeps safety */ }
+            if (!hasEnemyNearPlayer) {
+              // No enemy near the player: delay the next check a bit for responsiveness
+              (b as any)._nextWeaverShotAt = nowC + Math.max(250, Math.min(400, Math.floor(intervalPerOrb / 2)));
+              // Skip firing this tick
+              activeBullets.push(b);
+              continue;
+            }
+            (b as any)._nextWeaverShotAt = nowC + intervalPerOrb;
+            // Choose target: prefer psionic-marked (enemy or boss), else nearest (enemy or boss) in range, else shoot outward
+            let tx = 0, ty = 0;
+            let found = false;
+            const searchR = 1200;
+            const near = this.enemySpatialGrid.query(b.x, b.y, searchR) as any[];
+            let bestMarked: any = null; let bestMarkedD2 = Infinity;
+            let best: any = null; let bestD2 = Infinity;
+            const nowM = performance.now();
+            for (let iN = 0; iN < near.length; iN++) {
+              const e: any = near[iN]; if (!e.active || e.hp <= 0) continue;
+              const dx = e.x - b.x, dy = e.y - b.y; const d2 = dx*dx + dy*dy; if (d2 < 24*24) continue; // skip too-close
+              if ((e._psionicMarkUntil || 0) > nowM) { if (d2 < bestMarkedD2) { bestMarkedD2 = d2; bestMarked = e; } }
+              if (d2 < bestD2) { bestD2 = d2; best = e; }
+            }
+            // Add boss as candidate target
+            let bossCand: any = null; let bossD2 = Infinity; let bossMarked = false;
+            try {
+              const bossMgr: any = (window as any).__bossManager;
+              const boss = bossMgr && bossMgr.getActiveBoss ? bossMgr.getActiveBoss() : null;
+              if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+                const dxB = boss.x - b.x; const dyB = boss.y - b.y; const d2B = dxB*dxB + dyB*dyB;
+                if (d2B <= searchR*searchR) { bossCand = boss; bossD2 = d2B; bossMarked = ((boss as any)._psionicMarkUntil || 0) > nowM; }
+              }
+            } catch { /* ignore */ }
+            // Add treasures as candidate targets (prefer nearest when no marked target)
+            let bestTreasure: any = null; let bestTreasureD2 = Infinity;
+            try {
+              const emAny: any = this.enemyManager as any;
+              if (emAny && typeof emAny.getTreasures === 'function') {
+                const treasures = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number }>;
+                for (let ti = 0; ti < treasures.length; ti++) {
+                  const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                  const dxT = (t.x ?? 0) - b.x; const dyT = (t.y ?? 0) - b.y; const d2T = dxT*dxT + dyT*dyT;
+                  if (d2T < bestTreasureD2 && d2T <= searchR*searchR) { bestTreasureD2 = d2T; bestTreasure = t; }
+                }
+              }
+            } catch { /* ignore */ }
+            let target: any = bestMarked || best;
+            // Prefer marked boss over unmarked enemy and over farther marked enemy
+            if (bossCand) {
+              if (bossMarked) {
+                if (!bestMarked || bossD2 < bestMarkedD2) target = bossCand;
+              } else if (!bestMarked) {
+                if (!best || bossD2 < bestD2) target = bossCand;
+              }
+            }
+            // If we still have no marked target, prefer nearest treasure over unmarked enemy when closer
+            if (!bestMarked) {
+              if (!target || (bestTreasure && bestTreasureD2 < (bestD2 || Infinity))) target = bestTreasure || target;
+            }
+            if (target) {
+              tx = target.x; ty = target.y; found = true;
+            } else {
+              const ang = b.orbitAngle || 0;
+              const len = 360;
+              tx = b.x + Math.cos(ang) * len;
+              ty = b.y + Math.sin(ang) * len;
+            }
+            // Suppress Weaver lattice and harmonic echo for these autonomous shots
+            const prevSec = this.suppressWeaverSecondary;
+            const prevEcho = this.suppressPsionicEcho;
+            this.suppressWeaverSecondary = true;
+            this.suppressPsionicEcho = true;
+            try {
+              // Use level 7 stats for the spawned wave regardless of player weaver level
+              const lvl = 7;
+              const wave = this.spawnBullet(b.x, b.y, tx, ty, WeaponType.PSIONIC_WAVE, 0, lvl);
+              if (wave) {
+                // Tag for potential future tuning; allow normal ricochet behavior for L7 waves
+                (wave as any)._webWave = true;
+              }
+              if (wave && wave.projectileVisual) {
+                // Minor visual trim for readability
+                const vis: any = { ...(wave.projectileVisual as any) };
+                if (vis.thickness != null) vis.thickness = Math.max(8, Math.round(vis.thickness * 0.9));
+                vis.glowRadius = Math.max((vis.glowRadius || 24) * 0.9, 18);
+                // Lattice tint for wave
+                try { const meter2: any = (this.player as any)?.getWeaverLatticeMeter?.(); if (meter2 && meter2.active) { vis.color = '#6B1FB3'; vis.glowColor = '#B37DFF'; vis.glowRadius = Math.max(vis.glowRadius, 26); } } catch {}
+                wave.projectileVisual = vis;
+              }
+            } finally {
+              this.suppressWeaverSecondary = prevSec;
+              this.suppressPsionicEcho = prevEcho;
+            }
+          }
+        } catch { /* ignore firing errors */ }
+  // No direct contact collisions for Resonant Web orbs: they avoid all collision and only apply pulses/auto-casts
         activeBullets.push(b);
         continue;
       }
@@ -852,20 +1176,25 @@ export class BulletManager {
         // Record speed for potential hit-based slowdown hook
         (b as any)._lastSpeed = ns;
       }
-      // Kamikaze Drone phased logic
+    // Kamikaze Drone phased logic
   if (b.weaponType === WeaponType.HOMING && b.active) {
     const now = performance.now();
   if (!b.phase) b.phase = 'ASCEND';
   const player = this.player;
   if (b.phase === 'ASCEND') {
-          // Slower, smoother ascent with analytic easing (no incremental overshoot)
-          const ASCEND_DURATION = 2600; // ms
+          // Absolutely no collisions during takeoff: zero hit radius and mark disabled
+          (b as any).collisionDisabled = true;
+          b.radius = 0;
+          // Smooth ascent — at least ~3s visible takeoff before any dive
+          const ASCEND_DURATION = 3000; // ms
           const phaseElapsed = now - (b.phaseStartTime || now);
-          // Initial tether window ensures the drone appears exactly on top of the player for a brief moment
-          // so the spawn feels correctly centered instead of instantly offsetting into an orbit arc.
-          const TETHER_MS = 180; // a touch longer for readability
+          // Initial tether window anchors directly over the player to avoid instant lateral pop
+          const TETHER_MS = 120;
           // Establish / update anchor (player position) so orbit stays around moving player even if reference lost later
-          // Establish / update anchor (player position) so orbit stays around moving player even if reference lost later
+          if (player) {
+            (b as any).anchorX = player.x;
+            (b as any).anchorY = player.y;
+          }
           if ((b as any).anchorX === undefined) {
             (b as any).anchorX = player ? player.x : b.x;
             (b as any).anchorY = player ? player.y : b.y;
@@ -885,11 +1214,11 @@ export class BulletManager {
             b.y = (scy != null ? scy : anchorY);
             // Gentle altitude ramp so it "pops" in smoothly
             const tLock = phaseElapsed / TETHER_MS;
-            b.altitudeScale = 0.18 + 0.17 * tLock; // 0.18 -> 0.35
+            b.altitudeScale = 0.22 + 0.26 * tLock; // 0.22 -> ~0.48
             // Slight pre-spin so later easing picks up smoothly
-            b.orbitAngle = (b.orbitAngle || 0) + 1.2 * (deltaTime / 1000);
+            b.orbitAngle = (b.orbitAngle || 0) + 1.6 * (deltaTime / 1000);
           } else {
-            const maxOrbit = 190; // slightly larger circle, reads better at slower pace
+            const maxOrbit = 280; // much bigger takeoff circle for smoother, less-glitchy turns
             // Rebase time so easing starts after tether (continuity at 0)
             const ascendT = Math.min(1, (phaseElapsed - TETHER_MS) / (ASCEND_DURATION - TETHER_MS));
             // Smooth easeInOut for radius (accelerate then decelerate) -> easeInOutCubic
@@ -897,8 +1226,8 @@ export class BulletManager {
             b.orbitRadius = maxOrbit * easedRadius;
             // Angular speed smoothly decelerates (ease-out sine)
             const easedAng = Math.sin((ascendT * Math.PI) / 2); // 0->1
-            const angStart = 1.8; // calmer initial spin
-            const angEnd = 0.6;   // slower near apex
+            const angStart = 1.15; // slower start to keep linear speed reasonable at larger radius
+            const angEnd = 0.65;   // soft turns
             const angSpeed = (angStart + (angEnd - angStart) * easedAng) * (deltaTime / 1000);
             b.orbitAngle = (b.orbitAngle || 0) + angSpeed;
             const orad = b.orbitRadius || 0;
@@ -906,16 +1235,16 @@ export class BulletManager {
             const oy = Math.sin(b.orbitAngle) * orad * 0.55;
             b.x = anchorX + ox;
             b.y = anchorY + oy;
-            // Smooth altitude easing (easeOutSine) from 0.35 -> 1.0 (shifted to start at 0.35 after tether)
+            // Smooth altitude easing (easeOutSine) from ~0.48 -> 1.0
             const altEased = Math.sin((ascendT * Math.PI) / 2);
-            b.altitudeScale = 0.35 + 0.65 * altEased;
+            b.altitudeScale = 0.48 + 0.52 * altEased;
           }
 
           // Trail disabled for Quantum Halo (no accumulation)
 
       // Transition to HOVER at apex; defer targeting to HOVER phase
       // Use 1 when still in tether (ascendT undefined there) only when overall phaseElapsed exceeds ASCEND_DURATION
-      const ascendComplete = phaseElapsed >= ASCEND_DURATION;
+    const ascendComplete = phaseElapsed >= ASCEND_DURATION && b.phase === 'ASCEND';
     if (ascendComplete) {
             b.phase = 'HOVER';
             b.phaseStartTime = performance.now();
@@ -923,8 +1252,11 @@ export class BulletManager {
             (b as any).hoverScanCount = 0;
           }
   } else if (b.phase === 'HOVER') {
-          const HOVER_DURATION = 1200; // ms – linger a bit for anticipation
-          const SCAN_INTERVAL = 220;  // ms – slower, more deliberate scans
+          // Still collisionless while hovering pre-dive
+          (b as any).collisionDisabled = true;
+          b.radius = 0;
+          const HOVER_DURATION = 520; // visual pacing only; no forced dive
+          const SCAN_INTERVAL = 120;  // ms — snappier acquisition
           const hoverElapsed = now - (b.phaseStartTime || now);
           // Update anchor to follow player while hovering so drone orbits moving player
           if (player) {
@@ -934,10 +1266,10 @@ export class BulletManager {
           const anchorX = (b as any).anchorX;
           const anchorY = (b as any).anchorY;
           // Faster gentle spin + breathing radius to avoid static feel
-          b.orbitAngle = (b.orbitAngle || 0) + 0.75 * (deltaTime / 1000);
+          b.orbitAngle = (b.orbitAngle || 0) + 1.0 * (deltaTime / 1000);
           const baseRad = b.orbitRadius || 0;
           const seed = (b as any)._hoverSeed || 0;
-          const breathe = 1 + 0.08 * Math.sin(now * 0.004 + seed);
+          const breathe = 1 + 0.05 * Math.sin(now * 0.005 + seed);
           const oradH = baseRad * breathe;
           const ox = Math.cos(b.orbitAngle) * oradH;
           const oy = Math.sin(b.orbitAngle) * oradH * 0.55;
@@ -954,7 +1286,7 @@ export class BulletManager {
             let fallbackSingle: any = null;
             let fallbackDist = Infinity;
             if (player) {
-              const candidates = this.enemySpatialGrid.query(player.x, player.y, 1000);
+              const candidates = this.enemySpatialGrid.query(player.x, player.y, 1400);
               if (candidates.length > 0) (b as any).seenEnemy = true; // flag that at least one enemy existed during hover
               for (let ei = 0; ei < candidates.length; ei++) {
                 const e = candidates[ei];
@@ -967,13 +1299,16 @@ export class BulletManager {
                   const f = candidates[ej];
                   if (!f.active || f.hp <= 0) continue;
                   const dxC = f.x - ex; const dyC = f.y - ey;
-                  if (dxC*dxC + dyC*dyC <= 160*160) count++;
+                  if (dxC*dxC + dyC*dyC <= 200*200) count++;
                 }
                 if (count >= 3 && (!bestCluster || count > bestCluster.count)) bestCluster = { x: ex, y: ey, count, enemy: e };
               }
             }
-            // Require at least one scan before allowing dive, even if duration elapsed
-            if ((b as any).hoverScanCount >= 1 && (bestCluster || fallbackSingle || (hoverElapsed >= HOVER_DURATION && (b as any).seenEnemy))) {
+            // Require at least one scan AND a found enemy before allowing dive
+            // Enforce minimum 3s takeoff time since spawn
+            const minTakeoffMs = 3000;
+            const sinceSpawn = now - (((b as any).spawnTime || (b as any).phaseStartTime || now));
+            if ((b as any).hoverScanCount >= 1 && (bestCluster || fallbackSingle) && sinceSpawn >= minTakeoffMs) {
               b.phase = 'DIVE';
               b.phaseStartTime = performance.now();
               // Defer actual coordinate lock until first DIVE update for freshest target
@@ -982,17 +1317,11 @@ export class BulletManager {
               if (fallbackSingle) (b as any)._pendingFallbackEnemyId = (fallbackSingle as any).id || (fallbackSingle as any)._gid;
             }
           }
-          if (hoverElapsed >= HOVER_DURATION && b.phase !== 'DIVE') {
-            const EXTENDED_WAIT = 5000; // allow up to 5s hover if no enemies yet
-            if (!(b as any).seenEnemy && hoverElapsed < EXTENDED_WAIT) {
-              // Keep hovering; skip forced dive until enemy appears or timeout
-            } else {
-              b.phase = 'DIVE';
-              b.phaseStartTime = performance.now();
-              (b as any)._pendingDiveAcquire = true; // late lock on dive start
-            }
-          }
+          // Do not force a dive; remain hovering until an enemy is detected. Keeps drones from being wasted.
   } else if (b.phase === 'DIVE') {
+          // Stay collisionless in air; only explode at destination (or timeout)
+          (b as any).collisionDisabled = true;
+          if (!b.radius || b.radius < 8) b.radius = 12; // radius for visuals only
           if ((b as any)._pendingDiveAcquire) {
             delete (b as any)._pendingDiveAcquire;
             const playerRef = this.player;
@@ -1001,7 +1330,7 @@ export class BulletManager {
             const clusterId = (b as any)._pendingClusterEnemyId;
             const fallbackId = (b as any)._pendingFallbackEnemyId;
             let targetEnemy: any = null;
-            const nearby = this.enemySpatialGrid.query(cx, cy, 1000);
+            const nearby = this.enemySpatialGrid.query(cx, cy, 1400);
             let nearest: any = null; let nearestD2 = Infinity;
             for (let i2=0;i2<nearby.length;i2++) {
               const e = nearby[i2]; if (!e.active || e.hp<=0) continue;
@@ -1016,29 +1345,41 @@ export class BulletManager {
             if (!targetEnemy) targetEnemy = nearest;
             if (targetEnemy) { b.targetX = targetEnemy.x; b.targetY = targetEnemy.y; (b as any).lockedTargetId = (targetEnemy as any).id || (targetEnemy as any)._gid; }
             if (b.targetX == null || b.targetY == null) {
-              const diveOut = Math.min((b.orbitRadius || 0) + 140, 260);
+              const diveOut = Math.min((b.orbitRadius || 0) + 160, 300);
               const anchorX3 = (b as any).anchorX ?? b.x; const anchorY3 = (b as any).anchorY ?? b.y;
               b.targetX = anchorX3 + Math.cos(b.orbitAngle || 0) * diveOut;
               b.targetY = anchorY3 + Math.sin(b.orbitAngle || 0) * diveOut * 0.55;
             }
             // Minimum distance check
-            const minD2 = 110*110;
+            const minD2 = 64*64;
             let dxm = (b.targetX as number) - b.x; let dym = (b.targetY as number) - b.y; let d2m = dxm*dxm + dym*dym;
             if (d2m < minD2) {
               const ang = Math.atan2(dym, dxm) || (b.orbitAngle || 0);
-              const extend = 120;
+              const extend = 140;
               b.targetX = b.x + Math.cos(ang) * extend;
               b.targetY = b.y + Math.sin(ang) * extend * 0.55;
             }
-            b.vx = 0; b.vy = 0; // reset velocity for precise homing start
+            // Seed initial velocity along current tangential facing to keep direction continuity
+            const fa = (b as any).facingAng;
+            if (typeof fa === 'number') {
+              const seedSpeed = Math.max(2.2, Math.min(4.0, (b.orbitRadius || 120) / 60));
+              b.vx = Math.cos(fa) * seedSpeed;
+              b.vy = Math.sin(fa) * seedSpeed;
+            } else {
+              // Fallback: use orbit tangent
+              const tangent = (b.orbitAngle || 0) + Math.PI * 0.5;
+              const seedSpeed = 3.0;
+              b.vx = Math.cos(tangent) * seedSpeed;
+              b.vy = Math.sin(tangent) * seedSpeed;
+            }
           }
           // Dive phase: slower, precise homing pursuit with adaptive speed toward locked/moving target.
           const phaseElapsed = now - (b.phaseStartTime || now);
-          const MAX_DURATION = 1800; // absolute safety cutoff (slower pursuit)
+          const MAX_DURATION = 2200; // absolute safety cutoff (longer pursuit)
           // If we have a locked enemy id, update targetX/Y to its current position (live tracking)
           const lockedId = (b as any).lockedTargetId;
           if (lockedId) {
-            const nearby = this.enemySpatialGrid.query(b.x, b.y, 800);
+            const nearby = this.enemySpatialGrid.query(b.x, b.y, 1200);
             for (let i2=0;i2<nearby.length;i2++) {
               const e = nearby[i2];
               const eid = (e as any).id || (e as any)._gid;
@@ -1050,13 +1391,13 @@ export class BulletManager {
           let dxDive = tx - b.x;
           let dyDive = ty - b.y;
           const distDive = Math.hypot(dxDive, dyDive) || 1;
-          const tNorm = Math.min(1, phaseElapsed / 1600);
+          const tNorm = Math.min(1, phaseElapsed / 1400);
           // Desired direction normalized
           dxDive /= distDive; dyDive /= distDive;
           // Adaptive target speed: slower start, capped; gently ramps but also clamps by remaining distance to reduce overshoot
-          const baseSpeed = 3.2; // slower base
-          const maxSpeed = 9.5;  // overall cap
-          const ramp = 0.28 + 0.9 * tNorm; // gentler ramp
+          const baseSpeed = 3.8; // quicker start
+          const maxSpeed = 12.0; // higher cap for long dives
+          const ramp = 0.30 + 1.05 * tNorm; // brisk ramp
           let desiredSpeed = Math.min(maxSpeed, baseSpeed * ramp);
           // Clamp by remaining distance so last frames decelerate automatically
           desiredSpeed = Math.min(desiredSpeed, Math.max(2.0, distDive / 16));
@@ -1064,32 +1405,35 @@ export class BulletManager {
           const curSpeed = Math.hypot(b.vx || 0, b.vy || 0);
           let cvx = curSpeed > 0.001 ? b.vx / curSpeed : dxDive;
           let cvy = curSpeed > 0.001 ? b.vy / curSpeed : dyDive;
-          const turnRate = 0.18 * (deltaTime / 16.6667); // lower = smoother turns
+          // Soft turns: lower blend + explicit heading clamp
+          const turnRate = 0.10 * (deltaTime / 16.6667);
           cvx = cvx + (dxDive - cvx) * Math.min(1, turnRate);
           cvy = cvy + (dyDive - cvy) * Math.min(1, turnRate);
           const nrm = Math.hypot(cvx, cvy) || 1;
           cvx /= nrm; cvy /= nrm;
-          b.vx = cvx * desiredSpeed;
-          b.vy = cvy * desiredSpeed;
+          // Heading clamp (soft turns): limit angular change per second (ramped early to avoid abrupt flips)
+          const prevHeading = (curSpeed > 0.001) ? Math.atan2(b.vy, b.vx) : Math.atan2(dyDive, dxDive);
+          const desiredHeading = Math.atan2(cvy, cvx);
+          let dTheta = desiredHeading - prevHeading;
+          while (dTheta > Math.PI) dTheta -= Math.PI * 2;
+          while (dTheta < -Math.PI) dTheta += Math.PI * 2;
+          const BASE_TURN = 1.0;
+          const turnRamp = 0.55 + 0.45 * Math.min(1, phaseElapsed / 280); // slower at start, reaches BASE_TURN quickly
+          const maxStep = BASE_TURN * turnRamp * (deltaTime / 1000);
+          if (dTheta > maxStep) dTheta = maxStep; else if (dTheta < -maxStep) dTheta = -maxStep;
+          const newHeading = prevHeading + dTheta;
+          b.vx = Math.cos(newHeading) * desiredSpeed;
+          b.vy = Math.sin(newHeading) * desiredSpeed;
           b.x += b.vx;
           b.y += b.vy;
           (b as any).facingAng = Math.atan2(b.vy, b.vx);
           // Shrink more gradually; reaches minimum only very near impact for precision feel
-          b.altitudeScale = Math.max(0.10, 1 - 0.90 * tNorm * tNorm);
+          b.altitudeScale = Math.max(0.12, 1 - 0.88 * tNorm * tNorm);
           // Trail disabled for Quantum Halo (no accumulation)
           // Impact condition: near target OR elapsed > cutoff
           const remaining = Math.hypot((tx - b.x), (ty - b.y));
-          // Collision check (explicit) – explode if near locked target or any enemy intersecting
-          let impact = remaining < 18; // tighter radius for precision
-          if (!impact) {
-            const hitCandidates = this.enemySpatialGrid.query(b.x, b.y, 48);
-            for (let hi=0;hi<hitCandidates.length && !impact;hi++) {
-              const e = hitCandidates[hi];
-              if (!e.active || e.hp <= 0) continue;
-              const dxE = e.x - b.x; const dyE = e.y - b.y; const rs = (e.radius || 18) + (b.radius || 12) * (b.altitudeScale ? 0.6 : 1);
-              if (dxE*dxE + dyE*dyE <= rs*rs) impact = true;
-            }
-          }
+          // Explode only on reaching the destination (no mid-air enemy collisions)
+          let impact = remaining < 22; // slightly larger for feel
           if (impact || phaseElapsed > MAX_DURATION) {
             // Dispatch base radius (110) – ExplosionManager will upscale to achieve ~300% area
             window.dispatchEvent(new CustomEvent('droneExplosion', { detail: { x: b.x, y: b.y, damage: b.damage, radius: 110 } }));
@@ -1254,8 +1598,23 @@ export class BulletManager {
             const isCritical = Math.random() < critChance;
             // Bio Toxin: no direct impact damage; act as a zero-damage puddle spawner only
             if (b.weaponType !== WeaponType.BIO_TOXIN) {
-              const damage = isCritical ? b.damage * critMult : b.damage;
-              this.enemyManager.takeDamage(enemy, damage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
+              let outDamage = isCritical ? b.damage * critMult : b.damage;
+              // Resonance stacks for Psionic Wave: +10% per stack, max 6; on reaching 6, stun 250ms and consume
+              if (b.weaponType === WeaponType.PSIONIC_WAVE) {
+                const anyE: any = enemy as any;
+                const nowS = performance.now();
+                let stacks = Math.min(6, ((anyE._resonanceStacks | 0) + 1));
+                anyE._resonanceStacks = stacks;
+                anyE._resonanceExpire = nowS + 4000; // 4s decay timer refresh
+                const bonus = 1 + (Math.min(6, stacks) * 0.10);
+                outDamage *= bonus;
+                if (stacks >= 6) {
+                  // Apply a brief stun and consume stacks
+                  anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowS + 250);
+                  anyE._resonanceStacks = 0;
+                }
+              }
+              this.enemyManager.takeDamage(enemy, outDamage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
               if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
             }
             // Virus: spawn a paralysis/DoT zone at impact point, except for Rogue Hacker (auto-casts zones separately)
@@ -1486,7 +1845,19 @@ export class BulletManager {
             }
             const critMult = p?.critMultiplier ?? 2.0;
             const isCritical = Math.random() < critChance;
-            const damage = isCritical ? b.damage * critMult : b.damage;
+            let damage = isCritical ? b.damage * critMult : b.damage;
+            if (b.weaponType === WeaponType.PSIONIC_WAVE) {
+              const bAny: any = boss as any;
+              const nowS = performance.now();
+              let stacks = Math.min(6, ((bAny._resonanceStacks | 0) + 1));
+              bAny._resonanceStacks = stacks;
+              bAny._resonanceExpire = nowS + 4000;
+              damage *= (1 + Math.min(6, stacks) * 0.10);
+              if (stacks >= 6) {
+                bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, nowS + 250);
+                bAny._resonanceStacks = 0;
+              }
+            }
             if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
               (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, (b as any).level ?? 1);
             } else {
@@ -1506,16 +1877,78 @@ export class BulletManager {
         }
       }
 
-      // NOMAD_NEURAL: boss direct hit should apply primer debuff so tethers can link to boss later
+      // NOMAD_NEURAL: boss direct hit should deal damage and enable threads to anchor to boss
       if (b.weaponType === WeaponType.NOMAD_NEURAL && b.active && (!hitEnemy)) {
         const bossMgr: any = (window as any).__bossManager;
         const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
         if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
-          const dxB = boss.x - b.x; const dyB = boss.y - b.y; const rsB = (boss.radius || 160) + (b.radius * 0.55);
+          const dxB = boss.x - b.x; const dyB = boss.y - b.y; const rsB = (boss.radius || 160) + Math.max(2, b.radius * 0.75);
           if (dxB*dxB + dyB*dyB <= rsB*rsB) {
-            // Apply debuff primer to boss
-            try { (this.enemyManager as any).applyBossNeuralDebuff?.(boss); } catch { /* ignore */ }
-            // Allow damage application as usual (already handled above in generic collision when it happens)
+            // Prevent repeated hits with same projectile
+            const bossKey = 'boss';
+            if (!b.hitIds || b.hitIds.indexOf(bossKey) === -1) {
+              if (b.hitIds) b.hitIds.push(bossKey);
+              const weaponLevel = (b as any).level ?? 1;
+              const p: any = this.player;
+              let critChance = 0.15;
+              if (p) {
+                const agi = p.agility || 0; const luck = p.luck || 0;
+                const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+                const bonus = p.critBonus ? p.critBonus * 100 : 0;
+                critChance = Math.min(100, basePct + bonus) / 100;
+              }
+              const critMult = p?.critMultiplier ?? 2.0;
+              const isCritical = Math.random() < critChance;
+              const damage = isCritical ? b.damage * critMult : b.damage;
+              if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
+                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
+              } else {
+                boss.hp -= damage;
+                window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
+              }
+              // Apply primer debuff so threads can latch and add boss as an anchor if a thread exists and has room
+              try { (this.enemyManager as any).applyBossNeuralDebuff?.(boss); } catch {}
+              try {
+                const now = performance.now();
+                const overmindUntil = (window as any).__overmindActiveUntil || 0;
+                const spec: any = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
+                const stats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : { anchors: 2 };
+                let nearest: any = null; let bestD2 = Infinity;
+                for (let iT = 0; iT < this.neuralThreads.length; iT++) {
+                  const t = this.neuralThreads[iT];
+                  if (!t.active) continue;
+                  if (t.expireAt <= now) continue;
+                  if (t.ownerPlayerId != null && t.ownerPlayerId !== (this.player as any)._instanceId) continue;
+                  const cap = t.maxAnchors + (overmindUntil > now ? 1 : 0);
+                  if (t.anchors.length >= cap) continue;
+                  const last = t.anchors.length > 0 ? t.anchors[t.anchors.length - 1] : null;
+                  const lx = last ? last.x : boss.x; const ly = last ? last.y : boss.y;
+                  const dxT = boss.x - lx; const dyT = boss.y - ly; const d2 = dxT*dxT + dyT*dyT;
+                  if (d2 < bestD2) { bestD2 = d2; nearest = t; }
+                }
+                if (nearest) {
+                  if (nearest.anchors.indexOf(boss) === -1) nearest.anchors.push(boss);
+                } else {
+                  // Create a new thread starting at the boss
+                  const color = '#26ffe9';
+                  const ownerPid = (this.player as any)._instanceId ?? 1;
+                  const baseDamage = b.damage || 20;
+                  const pulsePct = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.pulsePct : 0.6) || 0.6;
+                  const pulseMs = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.pulseIntervalMs : 500) || 500;
+                  const threadLifeMs = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.threadLifeMs : 3000) || 3000;
+                  const maxAnchors = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.anchors : 2) || 2;
+                  const t = { anchors: [boss], createdAt: now, expireAt: now + threadLifeMs, nextPulseAt: now + pulseMs, pulseMs, baseDamage, pulsePct, maxAnchors, active: true, color, beadPhase: 0, ownerId: (b as any)._id, ownerPlayerId: ownerPid } as any;
+                  this.neuralThreads.push(t);
+                }
+              } catch {}
+              // Consume one pierce if present; otherwise expire
+              if (typeof b.pierceRemaining === 'number' && b.pierceRemaining > 0) {
+                b.pierceRemaining = b.pierceRemaining - 1;
+                if (b.pierceRemaining <= 0) { b.active = false; this.bulletPool.push(b); }
+              } else {
+                b.active = false; this.bulletPool.push(b);
+              }
+            }
           }
         }
       }
@@ -1663,6 +2096,41 @@ export class BulletManager {
     const minY = camY - pad, maxY = camY + viewH + pad;
   // Draw Neural Threader threads beneath bullets for layering clarity
   this.drawNeuralThreads(ctx);
+  // Draw Resonant Web connecting strands beneath projectiles for clarity
+  try {
+    const webs = this.bullets.filter(b => b.active && b.isOrbiting && b.weaponType === WeaponType.RESONANT_WEB && (b as any).orbitKind === 'WEB');
+    if (webs.length >= 2) {
+      // Lattice-active tint
+      let lineColOuter = 'rgba(255,153,255,0.45)';
+      let lineColInner = 'rgba(255,153,255,0.25)';
+      try {
+        const meter: any = (this.player as any)?.getWeaverLatticeMeter?.();
+        if (meter && meter.active) {
+          lineColOuter = 'rgba(107,31,179,0.65)'; // #6B1FB3
+          lineColInner = 'rgba(179,125,255,0.45)'; // #B37DFF
+        }
+      } catch { /* ignore */ }
+      // Build sorted ring by orbitIndex
+      const ring = webs.slice().sort((a, b) => (a.orbitIndex || 0) - (b.orbitIndex || 0));
+      ctx.save();
+      ctx.shadowColor = lineColOuter.replace('0.45','1.0');
+      ctx.shadowBlur = 14;
+      ctx.strokeStyle = lineColOuter;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ring[0].x, ring[0].y);
+      for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i].x, ring[i].y);
+      // close loop
+      ctx.lineTo(ring[0].x, ring[0].y);
+      ctx.stroke();
+      // Subtle inner filament
+      ctx.shadowBlur = 6;
+      ctx.strokeStyle = lineColInner;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+    }
+  } catch { /* ignore */ }
   for (const b of this.bullets) {
       if (!b.active) continue;
       if (b.x < minX || b.x > maxX || b.y < minY || b.y > maxY) continue;
@@ -2199,6 +2667,27 @@ export class BulletManager {
   }
 
   public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1): Bullet | undefined {
+    // Resonant Web is a persistent orbit system; do not spawn a standard projectile
+    if (weapon === WeaponType.RESONANT_WEB) {
+      // Ensure strands are created on demand this tick
+      try { this.ensureResonantWebStrands(0); } catch {}
+      return undefined;
+    }
+    // Cap concurrent hovering drones (ASCEND/HOVER) based on weapon level
+    if (weapon === WeaponType.HOMING) {
+      const lvl = Math.max(1, Math.min(7, Math.floor(level || 1)));
+      // Level mapping: L1-3 -> 2, L4-6 -> 3, L7 -> 4
+      const cap = (lvl >= 7) ? 4 : (lvl >= 4 ? 3 : 2);
+      let hovering = 0;
+      const arr = this.bullets;
+      for (let i = 0; i < arr.length; i++) {
+        const b = arr[i];
+        if (!b || !b.active) continue;
+        if (b.weaponType !== WeaponType.HOMING) continue;
+        const ph = (b as any).phase;
+        if (ph === 'ASCEND' || ph === 'HOVER') { hovering++; if (hovering >= cap) return undefined; }
+      }
+    }
     // One-at-a-time rule for Scrap Lash: if an active Lash exists, don't spawn another
     if (weapon === WeaponType.SCRAP_LASH) {
       for (let i = 0; i < this.bullets.length; i++) {
@@ -2277,6 +2766,11 @@ export class BulletManager {
       }
       if ((scaled as any).thickness != null) {
         projectileVisual = { ...projectileVisual, thickness: (scaled as any).thickness } as any;
+      }
+      // Psionic Wave: add innate pierce from scaling table
+      if (weapon === WeaponType.PSIONIC_WAVE && (scaled as any).pierce != null) {
+        const basePierce = b.pierceRemaining != null ? b.pierceRemaining : 0;
+        b.pierceRemaining = basePierce + (scaled as any).pierce;
       }
       // Propagate scaled explosion radius if provided by the weapon at this level
       if ((scaled as any).explosionRadius != null) {
@@ -2362,6 +2856,42 @@ export class BulletManager {
       (projectileVisual as any).trailLength = Math.max((projectileVisual as any).trailLength || 0, isPistol ? 12 : 6);
     }
     b.projectileVisual = projectileVisual;
+  // Psionic Wave harmonic echo: every 3rd primary cast only (skip during secondary lanes or echo itself)
+  if (weapon === WeaponType.PSIONIC_WAVE && !this.suppressWeaverSecondary && !this.suppressPsionicEcho) {
+      try {
+        const key = '__psionicEchoCounter';
+        const gp: any = (window as any);
+        gp[key] = (gp[key] || 0) + 1;
+        if (gp[key] >= 3) {
+          gp[key] = 0; // reset
+          const delay = 150;
+          const srcX = x, srcY = y, tX = targetX, tY = targetY, lvl = level;
+          const baseD = Math.round((damage || appliedDamage) * 0.60);
+          const start = performance.now();
+          const schedule = () => {
+            if (performance.now() - start >= delay) {
+        // Prevent echo from spawning more echoes or lattice secondaries
+        const prevEcho = this.suppressPsionicEcho;
+        const prevSec = this.suppressWeaverSecondary;
+        this.suppressPsionicEcho = true;
+        this.suppressWeaverSecondary = true;
+        const echo = this.spawnBullet(srcX, srcY, tX, tY, WeaponType.PSIONIC_WAVE, baseD, lvl);
+        this.suppressWeaverSecondary = prevSec;
+        this.suppressPsionicEcho = prevEcho;
+              if (echo && echo.projectileVisual) {
+                const vis: any = { ...(echo.projectileVisual as any) };
+                if (vis.thickness != null) vis.thickness = Math.max(6, Math.round(vis.thickness * 0.75));
+                vis.glowRadius = Math.max((vis.glowRadius||20) * 0.75, 16);
+                echo.projectileVisual = vis;
+              }
+            } else {
+              requestAnimationFrame(schedule);
+            }
+          };
+          requestAnimationFrame(schedule);
+        }
+      } catch { /* ignore */ }
+    }
   if ((spec as any).explosionRadius) (b as any).explosionRadius = (spec as any).explosionRadius;
     b.snakeTargets = undefined; // Clear previous snake targets    b.snakeBounceCount = undefined; // Clear previous bounce count
   // Reset pierce/trail state from any prior usage in pool
@@ -2485,7 +3015,11 @@ export class BulletManager {
     // Adaptive emission based on frame time
     const avgMs = (window as any).__avgFrameMs || 16;
     const highLoad = avgMs > 40; const severeLoad = avgMs > 55;
-      this.suppressWeaverSecondary = true; // prevent nested secondary emissions
+      // prevent nested secondary emissions and echo scheduling inside secondaries
+      const prevSec = this.suppressWeaverSecondary;
+      const prevEcho = this.suppressPsionicEcho;
+      this.suppressWeaverSecondary = true;
+      this.suppressPsionicEcho = true;
           const baseAngle = Math.atan2(targetY - y, targetX - x);
           const len = 320; // a bit longer for epic feel
       const angleOffset = severeLoad ? 0.12 : highLoad ? 0.15 : 0.18; // reduce fan under load
@@ -2574,7 +3108,9 @@ export class BulletManager {
             }
             }
           }
-          this.suppressWeaverSecondary = false;
+          // restore guards
+          this.suppressWeaverSecondary = prevSec;
+          this.suppressPsionicEcho = prevEcho;
         }
       } catch { /* ignore */ }
     }
@@ -2585,7 +3121,7 @@ export class BulletManager {
   (b as any).spawnTime = b.phaseStartTime; // track total sequence timing
       b.orbitAngle = Math.random() * Math.PI * 2;
       b.orbitRadius = 0; // start at player center then expand outward
-      b.altitudeScale = 0.12; // start very small so growth is obvious
+      b.altitudeScale = 0.18; // small but readable on spawn
       b.searchCooldownMs = 250; // search cluster every 250ms
   (b as any)._hoverSeed = Math.random() * Math.PI * 2; // personalize hover breathing
       // Center over player if available
@@ -2594,8 +3130,8 @@ export class BulletManager {
       // Neutralize initial velocity (we'll control manually)
       b.vx = 0; b.vy = 0;
       // Override lifetime/range so drone can finish full ascent & dive (at least 6s)
-      b.life = 600; // legacy frames (~10s) safeguard
-      b.lifeMs = 9000; // ms lifetime explicit
+  b.life = 3600; // legacy frames (~60s) generous hover budget
+  b.lifeMs = 60000; // ms lifetime explicit to support long idle hovers
       b.maxDistanceSq = 999999999; // effectively disable range cap for drone
     }
     // Tachyon/Singularity Spear special setup: heavy pierce, laser trail visuals

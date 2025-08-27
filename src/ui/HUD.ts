@@ -66,8 +66,22 @@ export class HUD {
   // Match minimap width for consistent layout (minimap = 150)
   const minimapSize = 150;
   const panelW = minimapSize;
-  // Class dominant color (fallback to cyan theme)
-  const classAccent = (this.player as any)?.color || (this.player as any)?.characterData?.color || COLOR_CYAN;
+  // Class dominant color (fallback to cyan theme). Force teal for Neural Nomad theme consistency.
+  const cd: any = (this.player as any)?.characterData;
+  const classId: string | undefined = cd?.id;
+  let classAccent = cd?.color || (this.player as any)?.color || COLOR_CYAN;
+  if (classId === 'neural_nomad') {
+    classAccent = '#26ffe9'; // Nomad teal
+  }
+  // Lattice-active theme override for Psionic Weaver: dark purple accent on stats panel
+  try {
+    if (classId === 'psionic_weaver' && (this.player as any)?.getWeaverLatticeMeter) {
+      const m: any = (this.player as any).getWeaverLatticeMeter();
+      if (m && m.active) {
+        classAccent = '#6B1FB3'; // dark purple during lattice
+      }
+    }
+  } catch { /* ignore */ }
   const simpleStats = this.getSimpleClassStats();
   const headerH = 58; // taller header to avoid overlap with first stat line
   const lineH = 24;   // more vertical spacing per stat row
@@ -240,8 +254,12 @@ export class HUD {
         const m: any = (this.player as any).getWeaverLatticeMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
         const label = m.active ? 'LATTICE ACTIVE' : (m.ready ? 'LATTICE READY (Spacebar)' : `LATTICE ${Math.ceil((m.max - m.value)/1000)}s`);
-        // Magenta/violet theme for Weaver
-        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff4de3', '#2a0b28', '#ff94f0', label);
+        // Theme for Weaver: dark purple during lattice, magenta otherwise
+        if (m.active) {
+          this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#6B1FB3', '#200a38', '#B37DFF', label);
+        } else {
+          this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff4de3', '#2a0b28', '#ff94f0', label);
+        }
       } else if (id === 'rogue_hacker' && (this.player as any).getHackerHackMeter) {
         const m: any = (this.player as any).getHackerHackMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
@@ -512,25 +530,53 @@ export class HUD {
         ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI*2); ctx.fill();
         ctx.restore();
       }
-      // Draw treasures as cyan diamonds
+      // Draw treasures as cyan diamonds; if out of minimap bounds, draw edge arrow pointing toward them
       for (let i = 0; i < treasures.length; i++) {
         const t = treasures[i]; if (!t?.active) continue;
-        const dx = t.x - viewLeft; const dy = t.y - viewTop;
-        if (dx < 0 || dx > viewSize || dy < 0 || dy > viewSize) continue;
-        const sx = minimapX + dx * mapScale; const sy = minimapY + dy * mapScale;
-        const s = 3.5; // half size of diamond
-        ctx.save();
-        ctx.globalAlpha = 0.95;
-        ctx.fillStyle = '#66CCFF';
-        ctx.shadowColor = '#66CCFF'; ctx.shadowBlur = 6;
-        ctx.beginPath();
-        ctx.moveTo(sx, sy - s);
-        ctx.lineTo(sx + s, sy);
-        ctx.lineTo(sx, sy + s);
-        ctx.lineTo(sx - s, sy);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
+        const worldDx = t.x - viewLeft; const worldDy = t.y - viewTop;
+        const inView = !(worldDx < 0 || worldDx > viewSize || worldDy < 0 || worldDy > viewSize);
+        if (inView) {
+          const sx = minimapX + worldDx * mapScale; const sy = minimapY + worldDy * mapScale;
+          const s = 3.5; // half size of diamond
+          ctx.save();
+          ctx.globalAlpha = 0.95;
+          ctx.fillStyle = '#66CCFF';
+          ctx.shadowColor = '#66CCFF'; ctx.shadowBlur = 6;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy - s);
+          ctx.lineTo(sx + s, sy);
+          ctx.lineTo(sx, sy + s);
+          ctx.lineTo(sx - s, sy);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        } else {
+          // Compute arrow at minimap edge pointing toward treasure
+          const centerX = minimapX + viewHalf * mapScale;
+          const centerY = minimapY + viewHalf * mapScale;
+          // Direction from center of view to treasure (world space)
+          const dirX = (t.x - (viewLeft + viewHalf));
+          const dirY = (t.y - (viewTop + viewHalf));
+          const ang = Math.atan2(dirY, dirX);
+          // Place arrow slightly inside the minimap frame
+          const radius = (viewHalf - 6) * mapScale;
+          const ax = centerX + Math.cos(ang) * radius;
+          const ay = centerY + Math.sin(ang) * radius;
+          // Draw small triangular arrow
+          const size = 6;
+          ctx.save();
+          ctx.translate(ax, ay);
+          ctx.rotate(ang);
+          ctx.fillStyle = '#66CCFF';
+          ctx.shadowColor = '#66CCFF'; ctx.shadowBlur = 6;
+          ctx.beginPath();
+          ctx.moveTo(size, 0);
+          ctx.lineTo(-size * 0.6, size * 0.6);
+          ctx.lineTo(-size * 0.6, -size * 0.6);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
       }
     } catch { /* ignore */ }
 

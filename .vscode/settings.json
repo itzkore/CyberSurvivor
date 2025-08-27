@@ -1,7 +1,15 @@
 {
-    "github.copilot.nextEditSuggestions.enabled": true,
-    "github.copilot.enable": {
-        "ts": true,
-        "typesript": true
+  "terminal.integrated.defaultProfile.windows": "Command Prompt",
+  "terminal.integrated.profiles.windows": {
+    "Command Prompt": {
+      "path": "C:\\Windows\\System32\\cmd.exe",
+      "args": []
     }
+  },
+  "terminal.integrated.shell.windows": "C:\\Windows\\System32\\cmd.exe",
+  "github.copilot.nextEditSuggestions.enabled": true,
+  "github.copilot.enable": {
+    "ts": true,
+    "typescript": true
+  }
 }

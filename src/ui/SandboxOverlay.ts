@@ -93,6 +93,7 @@ export class SandboxOverlay {
         <div class="row">
           <button id="sb-spawn-1" class="btn">Spawn 1</button>
           <button id="sb-spawn-5" class="btn">Spawn 5</button>
+          <button id="sb-spawn-all-types" class="btn">All Types</button>
           <button id="sb-clear" class="btn">Clear</button>
         </div>
       </div>
@@ -122,6 +123,12 @@ export class SandboxOverlay {
         <div class="hdr">Boss</div>
         <div class="row" style="flex-wrap:wrap;gap:6px;justify-content:space-between">
           <button id="sb-spawn-boss" class="btn">Spawn Boss (← 500px)</button>
+        </div>
+        <div class="row" style="flex-wrap:wrap;gap:6px;justify-content:space-between">
+          <button id="sb-boss-1" class="btn sm" title="Alpha — balanced">Boss 1</button>
+          <button id="sb-boss-2" class="btn sm" title="Beta — nova">Boss 2</button>
+          <button id="sb-boss-3" class="btn sm" title="Gamma — summoner">Boss 3</button>
+          <button id="sb-boss-4" class="btn sm" title="Omega — dasher">Boss 4</button>
         </div>
         <div class="mini" style="margin-top:4px;opacity:0.8">Spawns identical to game rules, positioned 500px left of the operative.</div>
       </div>
@@ -162,6 +169,9 @@ export class SandboxOverlay {
     });
     panel.querySelector('#sb-spawn-5')?.addEventListener('click', () => {
       window.dispatchEvent(new CustomEvent('sandboxSpawnDummy', { detail: { count: 5, radius: 32, hp: 5000 } }));
+    });
+    panel.querySelector('#sb-spawn-all-types')?.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('sandboxSpawnAllTypes'));
     });
     panel.querySelector('#sb-clear')?.addEventListener('click', () => {
       window.dispatchEvent(new CustomEvent('sandboxClearDummies'));
@@ -226,6 +236,17 @@ export class SandboxOverlay {
         window.dispatchEvent(new CustomEvent('sandboxSpawnBoss', { detail: { x: px - 500, y: py, cinematic: false } }));
       } catch {}
     });
+    const spawnSpecific = (id: string) => {
+      try {
+        const px = this.game?.player?.x ?? 0;
+        const py = this.game?.player?.y ?? 0;
+        window.dispatchEvent(new CustomEvent('sandboxSpawnBoss', { detail: { x: px - 500, y: py, cinematic: false, id } }));
+      } catch {}
+    };
+    panel.querySelector('#sb-boss-1')?.addEventListener('click', () => spawnSpecific('alpha'));
+    panel.querySelector('#sb-boss-2')?.addEventListener('click', () => spawnSpecific('beta'));
+    panel.querySelector('#sb-boss-3')?.addEventListener('click', () => spawnSpecific('gamma'));
+    panel.querySelector('#sb-boss-4')?.addEventListener('click', () => spawnSpecific('omega'));
 
     return panel;
   }
@@ -405,6 +426,10 @@ export class SandboxOverlay {
     if (!this.game?.player) return;
     // Reset first to avoid mixed states
     this.game.player.resetState();
+    // ResetState re-adds the class default weapon; clear to make UI the single source of truth
+    if (this.game.player.activeWeapons && typeof this.game.player.activeWeapons.clear === 'function') {
+      this.game.player.activeWeapons.clear();
+    }
     for (let i=0;i<weapons.length;i++) {
       const w = weapons[i];
       for (let l=0;l<w.level;l++) this.game.player.addWeapon(w.type);
@@ -428,6 +453,10 @@ export class SandboxOverlay {
     const pass = this.collectPassives();
     if (!this.game?.player) return;
     this.game.player.resetState();
+    // Prevent double-adding the class default weapon when applying from UI
+    if (this.game.player.activeWeapons && typeof this.game.player.activeWeapons.clear === 'function') {
+      this.game.player.activeWeapons.clear();
+    }
     for (let i=0;i<weapons.length;i++) {
       const w = weapons[i];
       for (let l=0;l<w.level;l++) this.game.player.addWeapon(w.type);
