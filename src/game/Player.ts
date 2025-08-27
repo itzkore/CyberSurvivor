@@ -167,7 +167,7 @@ export class Player {
   private bladeCyclonePrevKey: boolean = false; // rising-edge detection for Ctrl
   private bladeCycloneActive: boolean = false;
   private bladeCycloneTimeMs: number = 0;
-  private bladeCycloneDurationMs: number = 400; // spin duration
+  private bladeCycloneDurationMs: number = 600; // longer duration, slower spin
   public getBladeCyclone() { return { value: this.bladeCycloneCooldownMsMax - this.bladeCycloneCooldownMs, max: this.bladeCycloneCooldownMsMax, ready: this.bladeCycloneCooldownMs <= 0, active: this.bladeCycloneActive }; }
   /** Accumulated sprite rotation while Blade Cyclone is active (radians) */
   private cycloneSpinAngle: number = 0;
@@ -482,15 +482,15 @@ export class Player {
   if (this.characterData?.id === 'cyber_runner' && this.bladeCycloneActive) {
       this.bladeCycloneTimeMs += dt;
       const t = Math.max(0, Math.min(1, this.bladeCycloneTimeMs / this.bladeCycloneDurationMs));
-  // Advance sprite spin; start fast then ease slightly (render-time only)
+  // Advance sprite spin; slower overall to reduce visual churn
   const easeInOut = (p: number) => (p < 0.5 ? 2*p*p : -1 + (4 - 2*p)*p);
-  const spinTurns = 1.75 + 1.25 * easeInOut(t); // ~1.75 -> 3.0 turns over the duration
+  const spinTurns = 1.2 + 0.4 * easeInOut(t); // ~1.2 -> 1.6 turns over the duration
   const totalRadians = spinTurns * Math.PI * 2;
   const perMs = totalRadians / Math.max(1, this.bladeCycloneDurationMs);
   this.cycloneSpinAngle += perMs * dt;
 
-      // AOE damage every 100ms during cyclone
-      if (Math.floor(this.bladeCycloneTimeMs / 100) !== Math.floor((this.bladeCycloneTimeMs - dt) / 100)) {
+      // AOE damage every 150ms during cyclone
+      if (Math.floor(this.bladeCycloneTimeMs / 150) !== Math.floor((this.bladeCycloneTimeMs - dt) / 150)) {
         (this as any).performBladeCycloneDamage();
       }
 
@@ -2192,7 +2192,7 @@ export class Player {
         ctx.arc(0, 0, this.size/2, 0, Math.PI*2);
         ctx.fill();
       }
-      // Blade Cyclone visual: two tachyon-like swords orbiting while active (scaled to match hit radius)
+  // Blade Cyclone visual: two tachyon-like swords orbiting while active (scaled to match hit radius)
       if (this.characterData?.id === 'cyber_runner' && this.bladeCycloneActive) {
   const now = performance.now();
   // Use the same accumulated spin to keep swords synced with the sprite spin
@@ -2220,10 +2220,12 @@ export class Player {
         // Use additive blending once for swords / ring
         const prevComp = ctx.globalCompositeOperation;
         ctx.globalCompositeOperation = 'lighter';
+        // Neutralize the sprite rotation once for the cyclone visuals to keep orbit math simple
+        ctx.save();
+        ctx.rotate(- (appliedRotation + spriteFacingOffset));
         const drawSword = (ang: number, mirror: boolean) => {
           ctx.save();
-          // Position sword around player in world space (ignore sprite rotation offset)
-          ctx.rotate(- (appliedRotation + spriteFacingOffset)); // neutralize the sprite rotation we applied
+          // Position sword around player in world space (sprite rotation already neutralized)
           const px = Math.cos(ang) * radius;
           const py = Math.sin(ang) * radius + bob;
           ctx.translate(px, py);
@@ -2254,7 +2256,7 @@ export class Player {
         ctx.beginPath();
   ctx.arc(0, 0, cycloneRadiusVisual, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.restore();
+  ctx.restore();
         // Trails (sub-angles behind the current angle)
         for (let i = trailCount; i >= 1; i--) {
           const a = baseAngle - i * 0.25;
@@ -2268,6 +2270,7 @@ export class Player {
         // Current swords
         drawSword(baseAngle, false);
         drawSword(baseAngle + Math.PI, true);
+  ctx.restore(); // undo rotation neutralization
         ctx.globalCompositeOperation = prevComp;
       }
       // Shield block flash: cyan ring pulse (150ms)
