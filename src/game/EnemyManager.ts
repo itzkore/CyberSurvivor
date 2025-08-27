@@ -2073,6 +2073,8 @@ export class EnemyManager {
   this.avgFrameMs = this.avgFrameMs * 0.9 + deltaTime * 0.1;
   const highLoad = this.avgFrameMs > 40; // ~25 FPS
   const severeLoad = this.avgFrameMs > 55; // <18 FPS
+  // Expose to global so other managers (e.g., BulletManager) can adapt emissions
+  try { (window as any).__avgFrameMs = this.avgFrameMs; } catch {}
   // Stretch spawn interval under load (caps enemy growth pressure when Electron throttles)
   const targetInterval = severeLoad ? 600 : highLoad ? 450 : 300;
   // Ease toward target to avoid abrupt shifts
@@ -2150,8 +2152,10 @@ export class EnemyManager {
   const latticeActive = latticeUntil > nowMs;
   const latticeR = latticeActive ? 320 : 0;
   const latticeR2 = latticeR * latticeR;
-  // Lattice periodic damage: every 0.5s, deal 50% of Psionic Wave damage to enemies inside the zone
+  // Lattice periodic damage: every ~0.5s (adaptive), deal 50% of Psionic Wave damage to enemies inside the zone
   if (latticeActive) {
+    // Adaptive tick cadence to ease under load
+    const tickInterval = severeLoad ? 700 : highLoad ? 600 : this.latticeTickIntervalMs;
     if (nowMs >= this.latticeNextTickMs) {
       // Determine current Psionic Wave level and base damage
       let lvl = 1;
@@ -2166,8 +2170,10 @@ export class EnemyManager {
   const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
       const tickDamage = Math.max(1, Math.round(baseDmg * 0.50 * gdm));
       const px = this.player.x, py = this.player.y;
-      for (let i = 0; i < this.enemies.length; i++) {
-        const e = this.enemies[i];
+      // Use spatial grid to query candidates near the player instead of scanning everything
+      const candidates = this.enemySpatialGrid.query(px, py, latticeR + 32);
+      for (let i = 0; i < candidates.length; i++) {
+        const e = candidates[i];
         if (!e.active || e.hp <= 0) continue;
         const dx = e.x - px; const dy = e.y - py;
         if (dx*dx + dy*dy <= latticeR2) {
@@ -2177,11 +2183,12 @@ export class EnemyManager {
           (e as any)._lastHitByWeapon = WeaponType.PSIONIC_WAVE;
         }
       }
-      this.latticeNextTickMs = nowMs + this.latticeTickIntervalMs;
+      this.latticeNextTickMs = nowMs + tickInterval;
     }
   } else {
     // Reset scheduler baseline so first tick fires promptly next activation
-    this.latticeNextTickMs = nowMs + this.latticeTickIntervalMs;
+    const tickInterval = severeLoad ? 700 : highLoad ? 600 : this.latticeTickIntervalMs;
+    this.latticeNextTickMs = nowMs + tickInterval;
   }
   // Rebuild active enemy cache while updating (single pass)
     this.activeEnemies.length = 0;

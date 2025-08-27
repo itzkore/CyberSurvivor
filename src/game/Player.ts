@@ -2250,8 +2250,11 @@ export class Player {
           }
         }
         // Use additive blending once for swords / ring
-        const prevComp = ctx.globalCompositeOperation;
-        ctx.globalCompositeOperation = 'lighter';
+  const avgMs = (window as any).__avgFrameMs || 16;
+  const severeLoad = avgMs > 55;
+  const vfxLow = severeLoad || !!(window as any).__vfxLowMode;
+  const prevComp = ctx.globalCompositeOperation;
+  if (!vfxLow) ctx.globalCompositeOperation = 'lighter';
         // Neutralize the sprite rotation once for the cyclone visuals to keep orbit math simple
         ctx.save();
         ctx.rotate(- (appliedRotation + spriteFacingOffset));
@@ -2292,7 +2295,7 @@ export class Player {
         drawSword(baseAngle + Math.PI/2, false);
         drawSword(baseAngle + Math.PI/2 + Math.PI, true);
   ctx.restore(); // undo rotation neutralization
-        ctx.globalCompositeOperation = prevComp;
+  ctx.globalCompositeOperation = prevComp;
       }
       // Shield block flash: cyan ring pulse (150ms)
       const shieldTime = (this as any)._shieldBlockFlashTime || 0;

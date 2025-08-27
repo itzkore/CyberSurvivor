@@ -2477,16 +2477,20 @@ export class BulletManager {
     b.pierceRemaining = 0;
       } catch { /* ignore */ }
     }
-    // Psionic Wave: during Weaver Lattice, emit symmetric faint secondary waves to form a fuller weave pattern
+  // Psionic Wave: during Weaver Lattice, emit symmetric faint secondary waves to form a fuller weave pattern
   if (weapon === WeaponType.PSIONIC_WAVE && !this.suppressWeaverSecondary) {
       try {
         const until = (window as any).__weaverLatticeActiveUntil || 0;
         if (until > performance.now()) {
+    // Adaptive emission based on frame time
+    const avgMs = (window as any).__avgFrameMs || 16;
+    const highLoad = avgMs > 40; const severeLoad = avgMs > 55;
       this.suppressWeaverSecondary = true; // prevent nested secondary emissions
           const baseAngle = Math.atan2(targetY - y, targetX - x);
           const len = 320; // a bit longer for epic feel
-          const angleOffset = 0.18; // fixed gentle fan
-          const lateral = 30;       // inner lanes
+      const angleOffset = severeLoad ? 0.12 : highLoad ? 0.15 : 0.18; // reduce fan under load
+      const lateral = severeLoad ? 18 : highLoad ? 24 : 30;       // inner lanes
+    const lanesOuter = severeLoad ? 0 : highLoad ? 1 : 2; // reduce outer pair count under load
           // Left lane
           {
             const ox = x + Math.cos(baseAngle + Math.PI/2) * -lateral;
@@ -2498,8 +2502,8 @@ export class BulletManager {
             if (bL) {
               const vis: any = bL.projectileVisual || {};
               if (vis) {
-                if (vis.thickness != null) vis.thickness = Math.max(6, Math.round(vis.thickness * 0.8));
-                vis.glowRadius = Math.max(14, (vis.glowRadius || 24) * 0.8);
+                if (vis.thickness != null) vis.thickness = Math.max(severeLoad?4:6, Math.round((vis.thickness) * (severeLoad?0.65: highLoad?0.75:0.8)));
+                vis.glowRadius = Math.max(severeLoad?10:14, (vis.glowRadius || 24) * (severeLoad?0.6: highLoad?0.7:0.8));
                 if (vis.thickness == null) vis.thickness = 10; // ensure non-zero thickness for collision
                 bL.projectileVisual = vis;
               }
@@ -2517,19 +2521,20 @@ export class BulletManager {
             if (bR) {
               const vis: any = bR.projectileVisual || {};
               if (vis) {
-                if (vis.thickness != null) vis.thickness = Math.max(6, Math.round(vis.thickness * 0.8));
-                vis.glowRadius = Math.max(14, (vis.glowRadius || 24) * 0.8);
+                if (vis.thickness != null) vis.thickness = Math.max(severeLoad?4:6, Math.round((vis.thickness) * (severeLoad?0.65: highLoad?0.75:0.8)));
+                vis.glowRadius = Math.max(severeLoad?10:14, (vis.glowRadius || 24) * (severeLoad?0.6: highLoad?0.7:0.8));
                 if (vis.thickness == null) vis.thickness = 10;
                 bR.projectileVisual = vis;
               }
               bR.weaponType = WeaponType.PSIONIC_WAVE;
             }
           }
-          // Outer pair for more epic lattice
+          // Outer lanes (gated by load)
           const lateralOuter = lateral + 38;
           const angleOuter = angleOffset * 1.25;
-          // Left outer lane
-          {
+          if (lanesOuter >= 1) {
+            // Left outer lane
+            {
             const ox = x + Math.cos(baseAngle + Math.PI/2) * -lateralOuter;
             const oy = y + Math.sin(baseAngle + Math.PI/2) * -lateralOuter;
             const a2 = baseAngle - angleOuter;
@@ -2539,16 +2544,18 @@ export class BulletManager {
             if (bL2) {
               const vis: any = bL2.projectileVisual || {};
               if (vis) {
-                if (vis.thickness != null) vis.thickness = Math.max(5, Math.round((vis.thickness) * 0.75));
-                vis.glowRadius = Math.max(12, (vis.glowRadius || 24) * 0.75);
+                if (vis.thickness != null) vis.thickness = Math.max(severeLoad?3:5, Math.round((vis.thickness) * (severeLoad?0.55: highLoad?0.65:0.75)));
+                vis.glowRadius = Math.max(severeLoad?8:12, (vis.glowRadius || 24) * (severeLoad?0.5: highLoad?0.6:0.75));
                 if (vis.thickness == null) vis.thickness = 9;
                 bL2.projectileVisual = vis;
               }
               bL2.weaponType = WeaponType.PSIONIC_WAVE;
             }
+            }
           }
-          // Right outer lane
-          {
+          if (lanesOuter >= 2) {
+            // Right outer lane
+            {
             const ox = x + Math.cos(baseAngle + Math.PI/2) * lateralOuter;
             const oy = y + Math.sin(baseAngle + Math.PI/2) * lateralOuter;
             const a2 = baseAngle + angleOuter;
@@ -2558,12 +2565,13 @@ export class BulletManager {
             if (bR2) {
               const vis: any = bR2.projectileVisual || {};
               if (vis) {
-                if (vis.thickness != null) vis.thickness = Math.max(5, Math.round((vis.thickness) * 0.75));
-                vis.glowRadius = Math.max(12, (vis.glowRadius || 24) * 0.75);
+                if (vis.thickness != null) vis.thickness = Math.max(severeLoad?3:5, Math.round((vis.thickness) * (severeLoad?0.55: highLoad?0.65:0.75)));
+                vis.glowRadius = Math.max(severeLoad?8:12, (vis.glowRadius || 24) * (severeLoad?0.5: highLoad?0.6:0.75));
                 if (vis.thickness == null) vis.thickness = 9;
                 bR2.projectileVisual = vis;
               }
               bR2.weaponType = WeaponType.PSIONIC_WAVE;
+            }
             }
           }
           this.suppressWeaverSecondary = false;
