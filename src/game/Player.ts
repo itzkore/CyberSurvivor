@@ -494,18 +494,18 @@ export class Player {
         (this as any).performBladeCycloneDamage();
       }
 
-      // Spawn rotation particles (denser, align outer swirl to exact cyclone radius)
+  // Spawn rotation particles (throttled to cut overdraw)
       const pm = this.gameContext?.particleManager;
       if (pm) {
         const cycloneRadiusVisual = (this as any).getBladeCycloneTipRadius?.() ?? 240;
-        // Inner sparkle
-        if (Math.random() < 0.8) {
+    // Inner sparkle (reduced rate)
+    if (Math.random() < 0.3) {
           const a = Math.random() * Math.PI * 2;
           const r = 30 + Math.random() * Math.min(100, cycloneRadiusVisual * 0.3);
           pm.spawn(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r, 1, '#00FFFF', { sizeMin: 0.9, sizeMax: 2.0, life: 34, speedMin: 0.8, speedMax: 2.2 });
         }
-        // Outer swirl hints
-  if (Math.random() < 0.45) {
+    // Outer swirl hints (reduced rate)
+  if (Math.random() < 0.18) {
           const a = Math.random() * Math.PI * 2;
           const jitter = -10 + Math.random() * 20; // +/- 10px around actual radius
           const R = cycloneRadiusVisual + jitter;
@@ -2203,9 +2203,23 @@ export class Player {
   const bladeLen = Math.max(80, cycloneRadiusVisual * 0.5);
   const radius = Math.max(32, cycloneRadiusVisual - bladeLen);
         const bob = Math.sin(now / 90) * 2; // tiny bob to sell weight
-        // Simple motion trail by drawing faded swords behind
-        const trailCount = 2;
-        const trailFade = 0.45;
+        // Simple motion trail by drawing faded swords behind (reduced count)
+        const trailCount = 1;
+        const trailFade = 0.35;
+        // Cache a vertical gradient for the sword blade to avoid per-frame allocations
+        const selfAny: any = this as any;
+        let swordGrad: CanvasGradient | null = selfAny._cycloneSwordGrad || null;
+        let swordGradLen: number = selfAny._cycloneSwordGradLen || 0;
+        if (!swordGrad || swordGradLen !== bladeLen) {
+          swordGrad = ctx.createLinearGradient(0, -bladeLen*0.5, 0, bladeLen*0.5);
+          swordGrad.addColorStop(0, 'rgba(200,255,255,0.85)');
+          swordGrad.addColorStop(1, 'rgba(0,255,255,0.55)');
+          selfAny._cycloneSwordGrad = swordGrad;
+          selfAny._cycloneSwordGradLen = bladeLen;
+        }
+        // Use additive blending once for swords / ring
+        const prevComp = ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation = 'lighter';
         const drawSword = (ang: number, mirror: boolean) => {
           ctx.save();
           // Position sword around player in world space (ignore sprite rotation offset)
@@ -2217,18 +2231,14 @@ export class Player {
           if (mirror) ctx.scale(-1, 1);
           // Sword shape: thinner, longer neon cyan blade with white core
           const bladeW = 4.2; // slightly thinner
-          // Glow
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.shadowColor = 'rgba(0,255,255,0.65)';
-          ctx.shadowBlur = 14;
+          // Modest glow (lower shadow blur to reduce GPU cost)
+          ctx.shadowColor = 'rgba(0,255,255,0.45)';
+          ctx.shadowBlur = 6;
           // Core (slightly shorter than blade for depth)
           ctx.fillStyle = 'rgba(255,255,255,0.9)';
           ctx.fillRect(-bladeW*0.22, -bladeLen*0.9, bladeW*0.44, bladeLen*0.8);
           // Cyan blade
-          const grad = ctx.createLinearGradient(0, -bladeLen*0.5, 0, bladeLen*0.5);
-          grad.addColorStop(0, 'rgba(200,255,255,0.85)');
-          grad.addColorStop(1, 'rgba(0,255,255,0.55)');
-          ctx.fillStyle = grad;
+          ctx.fillStyle = swordGrad as any;
           // Blade from pivot (0) to tip (-bladeLen) so the tip lands on the ring
           ctx.fillRect(-bladeW/2, -bladeLen, bladeW, bladeLen);
           // Hilt
@@ -2239,21 +2249,11 @@ export class Player {
         };
         // Edge indicator ring at exact damage radius (subtle cyan glow)
         ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.strokeStyle = 'rgba(0,255,255,0.35)';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(0,255,255,0.28)';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
   ctx.arc(0, 0, cycloneRadiusVisual, 0, Math.PI * 2);
         ctx.stroke();
-        // Rotating arc segments to suggest motion
-        ctx.lineWidth = 3.5;
-        ctx.strokeStyle = 'rgba(0,255,255,0.5)';
-        for (let i = 0; i < 3; i++) {
-          const segStart = baseAngle + i * (2 * Math.PI / 3);
-          ctx.beginPath();
-          ctx.arc(0, 0, cycloneRadiusVisual, segStart, segStart + 0.35);
-          ctx.stroke();
-        }
         ctx.restore();
         // Trails (sub-angles behind the current angle)
         for (let i = trailCount; i >= 1; i--) {
@@ -2268,6 +2268,7 @@ export class Player {
         // Current swords
         drawSword(baseAngle, false);
         drawSword(baseAngle + Math.PI, true);
+        ctx.globalCompositeOperation = prevComp;
       }
       // Shield block flash: cyan ring pulse (150ms)
       const shieldTime = (this as any)._shieldBlockFlashTime || 0;
@@ -2460,8 +2461,12 @@ Player.prototype.activateAbility = function(this: Player & any) {
   if (this.characterData?.id !== 'cyber_runner') return;
   if (!this.bladeCycloneActive) return;
 
-  const enemies = this.enemyProvider ? this.enemyProvider() : [];
+  // Use spatial query when available to avoid scanning all enemies
+  const enemyMgr = this.gameContext?.enemyManager as any;
   const cycloneRadius = (this.getBladeCycloneTipRadius?.() ?? 0) || 240; // fallback ~240px
+  const enemies: any[] = (enemyMgr && typeof enemyMgr.queryEnemies === 'function')
+    ? enemyMgr.queryEnemies(this.x, this.y, cycloneRadius + 24)
+    : (this.enemyProvider ? this.enemyProvider() : []);
   const lvl = Math.max(1, Math.round(this.level || 1));
   const gdm = this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier ?? 1);
 
@@ -2481,7 +2486,6 @@ Player.prototype.activateAbility = function(this: Player & any) {
     if (distSq > cycloneRadius * cycloneRadius) continue;
 
     // Deal damage via EnemyManager for consistency
-    const enemyMgr = this.gameContext?.enemyManager;
     if (enemyMgr && typeof enemyMgr.takeDamage === 'function') {
       const isCrit = Math.random() < (((this as any).critBonus || 0) + 0.1);
       enemyMgr.takeDamage(e, damage, isCrit, false, WeaponType.RUNNER_GUN, this.x, this.y, lvl);
@@ -2495,8 +2499,11 @@ Player.prototype.activateAbility = function(this: Player & any) {
   e.y += normY * strength;
 
     // Hit spark
-    const pm = this.gameContext?.particleManager;
-    if (pm) pm.spawn(e.x, e.y, 1, '#00FFFF', { sizeMin: 1.0, sizeMax: 2.0, life: 26, speedMin: 1.2, speedMax: 2.2 });
+    // Cheap hit spark (throttled): only for the first few hits to curb overdraw
+    if (hits < 6) {
+      const pm = this.gameContext?.particleManager;
+      if (pm) pm.spawn(e.x, e.y, 1, '#00FFFF', { sizeMin: 0.9, sizeMax: 1.6, life: 22, speedMin: 0.9, speedMax: 1.8 });
+    }
     hits++;
   }
 

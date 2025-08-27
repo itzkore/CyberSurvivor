@@ -694,6 +694,20 @@ export class EnemyManager {
   return this.activeEnemies;
   }
 
+  /**
+   * Query nearby enemies efficiently using the internal spatial grid.
+   * Returns only active enemies within the given radius.
+   */
+  public queryEnemies(x: number, y: number, radius: number): Enemy[] {
+    const candidates = this.enemySpatialGrid.query(x, y, radius);
+    const out: Enemy[] = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const e = candidates[i];
+      if (e && e.active && e.hp > 0) out.push(e);
+    }
+    return out;
+  }
+
   /** Apply a short Neural Threader primer debuff (light DoT) to enable tether linking on subsequent hits. */
   public applyNeuralDebuff(enemy: Enemy) {
     if (!enemy || !enemy.active || enemy.hp <= 0) return;
