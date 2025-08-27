@@ -2192,7 +2192,7 @@ export class Player {
         ctx.arc(0, 0, this.size/2, 0, Math.PI*2);
         ctx.fill();
       }
-  // Blade Cyclone visual: two tachyon-like swords orbiting while active (scaled to match hit radius)
+      // Blade Cyclone visual: two tachyon-like swords orbiting while active (scaled to match hit radius)
       if (this.characterData?.id === 'cyber_runner' && this.bladeCycloneActive) {
   const now = performance.now();
   // Use the same accumulated spin to keep swords synced with the sprite spin
@@ -2203,19 +2203,51 @@ export class Player {
   const bladeLen = Math.max(80, cycloneRadiusVisual * 0.5);
   const radius = Math.max(32, cycloneRadiusVisual - bladeLen);
         const bob = Math.sin(now / 90) * 2; // tiny bob to sell weight
-        // Simple motion trail by drawing faded swords behind (reduced count)
-        const trailCount = 1;
-        const trailFade = 0.35;
-        // Cache a vertical gradient for the sword blade to avoid per-frame allocations
+        // Trails disabled for perf
+        const trailCount = 0;
+        const trailFade = 0.0;
+        // Pre-render a single sword into an offscreen canvas to cut per-frame draw cost
         const selfAny: any = this as any;
-        let swordGrad: CanvasGradient | null = selfAny._cycloneSwordGrad || null;
-        let swordGradLen: number = selfAny._cycloneSwordGradLen || 0;
-        if (!swordGrad || swordGradLen !== bladeLen) {
-          swordGrad = ctx.createLinearGradient(0, -bladeLen*0.5, 0, bladeLen*0.5);
-          swordGrad.addColorStop(0, 'rgba(200,255,255,0.85)');
-          swordGrad.addColorStop(1, 'rgba(0,255,255,0.55)');
-          selfAny._cycloneSwordGrad = swordGrad;
-          selfAny._cycloneSwordGradLen = bladeLen;
+        let swordCanvas: HTMLCanvasElement | null = selfAny._cycloneSwordCanvas || null;
+        let swordCanvasLen: number = selfAny._cycloneSwordCanvasLen || 0;
+        let swordCanvasPivotY: number = selfAny._cycloneSwordCanvasPivotY || 0;
+        if (!swordCanvas || swordCanvasLen !== bladeLen) {
+          const off = document.createElement('canvas');
+          const offCtx = off.getContext('2d');
+          if (offCtx) {
+            const bladeW = 4.2;
+            const margin = 12; // room for glow
+            off.width = Math.ceil(bladeW + margin * 2);
+            off.height = Math.ceil(bladeLen + margin * 2 + 8); // include hilt area
+            const pivotX = off.width / 2;
+            const pivotY = bladeLen + margin;
+            offCtx.save();
+            offCtx.translate(pivotX, pivotY);
+            // Modest glow baked into prerender
+            offCtx.shadowColor = 'rgba(0,255,255,0.35)';
+            offCtx.shadowBlur = 3;
+            // Core (slightly shorter than blade for depth)
+            offCtx.fillStyle = 'rgba(255,255,255,0.9)';
+            offCtx.fillRect(-bladeW*0.22, -bladeLen*0.9, bladeW*0.44, bladeLen*0.8);
+            // Cyan blade gradient
+            const grad = offCtx.createLinearGradient(0, -bladeLen*0.5, 0, bladeLen*0.5);
+            grad.addColorStop(0, 'rgba(200,255,255,0.85)');
+            grad.addColorStop(1, 'rgba(0,255,255,0.55)');
+            offCtx.fillStyle = grad as any;
+            offCtx.fillRect(-bladeW/2, -bladeLen, bladeW, bladeLen);
+            // Hilt
+            offCtx.shadowBlur = 0;
+            offCtx.fillStyle = '#082b2e';
+            offCtx.fillRect(-10, 2, 20, 6);
+            offCtx.restore();
+            // Persist cache
+            selfAny._cycloneSwordCanvas = off;
+            selfAny._cycloneSwordCanvasLen = bladeLen;
+            selfAny._cycloneSwordCanvasPivotY = pivotY;
+            swordCanvas = off;
+            swordCanvasLen = bladeLen;
+            swordCanvasPivotY = pivotY;
+          }
         }
         // Use additive blending once for swords / ring
         const prevComp = ctx.globalCompositeOperation;
@@ -2224,42 +2256,30 @@ export class Player {
         ctx.save();
         ctx.rotate(- (appliedRotation + spriteFacingOffset));
         const drawSword = (ang: number, mirror: boolean) => {
-          ctx.save();
           // Position sword around player in world space (sprite rotation already neutralized)
           const px = Math.cos(ang) * radius;
           const py = Math.sin(ang) * radius + bob;
+          ctx.save();
           ctx.translate(px, py);
           ctx.rotate(ang + Math.PI/2);
           if (mirror) ctx.scale(-1, 1);
-          // Sword shape: thinner, longer neon cyan blade with white core
-          const bladeW = 4.2; // slightly thinner
-          // Modest glow (lower shadow blur to reduce GPU cost)
-          ctx.shadowColor = 'rgba(0,255,255,0.45)';
-          ctx.shadowBlur = 6;
-          // Core (slightly shorter than blade for depth)
-          ctx.fillStyle = 'rgba(255,255,255,0.9)';
-          ctx.fillRect(-bladeW*0.22, -bladeLen*0.9, bladeW*0.44, bladeLen*0.8);
-          // Cyan blade
-          ctx.fillStyle = swordGrad as any;
-          // Blade from pivot (0) to tip (-bladeLen) so the tip lands on the ring
-          ctx.fillRect(-bladeW/2, -bladeLen, bladeW, bladeLen);
-          // Hilt
-          ctx.shadowBlur = 0;
-          ctx.fillStyle = '#082b2e';
-          ctx.fillRect(-10, 2, 20, 6);
+          const off = selfAny._cycloneSwordCanvas as HTMLCanvasElement;
+          if (off) {
+            ctx.drawImage(off, -off.width/2, -swordCanvasPivotY);
+          }
           ctx.restore();
         };
         // Edge indicator ring at exact damage radius (subtle cyan glow)
         ctx.save();
-        ctx.strokeStyle = 'rgba(0,255,255,0.28)';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(0,255,255,0.18)';
+        ctx.lineWidth = 1.2;
         ctx.beginPath();
   ctx.arc(0, 0, cycloneRadiusVisual, 0, Math.PI * 2);
         ctx.stroke();
   ctx.restore();
         // Trails (sub-angles behind the current angle)
         for (let i = trailCount; i >= 1; i--) {
-          const a = baseAngle - i * 0.25;
+          const a = baseAngle - i * 0.25 + Math.PI/2; // 90° offset to bias left/right
           const alpha = Math.max(0, trailFade * (1 - i / (trailCount + 1)));
           ctx.save();
           ctx.globalAlpha *= alpha;
@@ -2268,8 +2288,9 @@ export class Player {
           ctx.restore();
         }
         // Current swords
-        drawSword(baseAngle, false);
-        drawSword(baseAngle + Math.PI, true);
+        // 90° offset so swords read as left/right instead of front/back
+        drawSword(baseAngle + Math.PI/2, false);
+        drawSword(baseAngle + Math.PI/2 + Math.PI, true);
   ctx.restore(); // undo rotation neutralization
         ctx.globalCompositeOperation = prevComp;
       }
