@@ -774,7 +774,6 @@ export class Game {
    * @param deltaTime The time elapsed since the last update, in milliseconds.
    */
   private update(deltaTime: number) {
-  // console.log('Game.render called, current state:', this.state); // Removed misleading log
   // Always run gameLoop, and advance gameTime if in GAME state
   if (this.state === 'GAME') {
   // One-time world expansion after first 10s of gameplay to keep early coordinates small
@@ -857,9 +856,9 @@ export class Game {
         if (!b.active) continue;
     // Absolutely collisionless weapons: do not process boss collision here.
     //  - Quantum Halo / Industrial Grinder: flagged as isOrbiting and handle contact internally.
-    //  - Scrap-Saw melee sweep: flagged via isMeleeSweep and handled in BulletManager sweep logic.
+    //  - Melee sweep weapons: flagged via isMeleeSweep and handled in BulletManager sweep logic.
     if ((b as any).isOrbiting) continue;
-    if ((b as any).isMeleeSweep || (b as any).weaponType === (window as any).WeaponType?.SCRAP_SAW) continue;
+    if ((b as any).isMeleeSweep) continue;
         const dx = b.x - boss.x;
         const dy = b.y - boss.y;
         const r = bossRadSumSqBase + b.radius;

@@ -142,31 +142,7 @@ export class BulletManager {
   // Clear any visual/identity lock used to hard-enforce weapon-specific rendering
   (b as any).visualLock = undefined;
   }
-  /** Spawn a radial shrapnel burst for Scrap-Saw. Uses simple small bullets with short/medium range.
-   *  Optional range/speed let callers align with the triggering explosion/sweep radius.
-   */
-  private spawnShrapnelBurst(cx: number, cy: number, count: number, damage: number, range: number = 220, speed: number = 9.5) {
-    for (let i = 0; i < count; i++) {
-      const ang = (Math.PI * 2 * i) / count + Math.random() * 0.2 - 0.1;
-      const tx = cx + Math.cos(ang) * 40;
-      const ty = cy + Math.sin(ang) * 40;
-  const bFromPool = this.bulletPool.pop();
-  const b: Bullet = bFromPool || { x: cx, y: cy, vx: 0, vy: 0, radius: 4, life: 0, active: false, damage, weaponType: WeaponType.SCRAP_SAW } as Bullet;
-  if (bFromPool) this.resetPooledBullet(b);
-      b.x = cx; b.y = cy;
-      const dx = tx - cx, dy = ty - cy; const d = Math.hypot(dx, dy) || 1; b.vx = (dx/d) * speed; b.vy = (dy/d) * speed;
-      b.radius = 4; b.active = true; b.weaponType = WeaponType.SCRAP_SAW; b.damage = damage;
-      b.life = Math.ceil((range / speed)); // frames approximation, converted later
-      b.lifeMs = (range / (speed * 60)) * 1000; // ms life for consistency
-      b.projectileVisual = { type: 'bullet', color: '#C0C0C0', size: 4, glowColor: '#FFE28A', glowRadius: 6 } as any;
-      this.bullets.push(b);
-    }
-  }
 
-  /** Public: spawn Scrap shrapnel with explicit radius/speed tuning. */
-  public spawnScrapShrapnel(cx: number, cy: number, count: number, damage: number, range: number, speed: number = 9.5) {
-    this.spawnShrapnelBurst(cx, cy, count, damage, range, speed);
-  }
 
   /** Ensure Quantum Halo orbit bullets exist & reflect current player weapon level.
    *  Avoids full deactivation/rebuild to prevent visible resets/flicker when counts change.
@@ -333,21 +309,6 @@ export class BulletManager {
         const grStats = grSpec?.getLevelStats ? grSpec.getLevelStats(grLvl) : {};
         grinderR = (grStats?.orbitRadius ?? 140) + 18;
         const r2 = grinderR * grinderR; if (r2 > friendlySafeR2) friendlySafeR2 = r2;
-      }
-  // Scrap-Saw sweep reach (only when a sweep bullet exists this frame)
-  // Include saw sweep in plasma "friendly safe zone" so Plasma ignores collisions while inside the melee arc,
-  // preventing perceived interference between the saw and freshly fired Plasma near the player.
-  const FRIENDLY_SAFE_INCLUDE_SAW = true;
-  let sawActive = false; let sawReach = 0;
-      for (let ii = 0; ii < this.bullets.length; ii++) {
-        const bb = this.bullets[ii];
-        if (bb.active && (bb as any).isMeleeSweep && bb.weaponType === WeaponType.SCRAP_SAW) { sawActive = true; break; }
-      }
-  if (FRIENDLY_SAFE_INCLUDE_SAW && sawActive) {
-        const sawSpec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
-        // Use configured range as proxy for blade reach
-        sawReach = (sawSpec?.range ?? 120) + 12; // tighter margin
-        const r2 = sawReach * sawReach; if (r2 > friendlySafeR2) friendlySafeR2 = r2;
       }
     }
   } catch { /* non-fatal */ }
@@ -631,7 +592,7 @@ export class BulletManager {
               if (trig) {
                 // Mirror Scrap-Saw explosion behavior: big blast centered on player + heal
                 const pl: any = this.player;
-                const reach2 = ((WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120);
+                const reach2 = 120; // SCRAP_SAW range was 140, using fallback value
                 const radius2 = Math.max(220, Math.round(reach2 * 1.6));
                 const gdm = (p.getGlobalDamageMultiplier?.() ?? (p.globalDamageMultiplier ?? 1));
                 const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
@@ -674,7 +635,7 @@ export class BulletManager {
                     const trig2 = pAny.addScrapHitFromEnemy ? pAny.addScrapHitFromEnemy('boss') : (pAny.addScrapHits ? pAny.addScrapHits(1) : false);
                   if (trig2) {
                     const pl2: any = this.player;
-                    const reach2 = ((WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120);
+                    const reach2 = 120; // SCRAP_SAW range was 140, using fallback value
                     const radius2 = Math.max(220, Math.round(reach2 * 1.6));
                     const gdm2 = (pAny.getGlobalDamageMultiplier?.() ?? (pAny.globalDamageMultiplier ?? 1));
                     const dmgRef2 = Math.round((b.damage || 20) * 1.25 * (gdm2 || 1));
@@ -689,194 +650,6 @@ export class BulletManager {
         } catch { /* ignore */ }
         activeBullets.push(b);
         continue;
-      }
-
-  // Melee sweep (Scrap-Saw): ring-arc hitbox at blade distance + tether contact (half damage)
-  if ((b as any).isMeleeSweep && b.weaponType === WeaponType.SCRAP_SAW) {
-  // Safety: make sure sweep bullets can never be considered orbits this frame
-  b.isOrbiting = false; (b as any).orbitKind = undefined;
-  // Lock visual identity to SAW for the whole sweep lifetime
-  (b as any).visualLock = 'SAW';
-  const pl = this.player;
-  const start = (b as any).sweepStart || performance.now();
-  // Slightly slower and smoother sweep: apply a modest slowdown and easing
-  const baseDur = (b as any).sweepDurationMs || 200;
-  const dur = Math.max(120, Math.floor(baseDur * 1.15)); // +15% duration for smoother motion
-  const tRaw = Math.min(1, (performance.now() - start) / dur);
-  // Ease-in-out (sine) for smoother arc
-  const t = 0.5 - 0.5 * Math.cos(Math.PI * tRaw);
-        const arcRad = ((b as any).arcDegrees || 140) * Math.PI / 180;
-        // Sweep from -arc/2 to +arc/2 relative to facing
-        const baseAng = (b as any).baseAngle != null ? (b as any).baseAngle : Math.atan2(pl.vy || 0.0001, pl.vx || 1);
-        const dir = (b as any).sweepDir || 1; // 1 or -1 alternating
-        const curOffset = (t * arcRad - arcRad/2) * dir;
-  const centerAng = baseAng + curOffset;
-  (b as any).displayAngle = centerAng; // for sprite orientation
-        // Position blade tip at reach distance; use as visual center, collision uses sector test
-        const reach = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-        const bladeThickness = (b as any).thickness || Math.max(18, Math.min(36, reach * 0.22)); // radial thickness around blade ring
-        const angleBandScale = 0.5; // widen from 0.35 -> 0.5 for better feel
-        b.x = pl.x + Math.cos(centerAng) * reach;
-        b.y = pl.y + Math.sin(centerAng) * reach;
-        // Always enforce sawblade visual during sweep to avoid halo visual bleed
-        try {
-          const sawSpec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
-          const fallback: any = (sawSpec?.projectileVisual || {});
-          const size = (fallback.size ?? b.radius ?? 16);
-          b.projectileVisual = { ...fallback, size };
-        } catch { /* ignore */ }
-        // Collision: query nearby and sector test
-        const potential = this.enemySpatialGrid.query(pl.x, pl.y, reach + 40);
-  const nowT = performance.now();
-  // One-hit-per-enemy per sweep: shared set for blade+tether
-  if (!(b as any)._hitOnce) (b as any)._hitOnce = Object.create(null);
-  // Feature flag: disable saw tether collisions to avoid interfering with friendly projectiles (plasma/halo)
-  const SAW_TETHER_ENABLED = false;
-  // Ensure contact cooldown map exists (used for boss continuous contact)
-  if (!(b as any).contactCooldownMap) (b as any).contactCooldownMap = Object.create(null);
-        const halfArc = arcRad/2;
-        for (let i2=0;i2<potential.length;i2++){
-          const e = potential[i2]; if (!e.active || e.hp<=0) continue;
-          const dx = e.x - pl.x; const dy = e.y - pl.y;
-          const dist = Math.hypot(dx, dy);
-          if (dist > reach + (e.radius||16) + bladeThickness) continue;
-          let ang = Math.atan2(dy, dx) - baseAng; // relative to facing
-          // wrap to [-PI, PI]
-          ang = (ang + Math.PI) % (Math.PI*2) - Math.PI;
-          const withinAngle = Math.abs(ang - curOffset) <= halfArc * angleBandScale;
-          const withinRing = Math.abs(dist - reach) <= (bladeThickness + (e.radius||16));
-          // Resolve a stable enemy id for this sweep
-          let eid = (e as any).id || (e as any)._gid;
-          if (!eid) {
-            if (!(e as any)._scrapId) {
-              const seqProp = '_scrapSeq';
-              if ((this as any)[seqProp] == null) (this as any)[seqProp] = 1;
-              (e as any)._scrapId = 'sc' + ((this as any)[seqProp]++);
-            }
-            eid = (e as any)._scrapId;
-          }
-          // Skip if already hit by this sweep (blade or tether)
-          if ((b as any)._hitOnce[eid]) continue;
-          // Primary blade contact: ring-arc at blade distance
-          if (withinAngle && withinRing) {
-            const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-            const dmg = (b.damage||32) * (isCrit ? critMult : 1);
-            this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
-            // Mark as hit for this sweep
-            (b as any)._hitOnce[eid] = 1;
-            // Increment scrap meter per enemy hit; one scrap per enemy per round
-            const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(eid) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
-            if (triggered) {
-              // Reworked Scrap ability: big explosion around player and heal 5 HP
-              const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-              const radius2 = Math.max(220, Math.round(reach2 * 1.6));
-              // Scale explosion damage off current blade damage and player's global damage multiplier
-              const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
-              const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
-              try {
-                window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } }));
-              } catch {}
-              // Heal player by 5 HP (clamped to max)
-              (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
-            }
-          }
-          // Tether contact: disabled (retained behind SAW_TETHER_ENABLED for quick toggle)
-          if (SAW_TETHER_ENABLED) {
-            // Compute shortest distance from enemy center to segment (pl -> blade)
-            const ex = e.x, ey = e.y;
-            const x1 = pl.x, y1 = pl.y, x2 = b.x, y2 = b.y;
-            const vx = x2 - x1, vy = y2 - y1;
-            const segLen2 = vx*vx + vy*vy || 1;
-            const tSeg = Math.max(0, Math.min(1, ((ex - x1)*vx + (ey - y1)*vy) / segLen2));
-            const cx = x1 + vx * tSeg, cy = y1 + vy * tSeg;
-            const dSeg = Math.hypot(ex - cx, ey - cy);
-            const tetherWidth = 10; // collision thickness for tether line
-            if (dSeg <= tetherWidth + (e.radius||16)) {
-              // Skip if already hit by this sweep
-              if ((b as any)._hitOnce[eid]) continue;
-              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-              // 65% damage on tether contact
-              const base = (b.damage||32) * 0.65;
-              const dmg = base * (isCrit ? critMult : 1);
-              this.enemyManager.takeDamage(e, dmg, isCrit, false, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
-              (b as any)._hitOnce[eid] = 1; // mark as hit for this sweep
-              const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(eid) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
-              if (triggered) {
-                const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-                const radius2 = Math.max(220, Math.round(reach2 * 1.6));
-                const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
-                const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
-                try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
-                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
-              }
-            }
-          }
-        }
-        // Boss parity: allow Scrap-Saw to hit boss via blade arc and tether, once per sweep
-        try {
-          const bossMgr: any = (window as any).__bossManager;
-          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
-          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
-            const dxB = boss.x - pl.x; const dyB = boss.y - pl.y;
-            const distB = Math.hypot(dxB, dyB);
-            let angB = Math.atan2(dyB, dxB) - baseAng; angB = (angB + Math.PI) % (Math.PI*2) - Math.PI;
-            const withinAngleB = Math.abs(angB - curOffset) <= halfArc * angleBandScale;
-            const withinRingB = Math.abs(distB - reach) <= (bladeThickness + (boss.radius||160));
-            const bossKey = 'boss';
-            const nextOk = (b as any).contactCooldownMap[bossKey] || 0;
-            const bossCooldownMs = 120; // slightly faster multi-tick vs boss during a sweep
-            if (withinAngleB && withinRingB && nowT >= nextOk) {
-              const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-              const dmg = (b.damage||32) * (isCrit ? critMult : 1);
-              if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
-              (b as any).contactCooldownMap[bossKey] = nowT + bossCooldownMs;
-              const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(bossKey) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
-              if (triggered) {
-                const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-                const radius2 = Math.max(220, Math.round(reach2 * 1.6));
-                const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
-                const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
-                try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
-                (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
-              }
-            }
-            // Tether vs boss (half damage) – disabled via SAW_TETHER_ENABLED
-            if (SAW_TETHER_ENABLED) {
-              const x1 = pl.x, y1 = pl.y, x2 = b.x, y2 = b.y;
-              const vx = x2 - x1, vy = y2 - y1; const segLen2 = vx*vx + vy*vy || 1;
-              const tSeg = Math.max(0, Math.min(1, ((boss.x - x1)*vx + (boss.y - y1)*vy) / segLen2));
-              const cx = x1 + vx * tSeg, cy = y1 + vy * tSeg;
-              const dSeg = Math.hypot(boss.x - cx, boss.y - cy);
-              const tetherWidth = 10;
-              const nextOk2 = (b as any).contactCooldownMap[bossKey] || 0;
-              const bossCooldownMs2 = 120;
-              if (dSeg <= tetherWidth + (boss.radius||160) && nowT >= nextOk2) {
-                const level = (b as any).level || 1; const critMult = (this.player as any).critMultiplier || 2.0; const isCrit = Math.random() < (((this.player as any).critBonus||0)+0.08);
-                // Boss tether damage follows same 65% scaling
-                const base = (b.damage||32) * 0.65; const dmg = base * (isCrit ? critMult : 1);
-                if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_SAW, pl.x, pl.y, level);
-                (b as any).contactCooldownMap[bossKey] = nowT + bossCooldownMs2;
-                const triggered = (this.player as any).addScrapHitFromEnemy ? (this.player as any).addScrapHitFromEnemy(bossKey) : ((this.player as any).addScrapHits ? (this.player as any).addScrapHits(1) : false);
-                if (triggered) {
-                  const reach2 = (b as any).reach || (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW]?.range || 120;
-                  const radius2 = Math.max(220, Math.round(reach2 * 1.6));
-                  const gdm = (this.player as any).getGlobalDamageMultiplier?.() ?? ((this.player as any).globalDamageMultiplier ?? 1);
-                  const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
-                  try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
-                  (this.player as any).hp = Math.min((this.player as any).hp + 5, (this.player as any).maxHp || (this.player as any).hp);
-                }
-              }
-            }
-          }
-        } catch { /* ignore boss checks */ }
-        // End sweep
-        if (t >= 1) {
-          // End sweep; ensure no orbit flags remain before pooling to avoid cross-contamination
-          (b as any).isMeleeSweep = false; b.isOrbiting = false; (b as any).orbitKind = undefined; b.orbitIndex = undefined; b.orbitCount = undefined;
-          // End sweep; no extra shrapnel burst on completion in rework
-          b.active = false; this.bulletPool.push(b);
-        }
-        activeBullets.push(b); continue;
       }
 
   // Store previous position for swept-sphere collision
@@ -1940,12 +1713,7 @@ export class BulletManager {
       let visual: any = b.projectileVisual ? { ...(b.projectileVisual as any) } : { type: 'bullet', color: '#0ff', size: b.radius, glowColor: '#0ff', glowRadius: 8 };
       // Enforce visual identity locks first
       const vLock = (b as any).visualLock;
-      if (vLock === 'SAW' || (b.weaponType === WeaponType.SCRAP_SAW && (b as any).isMeleeSweep)) {
-        const sawSpec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
-        const fallback = (sawSpec?.projectileVisual || {}) as any;
-        const forcedSize = Math.max(fallback.size ?? 0, visual?.size ?? 0, b.radius ?? 0);
-        visual = { ...fallback, type: 'bullet', size: forcedSize || 16 };
-      } else if (vLock === 'GRINDER' || (b.weaponType === WeaponType.INDUSTRIAL_GRINDER && (b as any).isOrbiting)) {
+      if (vLock === 'GRINDER' || (b.weaponType === WeaponType.INDUSTRIAL_GRINDER && (b as any).isOrbiting)) {
         // Ensure grinder uses its sprite if available
         const grSpec: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];
         const fallback = (grSpec?.projectileVisual || {}) as any;
@@ -1959,8 +1727,8 @@ export class BulletManager {
         visual.glowRadius = 55;
       }
 
-      // Visual tether for Scavenger sawblade and evolved grinder: draw a glowing line from player to blade
-      if ((b.weaponType === WeaponType.SCRAP_SAW && (b as any).isMeleeSweep) || (b.weaponType === WeaponType.INDUSTRIAL_GRINDER && (b as any).isOrbiting)) {
+      // Visual tether for evolved grinder: draw a glowing line from player to blade
+      if (b.weaponType === WeaponType.INDUSTRIAL_GRINDER && (b as any).isOrbiting) {
         const pl = this.player;
         // Ensure player exists and keep within view bounds to avoid offscreen overdraw
         if (pl && b.x >= minX && b.x <= maxX && b.y >= minY && b.y <= maxY) {
@@ -2842,30 +2610,6 @@ export class BulletManager {
       // Slightly increase collision radius to help fast spear connect
       b.radius = Math.max(b.radius || 6, (vis.thickness || 4) * 0.75);
     }
-    // Melee: Scrap-Saw sweep spawns a transient sweep bullet bound to player
-  if (weapon === WeaponType.SCRAP_SAW) {
-      const spec: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
-      const scaled = spec?.getLevelStats ? spec.getLevelStats(level) : {};
-      (b as any).isMeleeSweep = true;
-      (b as any).sweepStart = performance.now();
-      (b as any).sweepDurationMs = scaled.sweepDurationMs || 200;
-  // Lock visual identity to prevent any halo/grinder visuals from attaching to this pooled object during its lifetime
-  (b as any).visualLock = 'SAW';
-  // Reset per-swing contact cooldowns so each sweep can hit a target at most once
-  b.contactCooldownMap = Object.create(null);
-  (b as any).tetherCooldownMap = Object.create(null);
-  // Reset per-sweep hit memo to avoid carrying hits from previous pooled bullets
-  (b as any)._hitOnce = Object.create(null);
-  (b as any).arcDegrees = scaled.arcDegrees || 140;
-  // Apply level-scaled reach/thickness when present
-  (b as any).reach = (scaled as any).reachPx || spec.range || 120;
-  (b as any).thickness = (scaled as any).thicknessPx || undefined;
-      (b as any).baseAngle = Math.atan2(targetY - y, targetX - x);
-      (b as any).level = level;
-      (b as any).sweepDir = (((this as any)._lastScrapDir = -(((this as any)._lastScrapDir)||-1))) as number; // alternate -1/1
-      // At end of sweep, we may spawn shrapnel burst elsewhere (handled in Player cooldown or separate hook). Keep bullet minimal.
-    }
-
     // Evolution: Industrial Grinder – spawn as orbiting bullet with finite duration
     if (weapon === WeaponType.INDUSTRIAL_GRINDER) {
       const spec: any = (WEAPON_SPECS as any)[WeaponType.INDUSTRIAL_GRINDER];

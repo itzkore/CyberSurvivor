@@ -35,7 +35,8 @@ export interface ProjectileVisual {
    */
   glowRadius?: number;
   /**
-   * Trail color for the projectile.
+   * Trai    isClassWeapon: true,
+    knockback: 60,olor for the projectile.
    */
   trailColor?: string;
   /**
@@ -461,51 +462,6 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       return { cooldown: cd, damage, speed: speedT[idx], spread: spreadT[idx] };
     }
   },
-  [WeaponType.BEAM]: {
-    id: WeaponType.BEAM,
-    name: 'Beam',
-  disabled: true,
-  description: 'Sustained lance that carves through lines. Short uptime, huge authority.',
-  icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'),
-    cooldown: 50,
-    salvo: 1,
-    spread: 0,
-    projectile: 'bullet_cyan',
-    speed: 17.5,
-    range: 700,
-  maxLevel: 7,
-    damage: 30, // Base damage for Beam
-    projectileVisual: {
-      type: 'beam',
-      color: '#8000FF',
-      thickness: 16,
-      length: 80,
-      glowColor: '#FF00FF',
-      glowRadius: 32,
-      trailColor: '#FFD700',
-      trailLength: 30
-    },
-    traits: ['Boss Beam', 'Epic Glow', 'Animated Core'],
-    usageTips: [
-      'Sweep across the densest packs to maximize ticks.',
-      'Don’t overtrack small targets—let them walk into the beam.',
-      'Pair with slows or pulls for longer contact.'
-    ],
-    isClassWeapon: false,
-  knockback: 0.5, // Beam: near-zero knockback to avoid sliding
-    getLevelStats(level: number){
-      const idx = Math.min(Math.max(level,1),7)-1;
-      // Target sustained DPS curve (single-target contact): 60,90,130,180,240,300,360
-      const dpsTargets = [60,90,130,180,240,300,360];
-      const cooldowns  = [50,48,46,44,42,40,38];
-      const thickness  = [16,16,17,17,18,18,19];
-      const lengths    = [80,82,84,86,88,90,92];
-      const cd = cooldowns[idx];
-      const rawDamage = dpsTargets[idx] * cd / 60; // per-shot damage (beam tick when fired)
-      const damage = Math.max(1, Math.round(rawDamage));
-  return { cooldown: cd, damage, thickness: thickness[idx], length: lengths[idx] };
-    }
-  },
   [WeaponType.RICOCHET]: {
     id: WeaponType.RICOCHET,
     name: 'Ricochet',
@@ -846,54 +802,6 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     }
   }
   ,
-  /** Scavenger class melee: arc sweep with scrap stacks + shrapnel burst */
-  [WeaponType.SCRAP_SAW]: {
-    id: WeaponType.SCRAP_SAW,
-    name: 'Scrap-Saw',
-  icon: AssetLoader.normalizePath('/assets/projectiles/bullet_sawblade.png'),
-  description: 'Arc sweep along a ring‑distance blade. Builds scrap stacks; at threshold, triggers a large blast around the user and heals +5 HP. Tether line deals 50% damage.',
-  // Slower cadence: larger base cooldown (ms)
-  cooldownMs: 930,
-  // Fallback frames value (unused when cooldownMs is present)
-  cooldown: 56,
-    salvo: 1,
-    spread: 0,
-    projectile: 'bullet_cyan',
-    speed: 0,
-  // Slightly increased reach for sweep contact radius
-  range: 140, // used as arc reach in px
-    maxLevel: 7,
-    damage: 32,
-  // Use manifest key; BulletManager resolves to actual path via AssetLoader
-  projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_sawblade.png'), size: 16, glowColor: '#FFD770', glowRadius: 16, rotationOffset: 0 },
-    traits: ['Melee','Arc Sweep','Scrap Stacks','Scrap Explosion','Self‑Heal','Tether','Armor Shred','High Knockback'],
-    usageTips: [
-      'Connect with the ring at blade distance for full damage; the tether line also hurts (50%).',
-      'Hit multiple enemies to build scrap fast—on trigger, you\'ll blast and heal +5 HP.',
-      'Sweep slowly; timing the arc into clumps gives better meter value than spamming.'
-    ],
-  isClassWeapon: true,
-  disabled: true,
-    knockback: 60,
-    evolution: { evolvedWeaponType: WeaponType.INDUSTRIAL_GRINDER, requiredPassive: 'Magnet' },
-    getLevelStats(level: number){
-      const idx = Math.min(Math.max(level,1),7)-1;
-  // Buffed base damage across levels (~+20%)
-  const dmg = [38,55,77,106,142,180,225][idx];
-  // Slightly faster cadence (~-10% cooldown)
-  const cdMs  = [840,810,780,750,720,690,660][idx];
-      // Arc grows by level and reaches full 360° at max level
-      const arc = [140,180,220,260,300,330,360][idx];
-      const dur = [280,300,320,340,360,380,420][idx];
-      const knock= [60,64,68,72,76,80,84][idx];
-      const shards=[6,6,7,8,8,9,10][idx];
-      // Reach (ring radius from the player) scales modestly with level for bigger coverage
-      const reachPx = [140,150,160,170,180,190,200][idx];
-      // Blade thickness also grows slightly so ring-arc feels meatier late
-      const thicknessPx = [22,24,26,28,30,32,36][idx];
-      return { damage: dmg, cooldownMs: cdMs, arcDegrees: arc, sweepDurationMs: dur, knockback: knock, shrapnelCount: shards, reachPx, thicknessPx } as any;
-    }
-  },
   /** New Scavenger weapon: Scrap Lash — returning boomerang blade that pierces and applies armor shred briefly. */
   [WeaponType.SCRAP_LASH]: {
     id: WeaponType.SCRAP_LASH,
@@ -942,13 +850,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     traits: ['Melee','Sustained Orbit','Strong Knockback'],
     isClassWeapon: true,
     knockback: 95,
-    // Single-level evolve: 2× DPS of Scrap-Saw level 7
+    // Single-level evolve: 2× DPS of base weapon level 7 (hardcoded values)
     getLevelStats(level:number){
-      const base = (WEAPON_SPECS as any)[WeaponType.SCRAP_SAW];
-      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 225, cooldownMs: 660 };
-      const baseCdMs = (typeof s.cooldownMs === 'number') ? s.cooldownMs : (typeof s.cooldown === 'number' ? Math.round(s.cooldown * (1000/60)) : 900);
-      const baseDpsL7 = (s.damage * 1000) / (baseCdMs || 1);
-      const targetDps = baseDpsL7 * 2;
+      // Base weapon level 7 stats: damage 225, cooldownMs 660
+      const baseDpsL7 = (225 * 1000) / 660; // ~340.9 DPS
+      const targetDps = baseDpsL7 * 2; // ~681.8 DPS
       const cooldown = 160; // frames per activation
       const cooldownMs = Math.round(cooldown * (1000/60));
       const damage = Math.max(1, Math.round(targetDps * cooldownMs / 1000));

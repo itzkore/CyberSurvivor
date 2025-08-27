@@ -61,6 +61,7 @@ export class EnemyManager {
   private pressureBaseline: number = 100; // grows over time
   private adaptiveGemBonus: number = 0; // multiplicative bonus for higher tier chance
   private bulletSpatialGrid: SpatialGrid<Bullet>; // Spatial grid for bullets
+  private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid for enemies (optimization for zone queries)
   private spawnBudgetCarry: number = 0; // carry fractional spawn budget between ticks so early game spawns occur
   private enemySpeedScale: number = 0.55; // further reduced global speed scaler to keep mobs slower overall
   // Cap enemies' effective chase speed to a ratio of the player's current speed to avoid runaway scaling
@@ -158,6 +159,7 @@ export class EnemyManager {
   constructor(player: Player, bulletSpatialGrid: SpatialGrid<Bullet>, particleManager?: ParticleManager, assetLoader?: AssetLoader, difficulty: number = 1) {
     this.player = player;
     this.bulletSpatialGrid = bulletSpatialGrid; // Assign spatial grid
+    this.enemySpatialGrid = new SpatialGrid<Enemy>(150); // Cell size 150 for enemy spatial queries
     this.particleManager = particleManager || null;
     this.assetLoader = assetLoader || null;
     this.preallocateEnemies(difficulty);
@@ -838,13 +840,9 @@ export class EnemyManager {
   // Do not apply knockback to Sandbox dummy targets
   if (spec && !(enemy as any)._isDummy) {
         // Choose knockback origin per weapon type
-        const isBeam = sourceWeaponType === WeaponType.BEAM;
         const isBioTick = sourceWeaponType === WeaponType.BIO_TOXIN; // DoT ticks only; direct impact is zeroed elsewhere
         let sx: number; let sy: number;
-        if (isBeam) {
-          // Continuous beams originate at the player for stable, radial push
-          sx = this.player.x; sy = this.player.y;
-        } else if (typeof sourceX === 'number' && typeof sourceY === 'number') {
+        if (typeof sourceX === 'number' && typeof sourceY === 'number') {
           // Use precise impact origin when available (projectile or melee contact point)
           sx = sourceX; sy = sourceY;
         } else {
@@ -856,13 +854,10 @@ export class EnemyManager {
         if (isBioTick) {
           // Bio DoT: force a tiny knockback, ignore min clamp and level scaling
           perFrame = this.knockbackBioTickPerFrame;
-        } else if (!isBeam) {
+        } else {
           // Preserve legacy minimum and level scaling for impulse-based weapons
           if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
           if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25; // simple linear scaling
-        } else {
-          // Continuous beams: honor exact spec.knockback (can be near-zero) and do NOT scale by level
-          if (perFrame < 0) perFrame = 0;
         }
         const baseForcePerSec = perFrame * 60; // convert to px/sec
         // Compute direction from chosen source point to enemy (push enemy away from source)
@@ -876,7 +871,7 @@ export class EnemyManager {
         // Mass attenuation (bigger radius -> more mass -> less acceleration)
   const massScale = 24 / Math.max(8, enemy.radius);
   // Strongly dampen beams to avoid runaway stacking; apply extra damping for Bio ticks
-  const beamDampen = isBeam ? 0.12 : (isBioTick ? 0.08 : 0.3);
+  const beamDampen = isBioTick ? 0.08 : 0.3;
         let impulse = baseForcePerSec * massScale * beamDampen;
         // Radial-only stacking: project any existing knockback onto radial axis, discard sideways component
         let existingRadial = 0;
@@ -919,11 +914,6 @@ export class EnemyManager {
     // Side-effects based on source weapon (limited for boss to avoid runaway)
   if (sourceWeaponType !== undefined) {
       bAny._lastHitByWeapon = sourceWeaponType;
-  // Apply short shred on Scrap-Saw and Scrap Lash
-  if ((sourceWeaponType === WeaponType.SCRAP_SAW || sourceWeaponType === WeaponType.SCRAP_LASH) && amount > 0) {
-        const now = performance.now();
-        bAny._armorShredExpire = now + 600;
-      }
       // Apply burn on Laser: cap stacks to 3, tick via boss burn ticker
       if (sourceWeaponType === WeaponType.LASER && amount > 0) {
         const perTick = amount * 0.10;
@@ -942,28 +932,24 @@ export class EnemyManager {
       // --- Boss knockback parity (minimal on Bio poison ticks) ---
       const spec = WEAPON_SPECS[sourceWeaponType];
       if (spec) {
-        const isBeam = sourceWeaponType === WeaponType.BEAM;
         const isBioTick = sourceWeaponType === WeaponType.BIO_TOXIN;
         // choose origin
         let sx: number; let sy: number;
-        if (isBeam) { sx = this.player.x; sy = this.player.y; }
-        else if (typeof sourceX === 'number' && typeof sourceY === 'number') { sx = sourceX; sy = sourceY; }
+        if (typeof sourceX === 'number' && typeof sourceY === 'number') { sx = sourceX; sy = sourceY; }
         else { sx = this.player.x; sy = this.player.y; }
         // per-frame knockback
         let perFrame = spec.knockback ?? this.knockbackMinPerFrame;
         if (isBioTick) {
           perFrame = this.knockbackBioTickPerFrame;
-        } else if (!isBeam) {
+        } else {
           if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
           if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25;
-        } else {
-          if (perFrame < 0) perFrame = 0;
         }
         const baseForcePerSec = perFrame * 60;
         let dx = boss.x - sx, dy = boss.y - sy; let dist = Math.hypot(dx, dy); if (dist < 0.0001){ dx=1; dy=0; dist=1; }
         const nx = dx/dist, ny = dy/dist;
         const massScale = 24 / Math.max(12, (boss.radius || 48));
-        const dampen = isBeam ? 0.12 : (isBioTick ? 0.08 : 0.3);
+        const dampen = isBioTick ? 0.08 : 0.3;
         let impulse = baseForcePerSec * massScale * dampen;
         let existingRadial = 0;
         if (bAny.knockbackTimer && bAny.knockbackTimer > 0 && (bAny.knockbackVx || bAny.knockbackVy)) {
@@ -2062,6 +2048,12 @@ export class EnemyManager {
   public update(deltaTime: number, gameTime: number = 0, bullets: Bullet[] = []) {
   this.lodToggle = !this.lodToggle;
   const nowFrame = performance.now(); // cache once per frame
+  
+  // Clear and rebuild enemy spatial grid for optimized zone queries
+  this.enemySpatialGrid.clear();
+  for (let i = 0; i < this.activeEnemies.length; i++) {
+    this.enemySpatialGrid.insert(this.activeEnemies[i]);
+  }
   // --- Adaptive frame time tracking ---
   // Use a fast EMA to smooth deltaTime (weight 0.1 new value)
   this.avgFrameMs = this.avgFrameMs * 0.9 + deltaTime * 0.1;
@@ -2093,22 +2085,31 @@ export class EnemyManager {
         const cooldownReady = nowFrame >= this.hackerAutoCooldownUntil;
         const anyActive = this.hasActiveHackerZone();
         if (cooldownReady && !anyActive) {
-          // Choose a target: nearest active enemy; fallback to a point ahead of player; clamp to 600px
+          // OPTIMIZATION: Use activeEnemies list instead of all enemies, and limit search distance
           let tx = this.player.x, ty = this.player.y;
           let bestD2 = Number.POSITIVE_INFINITY;
-          for (let i = 0; i < this.enemies.length; i++) {
-            const e = this.enemies[i];
-            if (!e.active || e.hp <= 0) continue;
-            const dx = e.x - this.player.x; const dy = e.y - this.player.y;
-            const d2 = dx*dx + dy*dy;
-            if (d2 < bestD2) { bestD2 = d2; tx = e.x; ty = e.y; }
-          }
-          // Enforce 600px max cast distance; only cast if a target exists within range
           const maxRange = 600;
-          if (bestD2 <= maxRange * maxRange) {
-            // Spawn exactly one zone; lifetime 2s (existing behavior)
+          const maxRangeSq = maxRange * maxRange;
+
+          // Search through active enemies only (much smaller list than all enemies)
+          for (let i = 0; i < this.activeEnemies.length; i++) {
+            const e = this.activeEnemies[i];
+            if (!e.active || e.hp <= 0) continue;
+            const dx = e.x - this.player.x;
+            const dy = e.y - this.player.y;
+            const d2 = dx*dx + dy*dy;
+            // Early exit if enemy is too far
+            if (d2 > maxRangeSq) continue;
+            if (d2 < bestD2) {
+              bestD2 = d2;
+              tx = e.x;
+              ty = e.y;
+            }
+          }
+
+          // Only spawn zone if we found a valid target within range
+          if (bestD2 <= maxRangeSq) {
             this.spawnHackerZone(tx, ty, 120, 2000);
-            // Set next eligible time 1.5s later; next will only trigger once current expires
             this.hackerAutoCooldownUntil = nowFrame + 1500;
           }
         }
@@ -2334,15 +2335,6 @@ export class EnemyManager {
           // Removed on-kill explosion effect for Mech Mortar (Titan Mech)
           this.killCount++;
         }
-  // Scavenger scrap stacks: increment when kill happened and last hit was Scrap-Saw or Scrap Lash
-  if (enemy._lastHitByWeapon === WeaponType.SCRAP_SAW || enemy._lastHitByWeapon === WeaponType.SCRAP_LASH) {
-          const pAny: any = this.player as any;
-          pAny._scrapStacks = (pAny._scrapStacks || 0) + 1;
-          // Cap at 3 stacks
-          if (pAny._scrapStacks > 3) pAny._scrapStacks = 3;
-          // Tiny UI ping (optional custom event)
-          window.dispatchEvent(new CustomEvent('scrapStacks', { detail: { stacks: pAny._scrapStacks } }));
-        }
         // Passive: AOE On Kill
         const playerAny: any = this.player as any;
         if (playerAny.hasAoeOnKill && !isDummy) {
@@ -2387,25 +2379,25 @@ export class EnemyManager {
         if (nowHz - z.created > z.lifeMs) continue;
   const rEff = z.radius; // enemy radius will be added per-enemy
         const stamp = z.stamp;
-        if (this.activeEnemies.length) {
-          for (let i = 0; i < this.activeEnemies.length; i++) {
-            const e = this.activeEnemies[i];
-            if (!e.active || e.hp <= 0) continue;
-            const anyE: any = e as any;
-            // Skip if this enemy already processed for this zone
-            if (anyE._lastHackerStamp === stamp) continue;
-            const dx = e.x - z.x; const dy = e.y - z.y;
-            // Quick circle-circle with sum radii: (r+re)^2
-            const rr = rEff + (e.radius || 0);
-            if (dx*dx + dy*dy <= rr * rr) {
-              anyE._lastHackerStamp = stamp;
-              // Apply paralysis and schedule DoT
-              anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowHz + 1500);
-              anyE._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
-              anyE._rgbGlitchUntil = nowHz + 260;
-              anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 1) % 7;
-              (e as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
-            }
+        // OPTIMIZATION: Use spatial grid to query only nearby enemies instead of iterating all activeEnemies
+        const nearbyEnemies = this.enemySpatialGrid.query(z.x, z.y, rEff + 50); // +50 for safety margin
+        for (let i = 0; i < nearbyEnemies.length; i++) {
+          const e = nearbyEnemies[i];
+          if (!e.active || e.hp <= 0) continue;
+          const anyE: any = e as any;
+          // Skip if this enemy already processed for this zone
+          if (anyE._lastHackerStamp === stamp) continue;
+          const dx = e.x - z.x; const dy = e.y - z.y;
+          // Quick circle-circle with sum radii: (r+re)^2
+          const rr = rEff + (e.radius || 0);
+          if (dx*dx + dy*dy <= rr * rr) {
+            anyE._lastHackerStamp = stamp;
+            // Apply paralysis and schedule DoT
+            anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowHz + 1500);
+            anyE._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
+            anyE._rgbGlitchUntil = nowHz + 260;
+            anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 1) % 7;
+            (e as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
           }
         }
         // Boss parity: zones also affect boss within radius
@@ -2801,6 +2793,7 @@ export class EnemyManager {
   eAny._poisonStacks = 0; eAny._poisonExpire = 0; eAny._poisonNextTick = 0;
   eAny._burnStacks = 0; eAny._burnExpire = 0; eAny._burnNextTick = 0; eAny._burnTickDamage = 0;
     this.enemies.push(enemy);
+    this.enemySpatialGrid.insert(enemy); // Add to spatial grid for optimized zone queries
   }
 
   /**

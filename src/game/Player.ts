@@ -151,7 +151,34 @@ export class Player {
   private invulnerableUntilMs: number = 0; // generic i-frames end time (ms since performance.now)
   /** Afterimage trail entries for Cyber Runner dash */
   private runnerAfterimages: { x: number; y: number; rotation: number; flip: boolean; ageMs: number; lifeMs: number; alpha: number; }[] = [];
+  private runnerDashActive: boolean = false;
+  private runnerDashTimeMs: number = 0;
+  private runnerDashDurationMs: number = 300; // dash duration
+  private runnerDashStartX: number = 0;
+  private runnerDashStartY: number = 0;
+  private runnerDashEndX: number = 0;
+  private runnerDashEndY: number = 0;
+  private runnerDashEmitAccum: number = 0;
   public getRunnerDash() { return { value: this.runnerDashCooldownMsMax - this.runnerDashCooldownMs, max: this.runnerDashCooldownMsMax, ready: this.runnerDashCooldownMs <= 0 }; }
+
+  // Cyber Runner: Blade Cyclone (Ctrl) — AOE spin attack with high damage, 6s cooldown
+  private bladeCycloneCooldownMsMax: number = 6000;
+  private bladeCycloneCooldownMs: number = 0;
+  private bladeCyclonePrevKey: boolean = false; // rising-edge detection for Ctrl
+  private bladeCycloneActive: boolean = false;
+  private bladeCycloneTimeMs: number = 0;
+  private bladeCycloneDurationMs: number = 400; // spin duration
+  public getBladeCyclone() { return { value: this.bladeCycloneCooldownMsMax - this.bladeCycloneCooldownMs, max: this.bladeCycloneCooldownMsMax, ready: this.bladeCycloneCooldownMs <= 0, active: this.bladeCycloneActive }; }
+  /** Accumulated sprite rotation while Blade Cyclone is active (radians) */
+  private cycloneSpinAngle: number = 0;
+  /** Rotation snapshot at the moment cyclone starts (radians) */
+  private bladeCycloneStartRotation: number = 0;
+  /** Smoothly blend back to base rotation after cyclone ends (ms remaining) */
+  private bladeCycloneSettleMs: number = 0;
+  /** Total settle duration for blending (ms) */
+  private bladeCycloneSettleTotalMs: number = 160;
+  /** Rotation at cyclone end used as blend start (radians) */
+  private bladeCycloneEndRotation: number = 0;
   public getTechGlide(): { value: number; max: number; ready: boolean; active: boolean } {
     // Value counts up toward max while on cooldown (similar to Runner dash meter)
     return { value: this.techDashCooldownMsMax - this.techDashCooldownMs, max: this.techDashCooldownMsMax, ready: this.techDashCooldownMs <= 0 && !this.techDashActive, active: this.techDashActive };
@@ -322,6 +349,10 @@ export class Player {
   const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   // Tick class ability cooldowns/buffs
   this._preUpdate(now, dt);
+    // Post-cyclone settle timer tick
+    if (this.bladeCycloneSettleMs > 0) {
+      this.bladeCycloneSettleMs = Math.max(0, this.bladeCycloneSettleMs - dt);
+    }
     // Movement (WASD/Arrows)
     let ax = 0, ay = 0;
   if (keyState['w'] || keyState['arrowup']) ay -= 1;
@@ -366,11 +397,20 @@ export class Player {
   // Cyber Runner: dash cooldown tick + input edge detect (Shift)
     if (this.characterData?.id === 'cyber_runner') {
       if (this.runnerDashCooldownMs > 0) this.runnerDashCooldownMs = Math.max(0, this.runnerDashCooldownMs - dt);
+      if (this.bladeCycloneCooldownMs > 0) this.bladeCycloneCooldownMs = Math.max(0, this.bladeCycloneCooldownMs - dt);
+
       const shiftNow = !!keyState['shift'];
       if (shiftNow && !this.runnerDashPrevKey && this.runnerDashCooldownMs <= 0) {
-        this.performRunnerDash?.();
+        (this as any).performRunnerDash?.();
       }
       this.runnerDashPrevKey = shiftNow;
+
+      // Blade Cyclone: Spacebar for AOE spin attack (edge-trigger)
+      const spaceNowRunner = !!(keyState[' '] || (keyState as any)['space'] || (keyState as any)['spacebar']);
+      if (spaceNowRunner && !this.bladeCyclonePrevKey && this.bladeCycloneCooldownMs <= 0) {
+        (this as any).performBladeCyclone?.();
+      }
+      this.bladeCyclonePrevKey = spaceNowRunner;
     }
 
     // Tech Warrior: glide dash (Shift) — slower, shorter, smoother
@@ -406,6 +446,81 @@ export class Player {
           this.techDashEmitAccum = 0;
           this.techDashCooldownMs = this.techDashCooldownMsMax;
         }
+      }
+    }
+
+    // Cyber Runner: Dash update
+    if (this.characterData?.id === 'cyber_runner' && this.runnerDashActive) {
+      this.runnerDashTimeMs += dt;
+      const t = Math.max(0, Math.min(1, this.runnerDashTimeMs / this.runnerDashDurationMs));
+
+      // easeInOutQuad
+      const ease = t < 0.5 ? (2 * t * t) : (1 - Math.pow(-2 * t + 2, 2) / 2);
+      this.x = this.runnerDashStartX + (this.runnerDashEndX - this.runnerDashStartX) * ease;
+      this.y = this.runnerDashStartY + (this.runnerDashEndY - this.runnerDashStartY) * ease;
+
+      // Emit afterimages at fixed cadence
+      this.runnerDashEmitAccum += dt;
+      const emitStep = 16; // ms
+      while (this.runnerDashEmitAccum >= emitStep) {
+        this.runnerDashEmitAccum -= emitStep;
+        const flipNow = this.lastDirX < 0;
+        const alpha = 0.4 * (1 - t) + 0.2;
+        const lifeMs = 300;
+        this.runnerAfterimages.push({ x: this.x, y: this.y, rotation: this.rotation - Math.PI/2, flip: flipNow, ageMs: 0, lifeMs, alpha });
+        if (this.runnerAfterimages.length > 64) this.runnerAfterimages.splice(0, this.runnerAfterimages.length - 64);
+      }
+
+      if (this.runnerDashTimeMs >= this.runnerDashDurationMs) {
+        this.runnerDashActive = false;
+        this.runnerDashTimeMs = 0;
+        this.runnerDashEmitAccum = 0;
+      }
+    }
+
+  // Cyber Runner: Blade Cyclone update
+  if (this.characterData?.id === 'cyber_runner' && this.bladeCycloneActive) {
+      this.bladeCycloneTimeMs += dt;
+      const t = Math.max(0, Math.min(1, this.bladeCycloneTimeMs / this.bladeCycloneDurationMs));
+  // Advance sprite spin; start fast then ease slightly (render-time only)
+  const easeInOut = (p: number) => (p < 0.5 ? 2*p*p : -1 + (4 - 2*p)*p);
+  const spinTurns = 1.75 + 1.25 * easeInOut(t); // ~1.75 -> 3.0 turns over the duration
+  const totalRadians = spinTurns * Math.PI * 2;
+  const perMs = totalRadians / Math.max(1, this.bladeCycloneDurationMs);
+  this.cycloneSpinAngle += perMs * dt;
+
+      // AOE damage every 100ms during cyclone
+      if (Math.floor(this.bladeCycloneTimeMs / 100) !== Math.floor((this.bladeCycloneTimeMs - dt) / 100)) {
+        (this as any).performBladeCycloneDamage();
+      }
+
+      // Spawn rotation particles (denser, align outer swirl to exact cyclone radius)
+      const pm = this.gameContext?.particleManager;
+      if (pm) {
+        const cycloneRadiusVisual = (this as any).getBladeCycloneTipRadius?.() ?? 240;
+        // Inner sparkle
+        if (Math.random() < 0.8) {
+          const a = Math.random() * Math.PI * 2;
+          const r = 30 + Math.random() * Math.min(100, cycloneRadiusVisual * 0.3);
+          pm.spawn(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r, 1, '#00FFFF', { sizeMin: 0.9, sizeMax: 2.0, life: 34, speedMin: 0.8, speedMax: 2.2 });
+        }
+        // Outer swirl hints
+  if (Math.random() < 0.45) {
+          const a = Math.random() * Math.PI * 2;
+          const jitter = -10 + Math.random() * 20; // +/- 10px around actual radius
+          const R = cycloneRadiusVisual + jitter;
+          pm.spawn(this.x + Math.cos(a) * R, this.y + Math.sin(a) * R, 1, 'rgba(0,255,255,0.6)', { sizeMin: 0.8, sizeMax: 1.6, life: 40, speedMin: 1.2, speedMax: 2.6 });
+        }
+      }
+
+      // End cyclone
+      if (this.bladeCycloneTimeMs >= this.bladeCycloneDurationMs) {
+        this.bladeCycloneActive = false;
+        this.bladeCycloneTimeMs = 0;
+  // Begin smooth settle back to current base rotation over a short window
+  this.bladeCycloneEndRotation = this.bladeCycloneStartRotation + this.cycloneSpinAngle;
+  this.bladeCycloneSettleMs = this.bladeCycloneSettleTotalMs;
+  this.cycloneSpinAngle = 0;
       }
     }
 
@@ -611,11 +726,9 @@ export class Player {
           if (typeof baseCdMs === 'number') { effCd = baseCdMs / rateMulWithBoost; }
           else { const effCdFrames = (baseCdFrames as number) / rateMulWithBoost; effCd = effCdFrames * FRAME_MS; }
       // Gate: only fire if target is within base range (no extra +10%).
-      // Scrap-Saw: ignore target requirement (can always sweep).
-      // For all other weapons: require a valid target — do not fire when no enemy/boss is in range.
+      // For all weapons: require a valid target — do not fire when no enemy/boss is in range.
           let canFire = true;
-          if (weaponType !== WeaponType.SCRAP_SAW && weaponType !== WeaponType.SCRAP_LASH) {
-            if (!(target && spec && typeof spec.range === 'number' && spec.range > 0)) {
+          if (!(target && spec && typeof spec.range === 'number' && spec.range > 0)) {
         canFire = !!target; // no range or no target -> require target
             }
             if (canFire && target && spec && typeof spec.range === 'number' && spec.range > 0) {
@@ -631,34 +744,9 @@ export class Player {
               const effectiveRange = spec.range * rangeMul;
               canFire = dist <= effectiveRange;
             }
-          }
           // Determine final target for this weapon.
-          // For Scrap-Saw, always sweep even if no enemy/boss is in range: use a synthetic forward aim.
           // For other weapons: fire only if a valid target is available and in range.
           let fireTarget: Enemy | null = canFire ? target : null;
-          if (weaponType === WeaponType.SCRAP_SAW || weaponType === WeaponType.SCRAP_LASH) {
-            if (!fireTarget) {
-              try {
-                const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
-                if (boss && boss.active && boss.hp > 0) {
-                  const dxB = boss.x - this.x; const dyB = boss.y - this.y;
-                  const distB = Math.hypot(dxB, dyB);
-                  if (spec && typeof spec.range === 'number' && distB <= spec.range) {
-                    fireTarget = boss as any;
-                  }
-                }
-              } catch {}
-            }
-            if (!fireTarget) {
-              // Synthesize a forward aim target using current movement direction (fallback to +X)
-              const vx = (this as any).vx || 1;
-              const vy = (this as any).vy || 0;
-              const norm = Math.hypot(vx, vy) || 1;
-              const ax = this.x + (vx / norm) * 100;
-              const ay = this.y + (vy / norm) * 100;
-              fireTarget = { x: ax, y: ay, hp: 1, active: true } as any; // minimal shape consumed by shootAt
-            }
-          }
           if (fireTarget) {
             // Neural Nomad: fire to multiple nearest enemies per attack (2 at L1 → up to 5 at L7)
             if (this.characterData?.id === 'neural_nomad' && weaponType === WeaponType.NOMAD_NEURAL) {
@@ -1163,16 +1251,6 @@ export class Player {
           return; // Skip normal projectile loop
         }
 
-        // Beam rework: single-target melting beam rendered via active-beam path
-        if (weaponType === WeaponType.BEAM) {
-          if ((spec as any)?.disabled) {
-            // Beam temporarily disabled
-            return;
-          }
-          this.handleBeamMelterFire(baseAngle, target, spec, weaponLevel);
-          return; // handled by beam path
-        }
-
   // Ghost Operative: heavyweight sniper — must be stationary; charge then instant hitscan beam with pierce
         if (weaponType === WeaponType.GHOST_SNIPER) {
           this.handleGhostSniperFire(baseAngle, target, spec, weaponLevel);
@@ -1548,148 +1626,6 @@ export class Player {
    * Beam (melter): fires a short-lived continuous beam that locks a single target and applies DPS each frame.
    * Visuals: tight white-hot core with faint amber, small impact bloom and occasional sparks.
    */
-  private handleBeamMelterFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
-    const game: any = this.gameContext; if (!game) return;
-  // Global post-kill lockout: prevent spawning a new melter until it expires
-  const now0 = performance.now();
-  const pkLock = (this as any)._beamKillLockUntil || 0;
-  if (now0 < pkLock) return;
-    // Resolve base stats and intended DPS from spec level data
-    const lvlStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
-    const baseCdFrames: number = (lvlStats && typeof (lvlStats as any).cooldown === 'number') ? (lvlStats as any).cooldown : (spec?.cooldown ?? 60);
-    const baseCdSec = baseCdFrames / 60;
-    const baseDamage: number = (lvlStats && typeof (lvlStats as any).damage === 'number') ? (lvlStats as any).damage : (spec?.damage ?? 30);
-    const thickness: number = (lvlStats && typeof (lvlStats as any).thickness === 'number') ? (lvlStats as any).thickness : 16;
-    const range: number = (spec?.range ?? 700);
-    const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-  let dps = (baseDamage / baseCdSec) * gdm; // recover intended DPS curve
-  // Slightly stronger at level 1 for feel
-  if (weaponLevel <= 1) dps *= 1.15;
-
-    // Prefer boss if active and within range
-    const bossMgr: any = (window as any).__bossManager;
-    const boss = bossMgr && typeof bossMgr.getActiveBoss === 'function' ? bossMgr.getActiveBoss() : null;
-    const hasBoss = boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0;
-    const distTo = (x1:number,y1:number,x2:number,y2:number) => Math.hypot(x2-x1, y2-y1);
-    let lockedBoss: any = null;
-    let lockedTarget: any = null;
-    const eyeX = this.x;
-    const eyeY = this.y - 8;
-    // Choose initial target only; do not change mid-beam even if another gets closer
-    if (hasBoss && distTo(eyeX, eyeY, boss.x, boss.y) <= range) {
-      lockedBoss = boss;
-    } else if (target && (target as any).active && distTo(eyeX, eyeY, target.x, target.y) <= range) {
-      lockedTarget = target;
-    } else {
-      try {
-        const enemies = game.enemyManager?.getEnemies?.() || [];
-        let best: any = null; let bestD = range + 1;
-        for (let i=0;i<enemies.length;i++) {
-          const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
-          const d = distTo(eyeX, eyeY, e.x, e.y); if (d < bestD && d <= range) { bestD = d; best = e; }
-        }
-        if (best) lockedTarget = best;
-      } catch {}
-    }
-    if (!lockedBoss && !lockedTarget) return; // nothing to melt
-
-    // Beam lifetime and tick setup — ramping needle up to 10s max intensity
-    const beamDurationMs = 10000; // allow long ramp; damage per tick scales up over time
-    const start = performance.now();
-    if (!game._activeBeams) game._activeBeams = [];
-    // If a melter beam is already active (ramping/ongoing), don't spawn a new one—preserve ramp and focus
-    {
-      const now = performance.now();
-      for (let i = 0; i < game._activeBeams.length; i++) {
-        const b = game._activeBeams[i];
-        if (b && b.type === 'melter') {
-          const alive = (now - b.start) < b.duration;
-          const notLocked = now >= (b._killLockUntil || 0);
-          if (alive && notLocked) {
-            return; // keep current melter active
-          }
-        }
-      }
-    }
-    const playerRef = this;
-    // Thin-at-origin visual that grows with ramp
-    const beamObj: any = {
-      type: 'melter',
-      x: eyeX,
-      y: eyeY,
-      angle: baseAngle,
-      range,
-      start,
-      duration: beamDurationMs,
-      lastTick: start,
-      weaponLevel,
-      thickness,
-      visLen: Math.min(range, lockedBoss ? distTo(eyeX, eyeY, lockedBoss.x, lockedBoss.y) : distTo(eyeX, eyeY, lockedTarget.x, lockedTarget.y)),
-      lockedTarget,
-      lockedBoss,
-      _lastSpark: start,
-      _killLockUntil: 0,
-      dealDamage(now:number) {
-        // Enforce post-kill cooldown lockout (2s) — note: we also end beam on kill, this is a safety guard
-        if (now < this._killLockUntil) { this.lastTick = now; return; }
-        // Update origin to player's current eye line so the beam follows movement
-        const ox = playerRef.x; const oy = playerRef.y - 8;
-        this.x = ox; this.y = oy;
-        // Choose current target and validate
-        let tx:number, ty:number, isBoss:boolean = false;
-        if (this.lockedBoss && this.lockedBoss.active && this.lockedBoss.state === 'ACTIVE' && this.lockedBoss.hp > 0) {
-          tx = this.lockedBoss.x; ty = this.lockedBoss.y; isBoss = true;
-        } else if (this.lockedTarget && this.lockedTarget.active && this.lockedTarget.hp > 0) {
-          tx = this.lockedTarget.x; ty = this.lockedTarget.y;
-        } else {
-          // End early if no target; shrink quickly
-          this.visLen = Math.max(0, this.visLen - 40);
-          return;
-        }
-        const dx = tx - ox; const dy = ty - oy;
-  const dist = Math.hypot(dx, dy);
-  const targetRadius = isBoss ? (this.lockedBoss.radius || 120) : ((this.lockedTarget.radius) || 12);
-  // Stop the beam at the target surface, never drawing through the enemy
-  const drawLen = Math.max(0, Math.min(dist - targetRadius, this.range));
-  this.visLen = drawLen;
-        this.angle = Math.atan2(dy, dx);
-  // Ramping intensity: start very low and grow to full over 10s
-  const t = Math.max(0, Math.min(1, (now - this.start) / this.duration));
-  const ramp = 0.12 + 0.88 * t; // 0.12 -> 1.0
-        // Beam gets slightly thicker as it ramps (visual only)
-        this.thickness = Math.max(6, Math.round(thickness * (0.5 + 0.5 * ramp)));
-        // Apply DPS scaled by elapsed time since last tick and ramp
-        const dtSec = Math.max(0, (now - this.lastTick) / 1000);
-        const dmg = (dps * ramp) * dtSec;
-        if (dmg > 0.0001) {
-          if (isBoss) {
-            try { game.enemyManager?.takeBossDamage?.(this.lockedBoss, dmg, false, WeaponType.BEAM, tx, ty, playerRef.activeWeapons.get(WeaponType.BEAM) || weaponLevel); } catch {}
-          } else {
-            const preHp = this.lockedTarget.hp;
-            try { game.enemyManager?.takeDamage?.(this.lockedTarget, dmg, false, false, WeaponType.BEAM, ox, oy, playerRef.activeWeapons.get(WeaponType.BEAM) || weaponLevel); } catch {}
-            if (this.lockedTarget && this.lockedTarget.hp <= 0 && preHp > 0) {
-              // On kill: immediately end this beam and impose a 2s global lockout before next melt
-              (playerRef as any)._beamKillLockUntil = now + 2000;
-              this._killLockUntil = now + 2000; // safety guard if not removed instantly
-              this.visLen = 0;
-              this.duration = 0; // mark for removal on next tick
-              return;
-            }
-          }
-        }
-        this.lastTick = now;
-        // Occasional impact spark for feedback (throttled)
-        if (game.particleManager && now - this._lastSpark > 60) {
-          this._lastSpark = now;
-          const impactX = ox + Math.cos(this.angle) * this.visLen;
-          const impactY = oy + Math.sin(this.angle) * this.visLen;
-          game.particleManager.spawn(impactX, impactY, 1, '#FFD27F', { sizeMin: 0.6, sizeMax: 1.2, life: 30, speedMin: 0.5, speedMax: 1.4 });
-        }
-      }
-    };
-    game._activeBeams.push(beamObj);
-  }
-
   /** Ghost Sniper: brief steady aim + instant hitscan beam that pierces with damage falloff. */
   private handleGhostSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
     // Prevent overlapping charges
@@ -2213,12 +2149,28 @@ export class Player {
           ctx.restore();
         }
       }
-      ctx.save();
-      ctx.translate(this.x, this.y);
+  ctx.save();
+  ctx.translate(this.x, this.y);
   // Align sprite artwork “front” with projectile aim. For our assets, use -90° so the sprite
   // points toward the shot direction (0 rad = right in math coords, sprites base-face up).
   const spriteFacingOffset = -Math.PI / 2; // adjust per-asset if needed
-  ctx.rotate(this.rotation + spriteFacingOffset);
+  // Compute the rotation we actually apply to the sprite this frame
+  let appliedRotation = this.rotation;
+  if (this.characterData?.id === 'cyber_runner') {
+    if (this.bladeCycloneActive) {
+      appliedRotation = this.bladeCycloneStartRotation + this.cycloneSpinAngle;
+    } else if (this.bladeCycloneSettleMs > 0) {
+      const t = 1 - (this.bladeCycloneSettleMs / Math.max(1, this.bladeCycloneSettleTotalMs)); // 0..1
+      // easeOutQuad
+      const ease = 1 - (1 - t) * (1 - t);
+      const start = this.bladeCycloneEndRotation;
+      const end = this.rotation; // follow current aim/base rotation
+      // Shortest angle interpolation to avoid wrap-around jerk
+      const diff = ((end - start + Math.PI) % (2 * Math.PI)) - Math.PI;
+      appliedRotation = start + diff * ease;
+    }
+  }
+  ctx.rotate(appliedRotation + spriteFacingOffset);
       // Damage flash: add white overlay pulse for first 200ms after hit
       const flashTime = (this as any)._damageFlashTime || 0;
       const since = performance.now() - flashTime;
@@ -2239,6 +2191,83 @@ export class Player {
         ctx.beginPath();
         ctx.arc(0, 0, this.size/2, 0, Math.PI*2);
         ctx.fill();
+      }
+      // Blade Cyclone visual: two tachyon-like swords orbiting while active (scaled to match hit radius)
+      if (this.characterData?.id === 'cyber_runner' && this.bladeCycloneActive) {
+  const now = performance.now();
+  // Use the same accumulated spin to keep swords synced with the sprite spin
+  const baseAngle = this.cycloneSpinAngle % (Math.PI * 2);
+        // Visual radius equals cyclone damage radius (400px * area multiplier)
+  const cycloneRadiusVisual = (this as any).getBladeCycloneTipRadius?.() ?? 240;
+  // Choose orbit (pivot) and blade length so tip reaches the exact ring: radius + bladeLen = ring
+  const bladeLen = Math.max(80, cycloneRadiusVisual * 0.5);
+  const radius = Math.max(32, cycloneRadiusVisual - bladeLen);
+        const bob = Math.sin(now / 90) * 2; // tiny bob to sell weight
+        // Simple motion trail by drawing faded swords behind
+        const trailCount = 2;
+        const trailFade = 0.45;
+        const drawSword = (ang: number, mirror: boolean) => {
+          ctx.save();
+          // Position sword around player in world space (ignore sprite rotation offset)
+          ctx.rotate(- (appliedRotation + spriteFacingOffset)); // neutralize the sprite rotation we applied
+          const px = Math.cos(ang) * radius;
+          const py = Math.sin(ang) * radius + bob;
+          ctx.translate(px, py);
+          ctx.rotate(ang + Math.PI/2);
+          if (mirror) ctx.scale(-1, 1);
+          // Sword shape: thinner, longer neon cyan blade with white core
+          const bladeW = 4.2; // slightly thinner
+          // Glow
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.shadowColor = 'rgba(0,255,255,0.65)';
+          ctx.shadowBlur = 14;
+          // Core (slightly shorter than blade for depth)
+          ctx.fillStyle = 'rgba(255,255,255,0.9)';
+          ctx.fillRect(-bladeW*0.22, -bladeLen*0.9, bladeW*0.44, bladeLen*0.8);
+          // Cyan blade
+          const grad = ctx.createLinearGradient(0, -bladeLen*0.5, 0, bladeLen*0.5);
+          grad.addColorStop(0, 'rgba(200,255,255,0.85)');
+          grad.addColorStop(1, 'rgba(0,255,255,0.55)');
+          ctx.fillStyle = grad;
+          // Blade from pivot (0) to tip (-bladeLen) so the tip lands on the ring
+          ctx.fillRect(-bladeW/2, -bladeLen, bladeW, bladeLen);
+          // Hilt
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#082b2e';
+          ctx.fillRect(-10, 2, 20, 6);
+          ctx.restore();
+        };
+        // Edge indicator ring at exact damage radius (subtle cyan glow)
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = 'rgba(0,255,255,0.35)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+  ctx.arc(0, 0, cycloneRadiusVisual, 0, Math.PI * 2);
+        ctx.stroke();
+        // Rotating arc segments to suggest motion
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = 'rgba(0,255,255,0.5)';
+        for (let i = 0; i < 3; i++) {
+          const segStart = baseAngle + i * (2 * Math.PI / 3);
+          ctx.beginPath();
+          ctx.arc(0, 0, cycloneRadiusVisual, segStart, segStart + 0.35);
+          ctx.stroke();
+        }
+        ctx.restore();
+        // Trails (sub-angles behind the current angle)
+        for (let i = trailCount; i >= 1; i--) {
+          const a = baseAngle - i * 0.25;
+          const alpha = Math.max(0, trailFade * (1 - i / (trailCount + 1)));
+          ctx.save();
+          ctx.globalAlpha *= alpha;
+          drawSword(a, false);
+          drawSword(a + Math.PI, true);
+          ctx.restore();
+        }
+        // Current swords
+        drawSword(baseAngle, false);
+        drawSword(baseAngle + Math.PI, true);
       }
       // Shield block flash: cyan ring pulse (150ms)
       const shieldTime = (this as any)._shieldBlockFlashTime || 0;
@@ -2281,6 +2310,8 @@ export interface Player {
   activateAbility?: () => void;
   performRunnerDash?: () => void;
   performTechGlide?: () => void;
+  performBladeCycloneDamage?: () => void;
+  getBladeCycloneTipRadius?: () => number;
 }
 
 Player.prototype.activateAbility = function(this: Player & any) {
@@ -2416,65 +2447,65 @@ Player.prototype.activateAbility = function(this: Player & any) {
   }
 };
 
-// Class-private helper: perform Cyber Runner dash with afterimages and i-frames
-(Player as any).prototype.performRunnerDash = function(this: Player & any) {
-  if (this.characterData?.id !== 'cyber_runner') return;
-  // Cooldown gate
-  if (this.runnerDashCooldownMs > 0) return;
-  const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-  // Dash parameters
-  // Distance scales linearly with character level: 0.5x at Lv1 up to 1.0x at Lv50 (clamped at 50+)
-  const baseDistance = 400; // current full range at cap
-  const lvl = Math.max(1, Math.round(this.level || 1));
-  const t = Math.min(1, (lvl - 1) / (50 - 1)); // 0 at Lv1, 1 at Lv50
-  const scale = 0.5 + 0.5 * t; // 0.5..1.0
-  const distance = Math.round(baseDistance * scale); // px
-  const durationMs = 280; // i-frames window
-  // Direction: REQUIRE current movement input; dash follows move direction, not aim
-  const mvMag = Math.hypot(this.vx || 0, this.vy || 0);
-  if (mvMag < 0.01) {
-    // Not moving: do not consume cooldown; provide tiny feedback tap
-    try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 60, intensity: 1 } })); } catch {}
-    return;
-  }
-  let ang = Math.atan2(this.vy, this.vx);
-  // Start position snapshot
-  const sx = this.x, sy = this.y;
-  const dx = Math.cos(ang), dy = Math.sin(ang);
-  const ex = sx + dx * distance;
-  const ey = sy + dy * distance;
-  // Spawn afterimages along the path (under main sprite)
-  const steps = 10;
-  const lifeMs = 300;
-  const flipNow = this.lastDirX < 0;
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const px = sx + dx * distance * t;
-    const py = sy + dy * distance * t;
-    // Fade more at the tail
-    const alpha = 0.5 * (1 - (i - 1) / steps) + 0.2;
-  this.runnerAfterimages.push({ x: px, y: py, rotation: ang - Math.PI/2, flip: flipNow, ageMs: 0, lifeMs, alpha });
-  }
-  if (this.runnerAfterimages.length > 64) this.runnerAfterimages.splice(0, this.runnerAfterimages.length - 64);
-  // Optional particles for dash wake
-  const pm = this.gameContext?.particleManager;
-  if (pm) {
-    const burst = 18;
-    for (let i = 0; i < burst; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = 6 + Math.random() * 12;
-      pm.spawn(sx + Math.cos(a) * r, sy + Math.sin(a) * r, 1, '#00FFFF', { sizeMin: 0.8, sizeMax: 1.6, life: 36, speedMin: 1.0, speedMax: 2.2 });
-    }
-  }
-  // Teleport to end instantly for a snappy dodge
-  this.x = ex; this.y = ey;
-  // I-frames
-  this.invulnerableUntilMs = now + durationMs;
-  // Start cooldown
-  this.runnerDashCooldownMs = this.runnerDashCooldownMsMax;
-  // Haptic: slight screen shake
-  try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 2 } })); } catch {}
+// Returns the Blade Cyclone effective radius (match sword tips visually)
+(Player as any).prototype.getBladeCycloneTipRadius = function(this: Player & any): number {
+  const areaMul = this.getGlobalAreaMultiplier?.() ?? (this.globalAreaMultiplier ?? 1);
+  // Authoritative cyclone radius (edge ring and damage), scaled by area multiplier
+  const baseR = 200; // smaller: visual/damage edge in pixels at area=1
+  return baseR * (areaMul || 1);
 };
+
+// Class-private helper: perform AOE damage tick for Blade Cyclone (single canonical definition)
+(Player as any).prototype.performBladeCycloneDamage = function(this: Player & any) {
+  if (this.characterData?.id !== 'cyber_runner') return;
+  if (!this.bladeCycloneActive) return;
+
+  const enemies = this.enemyProvider ? this.enemyProvider() : [];
+  const cycloneRadius = (this.getBladeCycloneTipRadius?.() ?? 0) || 240; // fallback ~240px
+  const lvl = Math.max(1, Math.round(this.level || 1));
+  const gdm = this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier ?? 1);
+
+  // Damage: high base with modest level scaling
+  const base = 40 + Math.floor((lvl - 1) * 1.2); // 40 @1 -> ~98 @50
+  const damage = Math.round(base * (gdm || 1));
+  // Micro knockback only, outward from hero (no pull)
+  const baseKb = 6 + Math.floor((lvl - 1) * 0.15); // gentle push
+
+  let hits = 0;
+  for (let i = 0; i < enemies.length; i++) {
+    const e = enemies[i];
+    if (!e || !e.active || e.hp <= 0) continue;
+    const dx = e.x - this.x;
+    const dy = e.y - this.y;
+    const distSq = dx*dx + dy*dy;
+    if (distSq > cycloneRadius * cycloneRadius) continue;
+
+    // Deal damage via EnemyManager for consistency
+    const enemyMgr = this.gameContext?.enemyManager;
+    if (enemyMgr && typeof enemyMgr.takeDamage === 'function') {
+      const isCrit = Math.random() < (((this as any).critBonus || 0) + 0.1);
+      enemyMgr.takeDamage(e, damage, isCrit, false, WeaponType.RUNNER_GUN, this.x, this.y, lvl);
+    }
+
+  // Outward micro knockback (safe for zero distance)
+    const d = Math.sqrt(distSq) || 1;
+    const normX = dx / d, normY = dy / d;
+  const strength = baseKb * (0.8 + 0.4 * Math.random());
+  e.x += normX * strength;
+  e.y += normY * strength;
+
+    // Hit spark
+    const pm = this.gameContext?.particleManager;
+    if (pm) pm.spawn(e.x, e.y, 1, '#00FFFF', { sizeMin: 1.0, sizeMax: 2.0, life: 26, speedMin: 1.2, speedMax: 2.2 });
+    hits++;
+  }
+
+  if (hits > 0) {
+    try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 80, intensity: Math.min(3, 1 + hits * 0.25) } })); } catch {}
+  }
+};
+
+// (Removed older duplicate performRunnerDash that teleported instantly and incorrectly hosted cyclone damage definition.)
 
 // Class-private helper: perform Tech Warrior glide dash with easing and brief i-frames
 (Player as any).prototype.performTechGlide = function(this: Player & any) {
@@ -2500,4 +2531,95 @@ Player.prototype.activateAbility = function(this: Player & any) {
   // Gentle feedback
   try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 70, intensity: 1.6 } })); } catch {}
 };
+
+// Class-private helper: activate Blade Cyclone (single consolidated definition)
+(Player as any).prototype.performBladeCyclone = function(this: Player & any) {
+  if (this.characterData?.id !== 'cyber_runner') return;
+  if (this.bladeCycloneCooldownMs > 0) return;
+
+  this.bladeCycloneActive = true;
+  this.bladeCycloneTimeMs = 0;
+  this.bladeCycloneCooldownMs = this.bladeCycloneCooldownMsMax;
+  // Anchor draw spin to current facing
+  this.bladeCycloneStartRotation = this.rotation || 0;
+  this.cycloneSpinAngle = 0;
+
+  // Brief i-frames and strong feedback
+  try { this.invulnerableUntilMs = Math.max(this.invulnerableUntilMs || 0, performance.now() + 400); } catch {}
+  try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 160, intensity: 3.5 } })); } catch {}
+
+  // Initial particle burst
+  const pm = this.gameContext?.particleManager;
+  if (pm) {
+    const burst = 14;
+    for (let i = 0; i < burst; i++) {
+      const a = (i / burst) * Math.PI * 2;
+      const r = 18 + Math.random() * 20;
+      pm.spawn(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r, 1, '#FFAA33', { sizeMin: 1.4, sizeMax: 2.8, life: 48, speedMin: 1.2, speedMax: 2.6 });
+    }
+  }
+};
+
+// Class-private helper: activate Cyber Runner dash
+(Player as any).prototype.performRunnerDash = function(this: Player & any) {
+  if (this.characterData?.id !== 'cyber_runner') return;
+
+  // Calculate dash distance based on level
+  const lvl = Math.max(1, Math.round(this.level || 1));
+  const baseDistance = 200;
+  const distance = baseDistance + Math.floor((lvl - 1) * 4); // +4px per level, 600px at Lv50
+
+  // Direction based on movement input or facing direction
+  let dirX = 0, dirY = 0;
+  if (keyState['w'] || keyState['arrowup']) dirY -= 1;
+  if (keyState['s'] || keyState['arrowdown']) dirY += 1;
+  if (keyState['a'] || keyState['arrowleft']) dirX -= 1;
+  if (keyState['d'] || keyState['arrowright']) dirX += 1;
+
+  // If no input, dash in facing direction
+  if (dirX === 0 && dirY === 0) {
+    dirX = Math.cos(this.rotation);
+    dirY = Math.sin(this.rotation);
+  } else {
+    // Normalize diagonal movement
+    const len = Math.hypot(dirX, dirY);
+    if (len > 0) {
+      dirX /= len;
+      dirY /= len;
+    }
+  }
+
+  // Set dash target position
+  const startX = this.x;
+  const startY = this.y;
+  const endX = startX + dirX * distance;
+  const endY = startY + dirY * distance;
+
+  // Start dash
+  this.runnerDashActive = true;
+  this.runnerDashTimeMs = 0;
+  this.runnerDashStartX = startX;
+  this.runnerDashStartY = startY;
+  this.runnerDashEndX = endX;
+  this.runnerDashEndY = endY;
+  this.runnerDashCooldownMs = this.runnerDashCooldownMsMax;
+
+  // Invulnerability during dash
+  this.invulnerableUntilMs = performance.now() + 300; // 300ms i-frames
+
+  // Screen shake effect
+  try {
+    window.dispatchEvent(new CustomEvent('screenShake', { detail: { intensity: 0.4, durationMs: 300 } }));
+  } catch {}
+
+  // Sound effect
+  try {
+    const soundManager = (this.gameContext as any)?.soundManager;
+    if (soundManager?.play) {
+      soundManager.play('dash', 0.8);
+    }
+  } catch {}
+};
+
+// (Removed duplicate older performBladeCycloneDamage implementation)
 

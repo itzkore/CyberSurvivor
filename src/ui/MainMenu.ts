@@ -68,7 +68,7 @@ export class MainMenu {
         version: '0.2.9',
         date: '2025-08-25',
         entries: [
-          { tag: 'BAL', text: 'Beam — temporarily disabled while we rework behavior and visuals.' }
+          { tag: 'BAL', text: 'Beam — removed from the game while we rework the weapon concept for future implementation.' }
         ]
       },
       {
@@ -82,7 +82,7 @@ export class MainMenu {
           { tag: 'BAL', text: 'Heavy Gunner — Overdrive buff: instant power floor, 0.8s heat‑free startup, longer uptime, faster cooldown, tighter spread, bigger range, more damage.' },
           { tag: 'BAL', text: 'Smart Rifle — exponential homing speed ramp for quicker locks and chase.' },
           { tag: 'BAL', text: 'Neural Threader (Nomad) — fires to 2–5 nearest enemies per attack; threads/Overmind scale with level and damage multipliers.' },
-          { tag: 'BAL', text: 'Beam — long ramping needle: thin at start, ramps damage up to 10s; 5s lockout after a kill to contain power.' }
+          { tag: 'BAL', text: 'Beam — removed from the game; weapon concept will be reimplemented in a future update.' }
         ]
       },
       {
@@ -110,7 +110,7 @@ export class MainMenu {
         entries: [
           { tag: 'NEW', text: 'Passive — Area Up added: +10% radius per level across compatible area effects.' },
           { tag: 'SYS', text: 'Global area multiplier framework — AoE systems now scale consistently: Data Sigils, Titan Mortar, Shockwaves, Plasma Detonation, and On‑Kill pulses.' },
-          { tag: 'BAL', text: 'Beam melter — reduced knockback and enforced radial push from player for stable target lock.' },
+          { tag: 'BAL', text: 'Beam Melter — removed from the game; functionality will be redesigned for future implementation.' },
           { tag: 'QOL', text: 'Standardized multiplier getters (damage/area/fire‑rate); cooldowns and damage paths honor passives uniformly.' },
           { tag: 'FIX', text: 'Prevented double‑scaling of AoE; ensured explosionRadius propagation through event chain.' }
         ]

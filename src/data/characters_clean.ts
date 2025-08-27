@@ -94,7 +94,7 @@ export const CHARACTERS: CharacterData[] = [
     },
     shape: 'square',
     color: '#4169E1',
-    weaponTypes: [WeaponType.TRI_SHOT, WeaponType.PLASMA, WeaponType.BEAM],
+    weaponTypes: [WeaponType.TRI_SHOT, WeaponType.PLASMA],
   specialAbility: 'Tech Sync - Faster reload and firing rates with advanced weapons',
     playstyle: 'Aggressive',
   },

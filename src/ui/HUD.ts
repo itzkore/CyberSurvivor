@@ -148,6 +148,14 @@ export class HUD {
         const label = d.ready ? 'DASH READY (Shift)' : `DASH ${Math.ceil((d.max - d.value)/1000)}s`;
         // Cyan theme for Runner
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#26ffe9', '#07333a', '#00b3a3', label);
+        // Second bar: Blade Cyclone cooldown/active state (Spacebar)
+        if ((this.player as any).getBladeCyclone) {
+          const bc: any = (this.player as any).getBladeCyclone();
+          const ratio2 = bc.max > 0 ? bc.value / bc.max : 0;
+          const label2 = bc.active ? 'CYCLONE ACTIVE' : (bc.ready ? 'CYCLONE READY (Spacebar)' : `CYCLONE ${Math.ceil((bc.max - bc.value)/1000)}s`);
+          // Place directly above the dash bar with neon cyan theme
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#26ffe9', '#07333a', '#00b3a3', label2);
+        }
       } else if (id === 'data_sorcerer' && (this.player as any).getSorcererSigilMeter) {
         const m: any = (this.player as any).getSorcererSigilMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;

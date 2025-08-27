@@ -316,9 +316,9 @@ export class CharacterSelectPanel {
         return 'Synergy: Tag bosses with Rogue Hacker zones, then let Psionic Weaver or Data Sorcerer capitalize on the debuff window.';
       case WeaponType.QUANTUM_HALO:
         return 'Synergy: Quantum Halo keeps chip damage rolling—pair with Scavenger’s Scrap‑Lash for reliable boss contact.';
-  case WeaponType.SCRAP_SAW:
+
   case WeaponType.SCRAP_LASH:
-        return 'Synergy: Scrap‑Lash/Saw prime targets; Neural Nomad threads or Data Sigils will finish clustered packs.';
+        return 'Synergy: Scrap‑Lash prime targets; Neural Nomad threads or Data Sigils will finish clustered packs.';
       case WeaponType.NOMAD_NEURAL:
         return 'Synergy: Primer tethers love marked enemies—combine with Psionic marks or Rogue Hacker glitch for fast anchors.';
       default:

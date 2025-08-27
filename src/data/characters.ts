@@ -127,7 +127,7 @@ export const CHARACTERS: CharacterData[] = [
       defense: 4,
     },
     shape: 'triangle',
-    color: '#00FF41',
+    color: '#00FFFF',
   weaponTypes: [WeaponType.RUNNER_GUN, WeaponType.RICOCHET, WeaponType.PLASMA],
   specialAbility: 'Vector Dash — Level‑scaled dash with brief i‑frames and afterimages',
     playstyle: 'Mobility',

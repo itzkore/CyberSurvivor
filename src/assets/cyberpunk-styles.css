@@ -1945,3 +1945,15 @@ html, body { font-family: 'Orbitron', sans-serif; }
     min-width: 100px;
   }
 }
+
+/* Cyber Runner specific styling */
+.character-select-panel[data-character="cyber_runner"] .stat-box {
+  border-color: #00FFFF;
+  background: rgba(0, 255, 255, 0.1);
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+}
+
+.character-select-panel[data-character="cyber_runner"] .stat-value {
+  color: #00FFFF;
+  text-shadow: 0 0 12px #00FFFF;
+}

@@ -14,12 +14,12 @@ describe('Balance constants', () => {
 });
 
 describe('Speed passive additive behavior', () => {
-  it('adds +0.5 per level over innate base speed', () => {
+  it('adds +0.7 per level over innate base speed', () => {
     const character = { stats: { speed: 10 } };
     const p = new Player(0, 0, character);
     const innate = p.getBaseMoveSpeed();
-    applyPassive(p as any, 0, 2); // level 2 => +1.0
-    expect(p.speed).toBeCloseTo(innate + 1.0, 5);
+    applyPassive(p as any, 0, 2); // level 2 => +1.4
+    expect(p.speed).toBeCloseTo(innate + 1.4, 5);
   });
 
   it('preserves ordering between faster and slower base characters', () => {
@@ -27,8 +27,8 @@ describe('Speed passive additive behavior', () => {
     const slowChar = { stats: { speed: 8 } };
     const fastP = new Player(0, 0, fastChar);
     const slowP = new Player(0, 0, slowChar);
-    applyPassive(fastP as any, 0, 3); // +1.5
-    applyPassive(slowP as any, 0, 3); // +1.5
+    applyPassive(fastP as any, 0, 3); // +2.1
+    applyPassive(slowP as any, 0, 3); // +2.1
     expect(fastP.speed).toBeGreaterThan(slowP.speed);
   });
 });
