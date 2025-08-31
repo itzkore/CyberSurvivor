@@ -182,14 +182,15 @@ export class UpgradePanel {
 
       // Decide icon markup
       let iconHtml = '';
-      if (opt.type === 'weapon') {
+  if (opt.type === 'weapon') {
         try {
           const spec = WEAPON_SPECS[opt.id as WeaponType];
           const pv: any = spec?.projectileVisual;
           const bv: any = (spec as any)?.beamVisual;
           if (pv && pv.sprite) {
-            const src = pv.sprite;
-            iconHtml = `<img src="${src}" alt="${opt.name}" />`;
+    const raw = pv.sprite as string;
+    const src = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, ''))) : (typeof location!== 'undefined' && location.protocol === 'file:' && raw.startsWith('/assets/') ? ('.' + raw) : raw);
+    iconHtml = `<img src="${src}" alt="${opt.name}" />`;
           } else if (pv && pv.type === 'plasma' && (/orbit|halo|ring/i.test(String(spec?.name||'')) || (spec?.id === WeaponType.QUANTUM_HALO))) {
             const core = pv.color || '#FFFBEA';
             const glow = pv.glowColor || '#FFEFA8';
@@ -228,16 +229,19 @@ export class UpgradePanel {
               `</svg>`
             );
           } else {
-            const fallback = spec?.icon || opt.icon || '/assets/projectiles/bullet_cyan.png';
-            if (fallback) iconHtml = `<img src="${fallback}" alt="${opt.name}" />`;
+            const raw = (spec?.icon || opt.icon || '/assets/projectiles/bullet_cyan.png') as string;
+            const src = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, ''))) : (typeof location!== 'undefined' && location.protocol === 'file:' && raw.startsWith('/assets/') ? ('.' + raw) : raw);
+            if (src) iconHtml = `<img src="${src}" alt="${opt.name}" />`;
           }
         } catch {
-          const fallback = opt.icon || '/assets/projectiles/bullet_cyan.png';
-          iconHtml = fallback ? `<img src="${fallback}" alt="${opt.name}" />` : '';
+          const raw = (opt.icon || '/assets/projectiles/bullet_cyan.png') as string;
+          const src = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, ''))) : (typeof location!== 'undefined' && location.protocol === 'file:' && raw.startsWith('/assets/') ? ('.' + raw) : raw);
+          iconHtml = src ? `<img src="${src}" alt="${opt.name}" />` : '';
         }
       } else if (opt.type === 'passive') {
         const pSpec = PASSIVE_SPECS.find(p => p.id === opt.id);
-        const src = pSpec?.icon ? (typeof location!== 'undefined' && location.protocol === 'file:' && pSpec.icon.startsWith('/assets/') ? ('.' + pSpec.icon) : pSpec.icon) : '';
+        const raw = pSpec?.icon || '';
+        const src = raw ? ((window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, ''))) : (typeof location!== 'undefined' && location.protocol === 'file:' && raw.startsWith('/assets/') ? ('.' + raw) : raw)) : '';
         if (src) {
           iconHtml = `<img src="${src}" alt="${opt.name}" width="52" height="52" />`;
         } else {

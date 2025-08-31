@@ -167,7 +167,17 @@ export class GhostProtocolAbility {
     ctx.fillStyle = grad;
     ctx.beginPath(); ctx.arc(px, py, rBase, 0, Math.PI * 2); ctx.fill();
 
-    // Text-based AOE rings: render hacking commands around concentric circles
+  // Subtle crisp outline to improve zone visibility
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineWidth = 1.25;
+  ctx.strokeStyle = this.evolvedPalette ? 'rgba(255,48,48,0.95)' : 'rgba(255,210,120,0.95)';
+  ctx.beginPath();
+  ctx.arc(px, py, rBase, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // Text-based AOE rings: render hacking commands around concentric circles
   const ringCount = lowFX ? 1 : 2;
     // Precompute parameters to reduce per-iteration work
     const outerR = Math.max(32, rBase * 0.92);

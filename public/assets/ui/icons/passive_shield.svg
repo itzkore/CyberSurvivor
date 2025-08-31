@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Shield">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0%" stop-color="#071118"/>
+      <stop offset="70%" stop-color="#041018"/>
+      <stop offset="100%" stop-color="#02070B"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="20" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="16" fill="none" stroke="#0C2A36" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="16" fill="none" stroke="#143D4E" stroke-width="1" opacity="0.6"/>
+
+  <g fill="#0F2632" stroke="#CFF7FF" stroke-width="6" stroke-linejoin="round">
+    <path d="M128 44 L192 68 V120 c0 48 -32 80 -64 96 -32 -16 -64 -48 -64 -96 V68 Z"/>
+    <path d="M128 68 L176 88 V120 c0 32 -20 52 -48 66 -28 -14 -48 -34 -48 -66 V88 Z" fill="#123645"/>
+  </g>
+  <circle cx="128" cy="144" r="24" fill="none" stroke="#CFF7FF" stroke-width="6"/>
+</svg>
+

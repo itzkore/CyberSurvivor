@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Slow">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#07131A"/>
+      <stop offset="70%" stop-color="#051119"/>
+      <stop offset="100%" stop-color="#03080D"/>
+    </radialGradient>
+    <linearGradient id="bevel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#124255"/>
+      <stop offset="100%" stop-color="#0B2C3A"/>
+    </linearGradient>
+    <linearGradient id="cy" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1BB6C8"/>
+      <stop offset="100%" stop-color="#0E8396"/>
+    </linearGradient>
+    <!-- Beveled arrow fill (darker, grittier) -->
+    <linearGradient id="arrowFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#28AFC1"/>
+      <stop offset="60%" stop-color="#13879A"/>
+      <stop offset="100%" stop-color="#0A6675"/>
+    </linearGradient>
+    <!-- Edge gloss highlight (subtle) -->
+    <linearGradient id="edgeGloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#051E27" flood-opacity="0.85"/>
+    </filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background + bevel -->
+  <rect width="256" height="256" rx="22" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="url(#bevel)" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="#163E4F" stroke-width="1" opacity="0.55"/>
+
+  <!-- Three left-pointing arrows (beveled + rim + gloss) -->
+  <!-- Dark rim for separation -->
+  <g filter="url(#lift)" fill="none" stroke="#081C25" stroke-opacity="0.6" stroke-width="4" stroke-linejoin="round">
+    <!-- top curvy-notched arrow (left) -->
+    <path d="M208 82 C170 78, 132 78, 100 84 L100 72 L56 92 L100 112 L100 100 C132 106, 170 106, 208 102 L192 92 Z"/>
+    <!-- middle -->
+    <path d="M208 118 C170 114, 132 114, 100 120 L100 108 L56 128 L100 148 L100 136 C132 142, 170 142, 208 138 L192 128 Z"/>
+    <!-- bottom -->
+    <path d="M208 154 C170 150, 132 150, 100 156 L100 144 L56 164 L100 184 L100 172 C132 178, 170 178, 208 174 L192 164 Z"/>
+  </g>
+
+  <!-- Filled arrows -->
+  <g filter="url(#lift)" fill="url(#arrowFill)" stroke="#BFEAF2" stroke-width="2" stroke-linejoin="round">
+    <!-- top curvy-notched arrow (left) -->
+    <path d="M208 82 C170 78, 132 78, 100 84 L100 72 L56 92 L100 112 L100 100 C132 106, 170 106, 208 102 L192 92 Z" opacity="1"/>
+    <!-- middle -->
+    <path d="M208 118 C170 114, 132 114, 100 120 L100 108 L56 128 L100 148 L100 136 C132 142, 170 142, 208 138 L192 128 Z" opacity="0.9"/>
+    <!-- bottom -->
+    <path d="M208 154 C170 150, 132 150, 100 156 L100 144 L56 164 L100 184 L100 172 C132 178, 170 178, 208 174 L192 164 Z" opacity="0.85"/>
+  </g>
+
+  <!-- Edge gloss on top edges -->
+  <g fill="none" stroke="url(#edgeGloss)" stroke-linecap="round">
+    <!-- top-edge gloss following curvature -->
+    <path d="M202 82 C164 78, 128 78, 102 84" stroke-width="3"/>
+    <path d="M202 118 C164 114, 128 114, 102 120" stroke-width="3" opacity="0.85"/>
+    <path d="M202 154 C164 150, 128 150, 102 156" stroke-width="3" opacity="0.7"/>
+    <!-- head upper edges -->
+    <path d="M100 72 L60 92" stroke-width="2.5" opacity="0.8"/>
+    <path d="M100 108 L60 128" stroke-width="2.5" opacity="0.65"/>
+    <path d="M100 144 L60 164" stroke-width="2.5" opacity="0.5"/>
+  </g>
+
+  <!-- Soft glow accents behind arrows and backward motion lines -->
+  <g fill="none" stroke="url(#cy)" stroke-linecap="round" filter="url(#glow)">
+    <!-- trailing glow -->
+    <path d="M220 92 H136" stroke-width="6" opacity="0.28"/>
+    <path d="M220 128 H140" stroke-width="5" opacity="0.25"/>
+    <path d="M220 164 H144" stroke-width="4" opacity="0.22"/>
+    <!-- backward streaks (resistance) -->
+    <path d="M36 92 H62" stroke-width="4" opacity="0.28"/>
+    <path d="M36 128 H62" stroke-width="3.5" opacity="0.25"/>
+    <path d="M36 164 H62" stroke-width="3" opacity="0.22"/>
+  </g>
+</svg>
+

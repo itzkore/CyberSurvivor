@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Revive">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0%" stop-color="#071118"/>
+      <stop offset="70%" stop-color="#041018"/>
+      <stop offset="100%" stop-color="#02070B"/>
+    </radialGradient>
+  </defs>
+  <rect width="256" height="256" rx="20" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="16" fill="none" stroke="#0C2A36" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="16" fill="none" stroke="#143D4E" stroke-width="1" opacity="0.6"/>
+
+  <g fill="#123645" stroke="#CFF7FF" stroke-width="6" stroke-linejoin="round">
+    <path d="M128 56 l-30 30 h22 v32 h16 V86 h22 z"/>
+    <path d="M56 152 c14 46 56 64 72 72 16 -8 58 -26 72 -72 -22 22 -44 30 -72 30 -28 0 -50 -8 -72 -30 z"/>
+  </g>
+</svg>
+

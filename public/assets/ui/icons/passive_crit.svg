@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Critical Hit Chance">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#07131A"/>
+      <stop offset="70%" stop-color="#051119"/>
+      <stop offset="100%" stop-color="#03080D"/>
+    </radialGradient>
+    <linearGradient id="bevel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#124255"/>
+      <stop offset="100%" stop-color="#0B2C3A"/>
+    </linearGradient>
+    <linearGradient id="cy" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#BDF6FF"/>
+      <stop offset="60%" stop-color="#5FD7EA"/>
+      <stop offset="100%" stop-color="#2B5D6D"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#051E27" flood-opacity="0.85"/>
+    </filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="1.8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="22" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="url(#bevel)" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="#163E4F" stroke-width="1" opacity="0.55"/>
+  <!-- Stylized starburst/target indicating crit -->
+  <g filter="url(#lift)" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="128" cy="128" r="56" fill="#0E2530" stroke="#CFF7FF" stroke-width="3"/>
+    <circle cx="128" cy="128" r="34" fill="none" stroke="#8ED6E8" stroke-width="2" opacity="0.6"/>
+    <g filter="url(#glow)">
+      <path d="M128 84 v-18 M128 190 v-18 M84 128 h-18 M190 128 h-18" stroke="#BDF6FF" stroke-width="6"/>
+      <path d="M104 104 l-14 -14 M166 166 l-14 -14 M152 104 l14 -14 M90 166 l14 -14" stroke="#BDF6FF" stroke-width="5"/>
+    </g>
+    <!-- Diamond point -->
+    <path d="M128 112 L140 128 L128 144 L116 128 Z" fill="url(#cy)" stroke="#E7FCFF" stroke-width="2"/>
+  </g>
+</svg>
+

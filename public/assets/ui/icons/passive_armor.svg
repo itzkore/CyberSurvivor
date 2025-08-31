@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Armor">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="45%" r="70%">
+      <stop offset="0%" stop-color="#071118"/>
+      <stop offset="70%" stop-color="#041018"/>
+      <stop offset="100%" stop-color="#02070B"/>
+    </radialGradient>
+    <linearGradient id="face" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#E6FAFF"/>
+      <stop offset="70%" stop-color="#7CCEE3"/>
+      <stop offset="100%" stop-color="#2C5463"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="20" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="16" fill="none" stroke="#0C2A36" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="16" fill="none" stroke="#143D4E" stroke-width="1" opacity="0.6"/>
+
+  <g fill="url(#face)" stroke="#CFF7FF" stroke-width="6" stroke-linejoin="round">
+    <path d="M128 44 l-48 20 v56 c0 48 32 80 48 88 16 -8 48 -40 48 -88 V64 z"/>
+  </g>
+</svg>
+

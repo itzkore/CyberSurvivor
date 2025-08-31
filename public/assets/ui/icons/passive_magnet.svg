@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Pickup Range">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#07131A"/>
+      <stop offset="70%" stop-color="#051119"/>
+      <stop offset="100%" stop-color="#03080D"/>
+    </radialGradient>
+    <linearGradient id="bevel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#124255"/>
+      <stop offset="100%" stop-color="#0B2C3A"/>
+    </linearGradient>
+    <!-- Gradient for magnet band stroke -->
+    <linearGradient id="uStroke" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#C9FBFF"/>
+      <stop offset="55%" stop-color="#6FE1F0"/>
+      <stop offset="100%" stop-color="#2C6070"/>
+    </linearGradient>
+    <linearGradient id="capFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#E7FDFF"/>
+      <stop offset="100%" stop-color="#8CE9F4"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#051E27" flood-opacity="0.85"/>
+    </filter>
+  </defs>
+  <!-- Frame -->
+  <rect width="256" height="256" rx="22" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="url(#bevel)" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="#163E4F" stroke-width="1" opacity="0.55"/>
+
+  <!-- Horseshoe magnet: arch up, poles down. Hollow center (stroke only). -->
+  <g filter="url(#lift)" stroke-linecap="round" stroke-linejoin="round">
+    <!-- U centerline path stroked thick to create band -->
+    <!-- Geometry: legs at x=88 and x=168, top arc at y=84, bottom tips at y=176 -->
+    <path d="M88 176 V84 A40 40 0 0 1 168 84 V176" fill="none" stroke="url(#uStroke)" stroke-width="36"/>
+
+    <!-- Pole caps (bottom metal tips) aligned to leg width (stroke-width) -->
+    <rect x="70" y="176" width="36" height="22" rx="3" fill="url(#capFill)" stroke="#DDF9FF" stroke-width="2"/>
+    <rect x="150" y="176" width="36" height="22" rx="3" fill="url(#capFill)" stroke="#DDF9FF" stroke-width="2"/>
+
+    <!-- Subtle pickup field lines between pole gap -->
+    <path d="M112 188 h-18" stroke="#BDF6FF" stroke-width="4" opacity="0.9"/>
+    <path d="M162 188 h-18" stroke="#BDF6FF" stroke-width="4" opacity="0.9"/>
+    <path d="M120 196 h-12 M148 196 h-12" stroke="#BDF6FF" stroke-width="3" opacity="0.7"/>
+  </g>
+
+  <!-- Soft gloss -->
+  <path d="M24 32 h208 a12 12 0 0 1 12 12 v10 H12 V44 a12 12 0 0 1 12 -12z" fill="#FFFFFF" opacity="0.03"/>
+</svg>
+

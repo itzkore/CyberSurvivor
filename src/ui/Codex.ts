@@ -770,7 +770,12 @@ export class Codex {
       const p = PASSIVE_SPECS[i];
       if (q && !(p.name.toLowerCase().includes(q) || (p.description||'').toLowerCase().includes(q))) continue;
       // Use the passive's actual icon (normalized for hosting mode)
-      const iconSrc = p.icon ? AssetLoader.normalizePath(p.icon.startsWith('/') ? p.icon : ('/' + p.icon.replace(/^\.\//, ''))) : '';
+      const raw = p.icon || '';
+      const iconSrc = raw
+        ? ((window as any).AssetLoader
+            ? AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, '')))
+            : (typeof location!=='undefined' && location.protocol==='file:' && raw.startsWith('/assets/') ? ('.'+raw) : (raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, '')))))
+        : '';
       const icon = iconSrc
         ? `<img src="${this.escape(iconSrc)}" alt="${this.escape(p.name)}" width="52" height="52"/>`
         : `

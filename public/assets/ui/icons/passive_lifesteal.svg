@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Lifesteal">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#07131A"/>
+      <stop offset="70%" stop-color="#051119"/>
+      <stop offset="100%" stop-color="#03080D"/>
+    </radialGradient>
+    <linearGradient id="bevel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#124255"/>
+      <stop offset="100%" stop-color="#0B2C3A"/>
+    </linearGradient>
+    <linearGradient id="heartFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#E6FAFF"/>
+      <stop offset="55%" stop-color="#8DD6E9"/>
+      <stop offset="100%" stop-color="#2E5F6F"/>
+    </linearGradient>
+    <linearGradient id="snakeScale" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#BDF6FF"/>
+      <stop offset="60%" stop-color="#5FD7EA"/>
+      <stop offset="100%" stop-color="#2B5D6D"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#051E27" flood-opacity="0.85"/>
+    </filter>
+  </defs>
+
+  <!-- Background + frame -->
+  <rect width="256" height="256" rx="22" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="url(#bevel)" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="#163E4F" stroke-width="1" opacity="0.55"/>
+
+  <!-- Heart base -->
+  <g filter="url(#lift)">
+    <path d="M128 206 C86 170 70 150 70 120 c0 -22 18 -40 40 -40 13 0 26 8 32 20 6 -12 19 -20 32 -20 22 0 40 18 40 40 0 30 -16 52 -86 86 z" fill="url(#heartFill)" stroke="#CFF7FF" stroke-width="4"/>
+    <!-- Gloss on heart -->
+    <path d="M86 114 c14 -22 48 -26 72 -8 9 7 9 11 -2 9 -24 -5 -50 2 -68 15 -8 6 -12 -2 -2 -16 z" fill="url(#gloss)" opacity="0.35"/>
+  </g>
+
+  <!-- Snake wrapping around heart -->
+  <g filter="url(#lift)">
+    <!-- Snake body: S-curve around the heart -->
+    <path d="M176 92
+             C 156 86, 142 90, 138 102
+             C 134 114, 142 126, 154 132
+             C 166 138, 170 148, 164 158
+             C 156 170, 136 170, 122 162
+             C 110 154, 96 154, 86 166
+             C 80 174, 82 186, 90 194"
+          fill="none" stroke="url(#snakeScale)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+    <!-- Subtle ventral scales (short dashes) -->
+    <path d="M152 132 l-8 6 M140 128 l-8 4 M130 160 l-8 4 M106 160 l-8 6" stroke="#E7FCFF" stroke-opacity="0.55" stroke-width="3" stroke-linecap="round"/>
+    <!-- Head -->
+    <path d="M182 90
+             c 8 2 12 8 10 14
+             c -2 6 -10 10 -18 8
+             c -2 -8 2 -20 8 -22 z"
+          fill="url(#snakeScale)" stroke="#CFF7FF" stroke-width="2"/>
+    <circle cx="190" cy="100" r="2.6" fill="#06242D"/>
+    <!-- Fang touching heart (siphon) -->
+    <path d="M176 114 l-8 10" stroke="#E7FCFF" stroke-width="2.2" stroke-linecap="round"/>
+    <!-- Tail tip -->
+    <path d="M92 198 l6 -2 -2 6 z" fill="#E7FCFF"/>
+  </g>
+</svg>
+

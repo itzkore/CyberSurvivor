@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Max HP">
+  <defs>
+    <!-- Unified background + vignette -->
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#07131A"/>
+      <stop offset="70%" stop-color="#051119"/>
+      <stop offset="100%" stop-color="#03080D"/>
+    </radialGradient>
+    <!-- Beveled frame stroke -->
+    <linearGradient id="bevel" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#124255"/>
+      <stop offset="100%" stop-color="#0B2C3A"/>
+    </linearGradient>
+    <!-- Medical cross fill -->
+    <linearGradient id="crossFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#9FEAFF"/>
+      <stop offset="45%" stop-color="#56CBE6"/>
+      <stop offset="100%" stop-color="#2B5D6D"/>
+    </linearGradient>
+    <!-- Heart body gradient -->
+    <linearGradient id="heartFill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#E8FBFF"/>
+      <stop offset="55%" stop-color="#8DD6E9"/>
+      <stop offset="100%" stop-color="#2E5F6F"/>
+    </linearGradient>
+    <!-- Soft inner shadow for heart -->
+    <filter id="innerShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feOffset dx="0" dy="1"/>
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feComposite in="SourceAlpha" in2="blur" operator="arithmetic" k2="-1" k3="1" result="inner"/>
+      <feColorMatrix in="inner" type="matrix" values="0 0 0 0 0  0 0 0 0 0.5  0 0 0 0 0.6  0 0 0 0.6 0"/>
+      <feComposite in2="SourceGraphic" operator="over"/>
+    </filter>
+    <!-- Lifted drop shadow for foreground -->
+    <filter id="lift" x="-20%" y="-20%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#051E27" flood-opacity="0.85"/>
+    </filter>
+    <!-- Gloss highlight gradient -->
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background and frame -->
+  <rect width="256" height="256" rx="22" fill="url(#bg)"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="url(#bevel)" stroke-width="3"/>
+  <rect x="10" y="10" width="236" height="236" rx="18" fill="none" stroke="#163E4F" stroke-width="1" opacity="0.55"/>
+
+  <!-- Beveled shield + centered medical cross (clean, realistic HP) -->
+  <g filter="url(#lift)">
+    <!-- Shield outer -->
+    <path d="M128 48 L184 68 V120 c0 44 -28 72 -56 88 -28 -16 -56 -44 -56 -88 V68 Z" fill="url(#heartFill)" stroke="#CFF7FF" stroke-width="3"/>
+    <!-- Shield inner inset -->
+    <path d="M128 60 L172 76 V120 c0 34 -22 54 -44 66 -22 -12 -44 -32 -44 -66 V76 Z" fill="#2B5667" opacity="0.6"/>
+    <!-- Specular sweep on shield -->
+    <path d="M96 84 c18 -22 64 -26 84 -6 6 6 6 10 -2 8 -30 -8 -66 2 -82 16 -6 6 -10 -2 0 -18 z" fill="url(#gloss)" opacity="0.35"/>
+  </g>
+
+  <!-- Cross overlay (centered) -->
+  <g filter="url(#lift)" opacity="0.98">
+    <!-- Vertical bar: centered at (128, 136) -->
+    <rect x="114" y="96" width="28" height="80" rx="4" fill="url(#crossFill)" stroke="#E5FAFF" stroke-width="2"/>
+    <!-- Horizontal bar: centered at (128, 136) -->
+    <rect x="88" y="122" width="80" height="28" rx="4" fill="url(#crossFill)" stroke="#E5FAFF" stroke-width="2"/>
+  </g>
+</svg>
+
