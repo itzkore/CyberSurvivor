@@ -23,8 +23,9 @@ import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
 import { Logger } from '../core/Logger';
 import { WEAPON_SPECS } from './WeaponConfig';
+import { BlackSunZoneManager } from './BlackSunZone';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
-import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS } from './Balance';
+import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS, getHealEfficiency } from './Balance';
 
 interface Wave {
   startTime: number; // in seconds
@@ -41,6 +42,8 @@ export class EnemyManager {
   public enemies: Enemy[] = []; // Made public for Game.ts to pass to bullet collision
   // Cached list of active enemies (rebuilt each update to avoid repeated filter allocations)
   private activeEnemies: Enemy[] = [];
+  // Cached list of active gems (reuse underlying this.gems array after compaction)
+  private activeGems: Gem[] = [];
   private enemyPool: Enemy[] = []; // Explicit enemy pool
   private particleManager: ParticleManager | null = null;
   private gems: Gem[] = [];
@@ -99,6 +102,12 @@ export class EnemyManager {
   private _ghostCloakFollow: { active: boolean; x: number; y: number; until: number } = { active: false, x: 0, y: 0, until: 0 };
   // Data Sigils: planted glyphs that pulse AoE damage
   private dataSigils: { x:number; y:number; radius:number; pulsesLeft:number; pulseDamage:number; nextPulseAt:number; active:boolean; spin:number; created:number; follow?: boolean; cadenceMs?: number }[] = [];
+  // Black Sun seeds (Shadow Operative evolve): dim void orbs that slow/tick, then collapse
+  private blackSunSeeds: { x:number; y:number; created:number; active:boolean; fuseMs:number; pullRadius:number; pullStrength:number; collapseRadius:number; slowPct:number; tickIntervalMs:number; tickNext:number; ticksLeft:number; tickDmg:number; collapseDmg:number }[] = [];
+  // Dedicated Black Sun zone manager (replaces legacy blackSunSeeds lifecycle)
+  private blackSunZones: BlackSunZoneManager;
+  // Shadow Surge window (for synergy buffs)
+  private shadowSurgeUntilMs: number = 0;
 
   // Rogue Hacker paralysis/DoT zones (spawned under enemies on virus impact)
   // pulseUntil: draw a stronger spawn pulse/line for first ~220ms to improve visibility
@@ -108,11 +117,15 @@ export class EnemyManager {
   private hackerAutoCooldownUntil: number = 0;
   // Monotonic counter for Rogue Hacker zone stamps
   private hackerZoneStampCounter: number = 1;
+  // Evolved Hacker: deferred chain spawns schedule
+  private pendingHackerZoneSpawns: { x:number; y:number; radius:number; lifeMs:number; at:number }[] = [];
   // Spawn freeze window (e.g., on boss spawn). When now < spawnFreezeUntilMs, dynamic spawner is paused.
   private spawnFreezeUntilMs: number = 0;
 
   // Poison puddle system
-  private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean }[] = [];
+    private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean, vx?: number, vy?: number, isSludge?: boolean, potency?: number }[] = [];
+  /** Maximum radius cap for merged sludge puddles (absolute, world units). */
+  private readonly maxSludgeRadiusCap: number = 800;
   // Bio Engineer Outbreak! state
   private bioOutbreakUntil: number = 0;
   private bioOutbreakRadius: number = 0;
@@ -154,10 +167,18 @@ export class EnemyManager {
   }
   private readonly poisonTickIntervalMs: number = 500; // damage application cadence
   private readonly poisonDurationMs: number = 4000; // duration refreshed per stack add
-  private readonly poisonDpsPerStack: number = 3.2; // increased DPS per stack to emphasize DoT over impact
-  private readonly poisonMaxStacks: number = 10; // hard cap to avoid runaway
+  private readonly poisonDpsPerStack: number = 3.2; // per-stack DPS baseline
+  private readonly poisonMaxStacks: number = 10; // base cap; can be increased dynamically when evolved
   private readonly poisonSlowPerStack: number = 0.01; // 1% slow per stack
   private readonly poisonSlowCap: number = 0.20; // max 20% slow
+  /** Current poison max stacks; increase when evolved to Living Sludge for higher ceiling. */
+  private getPoisonMaxStacks(): number {
+    try {
+  // Living Sludge grants infinite poison stacking
+  if (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) return Infinity;
+    } catch { /* ignore */ }
+    return this.poisonMaxStacks;
+  }
   // Burn (Blaster) status: applied per enemy; stacking DoT (up to 3 stacks), 2s duration refreshed per stack add
   // We'll store transient fields directly on Enemy object via symbol-like keys to avoid changing type globally.
   private readonly burnTickIntervalMs: number = 500; // 4 ticks over 2s
@@ -184,6 +205,14 @@ export class EnemyManager {
   private _bossLastVoidTickMs: number = 0;
   private _bossLastHackerTickMs: number = 0;
 
+  // XP orb rendering cache (pre-rendered sprites by tier)
+  private gemSprites: Map<number, HTMLCanvasElement> = new Map();
+  // Gem merge throttling / buffers
+  private gemMergeNextCheckMs: number = 0;
+  private gemTierBuf1: Gem[] = [];
+  private gemTierBuf2: Gem[] = [];
+  private gemTierBuf3: Gem[] = [];
+
   /**
    * EnemyManager constructor
    * @param player Player instance
@@ -204,6 +233,8 @@ export class EnemyManager {
   this.preallocateSpecialItems();
   this.preallocateTreasures();
   this.waves = []; // legacy disabled; dynamic system takes over
+    // Initialize Black Sun dedicated zone manager
+    this.blackSunZones = new BlackSunZoneManager(this, this.player);
     // Freeze spawns and clear enemies on boss spawn (15s calm before the storm)
     window.addEventListener('bossSpawn', () => {
       const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -269,8 +300,128 @@ export class EnemyManager {
       const radius = baseRadius * (areaMul || 1);
       this.plantDataSigil(d.x, d.y, radius, d.pulseCount || 3, d.pulseDamage || 90, !!d.follow, d.pulseCadenceMs, d.pulseDelayMs);
     });
+    // Shadow Surge events (for Black Sun synergy)
+    window.addEventListener('shadowSurgeStart', (e: Event) => {
+      try { const d = (e as CustomEvent).detail || {}; this.shadowSurgeUntilMs = (typeof performance!== 'undefined' ? performance.now() : Date.now()) + (d.durationMs || 5000); } catch { this.shadowSurgeUntilMs = (typeof performance!== 'undefined' ? performance.now() : Date.now()) + 5000; }
+    });
+    window.addEventListener('shadowSurgeEnd', () => { this.shadowSurgeUntilMs = 0; });
+    // Quantum Halo: light AoE pulse when the ring completes a full rotation (high levels only)
+    window.addEventListener('quantumHaloPulse', (e: Event) => {
+      try {
+        const d = (e as CustomEvent).detail || {};
+        const x = (typeof d.x === 'number') ? d.x : this.player.x;
+        const y = (typeof d.y === 'number') ? d.y : this.player.y;
+        const radius = Math.max(40, Math.min(600, (d.radius || 140)));
+        const r2 = radius * radius;
+        const base = (typeof d.damage === 'number' ? d.damage : 60);
+        const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+        const dmg = Math.max(1, Math.round(base * gdm));
+        // Query nearby enemies via spatial grid for performance
+        const candidates = this.enemySpatialGrid ? this.enemySpatialGrid.query(x, y, radius) : this.enemies;
+        for (let i = 0; i < candidates.length; i++) {
+          const en = candidates[i];
+          if (!en.active || en.hp <= 0) continue;
+          const dx = en.x - x; const dy = en.y - y;
+          if (dx > radius || dx < -radius || dy > radius || dy < -radius) continue;
+          if (dx*dx + dy*dy <= r2) {
+            this.takeDamage(en, dmg, false, false, WeaponType.QUANTUM_HALO, x, y);
+            const anyE: any = en as any; // brief teal flash
+            anyE._poisonFlashUntil = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + 70;
+          }
+        }
+        // Also damage treasures within pulse radius
+        try {
+          const emAny: any = this as any;
+          if (typeof emAny.getTreasures === 'function') {
+            const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+            for (let ti = 0; ti < treasures.length; ti++) {
+              const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+              const dxT = t.x - x; const dyT = t.y - y;
+              if (dxT > radius || dxT < -radius || dyT > radius || dyT < -radius) continue;
+              if (dxT*dxT + dyT*dyT <= r2 && typeof emAny.damageTreasure === 'function') {
+                emAny.damageTreasure(t, dmg);
+              }
+            }
+          }
+        } catch { /* ignore treasure pulse errors */ }
+        // Boss parity
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+            const dxB = boss.x - x; const dyB = boss.y - y;
+            if (!(dxB > radius || dxB < -radius || dyB > radius || dyB < -radius)) {
+              if (dxB*dxB + dyB*dyB <= r2) {
+                this.takeBossDamage(boss, dmg, false, WeaponType.QUANTUM_HALO, x, y);
+              }
+            }
+          }
+        } catch { /* ignore */ }
+        // Subtle FX burst at center
+        try { this.particleManager?.spawn(x, y, 8, '#7DFFEA', { sizeMin: 1, sizeMax: 2, lifeMs: 300, speedMin: 1.0, speedMax: 2.2 }); } catch {}
+      } catch { /* ignore */ }
+    });
     window.addEventListener('bossDefeated', () => { // trigger new timed vacuum logic
       this.startTimedVacuum();
+    });
+    // Revive cinematic: freeze all enemies and spawns for 5s, then detonate on-screen at the end
+    window.addEventListener('playerRevived', (e: Event) => {
+      try {
+        const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        const freezeMs = 5000;
+        const until = now + freezeMs;
+        // Freeze dynamic spawns during the window
+        this.spawnFreezeUntilMs = Math.max(this.spawnFreezeUntilMs, until);
+        // Paralyze all active enemies
+        for (let i = 0; i < this.activeEnemies.length; i++) {
+          const en: any = this.activeEnemies[i];
+          if (!en.active || en.hp <= 0) continue;
+          en._paralyzedUntil = Math.max(en._paralyzedUntil || 0, until);
+        }
+        // Freeze boss as well
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+            const anyB: any = boss as any;
+            anyB._paralyzedUntil = Math.max(anyB._paralyzedUntil || 0, until);
+          }
+        } catch { /* ignore */ }
+      } catch { /* ignore */ }
+    });
+    // Detonate: kill all enemies currently on screen (viewport-based), include boss if present
+    window.addEventListener('reviveDetonate', () => {
+      try {
+        const camX = (window as any).__camX || 0;
+        const camY = (window as any).__camY || 0;
+        const vw = (window as any).__designWidth || (this as any).designWidth || 1280;
+        const vh = (window as any).__designHeight || (this as any).designHeight || 720;
+        const minX = camX, maxX = camX + vw, minY = camY, maxY = camY + vh;
+        const nukeDmg = 9999999;
+        // Kill regular enemies in view
+        for (let i = 0; i < this.enemies.length; i++) {
+          const e = this.enemies[i]; if (!e.active) continue;
+          if (e.x >= minX && e.x <= maxX && e.y >= minY && e.y <= maxY) {
+            this.takeDamage(e, nukeDmg, false, false, undefined);
+          }
+        }
+        // Kill boss if in view
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+          if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+            if (boss.x >= minX && boss.x <= maxX && boss.y >= minY && boss.y <= maxY) {
+              // Route through standard boss damage to ensure death side-effects
+              this.takeBossDamage(boss, nukeDmg, false, undefined, (this.player as any)?.x ?? boss.x, (this.player as any)?.y ?? boss.y);
+            }
+          }
+        } catch { /* ignore */ }
+        // FX burst + shake
+        try {
+          this.particleManager?.spawn(this.player.x, this.player.y, 26, '#FFFFFF', { sizeMin: 2, sizeMax: 5, lifeMs: 520, speedMin: 2.5, speedMax: 6 });
+          window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 360, intensity: 12 } }));
+        } catch { /* ignore */ }
+      } catch { /* ignore */ }
     });
     window.addEventListener('bossXPSpray', (e: Event) => {
       const { x, y } = (e as CustomEvent).detail;
@@ -311,7 +462,7 @@ export class EnemyManager {
         if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
           const bdx = boss.x - d.x, bdy = boss.y - d.y;
           if (bdx*bdx + bdy*bdy <= r2) {
-            this.takeBossDamage(boss, d.damage, false, d.x, d.y);
+            this.takeBossDamage(boss, d.damage, false, WeaponType.HACKER_VIRUS, d.x, d.y);
             const bAny: any = boss as any;
             bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, now + d.paralyzeMs);
             bAny._rgbGlitchUntil = now + Math.max(260, d.glitchMs|0);
@@ -436,64 +587,139 @@ export class EnemyManager {
       sig.x = x; sig.y = y; sig.radius = radius; sig.pulsesLeft = pulseCount; sig.pulseDamage = pulseDamage; sig.nextPulseAt = now + (initialDelayMs ?? 220); sig.active = true; sig.spin = Math.random()*Math.PI*2; sig.created = now; sig.follow = follow; sig.cadenceMs = cadenceMs;
     }
   // Golden spark burst on plant
-  try { this.particleManager?.spawn(x, y, 12, '#FFD700', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.2, speedMax: 3.2 }); } catch {}
+  try { this.particleManager?.spawn(x, y, 12, '#33E6FF', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.2, speedMax: 3.2 }); } catch {}
   }
 
   /** Update Data Sigils: emit pulses on cadence and apply AoE damage. */
-  private updateDataSigils(deltaMs:number){
+  private updateDataSigils(deltaMs: number): void {
+    if (!this.dataSigils.length) return;
     const now = performance.now();
-    for (let i=0;i<this.dataSigils.length;i++){
+    const p: any = this.player as any;
+    const gdm = p?.getGlobalDamageMultiplier?.() ?? (p?.globalDamageMultiplier ?? 1);
+    const areaMul = p?.getGlobalAreaMultiplier?.() ?? (p?.globalAreaMultiplier ?? 1);
+    // Precompute spatial query helper
+    const query = (x: number, y: number, r: number) => (this.enemySpatialGrid ? this.enemySpatialGrid.query(x, y, r) : this.enemies);
+    for (let i = 0; i < this.dataSigils.length; i++) {
       const s = this.dataSigils[i];
       if (!s.active) continue;
-  s.spin += deltaMs * 0.006; // slow rotation
-  if (s.follow) { // smooth follow to avoid outrunning enemies; creates a trailing, more reliable hit zone
-    s.x += (this.player.x - s.x) * 0.2;
-    s.y += (this.player.y - s.y) * 0.2;
-  }
-      if (now >= s.nextPulseAt && s.pulsesLeft > 0){
+      // Follow player if requested
+      if (s.follow) {
+        s.x = this.player.x;
+        s.y = this.player.y;
+      }
+      // Spin animation advance (scaled by delta)
+      s.spin += (deltaMs / 1000) * 2.2; // ~2.2 rad/sec
+      const cadence = Math.max(140, (s.cadenceMs ?? 420));
+      if (now >= s.nextPulseAt && s.pulsesLeft > 0) {
         s.pulsesLeft--;
-        const cadence = (s as any).cadenceMs ?? 420;
-        s.nextPulseAt = now + cadence; // pulse cadence
-        // Apply AoE damage to enemies inside radius
-        const r = s.radius;
-        const r2 = r * r;
-        // Compute damage multiplier once per pulse
-        const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
-        const len = this.enemies.length;
-        for (let j=0;j<len;j++){
-          const e = this.enemies[j];
+        s.nextPulseAt = now + cadence;
+        // Effective damage and radius with multipliers
+        const radius = Math.max(12, s.radius * (areaMul || 1));
+        const r2 = radius * radius;
+        const dmg = Math.max(1, Math.round((s.pulseDamage || 0) * (gdm || 1)));
+        const x = s.x, y = s.y;
+        // Prefer spatial grid query for nearby enemies
+        const candidates = query(x, y, radius + 32);
+        for (let j = 0; j < candidates.length; j++) {
+          const e = candidates[j];
           if (!e.active || e.hp <= 0) continue;
-          const dx = e.x - s.x; const dy = e.y - s.y;
-          // Quick AABB cull before precise circle check
-          if (dx > r || dx < -r || dy > r || dy < -r) continue;
-          if (dx*dx + dy*dy <= r2){
-      this.takeDamage(e, s.pulseDamage * gdm, false, false, WeaponType.DATA_SIGIL);
-            // Brief magenta flash/shake for impact
-            const anyE:any = e as any; anyE._poisonFlashUntil = now + 80; // reuse green flash channel but we’ll tint magenta in draw
-            anyE._shakeAmp = Math.max(anyE._shakeAmp||0, 1.2); anyE._shakeUntil = now + 90; if (!anyE._shakePhase) anyE._shakePhase = Math.random()*10;
+          const dx = e.x - x; const dy = e.y - y;
+          if (dx > radius || dx < -radius || dy > radius || dy < -radius) continue;
+          if (dx*dx + dy*dy <= r2) {
+            this.takeDamage(e, dmg, false, false, WeaponType.DATA_SIGIL, x, y);
+            (e as any)._lastHitByWeapon = WeaponType.DATA_SIGIL;
           }
         }
-        // Boss parity: Data Sigil pulses also damage the boss if within radius
+        // Boss parity: apply pulse damage within radius
         try {
           const bm: any = (window as any).__bossManager;
           const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
           if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-            const dxB = boss.x - s.x; const dyB = boss.y - s.y;
-            // Quick AABB cull before circle check
-            if (!(dxB > r || dxB < -r || dyB > r || dyB < -r)) {
-              if (dxB*dxB + dyB*dyB <= r2) {
-                this.takeBossDamage(boss, s.pulseDamage * gdm, false, WeaponType.DATA_SIGIL, s.x, s.y);
-                const bAny: any = boss as any; bAny._poisonFlashUntil = now + 80; // reuse flash channel; draw tints by lastHit
-              }
+            const dxB = boss.x - x; const dyB = boss.y - y;
+            if (!(dxB > radius || dxB < -radius || dyB > radius || dyB < -radius)) {
+              if (dxB*dxB + dyB*dyB <= r2) this.takeBossDamage(boss, dmg, false, WeaponType.DATA_SIGIL, x, y);
             }
           }
         } catch { /* ignore */ }
-  // Emit golden sparks on pulse
-  try { this.particleManager?.spawn(s.x, s.y, 10, '#FFE066', { sizeMin: 1, sizeMax: 2.5, lifeMs: 360, speedMin: 1.2, speedMax: 2.6 }); } catch {}
+        // Visual micro-shockwave via ExplosionManager if available
+        try {
+          const game: any = (window as any).__gameInstance || (window as any).__game;
+          const ex = game && game.explosionManager;
+          if (ex && typeof ex.triggerShockwave === 'function') {
+            ex.triggerShockwave(x, y, 0, Math.max(8, Math.min(radius, 120)), '#FFEFA8');
+          }
+        } catch { /* ignore */ }
       }
-      if (s.pulsesLeft <= 0 && now > s.nextPulseAt + 200){ s.active = false; }
+      // Deactivate when exhausted
+      if (s.pulsesLeft <= 0) {
+        // Finale: massive knockback shockwave at the end of the sigil's life
+        try {
+          const game: any = (window as any).__gameInstance || (window as any).__game;
+          const ex = game && game.explosionManager;
+          // Damage is scaled off last pulse; radius scales with sigil radius
+          const finaleDmg = Math.max(1, Math.round((s.pulseDamage || 0) * 1.25));
+          const finaleR = Math.max(80, Math.min(360, Math.round((s.radius || 120) * 1.15)));
+          if (ex && typeof ex.triggerShockwave === 'function') {
+            ex.triggerShockwave(s.x, s.y, finaleDmg, finaleR, '#FFEFAA');
+          }
+          // Apply manual AoE damage with weapon context for enemy knockback
+          const r2 = finaleR * finaleR;
+          for (let j = 0; j < this.enemies.length; j++) {
+            const e = this.enemies[j]; if (!e.active) continue;
+            const dx = e.x - s.x, dy = e.y - s.y; const d2 = dx*dx + dy*dy;
+            if (d2 <= r2) {
+              this.takeDamage(e, finaleDmg, false, false, WeaponType.DATA_SIGIL, s.x, s.y);
+              // Extra outward impulse to sell the "massive knockback"
+              const d = Math.max(1, Math.sqrt(d2));
+              const nx = dx / d, ny = dy / d;
+              const boost = 2200; // tuned impulse
+              const existingRadial = ((e as any).knockbackVx || 0) * nx + ((e as any).knockbackVy || 0) * ny;
+              const added = boost * (existingRadial > 0 ? this.knockbackStackScale : 1);
+              const newMag = Math.min(this.knockbackMaxVelocity, Math.max(existingRadial, 0) + added);
+              (e as any).knockbackVx = nx * newMag; (e as any).knockbackVy = ny * newMag;
+              (e as any).knockbackTimer = Math.max((e as any).knockbackTimer || 0, this.knockbackBaseMs + 90);
+            }
+          }
+          // Boss also takes finale damage (rely on visual knockback minimalism for bosses)
+          try {
+            const bm: any = (window as any).__bossManager;
+            const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+            if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+              const dxB = boss.x - s.x, dyB = boss.y - s.y; if (dxB*dxB + dyB*dyB <= r2) this.takeBossDamage(boss, finaleDmg, false, WeaponType.DATA_SIGIL, s.x, s.y);
+            }
+          } catch { /* ignore */ }
+        } catch { /* ignore */ }
+        s.active = false;
+      }
     }
+    // Compact array to keep active set dense
+    // (We keep full array because draw uses index for animation variance, but prune inactive tails.)
+    // No full filter to avoid allocations; manual in-place compaction is cheap.
+    let w = 0;
+    for (let r = 0; r < this.dataSigils.length; r++) {
+      const s = this.dataSigils[r];
+      if (s.active) this.dataSigils[w++] = s;
+    }
+    this.dataSigils.length = w + (this.dataSigils.length - w); // keep length unchanged to preserve pools
   }
+
+  // Black Sun lifecycle temporarily stubbed for parser isolation
+  public spawnBlackSunSeed(x: number, y: number, params: { fuseMs:number; pullRadius:number; pullStrength:number; collapseRadius:number; slowPct:number; tickIntervalMs:number; ticks:number; tickDmg:number; collapseDmg:number }): void {
+    // Route to dedicated zone manager; legacy array no longer used
+    this.blackSunZones.spawn(x, y, {
+      fuseMs: params.fuseMs,
+      pullRadius: params.pullRadius,
+      pullStrength: params.pullStrength,
+      collapseRadius: params.collapseRadius,
+      slowPct: params.slowPct,
+      tickIntervalMs: params.tickIntervalMs,
+      ticks: params.ticks,
+      tickDmg: params.tickDmg,
+      collapseDmg: params.collapseDmg,
+    });
+  }
+  // Legacy updateBlackSunSeeds is superseded by BlackSunZoneManager; retained as no-op for compatibility
+  private updateBlackSunSeeds(_deltaMs: number): void { return; }
 
   /** Spawn a Rogue Hacker zone at x,y with radius; lasts lifeMs. */
   private spawnHackerZone(x:number, y:number, radius:number, lifeMs:number){
@@ -521,13 +747,28 @@ export class EnemyManager {
     let slow = 0;
     // Poison slow (existing)
     const eAny: any = e as any;
-  // Rogue Hacker paralysis: hard stop while active
-  const nowPar = performance.now();
-  if (eAny._paralyzedUntil && eAny._paralyzedUntil > nowPar) return 0;
+    // Rogue Hacker paralysis: hard stop while active
+    const nowPar = performance.now();
+    if (eAny._paralyzedUntil && eAny._paralyzedUntil > nowPar) return 0;
     if (eAny._poisonStacks) slow = Math.max(slow, Math.min(this.poisonSlowCap, (eAny._poisonStacks | 0) * this.poisonSlowPerStack));
+    // Evolved Bio (Living Sludge): guarantee a slimy minimum 20% slow while poisoned or standing in sludge
+    try {
+      const hasSludge = (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) === true;
+      if (hasSludge) {
+        const nowSlim = performance.now();
+        if ((eAny._poisonStacks > 0) || ((eAny._inSludgeUntil || 0) > nowSlim)) {
+          slow = Math.max(slow, 0.20);
+        }
+      }
+    } catch { /* ignore */ }
     // Psionic mark slow: flat 28% while active (buffed)
-  const now = performance.now();
-  if (eAny._psionicMarkUntil && eAny._psionicMarkUntil > now) slow = Math.max(slow, 0.28);
+    const now = performance.now();
+    if (eAny._psionicMarkUntil && eAny._psionicMarkUntil > now) slow = Math.max(slow, 0.28);
+    // Black Sun slow: apply while inside a seed
+    if (eAny._blackSunSlowUntil && eAny._blackSunSlowUntil > now) {
+      const pct = Math.max(0, Math.min(0.97, eAny._blackSunSlowPct || 0));
+      slow = Math.max(slow, pct);
+    }
     // Weaver Lattice slow: 70% slow to all enemies currently within lattice radius around player
     try {
       const until = (window as any).__weaverLatticeActiveUntil || 0;
@@ -537,6 +778,23 @@ export class EnemyManager {
         if (dx*dx + dy*dy <= r*r) slow = Math.max(slow, 0.70);
       }
     } catch {}
+    // Slow Aura passive: apply additional slow within radius
+    try {
+      const p: any = this.player as any;
+      const lvl = p?.slowAuraLevel | 0;
+      if (lvl > 0) {
+        const baseR = p.slowAuraBaseRadius ?? 352; // match PassiveConfig (60% buff)
+        const addR = p.slowAuraRadiusPerLevel ?? 48;
+        const strength = p.slowAuraStrength ?? (0.16 + lvl * 0.07);
+        // Scale with global Area passive so aura grows with Area Up
+        const areaMul = (typeof p.getGlobalAreaMultiplier === 'function') ? p.getGlobalAreaMultiplier() : (p.globalAreaMultiplier || 1);
+        const r = (baseR + addR * lvl) * (areaMul || 1);
+        const dx = e.x - this.player.x; const dy = e.y - this.player.y;
+        if (dx*dx + dy*dy <= r*r) {
+          slow = Math.max(slow, Math.min(0.85, Math.max(0, strength)));
+        }
+      }
+    } catch { /* ignore */ }
     return baseSpeed * (1 - slow);
   }
 
@@ -777,7 +1035,7 @@ export class EnemyManager {
 
   private preallocateGems(): void {
     for (let i = 0; i < 1200; i++) { // expanded pool to prevent reuse popping
-      this.gemPool.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, size: 0, value: 0, active: false, tier: 1, color: '#FFD700' });
+      this.gemPool.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, size: 0, value: 0, active: false, tier: 1, color: '#33E6FF' });
     }
   }
 
@@ -831,8 +1089,16 @@ export class EnemyManager {
   }
 
   public getGems() {
-    return this.gems.filter(g => g.active);
+    // Prefer cached activeGems to avoid per-frame filter allocations from UI (HUD/minimap)
+    if (this.activeGems && this.activeGems.length) return this.activeGems;
+    // Fallback for early frames
+    const out: Gem[] = [];
+    for (let i = 0; i < this.gems.length; i++) { const g = this.gems[i]; if (g.active) out.push(g); }
+    return out;
   }
+
+  /** Zero-allocation getter for currently active gems (rebuilt inside update). */
+  public getActiveGems(): Gem[] { return this.activeGems; }
 
   /** Begin 5s timed vacuum after boss kill */
   private startTimedVacuum() {
@@ -939,12 +1205,37 @@ export class EnemyManager {
       // Shred reduces effective armor, so damage increases; apply 12% bonus while active
       amount *= 1.12;
     }
+    // Rogue Hacker evolved vulnerability: amplify all incoming damage while inside zone (and a short linger)
+    try {
+      const now = performance.now();
+      const until = anyE._hackerVulnUntil || 0;
+      const linger = anyE._hackerVulnLingerMs || 0;
+      if (until > 0) {
+        const active = now <= until;
+        const recent = !active && linger > 0 && now <= (until + linger);
+        if (active || recent) {
+          const frac = Math.max(0, Math.min(1, Number(anyE._hackerVulnFrac || 0)));
+          if (frac > 0) amount *= (1 + frac);
+        }
+      }
+    } catch { /* ignore */ }
     enemy.hp -= amount;
+    // Global lifesteal passive: heal player for a fraction of damage dealt
+    try {
+      const p: any = this.player as any;
+      const ls = p?.lifestealFrac || 0;
+      if (ls > 0 && amount > 0) {
+        const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+        const eff = getHealEfficiency(timeSec);
+        const heal = amount * ls * eff;
+        if (heal > 0) p.hp = Math.min(p.maxHp || p.hp, p.hp + heal);
+      }
+    } catch { /* ignore heal errors */ }
     // Side-effect: apply burn on Blaster direct damage (initial hit only, not DoT ticks)
   if (sourceWeaponType === WeaponType.LASER && amount > 0) {
       this.applyBurn(enemy, amount * 0.10); // store per-tick damage reference (10% bullet damage per tick)
     }
-    if (sourceWeaponType !== undefined) {
+  if (sourceWeaponType !== undefined) {
       enemy._lastHitByWeapon = sourceWeaponType;
   // Bio Toxin no longer applies direct impact damage; stacks are applied via puddles/outbreak only
   // Apply armor shred on Scrap Lash hits: short 0.6s window
@@ -960,8 +1251,33 @@ export class EnemyManager {
        *   otherwise fall back to radial-from-player.
        */
   const spec = WEAPON_SPECS[sourceWeaponType];
-  // Do not apply knockback to Sandbox dummy targets
+  // Do not apply knockback to Sandbox dummy targets. Suppress for Void/Black Sun sources entirely,
+  // also for beam-style weapons (Railgun, Ghost Sniper), and whenever the target is inside any active Black Sun zone
+  // or within the short-lived spawn suppression ring.
+  let suppressKb = sourceWeaponType === WeaponType.VOID_SNIPER
+    || sourceWeaponType === WeaponType.BLACK_SUN
+    || sourceWeaponType === WeaponType.RAILGUN
+    || sourceWeaponType === WeaponType.GHOST_SNIPER
+    || sourceWeaponType === WeaponType.GUNNER_LAVA_MINIGUN; // continuous micro-beam should not push
+  if (!suppressKb) {
+    try { if (this.blackSunZones?.isPointWithinAny(enemy.x, enemy.y, 0)) suppressKb = true; } catch {}
+  }
+  // Hard block any knockback assignment for a brief moment in the spawn suppression ring
+  if (!suppressKb) {
+    try { if (this.blackSunZones?.shouldSuppressKnockbackAt?.(enemy.x, enemy.y)) suppressKb = true; } catch {}
+  }
+  // Respect per-enemy suppression window set at seed spawn
+  if (!suppressKb) {
+    try { const eAnyKb: any = enemy as any; if (eAnyKb._kbSuppressUntil && performance.now() < eAnyKb._kbSuppressUntil) suppressKb = true; } catch {}
+  }
+  // If enemy is currently under Black Sun slow influence, suppress knockback entirely
+  if (!suppressKb) {
+    try { const now = performance.now(); const eAnySl: any = enemy as any; if (eAnySl._blackSunSlowUntil && now < eAnySl._blackSunSlowUntil) suppressKb = true; } catch {}
+  }
   if (spec && !(enemy as any)._isDummy) {
+      if (suppressKb) {
+        const eClear: any = enemy as any; eClear.knockbackTimer = 0; eClear.knockbackVx = 0; eClear.knockbackVy = 0;
+      } else {
         // Choose knockback origin per weapon type
         const isBioTick = sourceWeaponType === WeaponType.BIO_TOXIN; // DoT ticks only; direct impact is zeroed elsewhere
         let sx: number; let sy: number;
@@ -1012,6 +1328,7 @@ export class EnemyManager {
         enemy.knockbackTimer = Math.max(enemy.knockbackTimer ?? 0, this.knockbackBaseMs + bonus);
       }
     }
+  }
   // Dispatch damage event with enemy world coordinates so floating damage text appears above the enemy
   window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount, isCritical, x: enemy.x, y: enemy.y } }));
   }
@@ -1033,6 +1350,17 @@ export class EnemyManager {
       amount *= 1.12;
     }
     boss.hp -= amount;
+    // Apply global lifesteal on boss damage as well
+    try {
+      const p: any = this.player as any;
+      const ls = p?.lifestealFrac || 0;
+      if (ls > 0 && amount > 0) {
+        const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+        const eff = getHealEfficiency(timeSec);
+        const heal = amount * ls * eff;
+        if (heal > 0) p.hp = Math.min(p.maxHp || p.hp, p.hp + heal);
+      }
+    } catch { /* ignore heal errors */ }
     boss._damageFlash = Math.max(10, (boss._damageFlash || 0));
     // Side-effects based on source weapon (limited for boss to avoid runaway)
   if (sourceWeaponType !== undefined) {
@@ -1053,8 +1381,26 @@ export class EnemyManager {
         bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
       }
       // --- Boss knockback parity (minimal on Bio poison ticks) ---
-      const spec = WEAPON_SPECS[sourceWeaponType];
-      if (spec) {
+  const spec = WEAPON_SPECS[sourceWeaponType];
+  let suppressKb = sourceWeaponType === WeaponType.VOID_SNIPER
+    || sourceWeaponType === WeaponType.BLACK_SUN
+    || sourceWeaponType === WeaponType.RAILGUN
+    || sourceWeaponType === WeaponType.GHOST_SNIPER
+    || sourceWeaponType === WeaponType.GUNNER_LAVA_MINIGUN; // continuous micro-beam should not push
+  if (!suppressKb) {
+    try { if (this.blackSunZones?.isPointWithinAny(boss.x, boss.y, 0)) suppressKb = true; } catch {}
+  }
+  if (!suppressKb) {
+    try { if (this.blackSunZones?.shouldSuppressKnockbackAt?.(boss.x, boss.y)) suppressKb = true; } catch {}
+  }
+  // Respect boss-specific suppression window
+  if (!suppressKb) {
+    try { if ((bAny as any)._kbSuppressUntil && performance.now() < (bAny as any)._kbSuppressUntil) suppressKb = true; } catch {}
+  }
+  if (spec) {
+      if (suppressKb) {
+        bAny.knockbackTimer = 0; bAny.knockbackVx = 0; bAny.knockbackVy = 0;
+      } else {
         const isBioTick = sourceWeaponType === WeaponType.BIO_TOXIN;
         // choose origin
         let sx: number; let sy: number;
@@ -1087,9 +1433,144 @@ export class EnemyManager {
         bAny.knockbackTimer = Math.max(bAny.knockbackTimer || 0, this.knockbackBaseMs + bonus);
       }
     }
+  }
     // Emit particle + DPS event
     try { this.particleManager?.spawn(boss.x, boss.y, 1, isCritical ? '#ffcccc' : '#ffd280'); } catch {}
     try { window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount, isCritical, x: boss.x, y: boss.y } })); } catch {}
+  }
+
+  /**
+   * Spectral Executioner: Resolve a specter mark with an on‑target AoE pulse (no beam),
+   * then optionally chain smaller pulses to nearby still‑marked targets. Clears marks as it resolves.
+   * reason is 'expire' when the timer runs out or 'death' when the target dies while marked.
+   */
+  private executeSpecterExecution(primary: Enemy, reason: 'expire' | 'death'): void {
+    if (!primary) return;
+    const now = performance.now();
+    const pAny: any = primary as any;
+    // Guard: only once per mark
+    if (!pAny._specterMarkUntil && !pAny._specterMarkFrom) return;
+    // Capture stored origin (unused for AoE, kept for potential directional effects)
+    const origin = (pAny._specterMarkFrom as { x: number; y: number; time: number } | undefined) || { x: this.player.x, y: this.player.y, time: now };
+    // Clear mark on the primary before dealing damage to avoid double triggers
+    pAny._specterMarkUntil = 0;
+    pAny._specterMarkFrom = undefined;
+
+    // Compute execution damage anchored to Ghost Sniper L7 baseline with heavy multiplier and global damage
+    const gsSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
+    const gsL7 = gsSpec?.getLevelStats ? gsSpec.getLevelStats(7) : { damage: (gsSpec?.damage ?? 220) } as any;
+    const baseShot = (gsL7?.damage as number) || 220;
+    const heavyMult = 1.6;
+    const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+    const base = baseShot * heavyMult * gdm;
+    const execSpec: any = (WEAPON_SPECS as any)[WeaponType.SPECTRAL_EXECUTIONER];
+    const stats = execSpec?.getLevelStats ? execSpec.getLevelStats(1) : { execMult: 2.2, chainCount: 2, chainMult: 0.6 };
+    const execMult = Math.max(0.1, stats.execMult || 2.2);
+    const chainCount = Math.max(0, stats.chainCount || 0);
+    const chainMult = Math.max(0, Math.min(1, stats.chainMult || 0.6));
+  const execDamage = Math.max(1, Math.round(base * execMult));
+  const chainDamage = Math.max(1, Math.round(execDamage * chainMult));
+  const noRepeatMs = Math.max(600, Math.round((stats.markMs || 1200) * 1.5));
+
+    // On‑target AoE pulse for primary mark (no beam)
+    try {
+      const game: any = (window as any).__gameInstance || (window as any).gameInstance;
+      const ex = game && game.explosionManager;
+      if (ex && typeof ex.triggerShockwave === 'function') {
+        // Radius +50% for a bigger pop; color in gold palette
+        ex.triggerShockwave(primary.x, primary.y, execDamage, 165, '#FFD199');
+      } else {
+        // Fallback: direct damage if explosion manager is unavailable
+        this.takeDamage(primary, execDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y);
+      }
+      // Light particles for feedback
+      this.particleManager?.spawn(primary.x, primary.y, 4, '#FFE6AA', { sizeMin: 1, sizeMax: 2, lifeMs: 240, speedMin: 0.7, speedMax: 1.4 });
+    } catch { /* ignore AoE errors */ }
+    // Set per-target no-repeat window to avoid re-marking/executing same target immediately
+    try { (pAny as any)._specterNoRepeatUntil = now + noRepeatMs; } catch {}
+
+    // Chain to nearby marked targets
+    if (chainCount > 0 && chainDamage > 0) {
+      // Build candidate list: active, alive, still-marked enemies excluding primary
+      const candidates: Enemy[] = [];
+      const nowMs = now;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e = this.activeEnemies[i];
+        if (!e.active || e === primary || e.hp <= 0) continue;
+        const a: any = e as any;
+        if ((a._specterMarkUntil || 0) > nowMs) candidates.push(e);
+      }
+      // Sort by distance from primary
+      candidates.sort((a, b) => {
+        const da = (a.x - primary.x) * (a.x - primary.x) + (a.y - primary.y) * (a.y - primary.y);
+        const db = (b.x - primary.x) * (b.x - primary.x) + (b.y - primary.y) * (b.y - primary.y);
+        return da - db;
+      });
+      // Limit by radius to avoid full-screen chains
+      const chainRadius = 380;
+      const r2 = chainRadius * chainRadius;
+      let chained = 0;
+      for (let i = 0; i < candidates.length && chained < chainCount; i++) {
+        const e = candidates[i];
+        const dx = e.x - primary.x, dy = e.y - primary.y;
+        if (dx * dx + dy * dy > r2) continue;
+        const a: any = e as any;
+        // Clear the mark immediately to prevent re-entry
+        a._specterMarkUntil = 0; a._specterMarkFrom = undefined;
+        // On-target AoE pulse for each chained mark
+        try {
+          const game: any = (window as any).__gameInstance || (window as any).gameInstance;
+          const ex = game && game.explosionManager;
+          if (ex && typeof ex.triggerShockwave === 'function') {
+            ex.triggerShockwave(e.x, e.y, chainDamage, 135, '#FFE8B3');
+          } else {
+            this.takeDamage(e, chainDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, primary.x, primary.y);
+          }
+          this.particleManager?.spawn(e.x, e.y, 3, '#FFE6AA', { sizeMin: 0.8, sizeMax: 1.6, lifeMs: 200, speedMin: 0.6, speedMax: 1.1 });
+        } catch { /* ignore */ }
+        try { (e as any)._specterNoRepeatUntil = now + noRepeatMs; } catch {}
+        chained++;
+      }
+    }
+  }
+
+  /** Boss parity: execute Spectral Executioner mark on the boss (no chain). */
+  private executeBossSpecterExecution(reason: 'expire' | 'death'): void {
+    try {
+      const bm: any = (window as any).__bossManager;
+      const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+      if (!boss || !boss.active || boss.hp <= 0 || boss.state !== 'ACTIVE') return;
+      const bAny: any = boss as any;
+      const until = bAny._specterMarkUntil || 0;
+      if (!(until > 0)) return;
+      // Consume mark
+      const origin = (bAny._specterMarkFrom as { x:number;y:number;time:number } | undefined) || { x: this.player.x, y: this.player.y, time: performance.now() };
+      bAny._specterMarkUntil = 0; bAny._specterMarkFrom = undefined;
+      // Damage like primary execute
+      const gsSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
+      const gsL7 = gsSpec?.getLevelStats ? gsSpec.getLevelStats(7) : { damage: (gsSpec?.damage ?? 220) } as any;
+      const baseShot = (gsL7?.damage as number) || 220;
+      const heavyMult = 1.6;
+      const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+      const base = baseShot * heavyMult * gdm;
+      const execSpec: any = (WEAPON_SPECS as any)[WeaponType.SPECTRAL_EXECUTIONER];
+      const stats = execSpec?.getLevelStats ? execSpec.getLevelStats(1) : { execMult: 2.2 };
+  const execDamage = Math.max(1, Math.round(base * Math.max(0.1, stats.execMult || 2.2)));
+  const noRepeatMs = Math.max(600, Math.round(((stats as any).markMs || 1200) * 1.5));
+
+      // On‑target AoE pulse on boss (no chain)
+      try {
+        const game: any = (window as any).__gameInstance || (window as any).gameInstance;
+        const ex = game && game.explosionManager;
+        if (ex && typeof ex.triggerShockwave === 'function') {
+          ex.triggerShockwave(boss.x, boss.y, execDamage, 180, '#FFD199');
+        } else {
+          this.takeBossDamage(boss, execDamage, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y);
+        }
+        this.particleManager?.spawn(boss.x, boss.y, 5, '#FFE6AA', { sizeMin: 1, sizeMax: 2.2, lifeMs: 240, speedMin: 0.8, speedMax: 1.4 });
+      } catch { /* ignore AoE errors */ }
+      try { (bAny as any)._specterNoRepeatUntil = performance.now() + noRepeatMs; } catch {}
+    } catch { /* ignore */ }
   }
 
   /** Apply or refresh poison on boss (reduced slow cap same as enemies). */
@@ -1101,7 +1582,7 @@ export class EnemyManager {
       b._poisonNextTick = now + this.poisonTickIntervalMs;
       b._poisonExpire = now + this.poisonDurationMs;
     }
-    b._poisonStacks = Math.min(this.poisonMaxStacks, (b._poisonStacks || 0) + stacks);
+  b._poisonStacks = Math.min(this.getPoisonMaxStacks(), (b._poisonStacks || 0) + stacks);
     b._poisonExpire = now + this.poisonDurationMs;
   }
 
@@ -1113,17 +1594,35 @@ export class EnemyManager {
     if (now >= b._poisonNextTick) {
       b._poisonNextTick += this.poisonTickIntervalMs;
       const stacks = b._poisonStacks | 0; if (stacks <= 0) return;
-      // Scale like enemies: level + global damage multiplier
-      let level = 1; try { level = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN) ?? 1; } catch {}
-      const levelMul = 1 + Math.max(0, (level - 1)) * 0.35;
-  const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
-      const dps = this.poisonDpsPerStack * levelMul * dmgMul * stacks;
-      const perTick = dps * (this.poisonTickIntervalMs / 1000);
+      // Scale like enemies: consider evolved Living Sludge level when present and add evolved multiplier
+      let level = 1;
+      try {
+        const ls = this.player?.activeWeapons?.get(WeaponType.LIVING_SLUDGE);
+        const bt = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN);
+        level = (ls ?? bt ?? 1);
+      } catch {}
+      // Steepen level curve for "massive damage potential" when evolved
+      const hasSludge = (() => { try { return (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) === true; } catch { return false; } })();
+      const baseLevelMul = 1 + Math.max(0, (level - 1)) * (hasSludge ? 0.55 : 0.35);
+      // Additional evolved baseline multiplier
+      const evolvedMul = hasSludge ? 1.35 : 1.0;
+      // In-sludge contact amp for ticks while boss stands in sludge
+      const inSludgeAmp = (b as any)._inSludgeUntil && now < (b as any)._inSludgeUntil ? 1.20 : 1.0;
+      const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+      const dps = this.poisonDpsPerStack * baseLevelMul * evolvedMul * inSludgeAmp * dmgMul * stacks;
+  const perTick = dps * (this.poisonTickIntervalMs / 1000);
       this.takeBossDamage(boss, perTick, false, WeaponType.BIO_TOXIN, boss.x, boss.y);
   // Progressive toxicity on boss: each tick adds +1 stack (up to cap)
   this.applyBossPoison(boss, 1);
       // Visual: reuse green flash channel
       b._poisonFlashUntil = now + 120;
+      // Slimy FX: tiny neon-green droplets on evolved poison ticks
+      try {
+        const hasSludgeFX = (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) === true;
+        if (hasSludgeFX && this.particleManager) {
+          this.particleManager.spawn(boss.x, boss.y, 2, '#66FF6A', { sizeMin: 0.8, sizeMax: 1.6, lifeMs: 260, speedMin: 0.6, speedMax: 1.6 });
+        }
+      } catch { /* ignore */ }
     }
   }
 
@@ -1188,7 +1687,7 @@ export class EnemyManager {
       e._poisonNextTick = now + this.poisonTickIntervalMs;
       e._poisonExpire = now + this.poisonDurationMs;
     }
-    e._poisonStacks = Math.min(this.poisonMaxStacks, (e._poisonStacks || 0) + stacks);
+  e._poisonStacks = Math.min(this.getPoisonMaxStacks(), (e._poisonStacks || 0) + stacks);
     e._poisonExpire = now + this.poisonDurationMs; // refresh duration on application
   }
 
@@ -1205,17 +1704,31 @@ export class EnemyManager {
         const stacks = e._poisonStacks | 0;
         if (stacks > 0) {
       // Convert per-second DPS into per-tick damage.
-      // Scale Bio Toxin DoT with weapon level and global damage multiplier so DoT is the primary scaler.
+      // Scale DoT primarily via weapon level with stronger curve when evolved.
       const perStackBase = this.poisonDpsPerStack;
       let level = 1;
-      try { level = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN) ?? 1; } catch {}
-      const levelMul = 1 + Math.max(0, (level - 1)) * 0.35; // +35% per level after L1 (L7 ~ 3.1x)
-  const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
-      const dps = perStackBase * levelMul * dmgMul * stacks;
+      try {
+        const ls = this.player?.activeWeapons?.get(WeaponType.LIVING_SLUDGE);
+        const bt = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN);
+        level = (ls ?? bt ?? 1);
+      } catch {}
+      const hasSludge = (() => { try { return (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) === true; } catch { return false; } })();
+      const baseLevelMul = 1 + Math.max(0, (level - 1)) * (hasSludge ? 0.55 : 0.35);
+      const evolvedMul = hasSludge ? 1.35 : 1.0;
+      const inSludgeAmp = (e as any)._inSludgeUntil && now < (e as any)._inSludgeUntil ? 1.20 : 1.0;
+      const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+      const dps = perStackBase * baseLevelMul * evolvedMul * inSludgeAmp * dmgMul * stacks;
           const perTick = dps * (this.poisonTickIntervalMs / 1000);
           this.takeDamage(e as Enemy, perTick, false, false, WeaponType.BIO_TOXIN);
           // Progressive toxicity: each tick increases stacks by +1 (up to cap)
           this.applyPoison(e as Enemy, 1);
+          // Slimy FX: tiny neon-green droplets on evolved poison ticks
+          try {
+            const hasSludgeFX = (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) === true;
+            if (hasSludgeFX && this.particleManager) {
+              this.particleManager.spawn(e.x, e.y, 2, '#66FF6A', { sizeMin: 0.8, sizeMax: 1.6, lifeMs: 240, speedMin: 0.6, speedMax: 1.6 });
+            }
+          } catch { /* ignore */ }
           // Visual feedback: brief green flash + micro-shake
           e._poisonFlashUntil = now + 120;
           if (!e._shakePhase) e._shakePhase = Math.random() * 10;
@@ -1300,10 +1813,10 @@ export class EnemyManager {
     }
   }
 
-  public spawnPoisonPuddle(x: number, y: number, radius: number = 32, lifeMs: number = 3000) {
+  public spawnPoisonPuddle(x: number, y: number, radius: number = 32, lifeMs: number = 3000, options?: { isSludge?: boolean, potency?: number }) {
     let puddle = this.poisonPuddles.find(p => !p.active);
   if (!puddle) {
-    puddle = { x, y, radius: radius, life: lifeMs, maxLife: lifeMs, active: true };
+    puddle = { x, y, radius: radius, life: lifeMs, maxLife: lifeMs, active: true, vx: 0, vy: 0, isSludge: !!(options?.isSludge), potency: options?.potency ?? 0 };
       this.poisonPuddles.push(puddle);
     } else {
       puddle.x = x;
@@ -1312,10 +1825,48 @@ export class EnemyManager {
     puddle.life = lifeMs;
     puddle.maxLife = lifeMs;
       puddle.active = true;
+      puddle.vx = 0; puddle.vy = 0;
+      puddle.isSludge = !!(options?.isSludge);
+      puddle.potency = options?.potency ?? 0;
     }
   }
 
   private updatePoisonPuddles(deltaMs: number) {
+    const now = performance.now();
+    // Flow pass for sludge
+    for (const puddle of this.poisonPuddles) {
+      if (!puddle.active) continue;
+      if (puddle.isSludge) {
+        let tx: number | null = null, ty: number | null = null;
+        let bestD2 = Infinity;
+        for (let i = 0; i < this.activeEnemies.length; i++) {
+          const e = this.activeEnemies[i]; if (!e.active || e.hp <= 0) continue;
+          const dx = e.x - puddle.x; const dy = e.y - puddle.y; const d2 = dx*dx + dy*dy;
+          if (d2 < bestD2) { bestD2 = d2; tx = e.x; ty = e.y; }
+        }
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+          if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+            const dxB = boss.x - puddle.x; const dyB = boss.y - puddle.y; const d2B = dxB*dxB + dyB*dyB;
+            if (d2B < bestD2) { bestD2 = d2B; tx = boss.x; ty = boss.y; }
+          }
+        } catch { /* ignore */ }
+        if (tx != null && ty != null && bestD2 > 9) {
+          const dist = Math.sqrt(bestD2) || 1;
+          const dirX = (tx - puddle.x) / dist;
+          const dirY = (ty - puddle.y) / dist;
+          const basePxPerMs = 1.2 / 16.67; // ~0.072 px/ms
+          const pot = Math.max(0, puddle.potency || 0);
+          // Evolved sludge puddles were moving too fast — apply a 0.4x speed cut for sludge
+          let speed = basePxPerMs * (1 + pot * 0.18);
+          if (puddle.isSludge) speed *= 0.4;
+          const step = speed * deltaMs;
+          puddle.x += dirX * step;
+          puddle.y += dirY * step;
+        }
+      }
+    }
     for (const puddle of this.poisonPuddles) {
       if (!puddle.active) continue;
     puddle.life -= deltaMs;
@@ -1332,11 +1883,10 @@ export class EnemyManager {
         if (dist < puddle.radius + enemy.radius) {
           // Seed poison if not present; otherwise, refresh duration while standing in the puddle
           const eAny: any = enemy as any;
-          if (!eAny._poisonStacks || eAny._poisonStacks <= 0) {
-            this.applyPoison(enemy, 1);
-          } else {
-            eAny._poisonExpire = performance.now() + this.poisonDurationMs;
-          }
+          const stacksToApply = puddle.isSludge ? 2 : 1;
+          if (!eAny._poisonStacks || eAny._poisonStacks <= 0) this.applyPoison(enemy, stacksToApply);
+          else { eAny._poisonExpire = now + this.poisonDurationMs; if (puddle.isSludge) this.applyPoison(enemy, 1); }
+          if (puddle.isSludge) eAny._inSludgeUntil = Math.max(eAny._inSludgeUntil || 0, now + 220);
           didDamage = true; // Still track if damage was dealt for visual feedback
         }
       }
@@ -1349,18 +1899,55 @@ export class EnemyManager {
           const rBoss = (boss.radius || 160);
           if (dxB*dxB + dyB*dyB <= (puddle.radius + rBoss) * (puddle.radius + rBoss)) {
             const bAny: any = boss as any;
-            if (!bAny._poisonStacks || bAny._poisonStacks <= 0) {
-              this.applyBossPoison(boss, 1);
-            } else {
-              bAny._poisonExpire = performance.now() + this.poisonDurationMs;
-            }
+            const stacksToApply = puddle.isSludge ? 2 : 1;
+            if (!bAny._poisonStacks || bAny._poisonStacks <= 0) this.applyBossPoison(boss, stacksToApply);
+            else { bAny._poisonExpire = now + this.poisonDurationMs; if (puddle.isSludge) this.applyBossPoison(boss, 1); }
+            if (puddle.isSludge) bAny._inSludgeUntil = Math.max(bAny._inSludgeUntil || 0, now + 220);
             didDamage = true;
           }
         }
       } catch { /* ignore */ }
       // Visual feedback if puddle is damaging
       if (didDamage && this.particleManager) {
-        this.particleManager.spawn(puddle.x, puddle.y, 1, '#00FF00');
+        this.particleManager.spawn(puddle.x, puddle.y, 1, puddle.isSludge ? '#66FF6A' : '#00FF00');
+      }
+    }
+  // Merge pass: allow more merges under good performance for exciting chain reactions
+  // Make growth easier: raise merge budget across perf tiers
+  let mergesLeft = (this.avgFrameMs > 40) ? 6 : (this.avgFrameMs > 28) ? 10 : (this.avgFrameMs > 18) ? 16 : 24;
+    for (let i = 0; i < this.poisonPuddles.length && mergesLeft > 0; i++) {
+      const a = this.poisonPuddles[i]; if (!a.active || !a.isSludge) continue;
+      for (let j = i + 1; j < this.poisonPuddles.length && mergesLeft > 0; j++) {
+        const b = this.poisonPuddles[j]; if (!b.active || !b.isSludge) continue;
+        const dx = b.x - a.x; const dy = b.y - a.y; const d2 = dx*dx + dy*dy;
+        const minDist = a.radius + b.radius;
+        if (d2 <= minDist * minDist) {
+          const areaA = a.radius * a.radius; const areaB = b.radius * b.radius;
+          // Growth model (easier): absorb a larger fraction of the secondary puddle's area, with gentler damping near cap.
+          const cap = this.maxSludgeRadiusCap;
+          const capArea = cap * cap;
+          const near = Math.min(0.9999, areaA / Math.max(1, capArea));
+          const potA = Math.max(0, a.potency || 0);
+          const potB = Math.max(0, b.potency || 0);
+          const potSum = potA + potB;
+          // Base absorb fraction increased (0.25), potency boosts more, and near-cap damping is less punitive
+          const baseFrac = 0.25;
+          const potBoost = Math.min(0.14, 0.012 * potSum);
+          const nearDampen = Math.max(0.35, 1 - near * 0.6); // retain growth near cap for more satisfying merges
+          const absorbFrac = Math.max(0.10, Math.min(0.45, (baseFrac + potBoost) * nearDampen));
+          const gained = areaB * absorbFrac;
+          const newArea = Math.min(capArea, areaA + gained);
+          const newR = Math.sqrt(newArea);
+          a.x = (a.x * areaA + b.x * areaB) / (areaA + areaB);
+          a.y = (a.y * areaA + b.y * areaB) / (areaA + areaB);
+          // Hard cap at 800 radius (absolute). Keep consuming other puddles but clamp size at cap.
+          a.radius = Math.min(newR, cap);
+          a.life = Math.max(a.life, b.life);
+          a.maxLife = Math.max(a.maxLife, b.maxLife);
+      a.potency = (a.potency || 0) + (b.potency || 0) + 1;
+          b.active = false;
+          mergesLeft--;
+        }
       }
     }
   }
@@ -1439,6 +2026,56 @@ export class EnemyManager {
   // Psionic Weaver Lattice: draw a large pulsing slow zone around the player while active (behind enemies)
   try {
     const until = (window as any).__weaverLatticeActiveUntil || 0;
+  // Bio Boost visual: neon green speed aura + streaks while active (Shift ability for Bio Engineer)
+  try {
+    const bbUntil = (window as any).__bioBoostActiveUntil || 0;
+    const nowB = performance.now();
+    if (bbUntil > nowB) {
+      const px = this.player.x, py = this.player.y;
+      if (!(px < minX - 300 || px > maxX + 300 || py < minY - 300 || py > maxY + 300)) {
+        const tLeft = Math.max(0, Math.min(1, (bbUntil - nowB) / 2000));
+        const pulse = 1 + Math.sin(nowB * 0.015) * 0.08;
+        const baseR = 56;
+        const r = baseR * (0.9 + 0.2 * tLeft) * pulse;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        // Outer aura ring
+        ctx.globalAlpha = 0.28;
+        ctx.shadowColor = '#73FF00';
+        ctx.shadowBlur = 18;
+        ctx.strokeStyle = '#B6FF00';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.stroke();
+        // Inner glow disk
+        const grad = ctx.createRadialGradient(px, py, 6, px, py, r * 0.9);
+        grad.addColorStop(0, 'rgba(182,255,0,0.22)');
+        grad.addColorStop(1, 'rgba(182,255,0,0)');
+        ctx.globalAlpha = 0.22;
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(px, py, r * 0.92, 0, Math.PI * 2); ctx.fill();
+        // Speed streaks along velocity
+        const vx = this.player.vx || 0; const vy = this.player.vy || 0;
+        const spd = Math.hypot(vx, vy);
+        if (spd > 0.01) {
+          const ang = Math.atan2(vy, vx) + Math.PI; // tail behind motion
+          const streaks = 6;
+          const len = Math.min(180, 60 + spd * 12);
+          for (let s = 0; s < streaks; s++) {
+            const offA = ang + ((s - (streaks - 1) / 2) * 0.12);
+            const x0 = px + Math.cos(offA) * (r * 0.5);
+            const y0 = py + Math.sin(offA) * (r * 0.5);
+            const x1 = x0 + Math.cos(offA) * len;
+            const y1 = y0 + Math.sin(offA) * len;
+            ctx.globalAlpha = 0.20 * (1 - s / streaks);
+            ctx.strokeStyle = s % 2 === 0 ? '#ADFF2F' : '#73FF00';
+            ctx.lineWidth = 2 - (s * 0.12);
+            ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+          }
+        }
+        ctx.restore();
+      }
+    }
+  } catch { /* ignore */ }
   // Bio Outbreak visual: radioactive biohazard styling (layered glow ring + hazard stripes + trefoil arcs + floating spores)
   try {
     const now2 = performance.now();
@@ -1544,43 +2181,56 @@ export class EnemyManager {
       }
     }
   } catch { /* ignore */ }
-  // Draw Data Sigils below enemies (golden, glitchy magical)
+  // Draw Black Sun zones via dedicated manager (replaces legacy seed draw)
+  try { this.blackSunZones.draw(ctx); } catch {}
+  // Draw Data Sigils below enemies (divine golden laser-tech look)
   for (let i=0;i<this.dataSigils.length;i++){
     const s = this.dataSigils[i]; if (!s.active) continue;
     if (s.x < minX || s.x > maxX || s.y < minY || s.y > maxY) continue;
     ctx.save();
     const t = (performance.now() - s.created) / 1000;
-    // Base golden rings with slight RGB offset for glitch shimmer
+    // Base rings: layered divine gold with additive blend
     ctx.globalCompositeOperation = 'screen';
+    // Outer soft halo
+    ctx.globalAlpha = 0.16;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 1.04, 0, Math.PI*2); ctx.strokeStyle = '#FFF6C2'; ctx.lineWidth = 4; ctx.shadowColor = '#FFF6C2'; ctx.shadowBlur = 18; ctx.stroke();
+    // Main ring
     ctx.globalAlpha = 0.22;
-    ctx.beginPath(); ctx.arc(s.x-1, s.y, s.radius, 0, Math.PI*2); ctx.strokeStyle = '#FFD280'; ctx.lineWidth = 2.5; ctx.shadowColor = '#FFD280'; ctx.shadowBlur = 10; ctx.stroke();
-    ctx.globalAlpha = 0.18;
-    ctx.beginPath(); ctx.arc(s.x+1, s.y, s.radius*0.985, 0, Math.PI*2); ctx.strokeStyle = '#FFF2A8'; ctx.lineWidth = 2; ctx.shadowColor = '#FFF2A8'; ctx.shadowBlur = 8; ctx.stroke();
-    ctx.globalAlpha = 0.14;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius*1.02, 0, Math.PI*2); ctx.strokeStyle = '#FFC94D'; ctx.lineWidth = 1.5; ctx.stroke();
-    // Rotating glyph spokes (golden)
-    ctx.globalAlpha = 0.36;
-    const spokes = 6; const len = s.radius * 0.9;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI*2); ctx.strokeStyle = '#FFEFA8'; ctx.lineWidth = 3; ctx.shadowColor = '#FFE066'; ctx.shadowBlur = 14; ctx.stroke();
+    // Inner glow ring
+    ctx.globalAlpha = 0.2;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 0.94, 0, Math.PI*2); ctx.strokeStyle = '#FFD977'; ctx.lineWidth = 2; ctx.shadowColor = '#FFD977'; ctx.shadowBlur = 8; ctx.stroke();
+    // Laser spokes: crisp beams emanating from inner ring
+    ctx.globalAlpha = 0.34;
+    const spokes = 8; const inner = s.radius * 0.22; const len = s.radius * 0.96;
     for (let k=0;k<spokes;k++){
       const ang = s.spin + (Math.PI*2*k/spokes);
-      ctx.beginPath();
-      ctx.moveTo(s.x + Math.cos(ang)* (s.radius*0.2), s.y + Math.sin(ang)*(s.radius*0.2));
-      ctx.lineTo(s.x + Math.cos(ang)* len, s.y + Math.sin(ang)* len);
-      ctx.strokeStyle = '#FFE066'; ctx.lineWidth = 1.5; ctx.stroke();
+      const sx = s.x + Math.cos(ang) * inner; const sy = s.y + Math.sin(ang) * inner;
+      const ex = s.x + Math.cos(ang) * len;   const ey = s.y + Math.sin(ang) * len;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey);
+      ctx.strokeStyle = '#FFF2B3'; ctx.lineWidth = 2; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 10; ctx.stroke();
     }
-    // Pulse wave (brief expanding golden ring)
-    const phase = Math.max(0, 1 - (s.nextPulseAt - performance.now())/420);
+    // Rotating rune arcs along the perimeter (techy feel)
+    ctx.globalAlpha = 0.26;
+    const arcCount = 5;
+    for (let a=0;a<arcCount;a++){
+      const base = s.spin * 0.8 + a * (Math.PI * 2 / arcCount);
+      const sweep = Math.PI * 0.18;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 0.85, base, base + sweep);
+      ctx.strokeStyle = '#FFF8D1'; ctx.lineWidth = 2; ctx.stroke();
+    }
+    // Pulse wave: expanding ring synced to nextPulseAt
+    const phase = Math.max(0, 1 - (s.nextPulseAt - performance.now())/((s as any).cadenceMs ?? 420));
     ctx.globalAlpha = 0.28 * phase;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius*phase, 0, Math.PI*2); ctx.strokeStyle = '#FFEFA8'; ctx.lineWidth = 3; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 14; ctx.stroke();
-    // Tiny sparkle crosses orbiting (non-expensive: 4 marks)
-    ctx.globalAlpha = 0.32;
+    ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(6, s.radius * phase), 0, Math.PI*2); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 3; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 16; ctx.stroke();
+    // Floating crosses: minimal count for performance
+    ctx.globalAlpha = 0.28;
     const marks = 4;
     for (let m=0;m<marks;m++){
-      const ang = s.spin*1.7 + m * (Math.PI*2/marks);
-      const rad = s.radius * (0.35 + 0.5 * ((m%2)?1:0.85));
-      const mx = s.x + Math.cos(ang)*rad;
-      const my = s.y + Math.sin(ang)*rad;
-      ctx.strokeStyle = '#FFF8C9'; ctx.lineWidth = 1;
+      const ang = s.spin*1.4 + m * (Math.PI*2/marks);
+      const rad = s.radius * (0.42 + 0.46 * ((m%2)?1:0.85));
+      const mx = s.x + Math.cos(ang)*rad; const my = s.y + Math.sin(ang)*rad;
+      ctx.strokeStyle = '#FFFCE6'; ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.moveTo(mx-3, my); ctx.lineTo(mx+3, my); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(mx, my-3); ctx.lineTo(mx, my+3); ctx.stroke();
     }
@@ -1594,33 +2244,52 @@ export class EnemyManager {
     if (age > z.lifeMs) continue; // will be culled in update
     if (z.x < minX || z.x > maxX || z.y < minY || z.y > maxY) continue;
     const t = age / z.lifeMs;
-    const pulse = 1 + Math.sin(now * 0.02 + i) * 0.08;
+    const pulse = 1 + Math.sin(now * 0.02 + i) * 0.10;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
+    // Determine palette: base (orange) or evolved Backdoor (dark neon red)
+    let colRing = '#FF9A1F', colGlow = '#FF9A1F', colFill = '#FF7700', colPulse = '#FFD891', colLink = '#FFA500', colText = '#FFF0C2', colSpoke = '#FFAA55';
+    let glitch1 = '#ff2a2a', glitch2 = '#2aff2a', glitch3 = '#2a66ff';
+    try {
+      const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+      if (aw && aw.has(WeaponType.HACKER_BACKDOOR)) {
+        // Dark neon red theme
+        colRing = '#FF1133';
+        colGlow = '#FF3355';
+        colFill = '#550011';
+        colPulse = '#FF5577';
+        colLink = '#FF3355';
+        colText = '#FFD0DC';
+        colSpoke = '#FF5577';
+        glitch1 = '#ff2a2a';
+        glitch2 = '#ff2ae6';
+        glitch3 = '#ff6699';
+      }
+    } catch { /* ignore */ }
     // Stronger ring and subtle fill so it stands out on bright backgrounds
-    ctx.globalAlpha = 0.28 * (1 - t);
+    ctx.globalAlpha = 0.34 * (1 - t);
     ctx.beginPath();
     ctx.arc(z.x, z.y, z.radius * pulse, 0, Math.PI * 2);
-    ctx.strokeStyle = '#FFA500'; // orange virus ring
-    ctx.lineWidth = 4;
-    ctx.shadowColor = '#FFA500';
-    ctx.shadowBlur = 16;
+    ctx.strokeStyle = colRing; // ring color
+    ctx.lineWidth = 6;
+    ctx.shadowColor = colGlow;
+    ctx.shadowBlur = 22;
     ctx.stroke();
     // RGB glitch ring: slight channel offsets for brain‑fry vibe
-    ctx.globalAlpha = 0.22 * (1 - t);
-    const r = z.radius * (0.92 + 0.06 * Math.sin(now * 0.025 + i));
-    ctx.lineWidth = 1.6;
+    ctx.globalAlpha = 0.26 * (1 - t);
+    const r = z.radius * (0.90 + 0.08 * Math.sin(now * 0.025 + i));
+    ctx.lineWidth = 2.0;
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = '#ff2a2a'; ctx.beginPath(); ctx.arc(z.x - 1, z.y, r, 0, Math.PI*2); ctx.stroke();
-    ctx.strokeStyle = '#2aff2a'; ctx.beginPath(); ctx.arc(z.x, z.y, r*0.985, 0, Math.PI*2); ctx.stroke();
-    ctx.strokeStyle = '#2a66ff'; ctx.beginPath(); ctx.arc(z.x + 1, z.y, r, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = glitch1; ctx.beginPath(); ctx.arc(z.x - 1, z.y, r, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = glitch2; ctx.beginPath(); ctx.arc(z.x, z.y, r*0.985, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle = glitch3; ctx.beginPath(); ctx.arc(z.x + 1, z.y, r, 0, Math.PI*2); ctx.stroke();
     // faint fill
-    ctx.globalAlpha = 0.12 * (1 - t);
+    ctx.globalAlpha = 0.16 * (1 - t);
     ctx.beginPath(); ctx.arc(z.x, z.y, z.radius * 0.92, 0, Math.PI*2);
-    ctx.fillStyle = '#FF7700';
+    ctx.fillStyle = colFill;
     ctx.fill();
     // Hacker code glyphs + command text (adaptive count under load)
-    ctx.globalAlpha = 0.22 * (1 - t);
+    ctx.globalAlpha = 0.28 * (1 - t);
     const seed = (z.seed || 0);
     const frameMs = this.avgFrameMs || 16;
     const glyphs = frameMs > 40 ? 4 : frameMs > 28 ? 8 : 12;
@@ -1647,9 +2316,9 @@ export class EnemyManager {
       ctx.translate(gx, gy);
       ctx.rotate(ang + Math.PI/2);
       // Neon glow text
-      ctx.shadowColor = '#FFD280';
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = '#FFE6AA';
+      ctx.shadowColor = colPulse;
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = colText;
       if (text) ctx.fillText(text, -text.length*3, 0);
       ctx.restore();
     }
@@ -1657,36 +2326,56 @@ export class EnemyManager {
     if ((z.pulseUntil || 0) > now) {
       const left = Math.max(0, Math.min(1, (z.pulseUntil! - now) / 220));
       const r = z.radius * (1.0 + (1 - left) * 0.35);
-      ctx.globalAlpha = 0.40 * left;
+      ctx.globalAlpha = 0.48 * left;
       ctx.beginPath();
       ctx.arc(z.x, z.y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = '#FFD280';
-      ctx.lineWidth = 2;
-      ctx.shadowColor = '#FFD280';
-      ctx.shadowBlur = 10;
+      ctx.strokeStyle = colPulse;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = colPulse;
+      ctx.shadowBlur = 14;
       ctx.stroke();
       // Hack-link line (very brief)
-      ctx.globalAlpha = 0.18 * left;
+      ctx.globalAlpha = 0.24 * left;
       ctx.beginPath();
       ctx.moveTo(this.player.x, this.player.y);
       ctx.lineTo(z.x, z.y);
-      ctx.strokeStyle = '#FFA500';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = colLink;
+      ctx.lineWidth = 2.5;
       ctx.shadowBlur = 6;
       ctx.stroke();
+      // Code burst rays
+      ctx.globalAlpha = 0.18 * left;
+      const rays = 8;
+      for (let m=0;m<rays;m++){
+        const ang = (seed*0.017 + m) * (Math.PI*2/rays) + now*0.0015;
+        ctx.beginPath();
+        ctx.moveTo(z.x + Math.cos(ang) * (z.radius*0.3), z.y + Math.sin(ang) * (z.radius*0.3));
+        ctx.lineTo(z.x + Math.cos(ang) * r, z.y + Math.sin(ang) * r);
+        ctx.strokeStyle = colSpoke; ctx.lineWidth = 1.5; ctx.stroke();
+      }
     }
     // Circuit spokes (low-cost): 6 short lines rotating slowly
-    ctx.globalAlpha = 0.18 * (1 - t);
+    ctx.globalAlpha = 0.22 * (1 - t);
     const spokes = 6; const inner = z.radius * 0.25; const outer = z.radius * 0.85;
     for (let k=0;k<spokes;k++){
       const ang = (now * 0.002) + (Math.PI * 2 * k / spokes) + i * 0.37;
       ctx.beginPath();
       ctx.moveTo(z.x + Math.cos(ang) * inner, z.y + Math.sin(ang) * inner);
       ctx.lineTo(z.x + Math.cos(ang) * outer, z.y + Math.sin(ang) * outer);
-      ctx.strokeStyle = '#FFAA55';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = colSpoke;
+      ctx.lineWidth = 2.0;
       ctx.stroke();
     }
+    // Vulnerability tint overlay (subtle) when evolved spec is present
+    try {
+      const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+      if (aw && aw.has(WeaponType.HACKER_BACKDOOR)) {
+        ctx.globalAlpha = 0.08 * (1 - t);
+        ctx.beginPath(); ctx.arc(z.x, z.y, z.radius*0.86, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255, 0, 64, 0.8)';
+        ctx.fill();
+      }
+    } catch { /* ignore */ }
     ctx.restore();
   }
   // Rogue Hacker ultimate VFX (global): brief expanding RGB EMP ring + code burst
@@ -1701,13 +2390,25 @@ export class EnemyManager {
       // Outer RGB split rings
       ctx.globalAlpha = 0.45 * (1 - t);
       ctx.lineWidth = 6;
-      ctx.strokeStyle = '#ff2a2a'; ctx.beginPath(); ctx.arc(fx.x - 2, fx.y, r, 0, Math.PI*2); ctx.stroke();
-      ctx.strokeStyle = '#2aff2a'; ctx.beginPath(); ctx.arc(fx.x, fx.y, r*0.985, 0, Math.PI*2); ctx.stroke();
-      ctx.strokeStyle = '#2a66ff'; ctx.beginPath(); ctx.arc(fx.x + 2, fx.y, r, 0, Math.PI*2); ctx.stroke();
+      // If evolved Backdoor is owned, switch to dark neon red mono-ring aesthetic
+      let evolved = false;
+      try { const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined; evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR)); } catch {}
+      if (evolved) {
+        ctx.strokeStyle = '#FF1333'; ctx.beginPath(); ctx.arc(fx.x, fx.y, r, 0, Math.PI*2); ctx.stroke();
+      } else {
+        ctx.strokeStyle = '#ff2a2a'; ctx.beginPath(); ctx.arc(fx.x - 2, fx.y, r, 0, Math.PI*2); ctx.stroke();
+        ctx.strokeStyle = '#2aff2a'; ctx.beginPath(); ctx.arc(fx.x, fx.y, r*0.985, 0, Math.PI*2); ctx.stroke();
+        ctx.strokeStyle = '#2a66ff'; ctx.beginPath(); ctx.arc(fx.x + 2, fx.y, r, 0, Math.PI*2); ctx.stroke();
+      }
       // Inner glow disk
       const grad = ctx.createRadialGradient(fx.x, fx.y, Math.max(6, r*0.2), fx.x, fx.y, r);
-      grad.addColorStop(0, 'rgba(255,200,120,0.35)');
-      grad.addColorStop(1, 'rgba(255,200,120,0)');
+      if (evolved) {
+        grad.addColorStop(0, 'rgba(255,32,64,0.35)');
+        grad.addColorStop(1, 'rgba(255,32,64,0)');
+      } else {
+        grad.addColorStop(0, 'rgba(255,200,120,0.35)');
+        grad.addColorStop(1, 'rgba(255,200,120,0)');
+      }
       ctx.globalAlpha = 0.35 * (1 - t);
       ctx.fillStyle = grad;
       ctx.beginPath(); ctx.arc(fx.x, fx.y, r, 0, Math.PI*2); ctx.fill();
@@ -1722,7 +2423,8 @@ export class EnemyManager {
         const tx = fx.x + Math.cos(ang) * (r*0.7);
         const ty = fx.y + Math.sin(ang) * (r*0.7);
         ctx.save(); ctx.translate(tx, ty); ctx.rotate(ang);
-        ctx.shadowColor = '#FFD280'; ctx.shadowBlur = 12; ctx.fillStyle = '#FFE6AA';
+        if (evolved) { ctx.shadowColor = '#FF3355'; ctx.shadowBlur = 12; ctx.fillStyle = '#FFB3C0'; }
+        else { ctx.shadowColor = '#FFD280'; ctx.shadowBlur = 12; ctx.fillStyle = '#FFE6AA'; }
         const text = cmds[k % cmds.length];
         ctx.fillText(text, -ctx.measureText(text).width/2, 0);
         ctx.restore();
@@ -1734,6 +2436,12 @@ export class EnemyManager {
   // Draw enemies (cached sprite images if enabled)
     // Compute heavy FX budget per frame: start at 32 and scale down under load
     const frameMsForBudget = this.avgFrameMs || 16;
+    // Count visible enemies once to scale budgets accurately
+    let visibleEnemies = 0;
+    for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
+      const e = this.activeEnemies[i];
+      if (e.x >= minX && e.x <= maxX && e.y >= minY && e.y <= maxY) visibleEnemies++;
+    }
     // Global low-FX detection (not just SANDBOX) and load guard
   const sandboxLow = !!((window as any).__gameInstance?.gameMode === 'SANDBOX' && (window as any).__sandboxForceLowFX);
   const globalLow = !!((window as any).__lowFX);
@@ -1743,11 +2451,11 @@ export class EnemyManager {
   let heavyBudget = fxLow
       ? 0
       : (frameMsForBudget > 55 ? 8 : frameMsForBudget > 40 ? 16 : 32);
-    // Cap to a fraction of visible enemies to avoid worst-case storms
-    heavyBudget = Math.min(heavyBudget, Math.ceil(this.activeEnemies.length * 0.25));
+  // Cap to a fraction of visible enemies to avoid worst-case storms
+  heavyBudget = Math.min(heavyBudget, Math.ceil(visibleEnemies * 0.25));
     // Per-frame budget for RGB glitch ghost overlays (expensive overdraw)
   let glitchBudget = fxLow ? 0 : (frameMsForBudget > 55 ? 4 : frameMsForBudget > 40 ? 8 : 12);
-    glitchBudget = Math.min(glitchBudget, Math.ceil(this.activeEnemies.length * 0.15));
+  glitchBudget = Math.min(glitchBudget, Math.ceil(visibleEnemies * 0.15));
     if (this.usePreRenderedSprites) {
   for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
         const enemy = this.activeEnemies[i];
@@ -1930,7 +2638,7 @@ export class EnemyManager {
             ctx.beginPath();
             ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
             // If last hit was from Data Sigil use golden; Psionic Wave remains magenta; else green for poison
-            const tint = (lastHit === WeaponType.DATA_SIGIL) ? '#FFD700' : (lastHit === WeaponType.PSIONIC_WAVE ? '#FF00FF' : '#00FF00');
+            const tint = (lastHit === WeaponType.DATA_SIGIL) ? '#33E6FF' : (lastHit === WeaponType.PSIONIC_WAVE ? '#FF00FF' : '#00FF00');
             ctx.fillStyle = tint;
             ctx.shadowColor = tint;
             ctx.shadowBlur = 10;
@@ -2001,7 +2709,7 @@ export class EnemyManager {
             ctx.globalAlpha = 0.22;
             ctx.beginPath();
             ctx.arc(enemy.x + shakeX, enemy.y + shakeY, enemy.radius * 1.05, 0, Math.PI * 2);
-            const tint = (lastHit === WeaponType.DATA_SIGIL) ? '#FFD700' : (lastHit === WeaponType.PSIONIC_WAVE ? '#FF00FF' : '#00FF00');
+            const tint = (lastHit === WeaponType.DATA_SIGIL) ? '#33E6FF' : (lastHit === WeaponType.PSIONIC_WAVE ? '#FF00FF' : '#00FF00');
             ctx.fillStyle = tint;
             ctx.shadowColor = tint;
             ctx.shadowBlur = 10;
@@ -2011,38 +2719,46 @@ export class EnemyManager {
         }
       }
     }
-    /**
-     * Draws a fast 5-pointed star at (x, y) with given radius and color.
-     * @param ctx CanvasRenderingContext2D
-     * @param x Center X
-     * @param y Center Y
-     * @param r Outer radius
-     * @param color Fill color
-     */
-    function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, color: string) {
-      ctx.save();
-      ctx.beginPath();
+    // Lazy-build a crisp sprite for a given tier color and nominal radius (no fuzzy yellow glow)
+    const getGemSprite = (tier: number, color: string, baseR: number): HTMLCanvasElement => {
+      const key = (tier|0);
+      const existing = this.gemSprites.get(key);
+      if (existing) return existing;
+      const r = Math.max(3, Math.round(baseR));
+      const margin = Math.ceil(r * 0.4); // tighter margin since we removed outer glow
+      const size = (r + margin) * 2;
+      const cnv = document.createElement('canvas'); cnv.width = size; cnv.height = size;
+      const c = cnv.getContext('2d');
+      if (!c) { this.gemSprites.set(key, cnv); return cnv; }
+      const cx = size >> 1, cy = size >> 1;
+      // Core star shape (crisp, no shadowBlur or golden gradient)
+      c.globalAlpha = 1;
+      c.fillStyle = color;
       const spikes = 5, step = Math.PI / spikes;
+      c.beginPath();
       for (let i = 0; i < spikes * 2; i++) {
         const rad = i % 2 === 0 ? r : r * 0.45;
         const angle = i * step - Math.PI / 2;
-        ctx.lineTo(x + Math.cos(angle) * rad, y + Math.sin(angle) * rad);
+        c.lineTo(cx + Math.cos(angle) * rad, cy + Math.sin(angle) * rad);
       }
-      ctx.closePath();
-      ctx.fillStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 8;
-      ctx.fill();
-      ctx.restore();
-    }
+      c.closePath(); c.fill();
+      // Thin outline to improve contrast on bright backgrounds
+      try {
+        c.strokeStyle = 'rgba(255,255,255,0.75)';
+        c.lineWidth = Math.max(1, Math.round(r * 0.08));
+        c.stroke();
+      } catch {}
+      this.gemSprites.set(key, cnv);
+      return cnv;
+    };
     // XP Gems — add last-10s stutter (alpha flicker + tiny jitter/pulse)
-    const nowMsG = performance.now();
+  const nowMsG = performance.now();
     for (let i = 0, len = this.gems.length; i < len; i++) {
       const gem = this.gems[i];
       if (!gem.active) continue;
       if (gem.x < minX || gem.x > maxX || gem.y < minY || gem.y > maxY) continue;
-      let gx = gem.x, gy = gem.y;
-      let r = gem.size;
+  let gx = gem.x, gy = gem.y;
+  let r = gem.size;
       let alpha = 1;
       const lifeAbs = (gem as any).lifeMs as number | undefined;
       if (typeof lifeAbs === 'number') {
@@ -2061,8 +2777,10 @@ export class EnemyManager {
           alpha = (Math.floor(nowMsG / 120) & 1) === 0 ? 1 : 0.45;
         }
       }
-      ctx.globalAlpha = alpha;
-      drawStar(ctx, gx, gy, r, gem.color);
+  // Draw pre-rendered sprite
+  ctx.globalAlpha = alpha;
+  const sprite = getGemSprite(gem.tier, gem.color, r);
+  try { ctx.drawImage(sprite, Math.round(gx - sprite.width / 2), Math.round(gy - sprite.height / 2)); } catch {}
     }
     ctx.globalAlpha = 1;
     for (let i = 0, len = this.chests.length; i < len; i++) {
@@ -2181,14 +2899,91 @@ export class EnemyManager {
       const puddle = this.poisonPuddles[i];
       if (!puddle.active) continue;
       ctx.save();
-      const alpha = puddle.life / puddle.maxLife; // Fade out over time
-      ctx.globalAlpha = alpha * 0.6; // Max 60% opacity
-      ctx.beginPath();
-      ctx.arc(puddle.x, puddle.y, puddle.radius, 0, Math.PI * 2);
-      ctx.fillStyle = '#00FF00'; // Green color for poison
-      ctx.shadowColor = '#00FF00';
-      ctx.shadowBlur = 15;
-      ctx.fill();
+      const alpha = Math.max(0, Math.min(1, puddle.life / puddle.maxLife));
+      if (puddle.isSludge) {
+        // Living Sludge: neon green slimy gradient with wobble and bright rim
+        const wob = 1.0 + Math.sin((performance.now() + i * 120) * 0.004) * 0.06;
+        const r = puddle.radius * wob;
+        ctx.globalAlpha = alpha * 0.48;
+        const grad = ctx.createRadialGradient(puddle.x, puddle.y, r * 0.30, puddle.x, puddle.y, r);
+        grad.addColorStop(0.0, 'rgba(102,255,106,0.55)');
+        grad.addColorStop(1.0, 'rgba(0,160,0,0.00)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(puddle.x, puddle.y, r, 0, Math.PI * 2);
+        ctx.fill();
+        // Rim
+        ctx.globalAlpha = alpha * 0.60;
+        ctx.strokeStyle = 'rgba(90,240,95,0.65)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(puddle.x, puddle.y, r * 0.98, 0, Math.PI * 2);
+        ctx.stroke();
+        // Boiling overlay: bubbles + ripples (adaptive under load)
+        try {
+          const nowB = performance.now();
+          const frameMs = this.avgFrameMs || 16;
+          const budget = frameMs > 40 ? 0 : (frameMs > 28 ? 1 : 2);
+          // Bubbles
+          const baseCount = Math.min(6, Math.max(2, Math.floor(r / 28)));
+          const count = Math.max(0, baseCount - (budget === 0 ? 2 : budget === 1 ? 1 : 0));
+          ctx.globalCompositeOperation = 'screen';
+          for (let b = 0; b < count; b++) {
+            // Stable pseudo-random per puddle/index using sin hash
+            const seed = (i * 131 + b * 977) >>> 0;
+            const t = (nowB * 0.001 + (seed % 1000) * 0.001) % 1;
+            const ang = ((seed % 628) / 100) + nowB * 0.0007;
+            const rad = r * (0.15 + 0.65 * ((seed >> 3) % 100) / 100);
+            const bx = puddle.x + Math.cos(ang) * rad * 0.6;
+            // Rise from bottom to top
+            const by = puddle.y + (0.45 - t) * r * 0.9;
+            const br = (2 + ((seed >> 5) % 3)) * (1 + 0.15 * Math.sin(nowB * 0.02 + b));
+            ctx.globalAlpha = 0.25 * alpha;
+            ctx.fillStyle = 'rgba(200,255,200,0.18)';
+            ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+            ctx.globalAlpha = 0.32 * alpha;
+            ctx.strokeStyle = 'rgba(190,255,190,0.35)';
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(bx, by, br * (1 + 0.15 * Math.sin(nowB * 0.03 + seed)), 0, Math.PI * 2); ctx.stroke();
+          }
+          // Ripples: one expanding ring every ~700ms
+          const phase = ((nowB + i * 137) % 700) / 700;
+          const rr = r * (0.20 + 0.75 * phase);
+          ctx.globalAlpha = 0.16 * alpha * (1 - phase);
+          ctx.strokeStyle = 'rgba(160,255,160,0.55)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(puddle.x, puddle.y + r * 0.12, rr, 0, Math.PI * 2); ctx.stroke();
+          ctx.globalCompositeOperation = 'source-over';
+        } catch { /* ignore */ }
+      } else {
+        ctx.globalAlpha = alpha * 0.60;
+        ctx.beginPath();
+        ctx.arc(puddle.x, puddle.y, puddle.radius, 0, Math.PI * 2);
+        ctx.fillStyle = '#00FF00';
+        ctx.shadowColor = '#00FF00';
+        ctx.shadowBlur = 15;
+        ctx.fill();
+        // Light boiling for regular poison (cheaper)
+        try {
+          const nowB = performance.now();
+          const frameMs = this.avgFrameMs || 16;
+          if (frameMs <= 28) {
+            const r = puddle.radius;
+            const bubbles = Math.max(1, Math.min(3, Math.floor(r / 36)));
+            ctx.globalCompositeOperation = 'screen';
+            for (let b = 0; b < bubbles; b++) {
+              const t = ((nowB * 0.0015) + (i * 0.17) + b * 0.31) % 1;
+              const ang = nowB * 0.0009 + b;
+              const bx = puddle.x + Math.cos(ang) * r * 0.4;
+              const by = puddle.y + (0.5 - t) * r * 0.8;
+              const br = 1.6 + (b % 2);
+              ctx.globalAlpha = 0.18 * alpha; ctx.fillStyle = 'rgba(180,255,180,0.15)';
+              ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.globalCompositeOperation = 'source-over';
+          }
+        } catch { /* ignore */ }
+      }
       ctx.restore();
     }
     ctx.restore();
@@ -2243,7 +3038,7 @@ export class EnemyManager {
   // Timed special spawns (items/treasures) in real games
   this.tryScheduledSpecialSpawns(nowFrame);
 
-    // Rogue Hacker: auto-cast a paralysis/DoT zone every 1.5s, but only one active zone at a time.
+  // Rogue Hacker: auto-cast a paralysis/DoT zone on cadence, but only one active zone at a time.
     try {
       const isHacker = (this.player as any)?.characterData?.id === 'rogue_hacker';
       if (isHacker) {
@@ -2274,12 +3069,43 @@ export class EnemyManager {
 
           // Only spawn zone if we found a valid target within range
           if (bestD2 <= maxRangeSq) {
-            this.spawnHackerZone(tx, ty, 120, 2000);
-            this.hackerAutoCooldownUntil = nowFrame + 1500;
+            // Pull evolved spec, if present, to widen zone and extend life
+            let r = 120, life = 2000, cdMs = 1500;
+            try {
+              const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+              const evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
+              if (evolved) {
+                const spec: any = (WEAPON_SPECS as any)[WeaponType.HACKER_BACKDOOR];
+                const s = spec?.getLevelStats ? spec.getLevelStats(1) : undefined;
+                if (s) { r = s.zoneRadius||r; life = s.zoneLifeMs||life; cdMs = Math.max(900, Math.round((s.dotTickMs||500) * 3)); }
+              }
+            } catch { /* ignore */ }
+            // Scale with global Area multiplier
+            try { const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1); r *= (areaMul||1); } catch {}
+            this.spawnHackerZone(tx, ty, r, life);
+            this.hackerAutoCooldownUntil = nowFrame + cdMs;
           }
         }
       }
     } catch { /* ignore */ }
+
+  // Evolved Rogue Hacker pending chain spawns
+  try {
+    if (this.pendingHackerZoneSpawns.length) {
+      const now = nowFrame;
+      let w = 0;
+      for (let i=0; i<this.pendingHackerZoneSpawns.length; i++){
+        const p = this.pendingHackerZoneSpawns[i];
+        if (!p) continue;
+        if (now >= p.at) {
+          this.spawnHackerZone(p.x, p.y, p.radius, p.lifeMs);
+        } else {
+          this.pendingHackerZoneSpawns[w++] = p;
+        }
+      }
+      this.pendingHackerZoneSpawns.length = w;
+    }
+  } catch { /* ignore */ }
 
   // Update enemies
     // Determine chase target. During Ghost cloak, enemies follow the snapshot at cloak start.
@@ -2376,7 +3202,20 @@ export class EnemyManager {
       }
   // Hacker zones contact handled in a dedicated pass below for better cache behavior
       // Apply knockback velocity if active
+  // If enemy is under Black Sun pull, suppress any knockback so pull dominates
+  let suppressKbByBlackSun = false;
   if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
+    try { if (this.blackSunZones?.isPointWithinAny(enemy.x, enemy.y, 0)) suppressKbByBlackSun = true; } catch {}
+  }
+  const nowKb = performance.now();
+  const suppressWindow = (enemy as any)._kbSuppressUntil && (nowKb < (enemy as any)._kbSuppressUntil);
+  // Additionally suppress during short-lived spawn ring to remove the first-frame outward bump
+  let suppressBySpawnRing = false;
+  try { if (this.blackSunZones?.shouldSuppressKnockbackAt?.(enemy.x, enemy.y)) suppressBySpawnRing = true; } catch {}
+  // Additionally, if Black Sun slow is active, suppress movement knockback
+  let suppressBySlow = false;
+  try { const now = performance.now(); const eAny3: any = enemy as any; if (eAny3._blackSunSlowUntil && now < eAny3._blackSunSlowUntil) suppressBySlow = true; } catch {}
+  if (enemy.knockbackTimer && enemy.knockbackTimer > 0 && !suppressKbByBlackSun && !suppressWindow && !suppressBySpawnRing && !suppressBySlow) {
         const dtSec = effectiveDelta / 1000;
         // Recompute outward direction each frame so knockback always moves enemy further from hero
         let kdx = enemy.x - playerX;
@@ -2411,7 +3250,13 @@ export class EnemyManager {
         enemy.knockbackVy = kny * newSpeed;
         enemy.knockbackTimer -= effectiveDelta;
         if (enemy.knockbackTimer < 0) enemy.knockbackTimer = 0;
-      } else {
+  } else {
+        // Clear any residual knockback when suppression is active so enemies don't "pop" after window
+        if (suppressKbByBlackSun || suppressWindow || suppressBySpawnRing || suppressBySlow) {
+          enemy.knockbackVx = 0;
+          enemy.knockbackVy = 0;
+          enemy.knockbackTimer = 0;
+        }
         enemy.knockbackVx = 0;
         enemy.knockbackVy = 0;
         enemy.knockbackTimer = 0;
@@ -2446,6 +3291,19 @@ export class EnemyManager {
         const clamped = rm.clampToWalkable(enemy.x, enemy.y, enemy.radius || 20);
         enemy.x = clamped.x; enemy.y = clamped.y;
       }
+      // Spectral Executioner: if a specter mark expired on a still-alive target, trigger execution now
+      {
+        const anyE: any = enemy as any;
+        const until = anyE._specterMarkUntil || 0;
+        if (until > 0 && nowFrame >= until && enemy.hp > 0) {
+          // Fire execution from stored origin (falls back to player location if missing)
+          try { this.executeSpecterExecution(enemy, 'expire'); } catch { /* ignore */ }
+        }
+      }
+      // Boss parity: also trigger boss mark expiry executes (checked once per loop cheaply)
+      try {
+        this.executeBossSpecterExecution('expire');
+      } catch { /* ignore */ }
       // Player-enemy collision (do not apply for Sandbox dummies)
       if (dist < enemy.radius + this.player.radius) {
         const isDummy = (enemy as any)._isDummy === true;
@@ -2457,24 +3315,36 @@ export class EnemyManager {
           (enemy as any)._lastPlayerHitTime = now;
           // Clamp enemy damage into 1-10 range
           const dmg = Math.min(10, Math.max(1, enemy.damage || 1));
-          this.player.takeDamage(dmg);
-          // Apply small knockback to player away from enemy
-          const kdx = (this.player.x - enemy.x);
-          const kdy = (this.player.y - enemy.y);
-          const kd = Math.hypot(kdx, kdy) || 1;
-          const kb = 24; // pixels immediate displacement
-          this.player.x += (kdx / kd) * kb;
-          this.player.y += (kdy / kd) * kb;
+          // Skip damage during revive cinematic
+          const reviving = !!(window as any).__reviveCinematicActive;
+          if (!reviving) this.player.takeDamage(dmg);
+          // Skip knockback while reviving (player is unhittable/immovable during revive)
+          if (!reviving) {
+            // Apply small knockback to player away from enemy
+            const kdx = (this.player.x - enemy.x);
+            const kdy = (this.player.y - enemy.y);
+            const kd = Math.hypot(kdx, kdy) || 1;
+            const kb = 24; // pixels immediate displacement
+            this.player.x += (kdx / kd) * kb;
+            this.player.y += (kdy / kd) * kb;
+          }
         }
         }
       }
   // Bullet collisions handled centrally in BulletManager.update now (removed duplicate per-enemy pass)
       // Death handling
       if (enemy.hp <= 0 && enemy.active) {
+        // Spectral Executioner: if the dying enemy is marked, trigger death execution + chain before pooling
+        try {
+          const eAny: any = enemy as any;
+          if (eAny._specterMarkUntil || eAny._specterMarkFrom) {
+            this.executeSpecterExecution(enemy, 'death');
+          }
+        } catch { /* ignore */ }
         const isDummy = (enemy as any)._isDummy === true;
         enemy.active = false;
         // Skip on dummy targets
-        if (!isDummy) {
+  if (!isDummy) {
           // Poison contagion: on death with significant stacks, spread a portion to nearby enemies
         const eAny: any = enemy as any;
   const stacks = eAny._poisonStacks | 0;
@@ -2489,6 +3359,41 @@ export class EnemyManager {
               this.applyPoison(o, addStacks);
             }
           }
+          // Evolved Rogue Hacker: chain new zones on kill if victim was inside a hacker zone
+          try {
+            const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+            if (aw && aw.has(WeaponType.HACKER_BACKDOOR)) {
+              // Check if within any active hacker zone at the moment of death
+              let inZone = false;
+              let baseRadius = 120, lifeMs = 2000, chainCount = 0, chainRadius = 0, chainDelayMs = 0;
+              try {
+                const spec: any = (WEAPON_SPECS as any)[WeaponType.HACKER_BACKDOOR];
+                const s = spec?.getLevelStats ? spec.getLevelStats(1) : undefined;
+                if (s) { baseRadius = s.zoneRadius||120; lifeMs = s.zoneLifeMs||2000; chainCount = s.chainCount|0; chainRadius = s.chainRadius|0; chainDelayMs = s.chainDelayMs|0; }
+              } catch {}
+              for (let zi=0; zi<this.hackerZones.length; zi++){
+                const z = this.hackerZones[zi]; if (!z.active) continue;
+                const dx = enemy.x - z.x, dy = enemy.y - z.y; const rr = z.radius + (enemy.radius||0);
+                if (dx*dx + dy*dy <= rr*rr) { inZone = true; break; }
+              }
+              if (inZone && chainCount > 0) {
+                // Find up to N nearest enemies to seed new zones on
+                const nearby = this.enemySpatialGrid.query(enemy.x, enemy.y, Math.max(chainRadius, 200));
+                const cands: {e: Enemy; d2:number}[] = [];
+                for (let j=0; j<nearby.length; j++){
+                  const e2 = nearby[j]; if (!e2.active || e2.hp <= 0 || e2 === enemy) continue;
+                  const dx2 = e2.x - enemy.x, dy2 = e2.y - enemy.y; const d2 = dx2*dx2 + dy2*dy2;
+                  if (chainRadius <= 0 || d2 <= chainRadius*chainRadius) cands.push({ e: e2, d2 });
+                }
+                cands.sort((a,b)=>a.d2-b.d2);
+                const nowC = performance.now();
+                for (let k=0; k<Math.min(chainCount, cands.length); k++){
+                  const host = cands[k].e;
+                  this.pendingHackerZoneSpawns.push({ x: host.x, y: host.y, radius: baseRadius, lifeMs, at: nowC + chainDelayMs + k*40 });
+                }
+              }
+            }
+          } catch { /* ignore */ }
         }
           // XP orb drop chance per enemy type (fewer total orbs to smooth pacing)
           let dropChance = 0.5;
@@ -2510,9 +3415,11 @@ export class EnemyManager {
         const playerAny: any = this.player as any;
         if (playerAny.hasAoeOnKill && !isDummy) {
           const gdm = playerAny.getGlobalDamageMultiplier?.() ?? (playerAny.globalDamageMultiplier ?? 1);
-          const dmg = (this.player.bulletDamage || 10) * gdm * 0.4; // 40% scaled
+          const frac = playerAny.aoeOnKillDamageFrac ?? 0.4;
+          const dmg = (this.player.bulletDamage || 10) * gdm * frac;
           const areaMul = playerAny.getGlobalAreaMultiplier?.() ?? (playerAny.globalAreaMultiplier ?? 1);
-          const radius = 70 * (areaMul || 1); // modest radius to avoid chain wipes
+          const baseR = playerAny.aoeOnKillRadiusBase ?? 70;
+          const radius = baseR * (areaMul || 1); // modest radius to avoid chain wipes
           const game: any = (window as any).__gameInstance || (window as any).gameInstance;
           if (game && game.explosionManager && typeof game.explosionManager.triggerExplosion === 'function') {
             game.explosionManager.triggerExplosion(enemy.x, enemy.y, dmg, undefined, radius, '#FFAA33');
@@ -2537,12 +3444,44 @@ export class EnemyManager {
       const nowHz = nowFrame;
       // Precompute weapon level and damage multiplier once
       let lvl = 1;
+      let evolved = false;
+  let tracePulseMs = 0;
+  let tracePulseFrac = 0;
+  let vulnFrac = 0;
+  let vulnLingerMs = 0;
+  let paralyzeMsOverride: number | undefined = undefined;
+      let dotTicksOverride: number | undefined = undefined;
+      let dotTickMsOverride: number | undefined = undefined;
+  // Sustained DPS parameters
+  let sustainDps = 0;
+  let sustainTickMs = 0;
       try {
         const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
-        if (aw && typeof aw.get === 'function') lvl = aw.get(WeaponType.HACKER_VIRUS) || 1;
+        if (aw && typeof aw.get === 'function') {
+          if (aw.has(WeaponType.HACKER_BACKDOOR)) { evolved = true; }
+          lvl = aw.get(WeaponType.HACKER_VIRUS) || aw.get(WeaponType.HACKER_BACKDOOR) || 1;
+        }
       } catch {}
       const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
       const perTickBase = Math.max(8, Math.round((10 + lvl * 7) * gdm));
+      // If evolved, fetch spec-derived overrides once
+      if (evolved) {
+        try {
+          const spec: any = (WEAPON_SPECS as any)[WeaponType.HACKER_BACKDOOR];
+          const s = spec?.getLevelStats ? spec.getLevelStats(1) : undefined;
+          if (s) {
+            paralyzeMsOverride = s.paralyzeMs|0;
+            dotTicksOverride = s.dotTicks|0;
+            dotTickMsOverride = s.dotTickMs|0;
+            tracePulseMs = s.tracePulseMs|0;
+            tracePulseFrac = Number(s.tracePulseFrac||0) || 0;
+            vulnFrac = Number(s.vulnFrac||0) || 0;
+            vulnLingerMs = Number(s.vulnLingerMs||0) || 0;
+            sustainDps = Math.max(0, Number(s.sustainDps||0) || 0);
+            sustainTickMs = Math.max(60, Number(s.sustainTickMs||0) || 0);
+          }
+        } catch { /* ignore */ }
+      }
       // Process only active zones and only if within lifetime
       for (let zi = 0; zi < this.hackerZones.length; zi++) {
         const z = this.hackerZones[zi];
@@ -2564,10 +3503,19 @@ export class EnemyManager {
           if (dx*dx + dy*dy <= rr * rr) {
             anyE._lastHackerStamp = stamp;
             // Apply paralysis and schedule DoT
-            anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowHz + 1500);
-            anyE._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
+            const parMs = (paralyzeMsOverride ?? 1500);
+            const tickMs = (dotTickMsOverride ?? 500);
+            const ticks = (dotTicksOverride ?? 3);
+            anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowHz + parMs);
+            anyE._hackerDot = { nextTick: nowHz + tickMs, ticksLeft: ticks, perTick: perTickBase, cadenceMs: tickMs } as any;
             anyE._rgbGlitchUntil = nowHz + 260;
             anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 1) % 7;
+            // Evolved: apply vulnerability while in zone (and linger briefly after exit)
+            if (vulnFrac > 0) {
+              anyE._hackerVulnUntil = Math.max(anyE._hackerVulnUntil || 0, nowHz + Math.max(tickMs, 180));
+              anyE._hackerVulnFrac = vulnFrac;
+              anyE._hackerVulnLingerMs = Math.max(0, vulnLingerMs|0);
+            }
             (e as any)._lastHitByWeapon = WeaponType.HACKER_VIRUS;
           }
         }
@@ -2582,30 +3530,70 @@ export class EnemyManager {
               const rBoss = (boss.radius || 160);
               if (dxB*dxB + dyB*dyB <= (rEff + rBoss) * (rEff + rBoss)) {
                 bAny._lastHackerStamp = stamp;
-                bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, nowHz + 1200);
-                bAny._hackerDot = { nextTick: nowHz + 500, ticksLeft: 3, perTick: perTickBase };
+                const parMsB = (paralyzeMsOverride ?? 1200);
+                const tickMsB = (dotTickMsOverride ?? 500);
+                const ticksB = (dotTicksOverride ?? 3);
+                bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, nowHz + parMsB);
+                bAny._hackerDot = { nextTick: nowHz + tickMsB, ticksLeft: ticksB, perTick: perTickBase, cadenceMs: tickMsB } as any;
                 bAny._rgbGlitchUntil = nowHz + 260;
                 bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
                 // Tag last-hit for FX routing
                 bAny._lastHitByWeapon = WeaponType.HACKER_VIRUS;
+                if (vulnFrac > 0) {
+                  bAny._hackerVulnUntil = Math.max(bAny._hackerVulnUntil || 0, nowHz + Math.max(tickMsB, 180));
+                  bAny._hackerVulnFrac = vulnFrac;
+                  bAny._hackerVulnLingerMs = Math.max(0, vulnLingerMs|0);
+                }
               }
             }
           }
         } catch { /* ignore boss zone errors */ }
+
+        // Sustained DPS tick while inside zone (evolved only)
+        if (evolved && sustainDps > 0 && sustainTickMs > 0) {
+          const zAny: any = z as any;
+          if (!zAny._nextSustainAt) zAny._nextSustainAt = nowHz + sustainTickMs;
+          let guard = 5; // prevent spiral on long frames
+          while (guard-- > 0 && nowHz >= zAny._nextSustainAt) {
+            zAny._nextSustainAt += sustainTickMs;
+            const perTick = (sustainDps * (sustainTickMs / 1000)) * gdm;
+            const nearby = this.enemySpatialGrid.query(z.x, z.y, rEff + 50);
+            for (let i = 0; i < nearby.length; i++) {
+              const e = nearby[i]; if (!e.active || e.hp <= 0) continue;
+              const dx = e.x - z.x; const dy = e.y - z.y;
+              const rr = rEff + (e.radius || 0);
+              if (dx*dx + dy*dy <= rr * rr) {
+                this.takeDamage(e, perTick, false, false, WeaponType.HACKER_VIRUS, z.x, z.y);
+              }
+            }
+            // Boss sustain tick
+            try {
+              const bm: any = (window as any).__bossManager;
+              const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+              if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+                const dxB = boss.x - z.x; const dyB = boss.y - z.y; const rBoss = (boss.radius || 160);
+                if (dxB*dxB + dyB*dyB <= (rEff + rBoss) * (rEff + rBoss)) {
+                  this.takeBossDamage(boss, perTick, false, WeaponType.HACKER_VIRUS, z.x, z.y);
+                }
+              }
+            } catch { /* ignore */ }
+          }
+        }
       }
     }
 
-    // Rogue Hacker DoT ticking (3x35 over 1.5s on affected enemies)
+    // Rogue Hacker DoT ticking (base 3 ticks over ~1.5s; evolved may override cadence/ticks)
     {
   const now = nowFrame;
       for (let i = 0; i < this.activeEnemies.length; i++) {
         const e: any = this.activeEnemies[i] as any;
-        const dot = e._hackerDot;
+  const dot = e._hackerDot as { nextTick:number; ticksLeft:number; perTick:number; cadenceMs?: number } | undefined;
         if (!dot || e.hp <= 0) continue;
         let safety = 3;
         while (dot.ticksLeft > 0 && now >= dot.nextTick && safety-- > 0) {
           dot.ticksLeft--;
-          dot.nextTick += 500;
+          // Preserve original spacing if not overridden (dot was created with the right cadence)
+          dot.nextTick += Math.max(60, (dot.cadenceMs ?? 500));
           this.takeDamage(e as Enemy, dot.perTick, false, false, WeaponType.HACKER_VIRUS);
           // RGB glitch flash for hacker DoT (no green poison flash)
           e._rgbGlitchUntil = now + 260;
@@ -2660,6 +3648,43 @@ export class EnemyManager {
       }
     }
 
+    // Oracle Array DoT ticking (paralyzing DoT applied on hit): 3 ticks at 500ms; stacks add to per-tick damage
+    {
+      const now = nowFrame;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e: any = this.activeEnemies[i] as any;
+        const odot = e._oracleDot as { next: number; left: number; dmg: number } | undefined;
+        if (!odot || e.hp <= 0) continue;
+        let guard = 4;
+        while (odot.left > 0 && now >= odot.next && guard-- > 0) {
+          odot.left--;
+          odot.next += 500;
+          this.takeDamage(e as Enemy, odot.dmg, false, false, WeaponType.ORACLE_ARRAY);
+          // Soft golden glitch flash
+          e._rgbGlitchUntil = now + 160; e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
+        }
+        if (odot.left <= 0) e._oracleDot = undefined;
+      }
+    }
+
+    // Glyph Compiler light DoT ticking (2 ticks at 500ms; stacks add to per-tick damage)
+    {
+      const now = nowFrame;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e: any = this.activeEnemies[i] as any;
+        const gdot = e._glyphDot as { next: number; left: number; dmg: number } | undefined;
+        if (!gdot || e.hp <= 0) continue;
+        let guard = 3;
+        while (gdot.left > 0 && now >= gdot.next && guard-- > 0) {
+          gdot.left--;
+          gdot.next += 500;
+          this.takeDamage(e as Enemy, gdot.dmg, false, false, WeaponType.GLYPH_COMPILER);
+          e._rgbGlitchUntil = now + 120; e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
+        }
+        if (gdot.left <= 0) e._glyphDot = undefined;
+      }
+    }
+
     // Boss DoT ticking for Rogue Hacker and Void Sniper
   try {
       const bm: any = (window as any).__bossManager;
@@ -2710,16 +3735,75 @@ export class EnemyManager {
           }
           if (vdotB.left <= 0) bAny._voidSniperDot = undefined;
         }
+
+        // Oracle Array DoT on boss: next/left/dmg at 500ms cadence
+        const odotB = bAny._oracleDot as { next: number; left: number; dmg: number } | undefined;
+        if (odotB && odotB.left > 0) {
+          let g3 = 4;
+          while (odotB.left > 0 && now >= odotB.next && g3-- > 0) {
+            odotB.left--;
+            odotB.next += 500;
+            this.takeBossDamage(boss, odotB.dmg, false, WeaponType.ORACLE_ARRAY, boss.x, boss.y);
+            bAny._rgbGlitchUntil = now + 160; bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
+          }
+          if (odotB.left <= 0) bAny._oracleDot = undefined;
+        }
+
+        // Glyph Compiler DoT on boss: 2 ticks at 500ms cadence
+        const gdotB = bAny._glyphDot as { next: number; left: number; dmg: number } | undefined;
+        if (gdotB && gdotB.left > 0) {
+          let g4 = 3;
+          while (gdotB.left > 0 && now >= gdotB.next && g4-- > 0) {
+            gdotB.left--;
+            gdotB.next += 500;
+            this.takeBossDamage(boss, gdotB.dmg, false, WeaponType.GLYPH_COMPILER, boss.x, boss.y);
+            bAny._rgbGlitchUntil = now + 120; bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
+          }
+          if (gdotB.left <= 0) bAny._glyphDot = undefined;
+        }
       }
     } catch { /* ignore boss dot tick errors */ }
 
-    // Deactivate expired hacker zones
+    // Deactivate expired hacker zones (and schedule evolved chain spawns and trace pulses)
     {
-  const now = nowFrame;
+      const now = nowFrame;
+      // Evolved spec lookup (if present)
+      let evolved = false;
+      let chainCount = 0, chainRadius = 0, chainDelayMs = 0, tracePulseMs = 0, tracePulseFrac = 0;
+      try {
+        const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
+        evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
+        if (evolved) {
+          const spec: any = (WEAPON_SPECS as any)[WeaponType.HACKER_BACKDOOR];
+          const s = spec?.getLevelStats ? spec.getLevelStats(1) : undefined;
+          if (s) {
+            chainCount = s.chainCount|0; chainRadius = s.chainRadius|0; chainDelayMs = s.chainDelayMs|0; tracePulseMs = s.tracePulseMs|0; tracePulseFrac = Number(s.tracePulseFrac||0) || 0;
+          }
+        }
+      } catch {}
       for (let i = 0; i < this.hackerZones.length; i++) {
         const z = this.hackerZones[i];
         if (!z.active) continue;
-        if (now - z.created > z.lifeMs) z.active = false;
+        const age = now - z.created;
+        // Periodic trace pulse while active (bonus damage to enemies in-zone)
+        if (evolved && tracePulseMs > 0) {
+          if (!(z as any)._nextTraceAt) (z as any)._nextTraceAt = z.created + tracePulseMs;
+          if (now >= (z as any)._nextTraceAt) {
+            (z as any)._nextTraceAt += tracePulseMs;
+            const bonus = Math.max(1, Math.round((10 + ((this.player as any)?.level||1) * 5) * ((this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1)) * tracePulseFrac));
+            // Query enemies within zone and apply small bonus damage
+            const nearby = this.enemySpatialGrid.query(z.x, z.y, z.radius + 50);
+            for (let j=0;j<nearby.length;j++){
+              const e = nearby[j]; if (!e.active || e.hp <= 0) continue;
+              const dx = e.x - z.x, dy = e.y - z.y; if (dx*dx + dy*dy > (z.radius + e.radius)*(z.radius + e.radius)) continue;
+              this.takeDamage(e, bonus, false, false, WeaponType.HACKER_VIRUS);
+            }
+          }
+        }
+        if (age > z.lifeMs) {
+          z.active = false;
+          // On natural expiry, no chain. Chains only occur on kills inside zone; hook is elsewhere.
+        }
       }
     }
 
@@ -2813,9 +3897,8 @@ export class EnemyManager {
 
         // Local magnet: gently pull gems when inside magnet radius
         if (magnetR > 0 && d2 < magnetR2 && d2 > 0.0001) {
-          const d = Math.sqrt(d2);
-          // Ease-in style pull: stronger when closer; tuned for fixed 60fps but dt-aware
-          const t = 1 - Math.min(1, d / magnetR); // 0 far .. 1 near
+          // Ease-in style pull: stronger when closer; sqrt-free approximation via squared distances
+          const t = 1 - Math.min(1, d2 / magnetR2); // 0 far .. 1 near
           const pull = (0.08 + t * 0.22); // fraction of distance per frame @60fps
           // Convert fraction to dt-aware factor (game runs fixed-timestep ~16.67ms)
           const frameFactor = pull * (deltaTime / 16.6667);
@@ -2839,7 +3922,9 @@ export class EnemyManager {
         const g = this.gems[read];
         if (g.active) this.gems[write++] = g;
       }
-      this.gems.length = write;
+  this.gems.length = write;
+  // Point activeGems to compacted storage (no allocations)
+  this.activeGems = this.gems;
     }
     this.handleGemMerging();
 
@@ -2858,6 +3943,8 @@ export class EnemyManager {
   this.updatePoisons();
   // Data Sigils updates
   this.updateDataSigils(deltaTime);
+  // Update Black Sun zones (pull/slow/tick/collapse)
+  try { this.blackSunZones.update(deltaTime); } catch {}
 }
   /** Clear all currently active enemies immediately (used on boss spawn). */
   private clearAllEnemies() {
@@ -3010,7 +4097,7 @@ export class EnemyManager {
   private spawnGem(x: number, y: number, baseTier: number = 1, maxTier?: number) {
     let gem = this.gemPool.pop();
     if (!gem) {
-      gem = { x: 0, y: 0, vx: 0, vy: 0, life: 0, lifeMs: 0, size: 0, value: 0, active: false, tier: 1, color: '#FFD700' } as any;
+      gem = { x: 0, y: 0, vx: 0, vy: 0, life: 0, lifeMs: 0, size: 0, value: 0, active: false, tier: 1, color: '#33E6FF' } as any;
     }
     // Weighted upgrade chance influenced by adaptiveGemBonus
     let tier = baseTier;
@@ -3107,6 +4194,10 @@ export class EnemyManager {
           // Explicitly skip WEB orbiters; their damage comes from pulses/auto-casts, not contact
           continue;
         }
+        // Also allow Quantum Halo orbs to pass through treasures; they use orbit contact and periodic pulses
+        if ((bullet as any).isOrbiting && (bullet as any).weaponType === WeaponType.QUANTUM_HALO) {
+          continue;
+        }
         const dx = bullet.x - t.x; const dy = bullet.y - t.y;
         const rr = (t.radius + bullet.radius); if (dx*dx + dy*dy > rr*rr) continue;
         // Hit!
@@ -3168,8 +4259,10 @@ export class EnemyManager {
   /** Apply special item effects. */
   private applySpecialItemEffect(type: SpecialItem['type']) {
     if (type === 'HEAL') {
-      const amount = Math.max(1, Math.round(this.player.maxHp * 0.10));
-      this.player.hp = Math.min(this.player.maxHp, this.player.hp + amount);
+  const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+  const eff = getHealEfficiency(timeSec);
+  const amount = Math.max(1, Math.round(this.player.maxHp * 0.10 * eff));
+  this.player.hp = Math.min(this.player.maxHp, this.player.hp + amount);
       try { this.particleManager?.spawn(this.player.x, this.player.y, 8, '#66FF99', { sizeMin: 1, sizeMax: 3, lifeMs: 380, speedMin: 1.2, speedMax: 2.2 }); } catch {}
     } else if (type === 'MAGNET') {
       // Instantly collect all active XP orbs (gems) on the board
@@ -3204,7 +4297,7 @@ export class EnemyManager {
       } catch {}
       // Big FX burst
       try {
-        this.particleManager?.spawn(this.player.x, this.player.y, 16, '#FFD700', { sizeMin: 2, sizeMax: 4, lifeMs: 520, speedMin: 2, speedMax: 5 });
+  this.particleManager?.spawn(this.player.x, this.player.y, 16, '#33E6FF', { sizeMin: 2, sizeMax: 4, lifeMs: 520, speedMin: 2, speedMax: 5 });
         window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 280, intensity: 10 } }));
       } catch {}
     }
@@ -3212,55 +4305,70 @@ export class EnemyManager {
 
   // Merge lower tier gems into higher if enough cluster
   private handleGemMerging(): void {
+    // Throttle: don’t check every frame. Base 66ms, stretch under load; skip when few gems.
+    const now = performance.now();
+    const totalGems = this.gems.length;
+    if (totalGems < 24) return; // too few to bother
+    const baseDelay = 66;
+    const perfStretch = Math.min(3, (this.avgFrameMs || 16) / 16);
+    const delay = baseDelay * perfStretch;
+    if (now < this.gemMergeNextCheckMs) return;
+    this.gemMergeNextCheckMs = now + delay;
+
     // We require merges to be spatially local: a cluster of N same-tier gems within a small radius.
     // Parameters (tunable):
     const clusterRadius = 120; // px radius defining a "small area" for merging
     const clusterRadiusSq = clusterRadius * clusterRadius;
 
-  // Build per-tier lists (tiers 1-3 only) of active gems for quick iteration
-  const perTier: Record<number, Gem[]> = { 1: [], 2: [], 3: [] } as any;
+    // Build per-tier lists (tiers 1-3 only) using reusable buffers
+    const list1 = this.gemTierBuf1; list1.length = 0;
+    const list2 = this.gemTierBuf2; list2.length = 0;
+    const list3 = this.gemTierBuf3; list3.length = 0;
     for (let i = 0; i < this.gems.length; i++) {
       const g = this.gems[i];
-  if (!g.active || g.tier > 3) continue;
-      const arr = perTier[g.tier];
-      if (arr) arr.push(g);
+      if (!g.active) continue;
+      if (g.tier === 1) list1.push(g);
+      else if (g.tier === 2) list2.push(g);
+      else if (g.tier === 3) list3.push(g);
     }
 
-    // Iterate tiers; stop after performing at most one merge this frame
-  for (let t = 1; t <= 3; t++) {
-      const list = perTier[t];
-      if (!list || !list.length) continue;
+    // Iterate tiers; stop after performing at most one merge this check
+    for (let t = 1; t <= 3; t++) {
+      const list = t === 1 ? list1 : t === 2 ? list2 : list3;
+      if (!list.length) continue;
       const spec = getGemTierSpec(t);
       if (list.length < spec.merge) continue; // not enough of this tier globally
 
       // Attempt to find a local cluster: for each candidate gem, count neighbors within clusterRadius
-      // Early exit when found.
       const needed = spec.merge;
       for (let i = 0; i < list.length; i++) {
-        const g0 = list[i];
-        if (!g0.active) continue;
+        const g0 = list[i]; if (!g0.active) continue;
         let count = 1; // include g0
-        const cluster: Gem[] = [g0];
+        // Reuse list as a scratch cluster container rather than allocating
+        const cStart = list.length; // mark start index of temp push
         let sumX = g0.x, sumY = g0.y;
         for (let j = 0; j < list.length && count < needed; j++) {
           if (i === j) continue;
-            const gj = list[j];
-            if (!gj.active) continue;
-            const dx = gj.x - g0.x;
-            const dy = gj.y - g0.y;
-            if (dx*dx + dy*dy <= clusterRadiusSq) {
-              cluster.push(gj);
-              sumX += gj.x; sumY += gj.y;
-              count++;
-            }
+          const gj = list[j]; if (!gj.active) continue;
+          const dx = gj.x - g0.x; const dy = gj.y - g0.y;
+          if (dx*dx + dy*dy <= clusterRadiusSq) {
+            list.push(gj); // temp store
+            sumX += gj.x; sumY += gj.y; count++;
+          }
         }
         if (count === needed) {
-          // We found a tight cluster to merge; enqueue animation and stop.
-          const cx = sumX / count;
-          const cy = sumY / count;
-          this.gemMergeAnims.push({ group: cluster, tier: t, x: cx, y: cy, t: 0, dur: 480 });
-          return; // only one merge per frame
+          const cx = sumX / count; const cy = sumY / count;
+          // Build real group array once
+          const group: Gem[] = new Array(count);
+          group[0] = g0;
+          for (let k = 1; k < count; k++) group[k] = list[cStart + (k-1)];
+          // Truncate temp entries
+          list.length = cStart;
+          this.gemMergeAnims.push({ group, tier: t, x: cx, y: cy, t: 0, dur: 480 });
+          return;
         }
+        // No cluster: truncate any temp entries
+        list.length = cStart;
       }
     }
   }

@@ -148,6 +148,11 @@ export class Game {
   private currentShakeTime: number = 0; // Current time for shake effect
 
   private explosionManager?: ExplosionManager;
+  // Revive cinematic state
+  private reviveCinematicActive: boolean = false;
+  private reviveCinematicStart: number = 0;
+  private reviveCinematicDuration: number = 5000;
+  private reviveCinematicScheduled: boolean = false;
   /** Schedules or shows the opening upgrade if not already offered and player has zero upgrades. */
   private showInitialUpgradeIfNeeded(delayMs: number = 0) {
     if (this.initialUpgradeOffered) return;
@@ -182,6 +187,7 @@ export class Game {
   // Expose AssetLoader static helpers on window before any weapon visuals read them
   try { (window as any).AssetLoader = AssetLoader; } catch {}
   this.assetLoader = new AssetLoader(); // Initialization remains here
+  try { (window as any).__gameInstance = this; } catch {}
     this.particleManager = new ParticleManager(160);
     // Initialize spatial grids first
     this.enemySpatialGrid = new SpatialGrid<any>(200); // Cell size 200
@@ -236,6 +242,26 @@ export class Game {
   else { (this.roomManager as any).setOpenWorld(true); }
   // Expose globally for managers lacking direct reference (lightweight)
   try { (window as any).__roomManager = this.roomManager; } catch {}
+  // Listen for revive to start a 5s cinematic overlay and schedule detonation
+  window.addEventListener('playerRevived', (e: Event) => {
+    try {
+      this.reviveCinematicActive = true;
+      this.reviveCinematicStart = performance.now();
+      this.reviveCinematicScheduled = false;
+  try { (window as any).__reviveCinematicActive = true; } catch {}
+      // Optional: small screen shake at start
+      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 160, intensity: 6 } }));
+    } catch { /* ignore */ }
+  });
+  // Allow global skip via Escape to instantly end revive cinematic with detonation
+  window.addEventListener('keydown', (ke: KeyboardEvent) => {
+    if (!this.reviveCinematicActive) return;
+    if (ke.key === 'Escape') {
+      this.triggerReviveDetonation();
+      this.reviveCinematicActive = false;
+  try { (window as any).__reviveCinematicActive = false; } catch {}
+    }
+  });
   // Place player inside central room if currently outside any
   const spawnRoom = this.roomManager.getRoomAt(this.player.x, this.player.y) || this.roomManager.getFarthestRoom(this.player.x, this.player.y, false);
   if (spawnRoom) {
@@ -292,6 +318,13 @@ export class Game {
     });
     window.addEventListener('plasmaIonField', (e: Event) => {
       const d = (e as CustomEvent).detail; this.explosionManager?.triggerPlasmaIonField(d.x, d.y, d.damage, d.radius);
+    });
+
+    // Serpent Chain finisher: soft teal shockwave burst
+    window.addEventListener('serpentBurst', (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      try { this.explosionManager?.triggerShockwave(d.x, d.y, d.damage, d.radius, '#7EF1FF'); } catch {}
+      try { this.particleManager.spawn(d.x, d.y, 12, '#A8F7FF', { sizeMin: 2, sizeMax: 4, lifeMs: 380, speedMin: 0.8, speedMax: 2.2 }); } catch {}
     });
 
     // Neural Nomad Overmind VFX: teal shockwaves + brief charge glow burst
@@ -774,6 +807,28 @@ export class Game {
    * @param deltaTime The time elapsed since the last update, in milliseconds.
    */
   private update(deltaTime: number) {
+    // Hard-freeze the simulation during revive cinematic: no movement, no contact, no updates
+    if (this.reviveCinematicActive) {
+      // Keep camera centered on player while frozen
+      this.camX = this.player.x - this.designWidth / 2;
+      this.camY = this.player.y - this.designHeight / 2;
+      this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.designWidth));
+      this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.designHeight));
+      (window as any).__camX = this.camX;
+      (window as any).__camY = this.camY;
+      (window as any).__designWidth = this.designWidth;
+      (window as any).__designHeight = this.designHeight;
+      // Only handle revive cinematic timing and detonation scheduling
+      const nowFreeze = performance.now();
+      const elapsed = nowFreeze - this.reviveCinematicStart;
+      if (elapsed >= this.reviveCinematicDuration) {
+        this.triggerReviveDetonation();
+        this.reviveCinematicActive = false;
+        try { (window as any).__reviveCinematicActive = false; } catch {}
+      }
+      // Skip all other updates while frozen
+      return;
+    }
   // Always run gameLoop, and advance gameTime if in GAME state
   if (this.state === 'GAME') {
   // One-time world expansion after first 10s of gameplay to keep early coordinates small
@@ -832,6 +887,7 @@ export class Game {
   // Update environment (biome cycle)
   this.environment.update(this.gameTime);
   this.damageTextManager.update();
+  // (handled at top) revive cinematic timing and detonation
 
     // Clear and re-populate spatial grids
     this.enemySpatialGrid.clear();
@@ -1067,7 +1123,7 @@ export class Game {
             this.ctx.translate(beam.x, beam.y);
             this.ctx.rotate(beam.angle);
             const len = beam.range;
-            if (beam.type === 'sniper' || beam.type === 'voidsniper') {
+            if (beam.type === 'sniper' || beam.type === 'sniper_exec' || beam.type === 'voidsniper' || beam.type === 'sniper_black_sun') {
               // Sniper: ultra-tight bright white core with faint cyan rim
               const fadeEase = fade * fade; // smoother tail
               const thickness = (beam.thickness || 10) * (0.9 + 0.1 * Math.sin(elapsed * 0.24)) * (0.85 + 0.15 * fadeEase);
@@ -1081,6 +1137,24 @@ export class Game {
                   this.ctx.fillStyle = grad;
                   this.ctx.shadowColor = `rgba(178,102,255,${0.9 * fadeEase})`;
                   this.ctx.shadowBlur = 22 * (0.6 + 0.4 * fadeEase);
+                } else if (beam.type === 'sniper_black_sun') {
+                  // Black Sun multi-beam: deeper indigo palette
+                  grad.addColorStop(0, `rgba(158,112,255,${0.95 * fadeEase})`);
+                  grad.addColorStop(0.08, `rgba(75,0,130,${0.75 * fadeEase})`);
+                  grad.addColorStop(0.4, `rgba(75,0,130,${0.22 * fadeEase})`);
+                  grad.addColorStop(1, 'rgba(0,0,0,0)');
+                  this.ctx.fillStyle = grad;
+                  this.ctx.shadowColor = `rgba(155,120,255,${0.9 * fadeEase})`;
+                  this.ctx.shadowBlur = 22 * (0.6 + 0.4 * fadeEase);
+                } else if (beam.type === 'sniper_exec') {
+                  // Golden spectral execution beam
+                  grad.addColorStop(0, `rgba(255,244,200,${0.95 * fadeEase})`);
+                  grad.addColorStop(0.08, `rgba(255,230,160,${0.65 * fadeEase})`);
+                  grad.addColorStop(0.25, `rgba(255,210,120,${0.28 * fadeEase})`);
+                  grad.addColorStop(1, 'rgba(0,0,0,0)');
+                  this.ctx.fillStyle = grad;
+                  this.ctx.shadowColor = `rgba(255,234,170,${0.85 * fadeEase})`;
+                  this.ctx.shadowBlur = 18 * (0.6 + 0.4 * fadeEase);
                 } else {
                   grad.addColorStop(0, `rgba(255,255,255,${0.95 * fadeEase})`);
                   grad.addColorStop(0.05, `rgba(200,240,255,${0.65 * fadeEase})`);
@@ -1094,6 +1168,10 @@ export class Game {
               } else {
                 if (beam.type === 'voidsniper') {
                   this.ctx.fillStyle = `rgba(186,126,255,${0.55*fadeEase})`;
+                } else if (beam.type === 'sniper_black_sun') {
+                  this.ctx.fillStyle = `rgba(155,120,255,${0.55*fadeEase})`;
+                } else if (beam.type === 'sniper_exec') {
+                  this.ctx.fillStyle = `rgba(255,234,170,${0.55*fadeEase})`;
                 } else {
                   this.ctx.fillStyle = `rgba(240,250,255,${0.55*fadeEase})`;
                 }
@@ -1104,6 +1182,10 @@ export class Game {
               this.ctx.fill();
               if (beam.type === 'voidsniper') {
                 this.ctx.strokeStyle = this.lowFX ? `rgba(178,102,255,${0.3 * fadeEase})` : `rgba(178,102,255,${0.7 * fadeEase})`;
+              } else if (beam.type === 'sniper_black_sun') {
+                this.ctx.strokeStyle = this.lowFX ? `rgba(155,120,255,${0.3 * fadeEase})` : `rgba(155,120,255,${0.7 * fadeEase})`;
+              } else if (beam.type === 'sniper_exec') {
+                this.ctx.strokeStyle = this.lowFX ? `rgba(255,220,120,${0.3 * fadeEase})` : `rgba(255,220,120,${0.7 * fadeEase})`;
               } else {
                 this.ctx.strokeStyle = this.lowFX ? `rgba(255,255,255,${0.3 * fadeEase})` : `rgba(255,255,255,${0.7 * fadeEase})`;
               }
@@ -1116,29 +1198,68 @@ export class Game {
               // Compute intensity-ramp t based on beam duration for color cycle (0..1)
               const elapsedBeam = Math.max(0, Math.min(beam.duration, (performance.now() - beam.start)));
               const tRamp = beam.duration > 0 ? (elapsedBeam / beam.duration) : 0;
+              // Support a lava palette override for Lava Minigun beams
+              const lava = !!beam.lavaHint;
+              const heatT = lava ? Math.max(0, Math.min(1, (beam as any).heatT || 0)) : 0;
               // Hue cycles 0->360 once over the ramp; keep a tiny offset to start near red
-              const hue = Math.floor((tRamp * 360) % 360);
+              const hue = lava ? 20 : Math.floor((tRamp * 360) % 360);
               if (!this.lowFX && !debugNoAdd) {
                 this.ctx.globalCompositeOperation = 'lighter';
-                // Core (white)
-                this.ctx.fillStyle = `rgba(255,255,255,${0.72 * fadeEase})`;
+                // Core (white‑hot or lava‑tinted)
+                if (lava) {
+                  // Interpolate core from warm amber to near white‑hot based on heatT
+                  const coreR = 255;
+                  const coreG = Math.round(140 + (190 - 140) * (1 - heatT * 0.6));
+                  const coreB = Math.round(60 + (120 - 60) * (1 - heatT * 0.6));
+                  const coreA = (0.70 + 0.20 * heatT) * fadeEase;
+                  this.ctx.fillStyle = `rgba(${coreR},${coreG},${coreB},${coreA.toFixed(3)})`;
+                } else {
+                  this.ctx.fillStyle = `rgba(255,255,255,${(0.72 * fadeEase).toFixed(3)})`;
+                }
                 this.ctx.fillRect(0, -coreT/2, visLen, coreT);
                 // Rim (RGB gradient along beam length)
                 const grad = this.ctx.createLinearGradient(0, 0, visLen, 0);
-                // Use HSL for smooth spectrum; convert via CSS hsl()
+                // Use HSL for smooth spectrum; convert via CSS hsl(); lava sticks to hot reds/oranges
                 const rimA1 = (0.42 * fadeEase).toFixed(3);
                 const rimA2 = (0.28 * fadeEase).toFixed(3);
-                grad.addColorStop(0.00, `hsla(${hue}, 100%, 70%, ${rimA1})`);
-                grad.addColorStop(0.25, `hsla(${(hue+60)%360}, 100%, 65%, ${rimA2})`);
-                grad.addColorStop(0.50, `hsla(${(hue+120)%360}, 100%, 60%, ${rimA2})`);
-                grad.addColorStop(0.75, `hsla(${(hue+180)%360}, 100%, 55%, ${rimA2})`);
+                if (lava) {
+                  // Blend stops toward deeper reds as heat rises
+                  const a1 = parseFloat(rimA1) * (0.9 + 0.2 * heatT);
+                  const a2 = parseFloat(rimA2) * (0.9 + 0.2 * heatT);
+                  const o1 = `rgba(${255},${Math.round(120 + 20*(1-heatT))},0,${a1.toFixed(3)})`; // orange -> deep orange
+                  const r1 = `rgba(255,${Math.round(60 - 30*heatT)},${Math.round(0 + 10*(1-heatT))},${a1.toFixed(3)})`; // red hot
+                  const r2 = `rgba(255,${Math.round(40 - 25*heatT)},${Math.round(20 - 15*heatT)},${a2.toFixed(3)})`; // deeper red
+                  const g1 = `rgba(${Math.round(255 - 20*heatT)},${Math.round(180 - 60*heatT)},0,${a2.toFixed(3)})`; // gold -> amber
+                  grad.addColorStop(0.00, o1);
+                  grad.addColorStop(0.25, r1);
+                  grad.addColorStop(0.50, r2);
+                  grad.addColorStop(0.75, g1);
+                } else {
+                  grad.addColorStop(0.00, `hsla(${hue}, 100%, 70%, ${rimA1})`);
+                  grad.addColorStop(0.25, `hsla(${(hue+60)%360}, 100%, 65%, ${rimA2})`);
+                  grad.addColorStop(0.50, `hsla(${(hue+120)%360}, 100%, 60%, ${rimA2})`);
+                  grad.addColorStop(0.75, `hsla(${(hue+180)%360}, 100%, 55%, ${rimA2})`);
+                }
                 grad.addColorStop(1.00, 'rgba(0,0,0,0)');
                 this.ctx.fillStyle = grad;
                 this.ctx.fillRect(0, -rimT/2, visLen, rimT);
+                // Outer heat haze (very subtle, extended band)
+                if (lava) {
+                  const hazeA = (0.06 + 0.10 * heatT) * fadeEase;
+                  this.ctx.fillStyle = `rgba(255,40,20,${hazeA.toFixed(3)})`;
+                  this.ctx.fillRect(0, -rimT * 0.95, visLen, rimT * 1.9);
+                }
                 // Impact bloom tinted by current hue
                 const impact = this.ctx.createRadialGradient(visLen, 0, 0, visLen, 0, 18);
-                impact.addColorStop(0, `hsla(${hue}, 100%, 80%, ${0.62 * fadeEase})`);
-                impact.addColorStop(0.5, `hsla(${(hue+40)%360}, 100%, 65%, ${0.35 * fadeEase})`);
+                if (lava) {
+                  const a0 = (0.50 + 0.25 * heatT) * fadeEase;
+                  const a1i = (0.28 + 0.22 * heatT) * fadeEase;
+                  impact.addColorStop(0, `rgba(255,150,0,${a0.toFixed(3)})`);
+                  impact.addColorStop(0.5, `rgba(255,50,0,${a1i.toFixed(3)})`);
+                } else {
+                  impact.addColorStop(0, `hsla(${hue}, 100%, 80%, ${0.62 * fadeEase})`);
+                  impact.addColorStop(0.5, `hsla(${(hue+40)%360}, 100%, 65%, ${0.35 * fadeEase})`);
+                }
                 impact.addColorStop(1, 'rgba(0,0,0,0)');
                 this.ctx.fillStyle = impact;
                 this.ctx.beginPath();
@@ -1147,11 +1268,21 @@ export class Game {
               } else {
                 this.ctx.globalCompositeOperation = 'source-over';
                 // Low FX: single color band based on hue
-                this.ctx.fillStyle = `hsla(${hue}, 100%, 70%, ${0.45 * fadeEase})`;
+                if (lava) {
+                  const a = (0.35 + 0.18 * heatT) * fadeEase;
+                  this.ctx.fillStyle = `rgba(255,80,40,${a.toFixed(3)})`;
+                } else {
+                  this.ctx.fillStyle = `hsla(${hue}, 100%, 70%, ${0.45 * fadeEase})`;
+                }
                 this.ctx.fillRect(0, -rimT/2, visLen, rimT);
               }
               // Subtle outline that follows the hue at low opacity
-              this.ctx.strokeStyle = this.lowFX ? `hsla(${hue}, 100%, 80%, ${0.22 * fadeEase})` : `hsla(${hue}, 100%, 90%, ${0.44 * fadeEase})`;
+              if (lava) {
+                const a = (this.lowFX ? (0.16 + 0.10 * heatT) : (0.30 + 0.18 * heatT)) * fadeEase;
+                this.ctx.strokeStyle = `rgba(255,60,0,${a.toFixed(3)})`;
+              } else {
+                this.ctx.strokeStyle = this.lowFX ? `hsla(${hue}, 100%, 80%, ${0.22 * fadeEase})` : `hsla(${hue}, 100%, 90%, ${0.44 * fadeEase})`;
+              }
             } else {
               // Railgun: tuned to avoid brightening the background (no global additive blending)
               const fadeEase = fade * (0.7 + 0.3 * Math.min(1, fade));
@@ -1246,6 +1377,10 @@ export class Game {
         this.hud.draw(this.ctx, this.gameTime, this.enemyManager.getEnemies(), this.worldW, this.worldH, this.player.upgrades);
     // Draw cinematic alerts LAST so they remain visible even during bright spells/HUD
     this.bossManager.drawAlerts(this.ctx, this.designWidth, this.designHeight);
+    // Draw revive cinematic angelic overlay LAST over HUD when active
+    if (this.reviveCinematicActive) {
+      this.drawReviveCinematicOverlay(this.ctx, this.designWidth, this.designHeight);
+    }
 
         if (this.state === 'PAUSE') {
           // Pause overlay handled via DOM; no canvas rendering
@@ -1351,6 +1486,117 @@ export class Game {
       }
       this.bgPatternNeedsRedraw = true; // adjust pattern density if scale changed
     }
+  }
+
+  // --- Revive cinematic helpers ---
+  private triggerReviveDetonation() {
+    if (this.reviveCinematicScheduled) return;
+    this.reviveCinematicScheduled = true;
+    try { window.dispatchEvent(new CustomEvent('reviveDetonate')); } catch {}
+  }
+
+  private drawReviveCinematicOverlay(ctx: CanvasRenderingContext2D, w: number, h: number) {
+    const t = Math.max(0, Math.min(1, (performance.now() - this.reviveCinematicStart) / this.reviveCinematicDuration));
+  // Player screen position in logical space
+  const centerX = Math.round(this.player.x - this.camX);
+  const centerY = Math.round(this.player.y - this.camY);
+    const easeIn = (x: number) => x*x;
+    const easeOut = (x: number) => 1 - Math.pow(1 - x, 2);
+    const fadeIn = easeOut(Math.min(1, t * 2)); // first half fade-in
+    const fadeOut = easeIn(Math.max(0, Math.min(1, (t - 0.7) / 0.3))); // last 30% fade-out
+    const baseAlpha = Math.max(0, Math.min(1, fadeIn * (1 - fadeOut)));
+    ctx.save();
+    // Dim background slightly
+    ctx.globalAlpha = 0.25 * baseAlpha;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+    // Heavenly radial glow centered on player screen position
+    const px = centerX; // camera already applied to world; overlay is screen-space
+    const py = centerY;
+    const rMax = Math.hypot(w, h) * 0.6;
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, rMax);
+    grad.addColorStop(0, `rgba(255,255,255,${0.42 * baseAlpha})`);
+    grad.addColorStop(0.3, `rgba(255,244,200,${0.32 * baseAlpha})`);
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalCompositeOperation = 'screen';
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(px, py, rMax, 0, Math.PI*2); ctx.fill();
+    // Light shafts (god rays)
+    const rays = 7;
+    const rayAlpha = 0.16 * baseAlpha * (this.lowFX ? 0.6 : 1);
+    const time = (performance.now() - this.reviveCinematicStart) * 0.001;
+    for (let i = 0; i < rays; i++) {
+      const ang = (i / rays) * Math.PI * 2 + time * 0.4;
+      const len = rMax * 1.1;
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(ang);
+      const width = Math.max(24, Math.min(90, rMax * 0.12));
+      const gradRay = ctx.createLinearGradient(0, 0, len, 0);
+      gradRay.addColorStop(0, `rgba(255,255,240,${rayAlpha})`);
+      gradRay.addColorStop(0.5, `rgba(240,255,255,${rayAlpha * 0.6})`);
+      gradRay.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = gradRay;
+      ctx.fillRect(0, -width/2, len, width);
+      ctx.restore();
+    }
+    // Descending glyphs (simple crosses)
+    const glyphs = 18;
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < glyphs; i++) {
+      const gx = Math.sin((i * 127 + time * 1.7)) * (w * 0.35) + centerX;
+      const gy = ((i * 83) % h) * (1 - t) + h * (t * 0.2);
+      const s = 8 + (i % 3) * 4;
+      ctx.globalAlpha = 0.35 * baseAlpha;
+      ctx.strokeStyle = '#FFFDE6';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(gx - s, gy); ctx.lineTo(gx + s, gy);
+      ctx.moveTo(gx, gy - s); ctx.lineTo(gx, gy + s);
+      ctx.stroke();
+    }
+    // Soul visual: luminous orb rising from the player then hovering
+    // Rise phase ~ first 45% of t, then hover with gentle sine bob
+    const soulT = t;
+    const risePhase = Math.min(1, soulT / 0.45);
+    const bobPhase = Math.max(0, (soulT - 0.45) / 0.55);
+    const riseHeight = 80; // px above player
+    const hoverHeight = 110; // final hover height
+    const yRise = centerY - riseHeight * easeOut(risePhase);
+    const yHover = centerY - hoverHeight - Math.sin(time * 2.0) * 6 * bobPhase;
+    const soulY = soulT < 0.45 ? yRise : yHover;
+    const soulX = centerX;
+    // Orb glow
+    const orbR = 14 + 6 * Math.sin(time * 3.0) * (1 - fadeOut);
+    const orbGrad = ctx.createRadialGradient(soulX, soulY, 0, soulX, soulY, Math.max(28, orbR * 3));
+    const soulAlpha = 0.85 * baseAlpha;
+    orbGrad.addColorStop(0, `rgba(255,255,255,${soulAlpha})`);
+    orbGrad.addColorStop(0.4, `rgba(240,255,250,${soulAlpha * 0.55})`);
+    orbGrad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = orbGrad;
+    ctx.beginPath(); ctx.arc(soulX, soulY, Math.max(orbR, 10), 0, Math.PI * 2); ctx.fill();
+    // Subtle vertical aura lines
+    ctx.globalAlpha = 0.25 * baseAlpha;
+    ctx.strokeStyle = '#EFFFFF';
+    ctx.lineWidth = 1.5;
+    for (let i = -2; i <= 2; i++) {
+      const off = i * 10;
+      ctx.beginPath();
+      ctx.moveTo(soulX + off, soulY - 26);
+      ctx.lineTo(soulX + off, soulY + 26);
+      ctx.stroke();
+    }
+    // Final flash hint near the end
+    if (t > 0.9 && !this.lowFX) {
+      const k = (t - 0.9) / 0.1;
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = 0.35 * k;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, w, h);
+    }
+    ctx.restore();
   }
 
   /**

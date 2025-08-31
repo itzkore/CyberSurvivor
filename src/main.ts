@@ -7,6 +7,7 @@ import { Logger } from './core/Logger'; // Import Logger
 import { ensurePauseOverlay } from './ui/PauseOverlay';
 import { ensureGameOverOverlay } from './ui/GameOverOverlay';
 import { ensureSandboxOverlay } from './ui/SandboxOverlay';
+import { ensureRadioOverlay } from './ui/RadioOverlay';
 
 /** Lightweight frame snapshot for worker (packed minimal fields). */
 interface WorkerFrame {
@@ -67,6 +68,17 @@ window.onload = async () => {
     ov.style.opacity='0';
     setTimeout(()=>{ if (ov && ov.parentNode) ov.remove(); }, 650);
   }
+  // Hold overlay until fonts are ready (prevents font swap during loading)
+  try {
+    const fr: Promise<any> | undefined = (window as any).__fontsReadyPromise;
+    if (fr && typeof (fr as any).then === 'function') {
+      // Also add a short timeout fallback so we never block too long on slow font loads
+      const timeout = new Promise(res => setTimeout(res, 2500));
+      Promise.race([fr, timeout]).then(() => {
+        // allow hide later when game is ready
+      }).catch(()=>{/* ignore */});
+    }
+  } catch {}
   // Absolute safety fallback: force remove after 12s even if something broke earlier
   setTimeout(()=> hideLoadingOverlay(false), 12000);
 
@@ -147,6 +159,8 @@ window.onload = async () => {
   const gameOverOverlay = ensureGameOverOverlay(game);
   // Instantiate sandbox overlay helper (lazy show only in SANDBOX)
   const sandboxOverlay = ensureSandboxOverlay(game);
+  // Instantiate radio overlay (hidden by default)
+  const radioOverlay = ensureRadioOverlay();
   // Auto-aim: initialize from persisted setting and expose globally
   try {
     const savedAim = localStorage.getItem('cs-aimMode');
@@ -309,8 +323,9 @@ window.onload = async () => {
     Logger.info('[main.ts] UpgradePanel instantiated and set.');
   });
 
-  // Preload background music (no autoplay to avoid policy block)
+  // Preload background music for legacy path (skipped if radio enabled)
   import('./game/SoundManager').then(({ SoundManager }) => {
+  if ((window as any).__radioEnabled) return; // Radio will handle its own audio
   const musicPathInit = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/music/bg-music.mp3') : (location.protocol==='file:'?'./assets/music/bg-music.mp3':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/music/bg-music.mp3':'/assets/music/bg-music.mp3'));
     SoundManager.preloadMusic(musicPathInit);
     // Also arm early start: first user gesture (click / key) in main menu triggers playback.
@@ -387,6 +402,7 @@ window.onload = async () => {
   // Hudba se spustí až po startu hry (po interakci uživatele)
   let musicStarted = false;
   function startMusic(forceReload = false) {
+    if ((window as any).__radioEnabled) { musicStarted = true; return; }
     if (musicStarted && !forceReload) return;
     import('./game/SoundManager').then(({ SoundManager }) => {
   const musicPath = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/music/bg-music.mp3') : (location.protocol==='file:'?'./assets/music/bg-music.mp3':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/music/bg-music.mp3':'/assets/music/bg-music.mp3'));
@@ -434,6 +450,8 @@ window.onload = async () => {
     canvas.style.display = 'block';
     canvas.style.zIndex = '10';
     game.startCinematicAndGame(); // Start cinematic and then game
+  // Show in-game radio overlay near the minimap
+  try { radioOverlay.show(); } catch {}
     // Auto-show sandbox overlay when launching SANDBOX and spawn a few targets
     if ((game as any).gameMode === 'SANDBOX') {
       try {
@@ -469,6 +487,8 @@ window.onload = async () => {
     (game as any).gameMode = 'SANDBOX';
     game.resetGame(detail); // Player.resetState clears weapons, Game wiring re-adds class default
     game.startCinematicAndGame();
+  // Re-show radio overlay after restarting gameplay in Sandbox
+  try { radioOverlay.show(); } catch {}
     // Re-show overlay after switching operatives (spawn a couple of targets again)
     try {
       setTimeout(() => {
@@ -485,6 +505,7 @@ window.onload = async () => {
     canvas.style.display = 'block';
     canvas.style.zIndex = '10';
   try { ensureSandboxOverlay(game).hide(); } catch {}
+  try { radioOverlay.hide(); } catch {}
   });
 
   window.addEventListener('showCodex', () => {
@@ -495,11 +516,18 @@ window.onload = async () => {
     codex.show();
     // Keep canvas behind to allow UI focus
     canvas.style.zIndex = '-1';
+  // Hide radio overlay while Codex is open
+  try { radioOverlay.hide(); } catch {}
   });
 
   window.addEventListener('hideCodex', () => {
     Logger.info('[main.ts] hideCodex event received');
     codex.hide();
+    // If in-game, re-show radio overlay upon leaving Codex
+    try {
+      const st = game.getState ? game.getState() : (game as any).state;
+      if (st === 'GAME' || st === 'PAUSE') radioOverlay.show();
+    } catch {}
   });
 
   window.addEventListener('showMainMenu', () => {
@@ -510,6 +538,7 @@ window.onload = async () => {
   codex.hide();
     canvas.style.zIndex = '-1';
   try { ensureSandboxOverlay(game).hide(); } catch {}
+  try { radioOverlay.hide(); } catch {}
   // Clear sandbox pad on returning to menu to avoid stale positions after relaunch
   try { delete (window as any).__sandboxPad; } catch {}
   try { game.onReturnToMainMenu(); } catch { /* ignore if not yet defined */ }
@@ -521,6 +550,7 @@ window.onload = async () => {
     mainMenu.show();
     canvas.style.zIndex = '-1';
   try { ensureSandboxOverlay(game).hide(); } catch {}
+  try { radioOverlay.hide(); } catch {}
   // Clear sandbox pad on manual back to menu
   try { delete (window as any).__sandboxPad; } catch {}
   });
@@ -535,6 +565,8 @@ window.onload = async () => {
     game.resume(); // Game.resume() emits hidePauseOverlay itself
     canvas.style.display = 'block';
     canvas.style.zIndex = '10';
+  // Ensure radio overlay is visible again when resuming gameplay
+  try { radioOverlay.show(); } catch {}
   });
 
   // Show upgrade panel on player level up

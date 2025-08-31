@@ -1,6 +1,7 @@
 import type { Bullet } from './Bullet';
 import { Player } from './Player';
 import { WEAPON_SPECS } from './WeaponConfig';
+import { getHealEfficiency } from './Balance';
 import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
 import type { Enemy } from './EnemyManager'; // Import Enemy type
@@ -47,6 +48,8 @@ export class BulletManager {
     beadPhase: number; // for bead animation between pulses (0..1)
   ownerId: number; // legacy: id of the spawning bullet; not used for strict isolation anymore
   ownerPlayerId?: number; // logical owner (player instance identity)
+  weaponType?: WeaponType; // origin: Threader vs Nexus behavior
+  detonateFrac?: number; // optional expiry burst multiplier (Nexus)
   }> = [];
 
   constructor(assetLoader: AssetLoader, enemySpatialGrid: SpatialGrid<Enemy>, particleManager: ParticleManager, enemyManager: EnemyManager, player: Player) {
@@ -494,6 +497,7 @@ export class BulletManager {
                 if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
                   (this.enemyManager as any).takeBossDamage(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level);
                 } else {
+                  // Fallback path
                   boss.hp -= dmgBase;
                   window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage: dmgBase, crit: isCrit, x: b.x, y: b.y } }));
                 }
@@ -794,6 +798,7 @@ export class BulletManager {
                 if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
                   (this.enemyManager as any).takeBossDamage(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level);
                 } else {
+                  // Fallback
                   boss.hp -= dmgBase;
                   window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage: dmgBase, crit: isCrit, x: b.x, y: b.y } }));
                 }
@@ -921,8 +926,13 @@ export class BulletManager {
                 const gdm = (p.getGlobalDamageMultiplier?.() ?? (p.globalDamageMultiplier ?? 1));
                 const dmgRef = Math.round((b.damage || 20) * 1.25 * (gdm || 1));
                 try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); } catch {}
-                // Heal player by 5 HP (clamped to max) for consistency with Scrap-Saw
-                p.hp = Math.min(p.hp + 5, p.maxHp || p.hp);
+                // Heal player by 5 HP (scaled by global heal efficiency) and clamp to max
+                try {
+                  const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+                  const eff = getHealEfficiency(timeSec);
+                  const amt = 5 * eff;
+                  p.hp = Math.min(p.maxHp || p.hp, p.hp + amt);
+                } catch { p.hp = Math.min(p.hp + 5, p.maxHp || p.hp); }
               }
               }
             }
@@ -964,7 +974,12 @@ export class BulletManager {
                     const gdm2 = (pAny.getGlobalDamageMultiplier?.() ?? (pAny.globalDamageMultiplier ?? 1));
                     const dmgRef2 = Math.round((b.damage || 20) * 1.25 * (gdm2 || 1));
                     try { window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl2.x, y: pl2.y, damage: dmgRef2, radius: radius2, color: '#FFAA33' } })); } catch {}
-                    pAny.hp = Math.min(pAny.hp + 5, pAny.maxHp || pAny.hp);
+                    try {
+                      const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+                      const eff = getHealEfficiency(timeSec);
+                      const amt = 5 * eff;
+                      pAny.hp = Math.min(pAny.maxHp || pAny.hp, pAny.hp + amt);
+                    } catch { pAny.hp = Math.min(pAny.hp + 5, pAny.maxHp || pAny.hp); }
                   }
                   }
                 }
@@ -1502,6 +1517,23 @@ export class BulletManager {
             this.bulletPool.push(b);
             continue;
           } else {
+            // On general range expiration, BIO_TOXIN/LIVING_SLUDGE should also drop a puddle
+            if ((b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE)) {
+              try {
+                const lvl = (b as any).level || 1;
+                const baseR = 28, baseMs = 2600;
+                let radius: number = (b as any).puddleRadius;
+                let lifeMs: number = (b as any).puddleLifeMs;
+                if (radius == null) {
+                  radius = baseR + (lvl - 1) * 3;
+                  try { const mul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1); radius *= (mul || 1); } catch { /* ignore */ }
+                }
+                if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 200;
+                const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
+                const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
+                this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs, isSludge ? { isSludge: true, potency } : undefined);
+              } catch { /* ignore spawn errors */ }
+            }
             b.active = false;
             this.bulletPool.push(b);
             continue;
@@ -1591,8 +1623,10 @@ export class BulletManager {
               const agi = p.agility || 0;
               const luck = p.luck || 0;
               const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5); // percent
-              const bonus = p.critBonus ? p.critBonus * 100 : 0; // convert 0..0.5 to percent
-              critChance = Math.min(100, basePct + bonus) / 100; // normalize
+              const playerBonus = p.critBonus ? p.critBonus * 100 : 0; // convert 0..0.5 to percent
+              const bulletBonus = (b as any).critBonus ? ((b as any).critBonus * 100) : 0;
+              const totalPct = Math.min(100, basePct + playerBonus + bulletBonus);
+              critChance = totalPct / 100; // normalize
             }
             const critMult = p?.critMultiplier ?? 2.0;
             const isCritical = Math.random() < critChance;
@@ -1615,8 +1649,45 @@ export class BulletManager {
                 }
               }
               this.enemyManager.takeDamage(enemy, outDamage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
+              // Tech Warrior charged volley: per-bullet lifesteal on hit
+              try {
+                if ((b as any)._isVolley) {
+                  const frac = (b as any)._lifestealFrac || 0;
+                  if (frac > 0 && outDamage > 0) {
+                    const p: any = this.player;
+                    const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+                    const eff = getHealEfficiency(timeSec);
+                    const heal = outDamage * frac * eff;
+                    p.hp = Math.min(p.maxHp || p.hp, p.hp + heal);
+                  }
+                }
+              } catch { /* ignore */ }
               if (this.particleManager) this.particleManager.spawn(enemy.x, enemy.y, 1, '#f00');
             }
+            // Oracle Array: apply brief paralysis and schedule a short stacking DoT on direct hits
+            if (b.weaponType === WeaponType.ORACLE_ARRAY) {
+              try {
+                const anyE: any = enemy as any;
+                const nowP = performance.now();
+                // Brief paralysis on impact (0.35s)
+                anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowP + 350);
+                // Paralyzing DoT: 3 ticks at 500ms default; stacks additively to per-tick damage and refresh next tick/remaining
+                // Base Oracle DoT scaling on the projectile's actual damage (respects per-lane scaling)
+                const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+                const perTick = Math.max(1, Math.round(((b.damage || 20) * 0.22) * gdm));
+                const od = anyE._oracleDot as { next:number; left:number; dmg:number } | undefined;
+                if (!od) {
+                  anyE._oracleDot = { next: nowP + 500, left: 3, dmg: perTick };
+                } else {
+                  // Refresh duration and add to per-tick amount
+                  od.left = Math.max(od.left, 3);
+                  od.dmg = (od.dmg || 0) + perTick;
+                  od.next = nowP + 500;
+                }
+                (enemy as any)._lastHitByWeapon = WeaponType.ORACLE_ARRAY;
+              } catch { /* ignore oracle dot schedule errors */ }
+            }
+
             // Virus: spawn a paralysis/DoT zone at impact point, except for Rogue Hacker (auto-casts zones separately)
             if (b.weaponType === WeaponType.HACKER_VIRUS) {
               const isRogue = (this.player as any)?.characterData?.id === 'rogue_hacker';
@@ -1626,6 +1697,31 @@ export class BulletManager {
                 } catch {}
               }
             }
+            // Glyph Compiler: apply a light paralyzing DoT on direct hits (lighter than Oracle)
+            if (b.weaponType === WeaponType.GLYPH_COMPILER) {
+              try {
+                const anyE: any = enemy as any;
+                const nowP = performance.now();
+                // Very brief paralysis (0.2s) for impact feel
+                anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, nowP + 200);
+                // Light DoT: 2 ticks at 500ms; scales with level via scaled damage
+                const lvl = (b as any).level || 1;
+                const spec: any = (WEAPON_SPECS as any)[WeaponType.GLYPH_COMPILER];
+                const scaled = spec?.getLevelStats ? spec.getLevelStats(lvl) : { damage: b.damage };
+                const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+                const perTick = Math.max(1, Math.round((scaled.damage || b.damage || 14) * 0.12 * gdm));
+                const gdot = anyE._glyphDot as { next:number; left:number; dmg:number } | undefined;
+                if (!gdot) {
+                  anyE._glyphDot = { next: nowP + 500, left: 2, dmg: perTick };
+                } else {
+                  gdot.left = Math.max(gdot.left, 2);
+                  gdot.dmg = (gdot.dmg || 0) + perTick;
+                  gdot.next = nowP + 500;
+                }
+                (enemy as any)._lastHitByWeapon = WeaponType.GLYPH_COMPILER;
+              } catch { /* ignore glyph dot schedule errors */ }
+            }
+
             // Neural Threader: only anchor the directly hit enemy if it currently has a debuff; no auto-append
             if (b.weaponType === WeaponType.NOMAD_NEURAL) {
               try {
@@ -1668,7 +1764,7 @@ export class BulletManager {
                     // Create a new thread only when we have a valid debuffed hit to anchor
                     const color = '#26ffe9';
                     const ownerPid = (this.player as any)._instanceId ?? 1;
-                    thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 3000), nextPulseAt: now + (stats.pulseIntervalMs || 500), pulseMs: (stats.pulseIntervalMs || 500), baseDamage: b.damage || 20, pulsePct: (stats.pulsePct || 0.6), maxAnchors: maxAnchors, active: true, color, beadPhase: 0, ownerId: (b as any)._id, ownerPlayerId: ownerPid };
+                    thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 3000), nextPulseAt: now + (stats.pulseIntervalMs || 500), pulseMs: (stats.pulseIntervalMs || 500), baseDamage: b.damage || 20, pulsePct: (stats.pulsePct || 0.6), maxAnchors: maxAnchors, active: true, color, beadPhase: 0, ownerId: (b as any)._id, ownerPlayerId: ownerPid, weaponType: WeaponType.NOMAD_NEURAL } as any;
                     this.neuralThreads.push(thread);
                   }
                   if (thread.anchors.indexOf(enemy) === -1) {
@@ -1709,6 +1805,59 @@ export class BulletManager {
                 intersectionPoint = null;
                 continue;
               }
+            }
+            // Neural Nexus: evolved mesh — always anchor on hit and autosnap nearby primed enemies
+            if (b.weaponType === WeaponType.NEURAL_NEXUS) {
+              try {
+                const now = performance.now();
+                const spec: any = (WEAPON_SPECS as any)[WeaponType.NEURAL_NEXUS];
+                const stats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : { anchors: 10, threadLifeMs: 5200, pulseIntervalMs: 380, pulsePct: 1.2, detonateFrac: 3.0 } as any;
+                const maxAnchors = stats.anchors || 10;
+                // Find nearest existing Nexus thread for this player with capacity
+                let nearest: any = null; let bestD2 = Infinity;
+                for (let iT = 0; iT < this.neuralThreads.length; iT++) {
+                  const t = this.neuralThreads[iT];
+                  if (!t.active) continue;
+                  if (t.expireAt <= now) continue;
+                  if (t.weaponType !== WeaponType.NEURAL_NEXUS) continue;
+                  if (t.ownerPlayerId != null && t.ownerPlayerId !== (this.player as any)._instanceId) continue;
+                  if (t.anchors.length >= t.maxAnchors) continue;
+                  const last = t.anchors.length > 0 ? t.anchors[t.anchors.length - 1] : null;
+                  const lx = last ? last.x : enemy.x; const ly = last ? last.y : enemy.y;
+                  const dxT = enemy.x - lx; const dyT = enemy.y - ly; const d2 = dxT*dxT + dyT*dyT;
+                  if (d2 < bestD2) { bestD2 = d2; nearest = t; }
+                }
+                let thread = nearest;
+                if (!thread) {
+                  const color = '#9ffcf6';
+                  const ownerPid = (this.player as any)._instanceId ?? 1;
+                  thread = { anchors: [], createdAt: now, expireAt: now + (stats.threadLifeMs || 5200), nextPulseAt: now + (stats.pulseIntervalMs || 380), pulseMs: (stats.pulseIntervalMs || 380), baseDamage: b.damage || 24, pulsePct: (stats.pulsePct || 1.2), maxAnchors: maxAnchors, active: true, color, beadPhase: 0, ownerId: (b as any)._id, ownerPlayerId: ownerPid, weaponType: WeaponType.NEURAL_NEXUS, detonateFrac: (stats.detonateFrac || 3.0) } as any;
+                  this.neuralThreads.push(thread);
+                }
+                if (thread.anchors.indexOf(enemy) === -1) thread.anchors.push(enemy);
+                // Autosnap primed neighbors near the hit (up to capacity), 1-2 per hit
+                const sx = enemy.x, sy = enemy.y;
+                const radius = 260;
+                const candidates = this.enemySpatialGrid.query(sx, sy, radius);
+                let addedCount = 0;
+                for (let ci = 0; ci < candidates.length && thread.anchors.length < thread.maxAnchors; ci++) {
+                  const e = candidates[ci] as any; if (!e.active || e.hp <= 0) continue;
+                  if (thread.anchors.indexOf(e) !== -1) continue;
+                  const primed = (e._poisonStacks && e._poisonStacks > 0)
+                    || (e._burnStacks && e._burnStacks > 0)
+                    || ((e._psionicMarkUntil || 0) > now)
+                    || ((e._paralyzedUntil || 0) > now)
+                    || ((e._armorShredExpire || 0) > now)
+                    || ((e._rgbGlitchUntil || 0) > now)
+                    || ((e._neuralDebuffUntil || 0) > now);
+                  if (!primed) continue;
+                  thread.anchors.push(e);
+                  addedCount++;
+                  if (addedCount >= 2) break;
+                }
+                // Maintain pierce while capacity remains
+                b.pierceRemaining = (thread.anchors.length < thread.maxAnchors) ? 999 : 0;
+              } catch { /* ignore */ }
             }
             // Plasma detonation on first impact (no piercing). Determine over/charged multipliers here.
       if (b.weaponType === WeaponType.PLASMA) {
@@ -1765,6 +1914,36 @@ export class BulletManager {
               }
               // If no candidate found, fall through to normal expire
             }
+            // Serpent Chain evolved ricochet: bounce toward new target, ramp damage, and create finisher burst at chain end
+            if (b.weaponType === WeaponType.SERPENT_CHAIN && (b as any).bouncesRemaining && (b as any).bouncesRemaining > 0) {
+              const searchRadius = 560;
+              const candidates = this.enemySpatialGrid.query(b.x, b.y, searchRadius);
+              let best: any = null; let bestD2 = Infinity;
+              for (let ci = 0; ci < candidates.length; ci++) {
+                const c = candidates[ci];
+                if (!c.active || c.hp <= 0) continue;
+                const cid = (c as any).id || (c as any)._gid;
+                if (b.hitIds && cid && b.hitIds.indexOf(cid) !== -1) continue;
+                const dxC = c.x - b.x; const dyC = c.y - b.y; const d2C = dxC*dxC + dyC*dyC;
+                if (d2C < bestD2) { best = c; bestD2 = d2C; }
+              }
+              if (best) {
+                const curSpeed = Math.hypot(b.vx, b.vy) || ((WEAPON_SPECS as any)[WeaponType.SERPENT_CHAIN]?.speed || 8.2);
+                const dxN = best.x - b.x; const dyN = best.y - b.y; const distN = Math.hypot(dxN, dyN) || 1;
+                b.vx = dxN / distN * curSpeed;
+                b.vy = dyN / distN * curSpeed;
+                (b as any).bouncesRemaining -= 1;
+                // Ramp damage per bounce
+                try {
+                  const base = (b as any)._serpBaseDamage || b.damage; const ramp = Math.max(0, (b as any)._serpRamp || 0);
+                  (b as any)._serpHits = ((b as any)._serpHits|0) + 1;
+                  const mul = 1 + ramp * ((b as any)._serpHits);
+                  b.damage = Math.max(1, Math.round(base * mul));
+                } catch { /* ignore */ }
+                intersectionPoint = null;
+                continue;
+              }
+            }
             if (b.pierceRemaining && b.pierceRemaining > 0) {
               b.pierceRemaining -= 1;
               // Spear realism: lose some speed when piercing a target
@@ -1777,8 +1956,19 @@ export class BulletManager {
               intersectionPoint = null;
               continue;
             } else {
+              // If Serpent Chain has ended its bounce chain, create a soft coiling burst at the last target
+              if (b.weaponType === WeaponType.SERPENT_CHAIN && !(b as any)._serpDidFinisher) {
+                try {
+                  const base = (b as any)._serpBaseDamage || b.damage;
+                  const frac = (b as any)._serpFinisher != null ? (b as any)._serpFinisher : 1.20;
+                  const burstDmg = Math.max(1, Math.round(base * frac));
+                  const radius = 120; // modest AoE; visual-only shockwave handles application via ExplosionManager
+                  window.dispatchEvent(new CustomEvent('serpentBurst', { detail: { x: b.x, y: b.y, damage: burstDmg, radius } }));
+                  (b as any)._serpDidFinisher = true;
+                } catch { /* ignore */ }
+              }
               // On final hit (no pierce left), allow BIO_TOXIN to spawn a poison puddle at impact
-              if (b.weaponType === WeaponType.BIO_TOXIN) {
+        if (b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE) {
                 try {
                   const lvl = (b as any).level || 1;
                   const baseR = 28, baseMs = 2600;
@@ -1796,7 +1986,9 @@ export class BulletManager {
                   if (lifeMs == null) {
                     lifeMs = baseMs + (lvl - 1) * 200;
                   }
-                  this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs);
+          const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
+          const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
+          this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs, isSludge ? { isSludge: true, potency } : undefined);
                 } catch {}
               }
               // Plant Data Sigil on impact
@@ -1864,6 +2056,19 @@ export class BulletManager {
               boss.hp -= damage;
               window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
             }
+            // Tech Warrior charged volley lifesteal on boss hits as well
+            try {
+              if ((b as any)._isVolley) {
+                const frac = (b as any)._lifestealFrac || 0;
+                if (frac > 0 && damage > 0) {
+                  const p: any = this.player;
+                  const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+                  const eff = getHealEfficiency(timeSec);
+                  const heal = damage * frac * eff;
+                  p.hp = Math.min(p.maxHp || p.hp, p.hp + heal);
+                }
+              }
+            } catch { /* ignore */ }
             // Apply psionic mark to boss (slow + bonus window)
             const bAny: any = boss as any;
             const nowMs = performance.now();
@@ -1877,8 +2082,8 @@ export class BulletManager {
         }
       }
 
-      // NOMAD_NEURAL: boss direct hit should deal damage and enable threads to anchor to boss
-      if (b.weaponType === WeaponType.NOMAD_NEURAL && b.active && (!hitEnemy)) {
+  // NOMAD_NEURAL / NEURAL_NEXUS: boss direct hit should deal damage and enable threads to anchor to boss
+  if ((b.weaponType === WeaponType.NOMAD_NEURAL || b.weaponType === WeaponType.NEURAL_NEXUS) && b.active && (!hitEnemy)) {
         const bossMgr: any = (window as any).__bossManager;
         const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
         if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
@@ -1910,16 +2115,18 @@ export class BulletManager {
               try { (this.enemyManager as any).applyBossNeuralDebuff?.(boss); } catch {}
               try {
                 const now = performance.now();
+                const isNexus = b.weaponType === WeaponType.NEURAL_NEXUS;
+                const specBase: any = (WEAPON_SPECS as any)[isNexus ? WeaponType.NEURAL_NEXUS : WeaponType.NOMAD_NEURAL];
+                const stats = specBase?.getLevelStats ? specBase.getLevelStats(weaponLevel) : { anchors: (isNexus?10:2) } as any;
                 const overmindUntil = (window as any).__overmindActiveUntil || 0;
-                const spec: any = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
-                const stats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : { anchors: 2 };
                 let nearest: any = null; let bestD2 = Infinity;
                 for (let iT = 0; iT < this.neuralThreads.length; iT++) {
                   const t = this.neuralThreads[iT];
                   if (!t.active) continue;
                   if (t.expireAt <= now) continue;
                   if (t.ownerPlayerId != null && t.ownerPlayerId !== (this.player as any)._instanceId) continue;
-                  const cap = t.maxAnchors + (overmindUntil > now ? 1 : 0);
+                  if ((t.weaponType || WeaponType.NOMAD_NEURAL) !== (isNexus ? WeaponType.NEURAL_NEXUS : WeaponType.NOMAD_NEURAL)) continue;
+                  const cap = t.maxAnchors + (!isNexus && overmindUntil > now ? 1 : 0);
                   if (t.anchors.length >= cap) continue;
                   const last = t.anchors.length > 0 ? t.anchors[t.anchors.length - 1] : null;
                   const lx = last ? last.x : boss.x; const ly = last ? last.y : boss.y;
@@ -1927,17 +2134,17 @@ export class BulletManager {
                   if (d2 < bestD2) { bestD2 = d2; nearest = t; }
                 }
                 if (nearest) {
-                  if (nearest.anchors.indexOf(boss) === -1) nearest.anchors.push(boss);
+                  if (nearest.anchors.indexOf(boss) === -1) nearest.anchors.push(boss as any);
                 } else {
                   // Create a new thread starting at the boss
-                  const color = '#26ffe9';
+                  const color = isNexus ? '#9ffcf6' : '#26ffe9';
                   const ownerPid = (this.player as any)._instanceId ?? 1;
                   const baseDamage = b.damage || 20;
-                  const pulsePct = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.pulsePct : 0.6) || 0.6;
-                  const pulseMs = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.pulseIntervalMs : 500) || 500;
-                  const threadLifeMs = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.threadLifeMs : 3000) || 3000;
-                  const maxAnchors = (spec?.getLevelStats ? spec.getLevelStats(weaponLevel)?.anchors : 2) || 2;
-                  const t = { anchors: [boss], createdAt: now, expireAt: now + threadLifeMs, nextPulseAt: now + pulseMs, pulseMs, baseDamage, pulsePct, maxAnchors, active: true, color, beadPhase: 0, ownerId: (b as any)._id, ownerPlayerId: ownerPid } as any;
+                  const pulsePct = (stats?.pulsePct != null ? stats.pulsePct : (isNexus?1.2:0.6));
+                  const pulseMs = (stats?.pulseIntervalMs != null ? stats.pulseIntervalMs : (isNexus?380:500));
+                  const threadLifeMs = (stats?.threadLifeMs != null ? stats.threadLifeMs : (isNexus?5200:3000));
+                  const maxAnchors = (stats?.anchors != null ? stats.anchors : (isNexus?10:2));
+                  const t = { anchors: [boss as any], createdAt: now, expireAt: now + threadLifeMs, nextPulseAt: now + pulseMs, pulseMs, baseDamage, pulsePct, maxAnchors, active: true, color, beadPhase: 0, ownerId: (b as any)._id, ownerPlayerId: ownerPid, weaponType: (isNexus?WeaponType.NEURAL_NEXUS:WeaponType.NOMAD_NEURAL), detonateFrac: stats?.detonateFrac } as any;
                   this.neuralThreads.push(t);
                 }
               } catch {}
@@ -1948,6 +2155,113 @@ export class BulletManager {
               } else {
                 b.active = false; this.bulletPool.push(b);
               }
+            }
+          }
+        }
+      }
+
+      // ORACLE_ARRAY: boss direct hit parity — apply damage, brief paralysis, and schedule Oracle DoT
+      if (b.weaponType === WeaponType.ORACLE_ARRAY && b.active && (!hitEnemy)) {
+        const bossMgr: any = (window as any).__bossManager;
+        const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+          const dxB = boss.x - b.x; const dyB = boss.y - b.y; const rsB = (boss.radius || 160) + Math.max(2, b.radius * 0.75);
+          if (dxB*dxB + dyB*dyB <= rsB*rsB) {
+            const bossKey = 'boss';
+            if (!b.hitIds || b.hitIds.indexOf(bossKey) === -1) {
+              if (b.hitIds) b.hitIds.push(bossKey);
+              const weaponLevel = (b as any).level ?? 1;
+              const p: any = this.player;
+              let critChance = 0.15;
+              if (p) {
+                const agi = p.agility || 0; const luck = p.luck || 0;
+                const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+                const bonus = p.critBonus ? p.critBonus * 100 : 0;
+                critChance = Math.min(100, basePct + bonus) / 100;
+              }
+              const critMult = p?.critMultiplier ?? 2.0;
+              const isCritical = Math.random() < critChance;
+              const damage = isCritical ? b.damage * critMult : b.damage;
+              if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
+                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
+              } else {
+                boss.hp -= damage;
+                window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
+              }
+              // Apply brief paralysis and schedule Oracle DoT on boss
+              try {
+                const bAny: any = boss as any;
+                const nowP = performance.now();
+                bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, nowP + 300);
+                const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+                const perTick = Math.max(1, Math.round(((b.damage || 20) * 0.22) * gdm));
+                const odB = bAny._oracleDot as { next: number; left: number; dmg: number } | undefined;
+                if (!odB) {
+                  bAny._oracleDot = { next: nowP + 500, left: 3, dmg: perTick };
+                } else {
+                  odB.left = Math.max(odB.left, 3);
+                  odB.dmg = (odB.dmg || 0) + perTick;
+                  odB.next = nowP + 500;
+                }
+                bAny._lastHitByWeapon = WeaponType.ORACLE_ARRAY;
+              } catch { /* ignore boss oracle dot errors */ }
+              // Consume pierce or expire
+              if (typeof b.pierceRemaining === 'number' && b.pierceRemaining > 0) {
+                b.pierceRemaining = b.pierceRemaining - 1;
+                if (b.pierceRemaining <= 0) { b.active = false; this.bulletPool.push(b); }
+              } else { b.active = false; this.bulletPool.push(b); }
+            }
+          }
+        }
+      }
+
+      // GLYPH_COMPILER: boss direct hit parity — brief paralysis and light DoT
+      if (b.weaponType === WeaponType.GLYPH_COMPILER && b.active && (!hitEnemy)) {
+        const bossMgr: any = (window as any).__bossManager;
+        const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+          const dxB = boss.x - b.x; const dyB = boss.y - b.y; const rsB = (boss.radius || 160) + Math.max(2, b.radius * 0.75);
+          if (dxB*dxB + dyB*dyB <= rsB*rsB) {
+            const bossKey = 'boss';
+            if (!b.hitIds || b.hitIds.indexOf(bossKey) === -1) {
+              if (b.hitIds) b.hitIds.push(bossKey);
+              const weaponLevel = (b as any).level ?? 1;
+              const p: any = this.player;
+              let critChance = 0.15;
+              if (p) {
+                const agi = p.agility || 0; const luck = p.luck || 0;
+                const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+                const bonus = p.critBonus ? p.critBonus * 100 : 0;
+                critChance = Math.min(100, basePct + bonus) / 100;
+              }
+              const critMult = p?.critMultiplier ?? 2.0;
+              const isCritical = Math.random() < critChance;
+              const damage = isCritical ? b.damage * critMult : b.damage;
+              if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
+                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
+              } else {
+                boss.hp -= damage;
+                window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
+              }
+              // Schedule light glyph DoT and brief paralysis on boss
+              try {
+                const bAny: any = boss as any; const nowP = performance.now();
+                bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, nowP + 160);
+                const lvl = (b as any).level || 1;
+                const spec: any = (WEAPON_SPECS as any)[WeaponType.GLYPH_COMPILER];
+                const scaled = spec?.getLevelStats ? spec.getLevelStats(lvl) : { damage: b.damage };
+                const gdm = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+                const perTick = Math.max(1, Math.round((scaled.damage || b.damage || 14) * 0.12 * gdm));
+                const gdotB = bAny._glyphDot as { next: number; left: number; dmg: number } | undefined;
+                if (!gdotB) bAny._glyphDot = { next: nowP + 500, left: 2, dmg: perTick };
+                else { gdotB.left = Math.max(gdotB.left, 2); gdotB.dmg = (gdotB.dmg || 0) + perTick; gdotB.next = nowP + 500; }
+                bAny._lastHitByWeapon = WeaponType.GLYPH_COMPILER;
+              } catch {}
+              // Consume pierce or expire
+              if (typeof b.pierceRemaining === 'number' && b.pierceRemaining > 0) {
+                b.pierceRemaining = b.pierceRemaining - 1;
+                if (b.pierceRemaining <= 0) { b.active = false; this.bulletPool.push(b); }
+              } else { b.active = false; this.bulletPool.push(b); }
             }
           }
         }
@@ -2023,7 +2337,7 @@ export class BulletManager {
       }
 
   // For BIO_TOXIN, spawn a poison puddle on expiry (ms-based)
-      if (b.weaponType === WeaponType.BIO_TOXIN && b.lifeMs !== undefined && b.lifeMs <= 0) {
+    if ((b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE) && b.lifeMs !== undefined && b.lifeMs <= 0) {
         try {
           const lvl = (b as any).level || 1;
           const baseR = 28, baseMs = 2600;
@@ -2034,7 +2348,9 @@ export class BulletManager {
             try { const mul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1); radius *= (mul || 1); } catch { /* ignore */ }
           }
           if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 200;
-          this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs);
+      const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
+      const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
+      this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs, isSludge ? { isSludge: true, potency } : undefined);
         } catch { this.enemyManager.spawnPoisonPuddle(b.x, b.y); }
         b.active = false; // Mark as inactive to be returned to pool
         this.bulletPool.push(b);
@@ -2062,7 +2378,7 @@ export class BulletManager {
       }
 
   // Trail accumulation for weapons with trail visuals (added LASER for subtle trace)
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
+  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
         if (!b.trail) b.trail = [];
         b.trail.push({ x: b.x, y: b.y });
         const baseMax = (b.projectileVisual as any).trailLength || 10;
@@ -2073,7 +2389,23 @@ export class BulletManager {
       // If bullet is still active and within extended frustum, keep it
       if (b.active) {
         if (b.x < minX || b.x > maxX || b.y < minY || b.y > maxY) {
-          // If lifetime left but out of bounds, deactivate silently to save work
+          // If BIO_TOXIN/LIVING_SLUDGE leave bounds, still drop a puddle at last position
+          if ((b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE)) {
+            try {
+              const lvl = (b as any).level || 1;
+              const baseR = 28, baseMs = 2600;
+              let radius: number = (b as any).puddleRadius;
+              let lifeMs: number = (b as any).puddleLifeMs;
+              if (radius == null) {
+                radius = baseR + (lvl - 1) * 3;
+                try { const mul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1); radius *= (mul || 1); } catch { /* ignore */ }
+              }
+              if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 200;
+              const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
+              const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
+              this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs, isSludge ? { isSludge: true, potency } : undefined);
+            } catch { /* ignore spawn errors */ }
+          }
           b.active = false;
           this.bulletPool.push(b);
           continue;
@@ -2135,13 +2467,23 @@ export class BulletManager {
       if (!b.active) continue;
       if (b.x < minX || b.x > maxX || b.y < minY || b.y > maxY) continue;
       ctx.save();
-  // Draw trail first (behind projectile) – Crossbow + Smart Rifle + Laser Blaster subtle trace
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
+  // Draw trail first (behind projectile) – add neon variant for Runner Gun
+  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
         const visual = b.projectileVisual as any;
         ctx.save();
-  // Thicker, softer trail for mortar vs others
+  // Thicker, softer trail for mortar; subtle neon for Runner Gun
   ctx.lineWidth = (b.weaponType === WeaponType.MECH_MORTAR ? 3.2 : 1.5);
   const col = visual.trailColor as string;
+  const avgMs = (window as any).__avgFrameMs || 16;
+  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+  const neonTrail = !vfxLow && (b.weaponType === WeaponType.RUNNER_GUN);
+  const prevComp = ctx.globalCompositeOperation;
+  if (neonTrail) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.shadowColor = (visual.glowColor as string) || '#66F2FF';
+    ctx.shadowBlur = Math.max(visual.glowRadius || 0, 6);
+    ctx.lineWidth = 1.8;
+  }
         for (let i = 1; i < b.trail.length; i++) {
           const p0 = b.trail[i - 1];
           const p1 = b.trail[i];
@@ -2161,6 +2503,7 @@ export class BulletManager {
             ctx.lineTo(p1.x, p1.y);
           ctx.stroke();
         }
+        if (neonTrail) { ctx.globalCompositeOperation = prevComp; }
         if (b.weaponType === WeaponType.MECH_MORTAR) {
           // Add faint expanding smoke puffs along path (simple circles)
           const every = 4;
@@ -2234,6 +2577,14 @@ export class BulletManager {
   if (visual?.type === 'bullet') {
         ctx.save(); // Ensure save/restore for bullet drawing
         if (visual.sprite) {
+          // Force-tint cyan runner sprite if used for Overdrive, to ensure dark red visuals
+          if (b.weaponType === WeaponType.RUNNER_OVERDRIVE) {
+            visual = { ...visual };
+            visual.color = '#8B0000';
+            visual.glowColor = visual.glowColor || '#B22222';
+            (visual as any).trailColor = (visual as any).trailColor || 'rgba(139,0,0,0.70)';
+            (visual as any).trailLength = Math.max(((visual as any).trailLength || 0), 20);
+          }
           // Use PNG sprite for bullet, rotated to match direction; lazy-load if absent
           // Resolve manifest key to path if needed
           let spritePath = visual.sprite as string;
@@ -2283,36 +2634,95 @@ export class BulletManager {
           }
         }
         if (!visual.sprite) {
-        // Extra faint directional beam segment for Laser Blaster to hint original laser feel
-        if (b.weaponType === WeaponType.LASER) {
-          const len = 26; // a bit longer than sprite diameter
-          const thick = 2;
-          const ang = Math.atan2(b.vy, b.vx);
+          // Extra faint directional beam segment for Laser Blaster to hint original laser feel
+          if (b.weaponType === WeaponType.LASER) {
+            const len = 26; // a bit longer than sprite diameter
+            const thick = 2;
+            const ang = Math.atan2(b.vy, b.vx);
+            ctx.save();
+            ctx.translate(b.x, b.y);
+            ctx.rotate(ang);
+            const grd = ctx.createLinearGradient(-len*0.5, 0, len*0.5, 0);
+            const col = visual.color || '#FF3020';
+            grd.addColorStop(0, 'rgba(255,80,60,0)');
+            grd.addColorStop(0.35, col + '');
+            grd.addColorStop(0.65, col + '');
+            grd.addColorStop(1, 'rgba(255,80,60,0)');
+            ctx.globalAlpha = 0.55; // subtle
+            ctx.beginPath();
+            ctx.roundRect(-len*0.5, -thick*0.5, len, thick, thick*0.5);
+            ctx.fillStyle = grd;
+            ctx.fill();
+            ctx.restore();
+          }
+      // Fallback for bullet visuals without sprite: draw a capsule-shaped bullet, not an orb
+          // Compute orientation
+          let ang = Math.atan2(b.vy, b.vx);
+          if ((!b.vx && !b.vy)) {
+            if (b.isOrbiting && (b.orbitAngle != null)) ang = b.orbitAngle;
+            if ((b as any).displayAngle != null) ang = (b as any).displayAngle;
+          }
+          if (typeof (visual as any).rotationOffset === 'number') ang += (visual as any).rotationOffset;
+          const r = (visual.size ?? b.radius) as number; // base radius
+          // Body length tuned for clarity; add slight dynamic squish for "gummy" feel
+          const tNow = performance.now();
+          const wob = 1 + Math.sin((tNow + (b as any)._id * 37) * 0.012) * 0.06;
+          const bodyLen = Math.max(8, r * 2.4 * wob);
+          const bodyWidth = Math.max(3, r * 0.9 / wob);
+          const tipLen = Math.max(3, r * 0.9);
+          // Glow
+          ctx.shadowColor = visual.glowColor ?? visual.color ?? '#FFD700';
+          ctx.shadowBlur = visual.glowRadius ?? 10;
+          // Draw capsule body
           ctx.save();
           ctx.translate(b.x, b.y);
           ctx.rotate(ang);
-          const grd = ctx.createLinearGradient(-len*0.5, 0, len*0.5, 0);
-          const col = visual.color || '#FF3020';
-          grd.addColorStop(0, 'rgba(255,80,60,0)');
-          grd.addColorStop(0.35, col + '');
-          grd.addColorStop(0.65, col + '');
-          grd.addColorStop(1, 'rgba(255,80,60,0)');
-          ctx.globalAlpha = 0.55; // subtle
           ctx.beginPath();
-          ctx.roundRect(-len*0.5, -thick*0.5, len, thick, thick*0.5);
-          ctx.fillStyle = grd;
-          ctx.fill();
-          ctx.restore();
-        }
-          // Fallback: draw colored circle
-          ctx.shadowColor = visual.glowColor ?? visual.color ?? '#FFD700';
-          ctx.shadowBlur = visual.glowRadius ?? 10;
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
+          // Rounded rectangle body (capsule)
+          const halfL = bodyLen * 0.5;
+          const halfW = bodyWidth * 0.5;
+          // Use roundRect if available; otherwise approximate with arcs
+          if ((ctx as any).roundRect) {
+            ctx.roundRect(-halfL, -halfW, bodyLen, bodyWidth, Math.min(halfW, 6));
+          } else {
+            ctx.moveTo(-halfL, -halfW);
+            ctx.lineTo(halfL, -halfW);
+            ctx.arc(halfL, 0, halfW, -Math.PI/2, Math.PI/2);
+            ctx.lineTo(-halfL, halfW);
+            ctx.arc(-halfL, 0, halfW, Math.PI/2, -Math.PI/2);
+          }
           ctx.fillStyle = visual.color ?? '#FFD700';
           ctx.fill();
+          // Draw a simple pointed tip
+          ctx.beginPath();
+          ctx.moveTo(halfL, 0);
+          ctx.lineTo(halfL + tipLen, -halfW * 0.85);
+          ctx.lineTo(halfL + tipLen, halfW * 0.85);
+          ctx.closePath();
+          ctx.fill();
+          // Subtle inner highlight for depth
+          const grad = ctx.createLinearGradient(-halfL, 0, halfL + tipLen, 0);
+          const baseCol = (visual.color ?? '#FFD700') as string;
+          grad.addColorStop(0, 'rgba(255,255,255,0.00)');
+          grad.addColorStop(0.45, 'rgba(255,255,255,0.15)');
+          grad.addColorStop(0.9, 'rgba(255,255,255,0.00)');
+          ctx.globalAlpha = 0.9;
+          ctx.fillStyle = grad;
+          if ((ctx as any).roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(-halfL * 0.6, -halfW * 0.5, bodyLen * 0.8, bodyWidth * 0.55, Math.min(halfW * 0.5, 4));
+            ctx.fill();
+          }
+          ctx.restore();
         }
         ctx.restore(); // Restore after bullet drawing
+        // Optional faint slime trail for slime-type visuals rendered as bullets (positions only; drawn in slime branch)
+        if (visual && (visual as any).type === 'slime') {
+          if (!b.trail) b.trail = [];
+          b.trail.push({ x: b.x, y: b.y });
+          const maxTrail = 10;
+          if (b.trail.length > maxTrail) b.trail.splice(0, b.trail.length - maxTrail);
+        }
 
         // Smart Rifle special orbiting mini-orbs (purely cosmetic)
         if (b.weaponType === WeaponType.RAPID) {
@@ -2360,7 +2770,7 @@ export class BulletManager {
             ctx.restore();
           }
         }
-      } else if (visual?.type === 'drone') {
+  } else if (visual?.type === 'drone') {
         // Kamikaze drone sprite (spins slowly)
         ctx.save();
         const img = visual.sprite ? this.assetLoader.getImage(visual.sprite) : this.assetLoader.getImage('/assets/projectiles/bullet_drone.png');
@@ -2402,15 +2812,102 @@ export class BulletManager {
           ctx.restore();
         }
         ctx.restore();
-      } else if (visual?.type === 'plasma' || visual?.type === 'slime') {
-        ctx.save(); // Ensure save/restore for plasma/slime drawing
+      } else if (visual?.type === 'slime') {
+        // Organic slime blob: wobbly amoeba with stretch along velocity, inner bubbles, and droplet trail
+        ctx.save();
+        const now = performance.now();
+        const avgMs = (window as any).__avgFrameMs || 16;
+        const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+        const size = Math.max(visual.size ?? b.radius, 6);
+        const vx = b.vx || 0, vy = b.vy || 0;
+        const spd = Math.hypot(vx, vy) || 0.0001;
+        const ang = Math.atan2(vy, vx);
+        // Wobble phase seeded per-bullet
+        const seed = ((b as any)._slimeSeed ?? ((b as any)._slimeSeed = Math.random() * 1000));
+        const phase = (now * 0.006 + seed) % (Math.PI * 2);
+        // Stretch scales with speed (capped)
+        const stretch = Math.min(0.35, spd * 0.03);
+        const sx = 1 + stretch;
+        const sy = 1 - stretch * 0.6;
+        // Build blob path with radial noise
+        ctx.translate(b.x, b.y);
+        ctx.rotate(ang);
+        ctx.scale(sx, sy);
+        const pts = vfxLow ? 10 : 14;
+        const r = size;
+        ctx.beginPath();
+        for (let i = 0; i < pts; i++) {
+          const t = (i / pts) * Math.PI * 2;
+          // Two-layer sine noise for bumpy edge; tiny breathing with phase
+          const n1 = Math.sin(t * 3 + phase) * 0.14;
+          const n2 = Math.sin(t * 6 - phase * 0.8) * 0.08;
+          const rr = r * (1 + n1 + n2);
+          const x = Math.cos(t) * rr;
+          const y = Math.sin(t) * rr;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        // Fill with radial gradient for gooey depth
+        const g = ctx.createRadialGradient(0, 0, r * 0.15, 0, 0, r * 1.05);
+        const baseCol = visual.color || '#66FF6A';
+        const glowCol = visual.glowColor || baseCol;
+        g.addColorStop(0, baseCol);
+        g.addColorStop(0.65, baseCol);
+        g.addColorStop(1, (glowCol.startsWith('rgba') || glowCol.startsWith('hsla')) ? glowCol : (glowCol + 'CC'));
+        ctx.shadowColor = visual.glowColor ?? baseCol;
+        ctx.shadowBlur = Math.max(visual.glowRadius ?? 10, vfxLow ? 6 : 12);
+        ctx.fillStyle = g;
+        ctx.fill();
+        // Sheen: faint elliptical highlight near front
+        ctx.save();
+        ctx.rotate(-ang); // back to world orientation for placing sheen relative to screen
+        ctx.globalAlpha = 0.25;
+        ctx.beginPath();
+        const sheenW = r * 0.9, sheenH = r * 0.45;
+        ctx.ellipse(r * 0.25, -r * 0.15, sheenW * 0.45, sheenH * 0.45, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'white';
+        ctx.fill();
+        ctx.restore();
+        // Inner bubbles drifting
+        const bubbles = vfxLow ? 2 : 4;
+        for (let i = 0; i < bubbles; i++) {
+          const bt = phase + i * 1.37;
+          const br = r * (0.25 + 0.35 * ((i + 1) / (bubbles + 1)));
+          const bx = Math.cos(bt) * br * 0.6;
+          const by = Math.sin(bt * 1.2) * br * 0.4;
+          ctx.beginPath();
+          ctx.arc(bx, by, Math.max(1.5, r * 0.10 * (0.7 + 0.3 * Math.sin(bt * 2))), 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255,255,255,0.18)';
+          ctx.fill();
+        }
+        ctx.restore();
+        // Droplet trail: draw small fading blobs along stored positions
+        if (b.trail && b.trail.length > 1) {
+          const maxDraw = Math.min(b.trail.length - 1, vfxLow ? 4 : 7);
+          for (let ti = 1; ti <= maxDraw; ti++) {
+            const p = b.trail[b.trail.length - 1 - ti];
+            const a = Math.max(0, 1 - ti / (maxDraw + 1));
+            const droplet = size * (0.35 + 0.12 * (1 - a));
+            ctx.save();
+            ctx.globalAlpha = 0.55 * a;
+            ctx.shadowColor = visual.glowColor || baseCol;
+            ctx.shadowBlur = (visual.glowRadius ?? 10) * 0.6;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, droplet, 0, Math.PI * 2);
+            ctx.fillStyle = baseCol;
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+      } else if (visual?.type === 'plasma') {
+        ctx.save();
         ctx.shadowColor = visual.glowColor ?? visual.color ?? '#0ff';
         ctx.shadowBlur = visual.glowRadius ?? 8;
         ctx.beginPath();
         ctx.arc(b.x, b.y, visual.size ?? b.radius, 0, Math.PI * 2);
         ctx.fillStyle = visual.color ?? '#0ff';
         ctx.fill();
-        ctx.restore(); // Restore after plasma/slime drawing
+        ctx.restore();
       } else if (visual?.type === 'laser') {
         // Laser: oriented line segment (length) with thickness, slight glow
         const len = visual.length ?? 20;
@@ -2455,7 +2952,7 @@ export class BulletManager {
     }
   }
 
-  /** Tick Neural Threader threads: apply periodic damage and manage lifecycle. */
+  /** Tick Neural Threader/Nexus threads: apply periodic damage and manage lifecycle. */
   private updateNeuralThreads(deltaMs: number) {
     const now = performance.now();
     if (!this.neuralThreads || this.neuralThreads.length === 0) return;
@@ -2464,23 +2961,56 @@ export class BulletManager {
       const t = this.neuralThreads[i];
       if (!t.active) continue;
       // Cull dead anchors and expired
-  t.anchors = t.anchors.filter(e => e && e.active && e.hp > 0);
-  // Keep threads alive with a single anchor so they can grow on subsequent hits or autosnap
-  if (t.anchors.length === 0 || now >= t.expireAt) {
+      t.anchors = t.anchors.filter(e => e && e.active && e.hp > 0);
+      const isNexus = (t.weaponType === WeaponType.NEURAL_NEXUS);
+      // Expiry handling: for Nexus, detonate on expiry; for Threader, just deactivate
+      if (t.anchors.length === 0) { t.active = false; continue; }
+      if (now >= t.expireAt) {
+        if (isNexus) {
+          // Detonation burst on all anchors, plus heavier segment splash
+          const burst = Math.max(1, Math.round(t.baseDamage * t.pulsePct * (t.detonateFrac || 3.0) * 0.7));
+          for (let ai = 0; ai < t.anchors.length; ai++) {
+            const e: any = t.anchors[ai]; if (!e || !e.active || e.hp <= 0) continue;
+            if ((e as any).isBoss) (this.enemyManager as any).takeBossDamage?.(e, burst, false, WeaponType.NEURAL_NEXUS, e.x, e.y);
+            else this.enemyManager.takeDamage(e, burst, false, false, WeaponType.NEURAL_NEXUS);
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 4, '#9ffcf6');
+          }
+          for (let ai = 0; ai < t.anchors.length - 1; ai++) {
+            const a = t.anchors[ai], bA = t.anchors[ai+1];
+            const mx = (a.x + bA.x) * 0.5, my = (a.y + bA.y) * 0.5;
+            const near = this.enemySpatialGrid.query(mx, my, 120);
+            for (let ni = 0; ni < near.length; ni++) {
+              const e = near[ni]; if (!e.active || e.hp <= 0) continue;
+              if (t.anchors.indexOf(e) !== -1) continue;
+              this.enemyManager.takeDamage(e, Math.max(1, Math.round(burst * 0.38)), false, false, WeaponType.NEURAL_NEXUS);
+              const anyE: any = e as any; anyE._rgbGlitchUntil = Math.max(anyE._rgbGlitchUntil||0, now + 220); anyE._rgbGlitchPhase = (anyE._rgbGlitchPhase||0) + 1;
+            }
+          }
+          try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 110, intensity: 2 } })); } catch {}
+        }
         t.active = false; continue;
       }
-      // Autosnap: during Overmind, attempt to add one nearby enemy up to +1 capacity
-      if (overmindUntil > now && t.anchors.length < t.maxAnchors + 1) {
+      // Autosnap: during Overmind for Threader, or always-on for Nexus (limited by capacity)
+      const allowNexusAutosnap = isNexus;
+      if ((overmindUntil > now && t.anchors.length < t.maxAnchors + 1) || (allowNexusAutosnap && t.anchors.length < t.maxAnchors)) {
         // Search around mid-point of last segment for a close enemy not already in anchors
         const last = t.anchors[t.anchors.length - 1];
         const sx = last.x, sy = last.y;
-        const candidates = this.enemySpatialGrid.query(sx, sy, 240);
+        const candidates = this.enemySpatialGrid.query(sx, sy, isNexus ? 280 : 240);
         // Pass 1: prefer psionic-marked enemies
         let added = false;
         for (let ci = 0; ci < candidates.length; ci++) {
           const e = candidates[ci]; if (!e.active || e.hp <= 0) continue;
           if (t.anchors.indexOf(e) !== -1) continue;
-          const anyE: any = e as any; if ((anyE._psionicMarkUntil || 0) <= now) continue;
+          const anyE: any = e as any;
+          const primed = (anyE._poisonStacks && anyE._poisonStacks > 0)
+            || (anyE._burnStacks && anyE._burnStacks > 0)
+            || ((anyE._psionicMarkUntil || 0) > now)
+            || ((anyE._paralyzedUntil || 0) > now)
+            || ((anyE._armorShredExpire || 0) > now)
+            || ((anyE._rgbGlitchUntil || 0) > now)
+            || ((anyE._neuralDebuffUntil || 0) > now);
+          if (!primed) continue;
           t.anchors.push(e); added = true; break;
         }
         // Pass 2: fallback to nearest if none marked
@@ -2499,28 +3029,30 @@ export class BulletManager {
       if (now >= t.nextPulseAt) {
         t.nextPulseAt = now + t.pulseMs;
         // Damage anchors
-        const perPulse = Math.max(1, Math.round(t.baseDamage * t.pulsePct));
+  // Reduce Nexus tick damage by ~30% (global Nexus tuning)
+  const perPulse = Math.max(1, Math.round(t.baseDamage * t.pulsePct * (isNexus ? 0.7 : 1)));
         for (let ai = 0; ai < t.anchors.length; ai++) {
           const e: any = t.anchors[ai]; if (!e || !e.active || e.hp <= 0) continue;
+          const wType = isNexus ? WeaponType.NEURAL_NEXUS : WeaponType.NOMAD_NEURAL;
           if ((e as any).isBoss) {
-            // Boss anchor: route via boss damage path
-            (this.enemyManager as any).takeBossDamage?.(e, perPulse, false, WeaponType.NOMAD_NEURAL, e.x, e.y);
-            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#26ffe9');
+            (this.enemyManager as any).takeBossDamage?.(e, perPulse, false, wType, e.x, e.y);
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, isNexus ? '#9ffcf6' : '#26ffe9');
           } else {
-            this.enemyManager.takeDamage(e, perPulse, false, false, WeaponType.NOMAD_NEURAL);
-            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#26ffe9');
+            this.enemyManager.takeDamage(e, perPulse, false, false, wType);
+            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, isNexus ? '#9ffcf6' : '#26ffe9');
           }
         }
         // Light arc zap to enemies near each segment for readability/aoe feel
         for (let ai = 0; ai < t.anchors.length - 1; ai++) {
           const a: any = t.anchors[ai], bA: any = t.anchors[ai+1];
           const mx = (a.x + bA.x) * 0.5, my = (a.y + bA.y) * 0.5;
-          const near = this.enemySpatialGrid.query(mx, my, 80);
+          const near = this.enemySpatialGrid.query(mx, my, isNexus ? 100 : 80);
           for (let ni = 0; ni < near.length; ni++) {
             const e = near[ni]; if (!e.active || e.hp <= 0) continue;
             if (t.anchors.indexOf(e) !== -1) continue;
-            // tiny chip
-            this.enemyManager.takeDamage(e, Math.max(1, Math.round(perPulse * 0.18)), false, false, WeaponType.NOMAD_NEURAL);
+            // tiny chip (stronger for Nexus)
+            const frac = isNexus ? 0.26 : 0.18;
+            this.enemyManager.takeDamage(e, Math.max(1, Math.round(perPulse * frac)), false, false, isNexus ? WeaponType.NEURAL_NEXUS : WeaponType.NOMAD_NEURAL);
           }
         }
         // Reset bead animation
@@ -2596,17 +3128,15 @@ export class BulletManager {
       for (let i = 0; i < this.neuralThreads.length; i++) {
         const t = this.neuralThreads[i];
         if (!t.active || !t.anchors || t.anchors.length === 0) continue;
-        const burst = Math.max(1, Math.round(t.baseDamage * t.pulsePct * 5.0 * (multiplier || 1))); // doubled overall
+  let burst = Math.max(1, Math.round(t.baseDamage * t.pulsePct * 5.0 * (multiplier || 1))); // doubled overall
+  if (t.weaponType === WeaponType.NEURAL_NEXUS) burst = Math.max(1, Math.round(burst * 0.7));
+        const wType = (t.weaponType === WeaponType.NEURAL_NEXUS) ? WeaponType.NEURAL_NEXUS : WeaponType.NOMAD_NEURAL;
         // Damage anchors heavily
         for (let ai = 0; ai < t.anchors.length; ai++) {
           const e: any = t.anchors[ai]; if (!e || !e.active || e.hp <= 0) continue;
-          if ((e as any).isBoss) {
-            (this.enemyManager as any).takeBossDamage?.(e, burst, false, WeaponType.NOMAD_NEURAL, e.x, e.y);
-            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 4, '#9ffcf6');
-          } else {
-            this.enemyManager.takeDamage(e, burst, false, false, WeaponType.NOMAD_NEURAL);
-            if (this.particleManager) this.particleManager.spawn(e.x, e.y, 4, '#9ffcf6');
-          }
+          if ((e as any).isBoss) (this.enemyManager as any).takeBossDamage?.(e, burst, false, wType, e.x, e.y);
+          else this.enemyManager.takeDamage(e, burst, false, false, wType);
+          if (this.particleManager) this.particleManager.spawn(e.x, e.y, 4, '#9ffcf6');
           // Flag RGB glitch effect
           const anyE: any = e as any; anyE._rgbGlitchUntil = Math.max(anyE._rgbGlitchUntil||0, performance.now() + 220); anyE._rgbGlitchPhase = (anyE._rgbGlitchPhase||0) + 1;
         }
@@ -2614,11 +3144,12 @@ export class BulletManager {
         for (let ai = 0; ai < t.anchors.length - 1; ai++) {
           const a = t.anchors[ai], b = t.anchors[ai+1];
           const mx = (a.x + b.x) * 0.5, my = (a.y + b.y) * 0.5;
-          const near = this.enemySpatialGrid.query(mx, my, 110);
+          const near = this.enemySpatialGrid.query(mx, my, (t.weaponType === WeaponType.NEURAL_NEXUS) ? 120 : 110);
           for (let ni = 0; ni < near.length; ni++) {
             const e = near[ni]; if (!e.active || e.hp <= 0) continue;
             if (t.anchors.indexOf(e) !== -1) continue;
-            this.enemyManager.takeDamage(e, Math.max(1, Math.round(burst * 0.33)), false, false, WeaponType.NOMAD_NEURAL);
+            const frac = (t.weaponType === WeaponType.NEURAL_NEXUS) ? 0.38 : 0.33;
+            this.enemyManager.takeDamage(e, Math.max(1, Math.round(burst * frac)), false, false, wType);
             const anyE: any = e as any; anyE._rgbGlitchUntil = Math.max(anyE._rgbGlitchUntil||0, performance.now() + 180); anyE._rgbGlitchPhase = (anyE._rgbGlitchPhase||0) + 1;
           }
         }
@@ -2704,7 +3235,7 @@ export class BulletManager {
         if (!found) return undefined;
       } catch { /* if grid unavailable, allow spawn */ }
     }
-    const spec = (WEAPON_SPECS as any)[weapon] ?? (WEAPON_SPECS as any)[WeaponType.PISTOL];
+  const spec = (WEAPON_SPECS as any)[weapon] ?? (WEAPON_SPECS as any)[WeaponType.PISTOL];
     const dx = targetX - x;
     const dy = targetY - y;
     const angle = Math.atan2(dy, dx);
@@ -2747,12 +3278,12 @@ export class BulletManager {
   b.radius = projectileVisual.size ?? 6; // Ensure radius matches the new visual size
     // Derive life from weapon range if available: life (frames) = range / speed.
     // Clamp to avoid extremely long-lived projectiles; fallback to 60 if insufficient data.
-    let appliedDamage = spec?.damage ?? damage;
+  let appliedDamage = spec?.damage ?? damage;
     let appliedCooldown = spec?.cooldown ?? 10;
     // Apply per-level scaling if function present
     if (spec?.getLevelStats) {
       const scaled = spec.getLevelStats(level);
-      if (scaled.damage != null) appliedDamage = scaled.damage;
+  if (scaled.damage != null) appliedDamage = scaled.damage;
       if (scaled.cooldown != null) appliedCooldown = scaled.cooldown;
       if (scaled.speed != null) speed = scaled.speed; // per-level projectile speed
       if (scaled.projectileSize != null) {
@@ -2815,7 +3346,7 @@ export class BulletManager {
       b.life = spec?.lifetime ?? 60;
     }
     b.active = true;
-    b.damage = appliedDamage; // leveled damage
+  b.damage = appliedDamage; // leveled damage
     b.weaponType = weapon;
   (b as any).level = level; // persist level on the bullet for per-shot logic
     // Persist per-level base speed for Scrap Lash so the return phase and rethrows never scale from prior speed
@@ -2849,8 +3380,8 @@ export class BulletManager {
         projectileVisual = vis;
       }
     } catch { /* ignore */ }
-    // Ensure a very subtle trail on small bullets if none present (skip if pistol defines its own)
-    if (projectileVisual && !(projectileVisual as any).trailColor) {
+  // Ensure a very subtle trail on small bullets if none present (skip if pistol defines its own)
+  if (projectileVisual && !(projectileVisual as any).trailColor) {
       const isPistol = weapon === WeaponType.PISTOL;
       (projectileVisual as any).trailColor = isPistol ? 'rgba(180,255,255,0.18)' : 'rgba(255,255,255,0.10)';
       (projectileVisual as any).trailLength = Math.max((projectileVisual as any).trailLength || 0, isPistol ? 12 : 6);
@@ -2919,6 +3450,20 @@ export class BulletManager {
         if ((scaled as any).bounces != null) bounceCount = (scaled as any).bounces;
       }
       (b as any).bouncesRemaining = bounceCount;
+    }
+    // Serpent Chain: initialize bounce count, ramp, and finisher parameters
+    if (weapon === WeaponType.SERPENT_CHAIN) {
+      try {
+        const scaled: any = spec?.getLevelStats ? spec.getLevelStats(level) : {};
+        (b as any).bouncesRemaining = (scaled?.bounces != null) ? scaled.bounces : 9;
+        (b as any)._serpRamp = (scaled?.ramp != null) ? scaled.ramp : 0.10;
+        (b as any)._serpFinisher = (scaled?.finisherFrac != null) ? scaled.finisherFrac : 1.20;
+        (b as any)._serpBaseDamage = b.damage;
+        (b as any)._serpHits = 0;
+        (b as any)._serpDidFinisher = false;
+      } catch {
+        (b as any).bouncesRemaining = 9; (b as any)._serpRamp = 0.10; (b as any)._serpFinisher = 1.20; (b as any)._serpBaseDamage = b.damage; (b as any)._serpHits = 0; (b as any)._serpDidFinisher = false;
+      }
     }
     // Psionic Wave: add level-based ricochet bounces (L1=1, +1 per level)
     if (weapon === WeaponType.PSIONIC_WAVE) {
@@ -2993,8 +3538,27 @@ export class BulletManager {
         }
       } catch { /* ignore */ }
     }
+    // Neural Nexus (evolved): allow multiple pierces to gather anchors; brighter visuals
+    if (weapon === WeaponType.NEURAL_NEXUS) {
+      try {
+        const specNex: any = (WEAPON_SPECS as any)[WeaponType.NEURAL_NEXUS];
+        const scaled = specNex?.getLevelStats ? specNex.getLevelStats(level) : { anchors: 10 };
+        // Allow at least anchors hits; no temporary Overmind bonus on projectile itself
+        b.pierceRemaining = Math.max(0, (scaled.anchors || 10) - 1);
+        // Golden-cyan glow for evolved state
+        if (b.projectileVisual) {
+          const vis: any = { ...b.projectileVisual };
+          vis.color = '#9ffcf6';
+          vis.glowColor = '#ffe873';
+          vis.glowRadius = Math.max(vis.glowRadius || 10, 14);
+          vis.trailColor = 'rgba(159,252,246,0.30)';
+          vis.trailLength = Math.max((vis.trailLength || 14), 18);
+          b.projectileVisual = vis;
+        }
+      } catch { /* ignore */ }
+    }
   // Bio Toxin: precompute puddle radius and lifetime based on level and area multiplier, and force no-impact behavior
-    if (weapon === WeaponType.BIO_TOXIN) {
+    if (weapon === WeaponType.BIO_TOXIN || weapon === WeaponType.LIVING_SLUDGE) {
       try {
         const lvl = level || (b as any).level || 1;
         const baseR = 28, baseMs = 2600;
@@ -3005,6 +3569,23 @@ export class BulletManager {
     // Ensure Bio Toxin projectiles never deal direct impact damage nor pierce
     b.damage = 0;
     b.pierceRemaining = 0;
+        // Visuals: slimy/gummy look for both, sludge brighter
+        if (b.projectileVisual) {
+          const vis: any = { ...b.projectileVisual };
+          vis.type = 'slime';
+          vis.size = Math.max(vis.size || 0, weapon === WeaponType.LIVING_SLUDGE ? 11 : 9);
+          // Consistent bio neon palette (toxic green)
+          if (weapon === WeaponType.LIVING_SLUDGE) {
+            vis.color = '#7CFF5E'; vis.glowColor = '#B6FF00'; vis.glowRadius = Math.max(vis.glowRadius||0, 16);
+          } else {
+            vis.color = '#77FF66'; vis.glowColor = '#B6FF00'; vis.glowRadius = Math.max(vis.glowRadius||0, 12);
+          }
+          b.projectileVisual = vis;
+        }
+        // Seed wobble uniqueness
+        (b as any)._slimeSeed = Math.random() * 1000;
+        // Spawn a tiny splat particle burst on cast
+        try { this.particleManager?.spawn(b.x, b.y, 6, '#B6FF00', { sizeMin: 0.8, sizeMax: 2.2, lifeMs: 340, speedMin: 0.6, speedMax: 2.0 }); } catch {}
       } catch { /* ignore */ }
     }
   // Psionic Wave: during Weaver Lattice, emit symmetric faint secondary waves to form a fuller weave pattern

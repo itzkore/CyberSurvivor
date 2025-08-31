@@ -37,3 +37,17 @@ export const XP_DROP_CHANCE_LARGE = 0.80;
 // XP gem lifetime before expiring (milliseconds). Long enough to avoid punishing pace but keeps memory clean.
 export const GEM_TTL_MS = 90000; // 90s
 
+/**
+ * Global healing efficiency over time.
+ * Full efficiency through 15:00, then linearly drops to 10% by 30:00 and clamps thereafter.
+ * @param gameTimeSec Elapsed gameplay time in seconds.
+ * @returns Multiplier in [0.1, 1.0]
+ */
+export function getHealEfficiency(gameTimeSec: number): number {
+	const minutes = gameTimeSec / 60;
+	if (minutes <= 15) return 1.0;
+	if (minutes >= 30) return 0.1;
+	const t = (minutes - 15) / 15; // 0..1 across 15->30m
+	return 1.0 - 0.9 * t; // 1.0 -> 0.1
+}
+

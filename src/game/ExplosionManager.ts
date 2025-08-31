@@ -30,7 +30,7 @@ export class ExplosionManager {
     // Rebalanced enemy death explosion: slightly larger area, full damage, lower visual intensity (no lingering zone).
     const scaledRadius = Math.max(30, radius * 0.55); // mild area increase
     const scaledDamage = damage; // full damage
-    // Immediate single tick damage only (no persistent AoE)
+  // Immediate single tick damage only (no persistent AoE)
     if (this.enemyManager && this.enemyManager.getEnemies) {
       const enemies = this.enemyManager.getEnemies();
       const r2 = scaledRadius * scaledRadius;
@@ -41,6 +41,33 @@ export class ExplosionManager {
         if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(enemy, scaledDamage);
       }
     }
+    // Also damage boss within blast radius
+    try {
+      const bm: any = (window as any).__bossManager;
+      const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+      if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+        const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
+        const rB = (boss.radius || 160);
+        if (dxB*dxB + dyB*dyB <= (scaledRadius + rB) * (scaledRadius + rB)) {
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+        }
+      }
+    } catch { /* ignore boss explosion errors */ }
+    // Also damage treasures within blast radius
+    try {
+      const emAny: any = this.enemyManager as any;
+      if (typeof emAny.getTreasures === 'function') {
+        const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+        const r2T = scaledRadius * scaledRadius;
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+          const dxT = t.x - x; const dyT = t.y - y;
+          if (dxT*dxT + dyT*dyT <= r2T && typeof emAny.damageTreasure === 'function') {
+            emAny.damageTreasure(t, scaledDamage);
+          }
+        }
+      }
+    } catch { /* ignore treasure explosion errors */ }
     // Single faint ring (alpha scaled down)
     this.shockwaves.push({
       x,
@@ -70,6 +97,33 @@ export class ExplosionManager {
         if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage);
       }
     }
+    // Also damage boss in the blast
+    try {
+      const bm: any = (window as any).__bossManager;
+      const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+      if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+        const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
+        const rB = (boss.radius || 160);
+        if (dxB*dxB + dyB*dyB <= (radius + rB) * (radius + rB)) {
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+        }
+      }
+    } catch { /* ignore boss explosion errors */ }
+    // Also damage treasures immediately in the blast
+    try {
+      const emAny: any = this.enemyManager as any;
+      if (typeof emAny.getTreasures === 'function') {
+        const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+        const r2T = radius * radius;
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+          const dxT = t.x - x; const dyT = t.y - y;
+          if (dxT*dxT + dyT*dyT <= r2T && typeof emAny.damageTreasure === 'function') {
+            emAny.damageTreasure(t, damage);
+          }
+        }
+      }
+    } catch { /* ignore treasure explosion errors */ }
     // Add a short-lived high-damage AoE zone (25% over 0.6s) with transparent fill
     const burnDamage = damage * 0.25;
     this.aoeZones.push(new AoEZone(x, y, radius * 0.55, burnDamage, 600, 'rgba(0,0,0,0)', this.enemyManager, this.player));
@@ -167,6 +221,33 @@ export class ExplosionManager {
         if (dx*dx + dy*dy <= finalRadius*finalRadius) this.enemyManager.takeDamage(e, damage);
       }
     }
+    // Also damage boss in shockwave radius
+    try {
+      const bm: any = (window as any).__bossManager;
+      const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+      if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+        const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
+        const rB = (boss.radius || 160);
+        if (dxB*dxB + dyB*dyB <= (finalRadius + rB) * (finalRadius + rB)) {
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+        }
+      }
+    } catch { /* ignore boss shockwave errors */ }
+    // Also damage treasures in shockwave radius
+    try {
+      const emAny: any = this.enemyManager as any;
+      if (typeof emAny.getTreasures === 'function') {
+        const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+        const r2T = finalRadius * finalRadius;
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+          const dxT = t.x - x; const dyT = t.y - y;
+          if (dxT*dxT + dyT*dyT <= r2T && typeof emAny.damageTreasure === 'function') {
+            emAny.damageTreasure(t, damage);
+          }
+        }
+      }
+    } catch { /* ignore treasure shockwave errors */ }
     // Shockwave visuals (reuse logic path by manually pushing similar rings)
     this.shockwaves.push({ x, y, startR: Math.max(6, finalRadius*0.25), endR: finalRadius*1.1, life: 200, maxLife: 200, color });
   // Removed second ring and screen shake
@@ -297,6 +378,18 @@ export class ExplosionManager {
         const dx = e.x - x; const dy = e.y - y; if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage);
       }
     }
+    // Boss in plasma detonation radius
+    try {
+      const bm: any = (window as any).__bossManager;
+      const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+      if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+        const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
+        const rB = (boss.radius || 160);
+        if (dxB*dxB + dyB*dyB <= (finalRadius + rB) * (finalRadius + rB)) {
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+        }
+      }
+    } catch { /* ignore boss plasma errors */ }
   // Brief filled AoE ring for clear hit location
     // Residual after-damage area reduced to avoid oversized zones
     this.aoeZones.push(new AoEZone(x, y, finalRadius * 0.35, Math.round(damage * 0.15), 120, 'rgba(140,200,255,0.18)', this.enemyManager, this.player));

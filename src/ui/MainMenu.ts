@@ -1,11 +1,13 @@
 import { Logger } from '../core/Logger';
 import { SoundManager } from '../game/SoundManager';
+import { radioService } from './RadioService';
 import { matrixBackground } from './MatrixBackground';
 import { CHARACTERS } from '../data/characters';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
 // Static imports for auth/score services to avoid mixed dynamic+static warnings in Vite
 import { googleAuthService } from '../auth/AuthService';
 import { fetchTop, resolveBoard, sanitizeName, isLeaderboardConfigured, fetchPlayerEntry, rewriteNickname, invalidateLeaderboardCache, isNicknameAvailable, claimNickname } from '../leaderboard';
+
 
 interface PlayerProfile {
   currency: number;
@@ -39,6 +41,20 @@ export class MainMenu {
   private patchNotesHistory: { version: string; date: string; entries: { tag: 'NEW'|'UI'|'BAL'|'FX'|'QOL'|string; text: string }[] }[] = (() => {
     // Use fixed release dates per version to avoid showing the same date for all entries
     return [
+      {
+        version: '0.4.0',
+        date: '2025-08-30',
+        entries: [
+          { tag: 'NEW', text: 'Passives — Armor (flat reduction), Revive (one-time, 5m CD, 60% heal + brief i‑frames), Slow Aura (radius scales with Area). Values documented in Codex.' },
+          { tag: 'BAL', text: 'Bio Engineer — Living Sludge: puddles merge easier (soft cap ≈800px) and apply 20% slow; evolved sludge crawls at 40% speed. Poison supports infinite stacking when evolved.' },
+          { tag: 'FIX', text: 'Evolution gating — Serpent Chain requirements enforced; offer appears only when prerequisites are met.' },
+          { tag: 'SYS', text: 'Revive cinematic — 5s “angelic” sequence freezes simulation, disables inputs, grants invulnerability, and ends with a screen-clearing detonation.' },
+          { tag: 'FIX', text: 'Safety — boss/enemy contact and knockbacks fully suppressed during revive; boss respects freeze/invulnerability.' },
+          { tag: 'FIX', text: 'Boss parity — AoE zones, explosions, shockwaves, Titan Mortar, and plasma detonation now damage the boss through a centralized path.' },
+          { tag: 'FIX', text: 'Beams parity — Ghost/Void Sniper and Railgun route boss hits via centralized damage; Railgun adds boss intersection; Void Sniper uses correct parameters and applies an immediate DoT tick.' },
+          { tag: 'FIX', text: 'Treasure parity — beams, pulses, AoE, explosions, and shockwaves consistently damage treasures.' }
+        ]
+      },
       {
         version: '0.3.0',
         date: new Date().toISOString().slice(0,10),
@@ -101,7 +117,7 @@ export class MainMenu {
           { tag: 'CSP', text: 'Content Security Policy expanded to allow Google Identity Services styles.' },
           { tag: 'FIX', text: 'FedCM disabled scenarios handled with explicit sign‑in modal fallback.' },
           { tag: 'FIX', text: 'Assets — cleaned invalid font paths; mapped missing bullet_grinder to sawblade to prevent 404s.' },
-          { tag: 'UI', text: 'Main menu layout fills screen reliably; Neural Link shows ONLINE/OFFLINE based on auth state.' }
+          { tag: 'UI', text: 'Main menu layout fills screen reliably; legacy Neural Link UI removed.' }
         ]
       },
       {
@@ -277,7 +293,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.3.0 — PATCH NOTES</div>
+            <div class="version-tag">v0.4.0 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
@@ -367,13 +383,22 @@ export class MainMenu {
             <button class="nav-btn" id="hs-load-more" style="margin-top:6px;font-size:11px;padding:4px 6px;">Refresh</button>
           </section>
         </main>
-        <footer class="mm-footer">
-          <div class="status-line offline"><span class="status-dot"></span>NEURAL LINK OFFLINE</div>
-        </footer>
+        <!-- Top bar: Radio controls (fixed at top) -->
+    <div class="mm-topbar">
+          <div class="radio-unit" id="radio-unit" aria-label="Radio controls">
+            <button class="ru-btn" id="ru-prev" title="Previous">⏮</button>
+            <button class="ru-btn" id="ru-play" title="Play/Pause">▶</button>
+            <button class="ru-btn" id="ru-next" title="Next">⏭</button>
+            <button class="ru-btn" id="ru-shuffle" title="Shuffle">🔀</button>
+            <div class="ru-title" id="ru-title"><span class="scroll">—</span></div>
+      <input type="range" id="ru-volume" min="0" max="1" step="0.01" title="Volume" />
+          </div>
+        </div>
+        
       </div>`;
 
     document.body.appendChild(this.mainMenuElement);
-    // Adaptive scaling
+  // Adaptive scaling
     import('./ViewportScaler').then(mod => {
       const adaptive = document.getElementById('main-menu-adaptive');
       if (adaptive) mod.attachAdaptiveScaler(adaptive as HTMLElement, {
@@ -388,9 +413,50 @@ export class MainMenu {
         adaptiveHeight: true
       });
     }).catch(()=>{});
-    // Show sound panel (if exists) while in main menu
-    const soundPanel = document.getElementById('sound-settings-panel');
-    if (soundPanel) soundPanel.style.display = 'block';
+  
+  // Legacy sound panel removed; radio slider manages volume
+    // --- Radio: init + UI wiring ---
+    try {
+      // Initialize radio with default playlist (your three provided MP3s)
+      radioService.init();
+  const ruTitle = document.getElementById('ru-title') as HTMLElement | null;
+      const btnPrev = document.getElementById('ru-prev') as HTMLButtonElement | null;
+      const btnPlay = document.getElementById('ru-play') as HTMLButtonElement | null;
+      const btnNext = document.getElementById('ru-next') as HTMLButtonElement | null;
+  const btnShuffle = document.getElementById('ru-shuffle') as HTMLButtonElement | null;
+  const vol = document.getElementById('ru-volume') as HTMLInputElement | null;
+      // Reflect state
+      radioService.subscribe(({ playing, track, shuffle }) => {
+        if (ruTitle) {
+          const span = ruTitle.querySelector('.scroll') as HTMLElement | null;
+          if (span) span.textContent = (track ? (playing ? '♪ ' : '') + track.title : '—');
+        }
+        if (btnPlay) btnPlay.textContent = playing ? '⏸' : '▶';
+        if (btnShuffle) btnShuffle.style.opacity = shuffle ? '1' : '0.7';
+      });
+      // Init slider from current volume
+      if (vol) {
+        try { vol.value = String((SoundManager as any).getVolume?.() ?? 0.5); } catch { vol.value = '0.5'; }
+      }
+      // Controls
+      btnPrev?.addEventListener('click', () => { SoundManager.playUiClick({ volume: 0.14, durationMs: 70, freq: 1220 }); radioService.prev(); });
+      btnNext?.addEventListener('click', () => { SoundManager.playUiClick({ volume: 0.14, durationMs: 70, freq: 1220 }); radioService.next(); });
+      btnShuffle?.addEventListener('click', () => { SoundManager.playUiClick({ volume: 0.14, durationMs: 70, freq: 980 }); radioService.toggleShuffle(); });
+      btnPlay?.addEventListener('click', () => { SoundManager.playUiClick({ volume: 0.14, durationMs: 70, freq: 1350 }); radioService.toggle(); });
+      vol?.addEventListener('input', () => {
+        const v = Math.max(0, Math.min(1, parseFloat(vol!.value)));
+        SoundManager.setVolume(v);
+      });
+      // Keep in sync with in-game overlay slider
+      window.addEventListener('volumechange', (e: any) => {
+        if (!vol) return;
+        const val = typeof e?.detail === 'number' ? e.detail : null;
+        if (val == null) return;
+        const cur = parseFloat(vol.value);
+        if (Math.abs(cur - val) > 0.001) vol.value = String(val);
+      });
+    } catch {}
+  
     // Auth init (static import to avoid chunk duplication warnings)
     const loginBtn = document.getElementById('login-btn');
     const authProfile = document.getElementById('auth-profile');
@@ -528,7 +594,7 @@ export class MainMenu {
     });
   // Periodic refresh every 5 minutes
   const loop = () => { this.refreshHighScores(true); setTimeout(loop, 300000); }; setTimeout(loop, 300000);
-    if (!document.getElementById('mm-hs-styles')) {
+  if (!document.getElementById('mm-hs-styles')) {
     const style = document.createElement('style');
       style.id = 'mm-hs-styles';
   style.textContent = `/* Layout grid */
@@ -537,18 +603,30 @@ export class MainMenu {
     /* Match loading screen background */
     #main-menu .main-menu-shell{position:relative}
     #main-menu .matrix-bg-overlay{position:absolute;inset:0;background:radial-gradient(circle at 50% 40%, #062025 0%, #020a0c 80%);z-index:0;pointer-events:none}
-    .mm-header,.mm-main,.mm-footer{position:relative;z-index:1}
-  /* Enable pointer events so the sound slider (hosted in the footer status line) is interactive even when signed out */
-  .mm-footer{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;padding:6px 0;pointer-events:auto;z-index:5}
-  .status-line{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:1px}
-  .status-line .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;box-shadow:0 0 8px currentColor}
-  .status-line.online{color:#59ff87}
-  .status-line.online .status-dot{background:#59ff87}
-  .status-line.offline{color:#ff5964}
-  .status-line.offline .status-dot{background:#ff5964}
+    .mm-header,.mm-main{position:relative;z-index:1}
+  .mm-topbar{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;gap:12px;padding:6px 8px;pointer-events:auto;z-index:20}
+  /* Radio unit */
+  .radio-unit{display:flex;align-items:center;gap:6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:4px 8px;border-radius:10px;width:640px;height:32px}
+  .radio-unit .ru-btn{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:22px;border-radius:6px;border:1px solid rgba(0,255,255,0.45);background:rgba(0,45,60,0.35);color:#b8faff;cursor:pointer;font-size:12px;line-height:1;user-select:none}
+  .radio-unit .ru-btn:hover{background:rgba(0,80,100,0.45);box-shadow:0 0 10px rgba(0,255,255,0.25) inset}
+  .radio-unit .ru-title{font-size:12px;color:#9adfff;width:360px;white-space:nowrap;overflow:hidden;position:relative}
+  .radio-unit .ru-title .scroll{display:inline-block;padding-left:100%;animation: ru-marquee 12s linear infinite}
+  @keyframes ru-marquee{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+  .radio-unit #ru-volume{appearance:none;width:120px;height:4px;background:rgba(0,255,255,0.25);border-radius:3px;outline:none;margin-left:6px}
+  .radio-unit #ru-volume::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:#26ffe9;border:1px solid rgba(0,255,255,0.7);box-shadow:0 0 8px rgba(38,255,233,0.45)}
+  
+  /* Radio unit */
+  .radio-unit{display:flex;align-items:center;gap:6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:4px 6px;border-radius:8px;width:600px;height:32px}
+  .radio-unit .ru-btn{min-width:28px;height:24px;padding:0 6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,45,60,0.28);color:#b8faff;border-radius:6px;cursor:pointer}
+  .radio-unit .ru-btn:hover{background:rgba(0,80,100,0.45)}
+  .radio-unit .ru-title{width:300px;white-space:nowrap;overflow:hidden;color:#9adfff;font-size:12px;padding-left:4px;position:relative}
+  .radio-unit .ru-title .scroll{display:inline-block;padding-left:100%;animation: ru-marquee 12s linear infinite}
+  @keyframes ru-marquee{from{transform:translateX(0)}to{transform:translateX(-100%)}}
+  .radio-unit #ru-volume{appearance:none;width:120px;height:4px;background:rgba(0,255,255,0.22);border-radius:3px;outline:none;margin-left:6px}
+  .radio-unit #ru-volume::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:#26ffe9;border:1px solid rgba(0,255,255,0.7);box-shadow:0 0 8px rgba(38,255,233,0.45)}
   .main-menu-shell{display:flex;flex-direction:column;flex:1 1 auto;min-height:0}
   .mm-header{flex:0 0 auto}
-  .mm-main{display:grid;grid-template-columns:18% 34% 1fr;grid-template-rows:1fr;grid-template-areas:'nav middle hs';gap:28px;align-items:stretch;align-content:stretch;padding:0 8px 0 0;margin:0;flex:1 1 auto;min-height:0}
+  .mm-main{display:grid;grid-template-columns:18% 34% 1fr;grid-template-rows:1fr;grid-template-areas:'nav middle hs';gap:28px;align-items:stretch;align-content:stretch;padding:42px 8px 38px 0;margin:0;flex:1 1 auto;min-height:0}
   .panel{margin:0}
   .nav-panel{grid-area:nav;display:flex;flex-direction:column;height:100%;min-height:0;}  
   .nav-panel .nav-buttons{display:flex;flex-direction:column;gap:10px;margin-top:14px}
@@ -730,6 +808,8 @@ export class MainMenu {
     // Render structured patch notes
     this.renderPatchNotes();
   }
+
+  
 
   private setupEventListeners(): void {
     const startBtn = document.getElementById('start-mission-btn');
@@ -1349,7 +1429,6 @@ export class MainMenu {
     const avatar = document.getElementById('auth-avatar') as HTMLImageElement | null;
     const nameEl = document.getElementById('auth-name');
     const emailEl = document.getElementById('auth-email');
-  const statusLine = document.querySelector('.mm-footer .status-line') as HTMLElement | null;
     if (!loginBtn || !authProfile) return;
     if (this.authUser) {
     // Hide login button explicitly and show profile
@@ -1364,21 +1443,13 @@ export class MainMenu {
       if (!this.authUser.profileComplete) {
         this.showNicknameModal();
       }
-      if (statusLine) {
-        statusLine.classList.remove('offline');
-        statusLine.classList.add('online');
-        statusLine.innerHTML = '<span class="status-dot"></span>NEURAL LINK ONLINE';
-      }
+      
     } else {
   authProfile.classList.add('hidden-init');
   (authProfile as HTMLElement).style.display = 'none';
   (loginBtn as HTMLElement).style.display = 'inline-flex';
   loginBtn.classList.remove('hidden-init');
-      if (statusLine) {
-        statusLine.classList.remove('online');
-        statusLine.classList.add('offline');
-        statusLine.innerHTML = '<span class="status-dot"></span>NEURAL LINK OFFLINE';
-      }
+      
     }
   }
   private async refreshHighScores(silent:boolean=false): Promise<void> {
@@ -1631,18 +1702,7 @@ export class MainMenu {
       if (sb) { sb.disabled = false; sb.classList.remove('glitch'); }
     }
   matrixBackground.start();
-  const soundPanel = document.getElementById('sound-settings-panel');
-    if (soundPanel) {
-      soundPanel.style.display = 'block';
-    } else {
-      // Lazy load original floating sound settings panel (main menu only)
-      import('./SoundSettingsPanel').then(mod => {
-        try {
-          const panel = new mod.SoundSettingsPanel();
-          panel.show();
-        } catch { /* ignore */ }
-      }).catch(()=>{/* ignore */});
-    }
+  
   }
 
   public hide(): void {
@@ -1650,8 +1710,7 @@ export class MainMenu {
       this.mainMenuElement.style.display = 'none';
     }
   matrixBackground.stop();
-  const soundPanel = document.getElementById('sound-settings-panel');
-  if (soundPanel) soundPanel.style.display = 'none';
+  
   }
 
   public updateScore(characterId: string, score: number): void {

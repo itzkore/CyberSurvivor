@@ -17,8 +17,29 @@
   <!-- Optional backend API base (was only in root index) -->
   <meta name="backend-api-base" content="https://itzkore.cz/">
   <link rel="stylesheet" href="./assets/cyberpunk-styles.css" />
-  <!-- Removed woff2 preload (no corresponding file); relying on TTF @font-face with swap. -->
-  <!-- Google Fonts removed; using self-hosted font-face (placeholder). -->
+  <!-- Preload self-hosted Orbitron fonts to prevent FOUT on initial loading text -->
+  <link rel="preload" href="/assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-SemiBold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-Bold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-Black.ttf" as="font" type="font/ttf" crossorigin>
+  <script>
+    (function(){
+      try{
+        // Kick off early font loads for common weights used in loading/menu/HUD
+        var fs = document.fonts;
+        if (fs && fs.load){
+          var p = Promise.all([
+            fs.load('600 18px \"Orbitron\"'), // HUD/body
+            fs.load('700 20px \"Orbitron\"'), // buttons
+            fs.load('800 24px \"Orbitron\"'), // titles
+            fs.load('900 54px \"Orbitron\"')  // big cinematic/menu headings
+          ]).catch(function(){ /* ignore */ });
+          window.__fontsReadyPromise = p;
+        }
+      }catch(e){ /* ignore */ }
+    })();
+  </script>
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>

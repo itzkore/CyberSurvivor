@@ -53,6 +53,8 @@ export interface ProjectileVisual {
 export interface WeaponEvolution {
   evolvedWeaponType: WeaponType;
   requiredPassive: string; // Name of the required passive for evolution
+  /** Optional minimum level required for the passive; defaults to 1 if omitted */
+  minPassiveLevel?: number;
 }
 
 export interface WeaponSpec {
@@ -188,7 +190,9 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       'Hold ground at chokepoints; overlapping pulses stack damage.',
       'Pair with slows or pulls to keep enemies inside the radius.'
     ],
-    isClassWeapon: true,
+  isClassWeapon: true,
+  // Evolve into a sustained emitter when you enlarge zones
+  evolution: { evolvedWeaponType: WeaponType.RUNIC_ENGINE, requiredPassive: 'Area Up' },
     knockback: 2,
     getLevelStats(level:number){
       const idx = Math.min(Math.max(level,1),7)-1;
@@ -198,6 +202,29 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       const pulses = [2,2,3,3,4,4,5][idx];
       const pulseDmg = [20,50,80,110,140,170,200][idx];
       return { damage: dmg, cooldown: cd, sigilRadius: radius, pulseCount: pulses, pulseDamage: pulseDmg } as any;
+    }
+  },
+  /** Runic Engine — Evolution of Data Sigil: sustained rotating engine with higher pulse density and chaining. */
+  [WeaponType.RUNIC_ENGINE]: {
+    id: WeaponType.RUNIC_ENGINE,
+    name: 'Runic Engine',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'An anchored runic engine that emits dense, chaining shockwaves. Holds space with brutal rhythm.',
+    cooldown: 90,
+    salvo: 1,
+    spread: 0,
+    projectile: 'sigil_seed',
+    speed: 0,
+    range: 420,
+    maxLevel: 1,
+    damage: 0,
+    projectileVisual: { type: 'plasma', color: '#FFD700', size: 11, glowColor: '#FFF08A', glowRadius: 24 },
+    traits: ['Area','Pulses','Chain','Evolution'],
+    isClassWeapon: true,
+    knockback: 4,
+    getLevelStats(level:number){
+      const sigilRadius = 240; const pulseCount = 6; const pulseDamage = 160; const chain = 2;
+      return { cooldown: 90, sigilRadius, pulseCount, pulseDamage, chain } as any;
     }
   },
   /** Sorcerer Orb: orbiting arcane orb that fires beams periodically */
@@ -216,7 +243,9 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     damage: 20,
     projectileVisual: { type: 'plasma', color: '#AA77FF', size: 10, glowColor: '#D6C2FF', glowRadius: 20, trailColor: 'rgba(170,119,255,0.25)', trailLength: 10 },
     traits: ['Orbit','Beams','Area','Scaling'],
-    isClassWeapon: true,
+  isClassWeapon: true,
+  // Evolve into a conflux that slows and amplifies control when you bring your own Slow Aura
+  evolution: { evolvedWeaponType: WeaponType.ARCANE_CONFLUX, requiredPassive: 'Slow Aura' },
     getLevelStats(level:number){
       const idx = Math.min(Math.max(level,1),7)-1;
       const base = [20,26,34,44,56,70,86][idx];
@@ -224,6 +253,112 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       const beams= [1,1,2,2,3,3,4][idx];
       const radius=[120,126,132,140,148,156,164][idx];
       return { damage: base, cooldown: cd, beams, orbitRadius: radius } as any;
+    }
+  },
+  /** Arcane Conflux — Evolution of Sorcerer Orb: clustered orbit with heavy slow and frequent beams. */
+  [WeaponType.ARCANE_CONFLUX]: {
+    id: WeaponType.ARCANE_CONFLUX,
+    name: 'Arcane Conflux',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'A dense cluster of orbs forming a slowing field that lashes enemies with beams.',
+    cooldown: 60,
+    salvo: 1,
+    spread: 0,
+    projectile: 'orb_purple',
+    speed: 0,
+    range: 300,
+    maxLevel: 1,
+    damage: 0,
+    projectileVisual: { type: 'plasma', color: '#C39BFF', size: 11, glowColor: '#EBD6FF', glowRadius: 26 },
+    traits: ['Orbit','Heavy Slow','Beams','Evolution'],
+    isClassWeapon: true,
+    getLevelStats(level:number){
+      const beams = 4; const orbitRadius = 120; const slowStrength = 0.35; const pulseDamage = 110;
+      return { cooldown: 60, beams, orbitRadius, slowStrength, pulseDamage } as any;
+    }
+  },
+
+  /** Glyph Compiler — new Data Sorcerer class weapon: compile rune shards into a glyph that fires predictive lances. */
+  [WeaponType.GLYPH_COMPILER]: {
+    id: WeaponType.GLYPH_COMPILER,
+    name: 'Glyph Compiler',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'Compile runes into a predictive array—fires lances along computed enemy paths.',
+    cooldown: 42,
+    salvo: 1,
+    spread: 0,
+    projectile: 'laser_white',
+    speed: 18,
+    range: 760,
+    maxLevel: 7,
+    damage: 26,
+    // Yellow/golden laser theme to match Data Sorcerer palette
+    projectileVisual: {
+      type: 'laser',
+      color: '#FFD700',
+      thickness: 2,
+      length: 90,
+      glowColor: '#FFF08A',
+      glowRadius: 18,
+      trailColor: 'rgba(255,215,0,0.30)',
+      trailLength: 14
+    },
+  traits: ['Predictive','Pierce','Paralysis','Damage Over Time','Crit','Scaling'],
+    usageTips: [
+      'Kite to lengthen enemy trajectories; predictive lances thrive on straight lines.',
+      'Stack Crit for burst—compiled shots seek high‑value targets first.'
+    ],
+    isClassWeapon: true,
+    evolution: { evolvedWeaponType: WeaponType.ORACLE_ARRAY, requiredPassive: 'Crit' },
+    getLevelStats(level:number){
+      const idx = Math.min(Math.max(level,1),7)-1;
+      const dmg = [26,34,44,56,70,86,104][idx];
+      const cd  = [42,40,38,36,34,32,30][idx];
+      const pierce = [1,1,2,2,3,3,4][idx];
+      const critMul = [1.5,1.6,1.7,1.8,1.9,2.0,2.1][idx];
+      return { damage: dmg, cooldown: cd, pierce, critMultiplier: critMul } as any;
+    }
+  },
+  /** Oracle Array — Evolution of Glyph Compiler: multi‑lane predictive fire with innate crit amp. */
+  [WeaponType.ORACLE_ARRAY]: {
+    id: WeaponType.ORACLE_ARRAY,
+    name: 'Oracle Array',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'A lattice that projects predictive lances across multiple lanes with amplified critical strikes.',
+    cooldown: 50,
+    salvo: 1,
+    spread: 0,
+    projectile: 'laser_white',
+    speed: 20,
+    range: 900,
+    maxLevel: 1,
+    damage: 0,
+    // Oracle Array adopts a brighter golden-white for evolved identity
+    projectileVisual: {
+      type: 'laser',
+      color: '#FFEFA8',
+      thickness: 2,
+      length: 110,
+      glowColor: '#FFE066',
+      glowRadius: 22,
+      trailColor: 'rgba(255,224,102,0.35)',
+      trailLength: 16
+    },
+  traits: ['Predictive','Multi‑lane','Paralysis','Damage Over Time','Crit Amp','Evolution'],
+    isClassWeapon: true,
+    getLevelStats(level:number){
+      // Derive evolved damage from Glyph Compiler L7 DPS, then apply evolution multiplier.
+      const base = (WEAPON_SPECS as any)[WeaponType.GLYPH_COMPILER];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 26, cooldown: 42 };
+      const baseDpsL7 = (s.damage * 60) / Math.max(1, (s.cooldown || 42));
+      const targetDps = baseDpsL7 * 2.0; // evolution power budget
+      const cd = 50; // frames per trigger for evolved
+      const lanes = 3; // multi‑lane identity
+      const pierce = 4;
+      const critMultiplier = 2.4;
+      // Damage per bolt: distribute DPS over per‑shot cadence; keep salvo = 1 (lanes handled in Player)
+      const damage = Math.max(1, Math.round((targetDps * cd) / 60));
+      return { cooldown: cd, lanes, pierce, critMultiplier, damage } as any;
     }
   },
   /** Evolution: Akimbo Deagle — slow, heavy two-round bursts; higher knockback and damage. */
@@ -476,13 +611,14 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   maxLevel: 7,
     damage: 12,
   projectileVisual: { type: 'bullet', color: '#0090FF', size: 9, glowColor: '#33B5FF', glowRadius: 14, trailColor: 'rgba(0,144,255,0.55)', trailLength: 10 },
-    traits: ['Bounces Between Enemies', 'Locks On Next Target', 'Max 3 Bounces', 'Low Damage'],
+  traits: ['Bounces Between Enemies', 'Locks On Next Target', 'Max 3 Bounces', 'Low Damage'],
     usageTips: [
       'Fire into clumps—the next target is found faster.',
       'The last bounce often misses if spaced—herd enemies closer.',
       'Pairs well with slows to prevent wide skips.'
     ],
-    isClassWeapon: false,
+  isClassWeapon: false,
+  evolution: { evolvedWeaponType: WeaponType.SERPENT_CHAIN, requiredPassive: 'Area Up' },
     knockback: 18, // Ricochet: moderate knockback
     getLevelStats(level: number){
   // Reworked for 7 levels: broaden bounce potential & extend damage/cooldown curve.
@@ -494,6 +630,39 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   // Bounce scaling: L1=3 .. L7=9
   const bounces = level + 2; // 3..9
   return { damage: dmg, cooldown: cd, bounces };
+    }
+  },
+  /** Evolution: Serpent Chain — agile chain-bullet that ramps damage per bounce and finishes with a coiling burst. */
+  [WeaponType.SERPENT_CHAIN]: {
+    id: WeaponType.SERPENT_CHAIN,
+    name: 'Serpent Chain',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'Binds the crowd. Each bounce ramps damage; the last target detonates a coiling burst.',
+    cooldown: 58, // a touch faster than base Ricochet L7
+    salvo: 1,
+    spread: 0,
+    projectile: 'bullet_cyan',
+    speed: 8.2,
+    range: 520,
+    maxLevel: 1,
+    damage: 16,
+  projectileVisual: { type: 'bullet', color: '#7EF1FF', size: 7, glowColor: '#A8F7FF', glowRadius: 14, trailColor: 'rgba(126,241,255,0.45)', trailLength: 18, rotationOffset: Math.PI },
+    traits: ['Bounce Ramp','Finisher Burst','Crowd Control'],
+    isClassWeapon: false,
+    knockback: 16,
+    getLevelStats(level: number){
+      // Target: ~2.2x DPS of Ricochet L7 assuming full bounce chain and finisher value
+      const base = (WEAPON_SPECS as any)[WeaponType.RICOCHET];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 72, cooldown: 56, bounces: 9 };
+      const baseDpsL7 = (s.damage * 60) / (s.cooldown || 1);
+      const targetDps = baseDpsL7 * 2.2;
+      const cd = 58;
+      const dmg = Math.max(1, Math.round(targetDps * cd / 60));
+      // Bounce plan: keep 9 bounces; ramp 10% damage per bounce, finisher burst ~120% of base
+      const bounces = 9;
+      const ramp = 0.10;
+      const finisherFrac = 1.20;
+      return { cooldown: cd, damage: dmg, bounces, ramp, finisherFrac } as any;
     }
   },
   [WeaponType.HOMING]: {
@@ -616,11 +785,11 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     }
   },
   // Rebalanced Runner Gun: base damage set for ~60 DPS (damage * salvo * 60 / cooldown)
-  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), description: 'Single‑round spray built for motion. Effective only within 360 range—tight spread for reliable mid‑range clears.', cooldown: 12, salvo: 1, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 360, maxLevel: 7, damage: 6, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), size: 5, trailColor: 'rgba(0,255,255,0.5)', trailLength: 12, glowColor: '#66F2FF', glowRadius: 10 }, traits: ['Spray', 'Fast', 'Scaling'], usageTips: [
+  [WeaponType.RUNNER_GUN]: { id: WeaponType.RUNNER_GUN, name: 'Runner Gun', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), description: 'Single‑round spray built for motion. Effective only within 360 range—tight spread for reliable mid‑range clears.', cooldown: 6, salvo: 1, spread: 0.12, projectile: 'bullet_cyan', speed: 10.5, range: 360, maxLevel: 7, damage: 6, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), size: 5, trailColor: 'rgba(0,255,255,0.55)', trailLength: 16, glowColor: '#66F2FF', glowRadius: 12 }, traits: ['Spray', 'Fast', 'Scaling'], usageTips: [
     'Stay inside 360 range: weapons won\'t fire beyond it.',
     'Strafe while firing—barrels auto‑converge toward target for tighter hits.',
   'Dash through gaps and keep pressure; maintain DPS while repositioning.'
-  ], isClassWeapon: true, knockback: 5, getLevelStats(level: number) { const baseDamage=6, baseCooldown=12, mult=7.5; const dmg=Math.round(baseDamage*(1+ (level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1- (level-1)*0.32/6)); return { damage:dmg, cooldown:cd }; } },
+  ], isClassWeapon: true, knockback: 5, evolution: { evolvedWeaponType: WeaponType.RUNNER_OVERDRIVE, requiredPassive: 'Fire Rate' }, getLevelStats(level: number) { const baseDamage=6, baseCooldown=6, mult=7.5; const dmg=Math.round(baseDamage*(1+ (level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1- (level-1)*0.32/6)); return { damage:dmg, cooldown:cd }; } },
   
   
   /** Tech Warrior: Tachyon Spear — a phased dash-lance that pierces and leaves a micro-warp trail. */
@@ -648,7 +817,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     ],
     isClassWeapon: true,
     knockback: 18,
-    evolution: { evolvedWeaponType: WeaponType.SINGULARITY_SPEAR, requiredPassive: 'Overclock' },
+  evolution: { evolvedWeaponType: WeaponType.SINGULARITY_SPEAR, requiredPassive: 'Speed Boost' },
     getLevelStats(level:number){
       const idx = Math.min(Math.max(level,1),7)-1;
       const dmg = [42,56,74,96,122,152,186][idx];
@@ -696,20 +865,46 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Lob into clumps—pools linger and tick multiple enemies.',
     'Upgrade cadence to chain zones; funnel mobs through the slime.',
     'Pair with slows or pulls to keep enemies bathing in damage.'
-  ], isClassWeapon: true, getLevelStats(level:number){
+  ], isClassWeapon: true, evolution: { evolvedWeaponType: WeaponType.LIVING_SLUDGE, requiredPassive: 'Area Up' }, getLevelStats(level:number){
     const baseCooldown=88;
     // Faster fire rate with level: cooldown reduces up to ~40% by level 7
     const cd=Math.max(36, Math.round(baseCooldown*(1-(level-1)*0.40/6)));
     // Impact damage intentionally 0; puddles and poison ticks carry the damage model
     return {damage:0, cooldown:cd};
   } },
-  [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_smart.png'), cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 7, damage: 32, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP','Disrupt','Pierces','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=32, baseCooldown=32, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  
+  /** Bio Engineer evolution: Living Sludge — viscous pools that flow toward enemies, merge to grow, and apply heavy slow. */
+  [WeaponType.LIVING_SLUDGE]: {
+    id: WeaponType.LIVING_SLUDGE,
+    name: 'Living Sludge',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'Viscous toxic globs that crawl toward crowds, merging into bigger, deadlier pools that heavily slow and corrode.',
+  cooldown: 96,
+  // Triple glob: center + two adjacent (wider fan)
+  salvo: 3,
+  spread: 0.44,
+    projectile: 'sludge_green',
+    speed: 3.2,
+    range: 240,
+    maxLevel: 1,
+    damage: 0,
+    // Slimy/gummy visual baseline
+    projectileVisual: { type: 'slime', color: '#66FF6A', size: 11, glowColor: '#8BFF8E', glowRadius: 14 },
+    traits: ['Poison','Heavy Slow','Merges','Flows','Evolution'],
+    isClassWeapon: true,
+    knockback: 4,
+    // Single-level evolve: runtime handles flow/merge; Bio Toxin DoT tables remain in EnemyManager
+    getLevelStats(level:number){
+      return { damage: 0, cooldown: 96, projectileSize: 11, speed: 3.2 } as any;
+    }
+  },
+  [WeaponType.HACKER_VIRUS]: { id: WeaponType.HACKER_VIRUS, name: 'Hacker Virus', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_smart.png'), cooldown: 32, salvo: 1, spread: 0, projectile: 'virus_orange', speed: 8.4, range: 340, maxLevel: 7, damage: 32, projectileVisual: { type: 'plasma', color: '#FFA500', size: 10, glowColor: '#FFA500', glowRadius: 8 }, traits: ['EMP','Disrupt','Pierces','Scaling'], isClassWeapon: true, evolution: { evolvedWeaponType: WeaponType.HACKER_BACKDOOR, requiredPassive: 'Fire Rate' }, getLevelStats(level:number){ const baseDamage=32, baseCooldown=32, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   // Virus bolts silence abilities briefly—great for shutting down dangerous elites.
   [WeaponType.GUNNER_MINIGUN]: { id: WeaponType.GUNNER_MINIGUN, name: 'Minigun', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'), cooldown: 10, salvo: 1, spread: 0.22, projectile: 'bullet_cyan', speed: 7.7, range: 320, maxLevel: 7, damage: 10, projectileVisual: { type: 'bullet', color: '#B8860B', size: 4, glowColor: '#DAA520', glowRadius: 7, trailColor: 'rgba(184,134,11,0.22)', trailLength: 8 }, traits: ['Spray','Rapid','Scaling'], usageTips: [
     'Strafe into arcs—short bursts keep spread under control.',
     'Stay within 320 range to maintain constant fire.',
     'Knockback and slows help hold targets in the stream.'
-  ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=10, baseCooldown=10, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  ], isClassWeapon: true, evolution: { evolvedWeaponType: WeaponType.GUNNER_LAVA_MINIGUN, requiredPassive: 'Fire Rate', minPassiveLevel: 1 }, getLevelStats(level:number){ const baseDamage=10, baseCooldown=10, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
   // Sustained pressure—think lawnmower, not sniper.
   [WeaponType.PSIONIC_WAVE]: { id: WeaponType.PSIONIC_WAVE, name: 'Psionic Wave', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 24, salvo: 1, spread: 0, projectile: 'wave_pink', speed: 9.4, range: 540, maxLevel: 7, damage: 30, 
     description: 'Sweeping psionic beam that pierces and briefly marks foes, slowing them and boosting follow-up damage during the mark.',
@@ -717,7 +912,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Sweep perpendicular to enemy flow—pierce maximizes coverage.',
     'Tag elites/bosses, then pour damage while the psionic mark is active.',
     'Slows, pulls, or chokepoints extend beam uptime and stack marks safely.'
-  ], isClassWeapon: true, evolution: { evolvedWeaponType: WeaponType.RESONANT_WEB, requiredPassive: 'Area Up' }, getLevelStats(level:number){
+  ], isClassWeapon: true, evolution: { evolvedWeaponType: WeaponType.RESONANT_WEB, requiredPassive: 'Regen' }, getLevelStats(level:number){
       // Slightly higher growth and innate pierce scaling
       const idx = Math.min(Math.max(level,1),7)-1;
       const damageTbl   = [30,38,48,60,75,92,112][idx];
@@ -750,6 +945,51 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     // Single-level evolve: handled by BulletManager runtime (orbit strands + pulses)
     getLevelStats(level: number){ return { damage: 24, cooldown: 160 } as any; }
   },
+  /** Rogue Hacker evolution: Backdoor Rootkit — zones gain longer paralysis and on-death chain spawns; periodic trace pings add bonus damage. */
+  [WeaponType.HACKER_BACKDOOR]: {
+    id: WeaponType.HACKER_BACKDOOR,
+    name: 'Backdoor Rootkit',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_smart.png'),
+    description: 'Compromised systems propagate—the virus nests deeper, chaining new breaches on kill and hard-locking targets longer.',
+    cooldown: 26,
+    salvo: 1,
+    spread: 0,
+    projectile: 'virus_orange',
+    speed: 9.2,
+    range: 420,
+    maxLevel: 1,
+    damage: 44,
+  projectileVisual: { type: 'plasma', color: '#FF1333', size: 11, glowColor: '#FF3355', glowRadius: 12 },
+    traits: ['EMP','Chain','Hard Lock','Evolution'],
+    isClassWeapon: true,
+    getLevelStats(level:number){
+      // Anchor evolved power at 2× the Hacker Virus L7 DPS budget, then distribute across zone ticks and pulses.
+      const base = (WEAPON_SPECS as any)[WeaponType.HACKER_VIRUS];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 160, cooldown: 21 } as any;
+      const baseDps = (s.damage * 60) / Math.max(1, (s.cooldown || 32));
+      const targetDps = baseDps * 2.0; // strict 2× power budget vs L7
+      const cooldown = 26; // slightly faster cadence
+      const damage = Math.max(1, Math.round((targetDps * cooldown) / 60));
+      // Zone params for EnemyManager (wider, louder, longer)
+      const zoneRadius = 200; // much wider control field
+      const zoneLifeMs = 2600; // lasts a bit longer
+      const paralyzeMs = 2200; // longer hard lock
+      const dotTicks = 5; // more ticks to spread damage window
+      const dotTickMs = 420; // faster cadence
+      const chainCount = 3; // more aggressive propagation
+      const chainRadius = 220; // search radius for next hosts
+      const chainDelayMs = 60; // brief delay before new zone appears
+      const tracePulseMs = 700; // more frequent trace bursts
+      const tracePulseFrac = 0.6; // stronger trace damage (fraction of per-tick base)
+      // Vulnerability (damage amp) while inside evolved zones
+  const vulnFrac = 0.35; // +35% damage taken from all sources
+  const vulnLingerMs = 600; // lingers after exiting briefly
+  // Sustained DPS applied to all targets while inside the zone (processed in EnemyManager)
+  const sustainDps = 1000; // per target, per second (pre-multipliers)
+  const sustainTickMs = 100; // cadence of sustained ticks
+  return { cooldown, damage, zoneRadius, zoneLifeMs, paralyzeMs, dotTicks, dotTickMs, chainCount, chainRadius, chainDelayMs, tracePulseMs, tracePulseFrac, vulnFrac, vulnLingerMs, sustainDps, sustainTickMs } as any;
+    }
+  },
   
   /** Neural Nomad class weapon: Neural Threader — pierce to anchor enemies into a threaded link that pulses. */
   [WeaponType.NOMAD_NEURAL]: {
@@ -771,7 +1011,9 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       'Kite threaded enemies; the link pulses damage over time.',
       'Upgrade anchors to chain more targets and amplify pulses.'
     ],
-    isClassWeapon: true,
+  isClassWeapon: true,
+  // Evolve into a Neural Nexus when you bring control to the field
+  evolution: { evolvedWeaponType: WeaponType.NEURAL_NEXUS, requiredPassive: 'Slow Aura' },
     // Thread-specific tuning exposed to BulletManager via getLevelStats
     getLevelStats(level:number){
       const idx = Math.min(Math.max(level,1),7)-1;
@@ -785,24 +1027,143 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       return { damage: dmg, cooldown: cd, anchors, threadLifeMs, pulseIntervalMs, pulsePct } as any;
     }
   },
-  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 95, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], usageTips: [
+  /** Neural Nexus — Evolution of Neural Threader: auto-links primed enemies into a persistent network that detonates on expiry. */
+  [WeaponType.NEURAL_NEXUS]: {
+    id: WeaponType.NEURAL_NEXUS,
+    name: 'Neural Nexus',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'Autonomous neural mesh that snaps to primed foes, pulsing harder and detonating on collapse.',
+    cooldown: 56,
+    salvo: 1,
+    spread: 0,
+    projectile: 'needle_teal',
+    speed: 12.5,
+    range: 820,
+    maxLevel: 1,
+    damage: 0,
+    projectileVisual: { type: 'bullet', color: '#26ffe9', size: 7, glowColor: '#9ffcf6', glowRadius: 16, trailColor: 'rgba(38,255,233,0.30)', trailLength: 16 },
+    traits: ['Thread','Autosnap','Pulses','Expiry Detonation','Evolution'],
+    isClassWeapon: true,
+    getLevelStats(level:number){
+      // Anchor evolved DPS to Nomad Neural L7 power budget
+      const base = (WEAPON_SPECS as any)[WeaponType.NOMAD_NEURAL];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 92, cooldown: 40, pulsePct: 1.10 } as any;
+      const baseDpsL7 = (s.damage * 60) / Math.max(1, (s.cooldown || 40));
+      const targetDps = baseDpsL7 * 2.0; // evolution factor
+      const cooldown = 56;
+      // Pulse/mesh tuning exposed to BulletManager (read from bullet fields)
+      const anchors = 10; // larger mesh
+      const threadLifeMs = 5200;
+      const pulseIntervalMs = 380;
+      const pulsePct = 1.20; // stronger pulses than base
+      const detonateFrac = 3.0; // expiry burst multiplier vs per-pulse base
+      const damage = Math.max(1, Math.round((targetDps * cooldown) / 60));
+      return { cooldown, damage, anchors, threadLifeMs, pulseIntervalMs, pulsePct, detonateFrac } as any;
+    }
+  },
+  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 95, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], evolution: { evolvedWeaponType: WeaponType.SPECTRAL_EXECUTIONER, requiredPassive: 'Armor Shred' }, usageTips: [
     'Take longer lines of sight—shots pierce and reward straight lanes.',
     'Weave between shots; high alpha damage favors deliberate pacing.',
     'Prioritize elites and bosses—armor pierce makes headway through tanks.'
   ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=95, baseCooldown=95, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); return {damage:dmg, cooldown:cd}; } },
+  /** Spectral Executioner — Evolution of Ghost Sniper: Marks targets; on mark expiry or death triggers an on‑target execution pulse that can chain. */
+  [WeaponType.SPECTRAL_EXECUTIONER]: {
+    id: WeaponType.SPECTRAL_EXECUTIONER,
+    name: 'Spectral Executioner',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'),
+    description: 'Tag foes with a specter mark; when it ends, a golden shockwave executes the target and chains.',
+    usageTips: [
+      'First target hit is marked; when the mark ends, an on-target golden pulse executes it.',
+      'Marks can chain to nearby marked targets as smaller pulses. Focus fire to set up multi-kills.',
+      'Armor Shred as the gate synergizes—pop elites during the shred window.'
+    ],
+    cooldown: 100, // slightly higher than base to pay for execute
+    salvo: 1,
+    spread: 0,
+    projectile: 'sniper_white',
+    speed: 22.4,
+    range: 1200,
+    maxLevel: 1,
+    damage: 0,
+    projectileVisual: { type: 'laser', color: '#E6F7FF', thickness: 2, length: 140, glowColor: '#C0F0FF', glowRadius: 20 },
+    traits: ['Laser','Mark','Execute','Chain','Pierces','Evolution'],
+    isClassWeapon: true,
+    getLevelStats(level:number){
+      // Anchor power to Ghost Sniper L7 and allocate budget to beam+execute
+      const base = (WEAPON_SPECS as any)[WeaponType.GHOST_SNIPER];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 220, cooldown: 60 } as any;
+      const baseDpsL7 = (s.damage * 60) / Math.max(1, (s.cooldown || 60));
+      const targetDps = baseDpsL7 * 1.75; // evolved payout
+      const cooldown = 100;
+      const damage = Math.max(1, Math.round((targetDps * cooldown) / 60 * 0.55)); // allocate ~55% to primary beam
+      // Execution parameters
+      const markMs = 1200; // mark duration
+  const execMult = 2.2; // execution pulse multiplier vs (per-shot base)
+      const chainCount = 2; // max extra marked targets
+      const chainMult = 0.6; // percent to chained marks
+      return { cooldown, damage, markMs, execMult, chainCount, chainMult } as any;
+    }
+  },
   /** Void Sniper: Shadow Operative variant of Ghost Sniper. Deals damage over time only. */
-  [WeaponType.VOID_SNIPER]: { id: WeaponType.VOID_SNIPER, name: 'Void Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 95, projectileVisual: { type: 'laser', color: '#6A0DAD', thickness: 2, length: 140, glowColor: '#B266FF', glowRadius: 22 }, traits: ['Laser','Paralysis (0.5s)','Damage Over Time','Pierces','Scaling'], usageTips: [
+  [WeaponType.VOID_SNIPER]: { id: WeaponType.VOID_SNIPER, name: 'Void Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 95, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 95, projectileVisual: { type: 'laser', color: '#6A0DAD', thickness: 2, length: 140, glowColor: '#B266FF', glowRadius: 22 }, traits: ['Laser','Paralysis (0.5s)','Damage Over Time','Pierces','Scaling','Evolution'], usageTips: [
     'Tag elites and kite—DoT stacks on the same target.',
     'Dark tick visuals confirm stacks; keep targets inside beam length.',
     'Pair with slows or knockback to keep afflicted mobs in range.'
-  ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=95, baseCooldown=95, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); // ticks: 3 over 3000ms
+  ], isClassWeapon: true,
+    evolution: { evolvedWeaponType: WeaponType.BLACK_SUN, requiredPassive: 'Area Up' } as any,
+    getLevelStats(level:number){ const baseDamage=95, baseCooldown=95, mult=7.5; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.32/6)); // ticks: 3 over 3000ms
       return {damage:dmg, cooldown:cd, ticks:3, tickIntervalMs:1000}; } },
+  /** Black Sun — Evolution of Void Sniper: Seeds void orbs that slow and tick; they collapse after a short fuse with a pull and a pulse. */
+  [WeaponType.BLACK_SUN]: {
+    id: WeaponType.BLACK_SUN,
+    name: 'Black Sun',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'),
+    description: 'Unleashes five converging void beams at once—each locks a different target and sears it.',
+    usageTips: [
+      'Stand still to steady your aim, then release a five-target snipe volley.',
+      'Beams won’t stack on the same enemy—position to tag separate elites.',
+      'Damage scales with Void Sniper’s apex—synergizes with crit and damage boosts.'
+    ],
+    cooldown: 95,
+    salvo: 1,
+    spread: 0,
+    projectile: 'sniper_white',
+    speed: 22.4,
+    range: 1200,
+    maxLevel: 1,
+    damage: 0,
+    projectileVisual: { type: 'laser', color: '#4B0082', thickness: 2, length: 140, glowColor: '#B266FF', glowRadius: 24 },
+  traits: ['Laser','Seed','Slow','Collapse','AoE','Evolution'],
+    isClassWeapon: true,
+  // Evolution is defined on Void Sniper; Black Sun is the evolved weapon.
+  getLevelStats(level:number){
+      // Anchor to Void Sniper L7 DPS and budget into seed ticks + collapse
+      const base = (WEAPON_SPECS as any)[WeaponType.VOID_SNIPER];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 220, cooldown: 60, ticks: 3 } as any;
+      const baseDpsL7 = (s.damage * 60) / Math.max(1, (s.cooldown || 60));
+  const targetDps = baseDpsL7 * 1.7; // evolved payout
+      const cooldown = 95;
+      const damage = Math.max(1, Math.round((targetDps * cooldown) / 60 * 0.45)); // allocate ~45% to beam frontload (small)
+      // Seed + collapse mechanics
+  const seedSlowPct = 0.90; // heavy slow inside orb so gravity dominates movement (up to 90%)
+  const seedTicks = 6; // more pre-collapse ticks
+  const seedTickIntervalMs = 260; // slightly faster cadence
+  const seedTickFrac = 0.50; // per-tick vs beam base (substantial DoT)
+  const fuseMs = 1800; // modestly longer to allow overlap and pull-in
+  const pullRadius = 200; // slightly wider pull zone
+  const pullStrength = 680; // much stronger pull impulse so it overcomes chase/knockback
+  const collapseRadius = 200; // slightly wider collapse shockwave radius
+  const collapseMult = 5.0; // much stronger collapse pulse vs beam base
+      return { cooldown, damage, seedSlowPct, seedTicks, seedTickIntervalMs, seedTickFrac, fuseMs, pullRadius, pullStrength, collapseRadius, collapseMult } as any;
+    }
+  },
   // Mech Mortar: extended range + acceleration handled in BulletManager for more epic arc
   [WeaponType.MECH_MORTAR]: { id: WeaponType.MECH_MORTAR, name: 'Mech Mortar', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_mortar.png'), cooldown: 90, salvo: 1, spread: 0, projectile: 'bullet_gold', speed: 7, damage: 90, range: 520, maxLevel: 8, projectileVisual: { type: 'bullet', sprite: AssetLoader.normalizePath('/assets/projectiles/bullet_mortar.png'), size: 16, glowColor: '#FFD770', glowRadius: 14, trailColor: 'rgba(255,200,80,0.35)', trailLength: 32, rotationOffset: Math.PI/2 }, explosionRadius: 200, traits: ['Heavy','AoE','Scaling'], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=90, baseCooldown=90, mult=5.833333; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/4)); const cd=Math.round(baseCooldown*(1-(level-1)*0.30/4)); const radius = Math.round(200 * (1 + 0.12 * (Math.min(Math.max(level,1),8)-1))); return {damage:dmg, cooldown:cd, explosionRadius: radius}; } },
   /** Quantum Halo: persistent rotating orbs around player. Managed separately (cooldown unused). */
   [WeaponType.QUANTUM_HALO]: {
     id: WeaponType.QUANTUM_HALO,
     name: 'Quantum Halo',
+  // Icon: render as orbit ring in UpgradePanel via inline SVG; keep a neutral cyan bullet fallback
   icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
     cooldown: 9999,
     salvo: 0,
@@ -814,6 +1175,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   damage: 22,
   knockback: 28, // strong continuous radial push
   // Fast precise variant: smaller core & shorter trail
+  // Provide a pseudo-sprite hint so UI prefers a graphic over a generic beam icon
   projectileVisual: { type: 'plasma', color: '#FFFBEA', size: 8, glowColor: '#FFEFA8', glowRadius: 34, trailColor: 'rgba(255,240,170,0.45)', trailLength: 14 },
     traits: ['Orbit','Persistent','Pulse','Scaling','Defense'],
     description: 'Defensive constellation of blades—orbits that carve and push enemies away.',
@@ -829,11 +1191,44 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
   // Increased base spin speeds for very fast precise orbiting
   // Faster unified orbit speed for higher DPS coverage (clockwise)
   const spinSpeed  = [3.2,3.5,3.8,4.1,4.4,4.7,5.0][idx];
-      const pulseDamage= [0,0,0,90,130,170,220][idx];
+  const pulseDamage= [0,0,0,110,150,195,240][idx];
       return { damage: baseDamage, orbCount, orbitRadius, spinSpeed, pulseDamage } as any;
     }
   }
   ,
+  /** Heavy Gunner evolution: Lava Laser Minigun — sustained micro-beam that melts through lines at close range. */
+  [WeaponType.GUNNER_LAVA_MINIGUN]: {
+    id: WeaponType.GUNNER_LAVA_MINIGUN,
+    name: 'Lava Laser Minigun',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'),
+    description: 'Spin the barrels into a white-hot micro-beam. Short, thick, and relentless—pure close-range melt.',
+    cooldown: 5,
+    salvo: 1,
+    spread: 0.04,
+    projectile: 'beam_lava',
+    speed: 0,
+    range: 260,
+    maxLevel: 1,
+    damage: 6,
+    // Represent as a beam for UI; actual visuals handled in Game beams render
+    projectileVisual: { type: 'beam', color: '#FF4500', thickness: 8, length: 220, glowColor: '#FF8C00', glowRadius: 22, trailColor: 'rgba(255,69,0,0.45)', trailLength: 28 },
+    traits: ['Beam','Sustained','Pierces','Short Range'],
+    isClassWeapon: true,
+    knockback: 4,
+    getLevelStats(level: number){
+      // Balance target: approximately 2.2x Minigun L7 DPS concentrated in a short beam tick stream.
+      const base = (WEAPON_SPECS as any)[WeaponType.GUNNER_MINIGUN];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 75, cooldown: 3 };
+      // Approx DPS of minigun L7
+      const baseDpsL7 = (s.damage * 60) / Math.max(1, s.cooldown||1);
+      const targetDps = baseDpsL7 * 2.2;
+      const cd = 5; // frames
+      const dmg = Math.max(1, Math.round(targetDps * cd / 60));
+      const length = 240;
+      const thickness = 8;
+      return { cooldown: cd, damage: dmg, length, thickness } as any;
+    }
+  },
   /** New Scavenger weapon: Scrap Lash — returning boomerang blade that pierces and applies armor shred briefly. */
   [WeaponType.SCRAP_LASH]: {
     id: WeaponType.SCRAP_LASH,
@@ -852,7 +1247,9 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     traits: ['Returning','Pierce','Armor Shred','Sustain'],
     isClassWeapon: true,
   knockback: 10,
-    getLevelStats(level:number){
+  // Evolves into an orbiting grinder when you have sufficient area scaling
+  evolution: { evolvedWeaponType: WeaponType.INDUSTRIAL_GRINDER, requiredPassive: 'Area Up' },
+  getLevelStats(level:number){
       const idx = Math.min(Math.max(level,1),7)-1;
   const damage = [36,46,60,78,100,126,156][idx];
   const cooldown = [38,36,34,32,30,28,26][idx];
@@ -893,6 +1290,42 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       const durationMs = 1300;
       const orbitRadius = 140;
       return { cooldown, cooldownMs, damage, durationMs, orbitRadius } as any;
+    }
+  }
+  ,
+  /** Cyber Runner evolution: Runner Overdrive — hyper-cadence twin-stream with lane biasing. */
+  [WeaponType.RUNNER_OVERDRIVE]: {
+    id: WeaponType.RUNNER_OVERDRIVE,
+    name: 'Runner Overdrive',
+    icon: AssetLoader.normalizePath('/assets/projectiles/bullet_cyan.png'),
+    description: 'Flip the limiter. Twin converging streams lock to your strafe—surgical spray at insane cadence.',
+    cooldown: 4,
+    salvo: 2,
+    spread: 0.06,
+    projectile: 'bullet_cyan',
+    speed: 12.5,
+    range: 380,
+    maxLevel: 1,
+    damage: 6,
+    // Dark neon red theme
+  // Draw as a pure color bullet (no cyan sprite) so theme is dark neon red with a visible trail
+  projectileVisual: { type: 'bullet', size: 6, color: '#8B0000', glowColor: '#B22222', glowRadius: 18, trailColor: 'rgba(139,0,0,0.70)', trailLength: 22 },
+    traits: ['Twin Stream','Hyper Cadence','Lane Bias'],
+    isClassWeapon: true,
+    knockback: 6,
+    getLevelStats(level: number){
+      // Double the DPS of Runner Gun level 7, accounting for salvo and faster cadence
+      const base = (WEAPON_SPECS as any)[WeaponType.RUNNER_GUN];
+      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 18, cooldown: 4 };
+      const salvo = 2;
+      const cd = 4; // frames
+      const baseDpsL7 = (s.damage * 60) / (s.cooldown || 1);
+      const targetDps = baseDpsL7 * 2;
+      const dmg = Math.max(1, Math.round(targetDps * cd / (salvo * 60)));
+      const spread = 0.06; // tighter
+      const speed = 12.5;
+      const projectileSize = 6;
+      return { cooldown: cd, salvo, damage: dmg, spread, speed, projectileSize } as any;
     }
   }
   

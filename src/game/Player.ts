@@ -4,9 +4,10 @@ import { Enemy } from './EnemyManager';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
 import { PASSIVE_SPECS, applyPassive } from './PassiveConfig';
-import { SPEED_SCALE, EXP_BASE, EXP_LINEAR, EXP_QUAD } from './Balance';
+import { SPEED_SCALE, EXP_BASE, EXP_LINEAR, EXP_QUAD, getHealEfficiency } from './Balance';
 import { Logger } from '../core/Logger';
 import { AssetLoader } from './AssetLoader';
+import { GhostProtocolAbility } from './abilities/GhostProtocol';
 
 /**
  * Player entity class. Handles movement, shooting, upgrades, and rendering.
@@ -144,6 +145,20 @@ export class Player {
   return Math.max(this.gunnerBoostFloorT, heatT);
   }
 
+  /**
+   * Heavy Gunner power shaping function (0..1.15). Grows faster near max heat and adds a small edge surge.
+   * Used for damage/fire rate/range; jitter/spread continue to use linear t for control.
+   */
+  private getGunnerPowerT(): number {
+    if (this.characterData?.id !== 'heavy_gunner') return 0;
+    if (!this.gunnerBoostActive) return 0;
+    const heatT = Math.max(0, Math.min(1, this.gunnerHeatMs / this.gunnerHeatMsMax));
+    const base = Math.max(this.gunnerBoostFloorT, heatT);
+    const shaped = Math.pow(base, 1.6);
+    const edge = heatT > 0.9 ? (heatT - 0.9) / 0.1 : 0; // 0..1 near overheat
+    return Math.min(1.15, shaped + 0.15 * edge);
+  }
+
   // Cyber Runner: Dash (Shift) — dodge distance scales with level (200px at Lv1 → 400px at Lv50), 5s cooldown
   private runnerDashCooldownMsMax: number = 5000;
   private runnerDashCooldownMs: number = 0;
@@ -151,6 +166,8 @@ export class Player {
   private invulnerableUntilMs: number = 0; // generic i-frames end time (ms since performance.now)
   /** Afterimage trail entries for Cyber Runner dash */
   private runnerAfterimages: { x: number; y: number; rotation: number; flip: boolean; ageMs: number; lifeMs: number; alpha: number; }[] = [];
+  /** Pool of reusable afterimage objects to reduce GC churn */
+  private runnerAfterimagesPool: { x: number; y: number; rotation: number; flip: boolean; ageMs: number; lifeMs: number; alpha: number; }[] = [];
   private runnerDashActive: boolean = false;
   private runnerDashTimeMs: number = 0;
   private runnerDashDurationMs: number = 300; // dash duration
@@ -160,6 +177,8 @@ export class Player {
   private runnerDashEndY: number = 0;
   private runnerDashEmitAccum: number = 0;
   public getRunnerDash() { return { value: this.runnerDashCooldownMsMax - this.runnerDashCooldownMs, max: this.runnerDashCooldownMsMax, ready: this.runnerDashCooldownMs <= 0 }; }
+  /** Cyber Runner: Overdrive surge window end time (ms since performance.now). While active, evolved Runner shots gain crit and speed. */
+  private runnerOverdriveSurgeUntil: number = 0;
 
   // Cyber Runner: Blade Cyclone (Ctrl) — AOE spin attack with high damage, 6s cooldown
   private bladeCycloneCooldownMsMax: number = 6000;
@@ -196,6 +215,24 @@ export class Player {
   private techDashEndX: number = 0;
   private techDashEndY: number = 0;
   private techDashEmitAccum: number = 0;
+
+  // Rogue Hacker: Ghost Protocol (Shift) — intangibility + aura; separate from System Hack (Space)
+  private ghostProtocol?: GhostProtocolAbility;
+  private ghostPrevShift: boolean = false;
+  public getGhostProtocolMeter() {
+    const anyThis: any = this as any;
+    const gp = this.ghostProtocol;
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const readyAt = (gp && typeof gp.cooldownReadyAt === 'number') ? gp.cooldownReadyAt : (anyThis._ghostProtocolCdUntil || 0);
+    const ready = now >= (readyAt || 0);
+    const active = !!(gp && gp.isActive);
+    const dur = gp ? gp.durationMs : 3000;
+    const cd = gp ? gp.cooldownMs : 14000;
+    // When active, show elapsed toward duration; else show cooldown progress
+    const value = active ? (dur - gp!.timeLeftMs) : (ready ? cd : Math.max(0, cd - Math.max(0, (readyAt || 0) - now)));
+    const max = active ? dur : cd;
+    return { value, max, ready: !active && ready, active };
+  }
 
   // Data Sorcerer: Sigil Surge (Spacebar) — 15s cooldown, summon a large following sigil that pulses damage
   private sorcererSigilCdMaxMs: number = 15000;
@@ -248,6 +285,17 @@ export class Player {
   private bioOutbreakPrevKey: boolean = false;
   public getBioOutbreakMeter() {
     return { value: this.bioOutbreakActive ? this.bioOutbreakActiveMs : (this.bioOutbreakCdMaxMs - this.bioOutbreakCdMs), max: this.bioOutbreakActive ? 5000 : this.bioOutbreakCdMaxMs, ready: this.bioOutbreakCdMs <= 0 && !this.bioOutbreakActive, active: this.bioOutbreakActive };
+  }
+  // Bio Engineer: BIO Boost (Shift) — 12s cooldown, 4s duration; x2 fire rate and massive speed boost
+  private bioBoostCdMaxMs: number = 12000;
+  private bioBoostCdMs: number = 0;
+  private bioBoostActiveMs: number = 0;
+  private bioBoostActive: boolean = false;
+  private bioBoostPrevShift: boolean = false;
+  private bioBoostSpeedMul: number = 2.2; // massive movement speed boost
+  private bioBoostFireRateMul: number = 2.0; // double fire rate
+  public getBioBoostMeter() {
+    return { value: this.bioBoostActive ? this.bioBoostActiveMs : (this.bioBoostCdMaxMs - this.bioBoostCdMs), max: this.bioBoostActive ? 4000 : this.bioBoostCdMaxMs, ready: this.bioBoostCdMs <= 0 && !this.bioBoostActive, active: this.bioBoostActive };
   }
 
   /**
@@ -349,18 +397,25 @@ export class Player {
   public update(deltaTime: number) {
     const dt = Math.max(0, deltaTime | 0);
   const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  // Global revive cinematic lockout: disable all player input/actions while active
+  const reviving = !!(window as any).__reviveCinematicActive;
+  // Optional local guard: small grace if needed after revive to avoid queued inputs
+  const localReviveLockUntil: number = (this as any)._reviveInputLockUntil || 0;
+  const inputLocked = reviving || (now < localReviveLockUntil);
   // Tick class ability cooldowns/buffs
   this._preUpdate(now, dt);
     // Post-cyclone settle timer tick
     if (this.bladeCycloneSettleMs > 0) {
       this.bladeCycloneSettleMs = Math.max(0, this.bladeCycloneSettleMs - dt);
     }
-    // Movement (WASD/Arrows)
+    // Movement (WASD/Arrows) — blocked while reviving
     let ax = 0, ay = 0;
-  if (keyState['w'] || keyState['arrowup']) ay -= 1;
-  if (keyState['s'] || keyState['arrowdown']) ay += 1;
-  if (keyState['a'] || keyState['arrowleft']) ax -= 1;
-  if (keyState['d'] || keyState['arrowright']) ax += 1;
+  if (!inputLocked) {
+    if (keyState['w'] || keyState['arrowup']) ay -= 1;
+    if (keyState['s'] || keyState['arrowdown']) ay += 1;
+    if (keyState['a'] || keyState['arrowleft']) ax -= 1;
+    if (keyState['d'] || keyState['arrowright']) ax += 1;
+  }
     // Normalize
     if (ax !== 0 || ay !== 0) {
       const inv = 1 / Math.hypot(ax, ay);
@@ -371,8 +426,10 @@ export class Player {
   else if (ax > 0.001) this.lastDirX = 1;
   this.isFlipped = this.lastDirX < 0;
     const moveScale = dt / 16.6667;
-    this.vx = ax * this.speed;
-    this.vy = ay * this.speed;
+  // Apply temporary BIO Boost speed multiplier if active (Bio Engineer only)
+  const speedMul = (this.characterData?.id === 'bio_engineer' && this.bioBoostActive) ? this.bioBoostSpeedMul : 1;
+  this.vx = inputLocked ? 0 : ax * this.speed * speedMul;
+  this.vy = inputLocked ? 0 : ay * this.speed * speedMul;
     this.x += this.vx * moveScale;
     this.y += this.vy * moveScale;
     // Walk-cycle flip while moving
@@ -389,7 +446,7 @@ export class Player {
     }
 
     // Cooldowns decrement (weapon cooldowns are tracked in milliseconds)
-    if (this.shootCooldowns.size) {
+  if (!reviving && this.shootCooldowns.size) {
       for (const [k, v] of this.shootCooldowns) {
         const nv = v - dt;
         this.shootCooldowns.set(k, nv > 0 ? nv : 0);
@@ -397,7 +454,7 @@ export class Player {
     }
 
   // Cyber Runner: dash cooldown tick + input edge detect (Shift)
-    if (this.characterData?.id === 'cyber_runner') {
+  if (!inputLocked && this.characterData?.id === 'cyber_runner') {
       if (this.runnerDashCooldownMs > 0) this.runnerDashCooldownMs = Math.max(0, this.runnerDashCooldownMs - dt);
       if (this.bladeCycloneCooldownMs > 0) this.bladeCycloneCooldownMs = Math.max(0, this.bladeCycloneCooldownMs - dt);
 
@@ -416,7 +473,7 @@ export class Player {
     }
 
     // Tech Warrior: glide dash (Shift) — slower, shorter, smoother
-    if (this.characterData?.id === 'tech_warrior') {
+  if (!inputLocked && this.characterData?.id === 'tech_warrior') {
       if (this.techDashCooldownMs > 0) this.techDashCooldownMs = Math.max(0, this.techDashCooldownMs - dt);
       const shiftNow = !!keyState['shift'];
       if (shiftNow && !this.techDashPrevKey && this.techDashCooldownMs <= 0 && !this.techDashActive) {
@@ -451,6 +508,41 @@ export class Player {
       }
     }
 
+    // Bio Engineer: BIO Boost (Shift) — independent of Outbreak (Space)
+  if (!inputLocked && this.characterData?.id === 'bio_engineer') {
+      if (this.bioBoostActive) {
+        this.bioBoostActiveMs += dt;
+        if (this.bioBoostActiveMs >= 4000) {
+          this.bioBoostActive = false;
+          this.bioBoostActiveMs = 0;
+          this.bioBoostCdMs = this.bioBoostCdMaxMs; // start cooldown when effect ends
+          try { (window as any).__bioBoostActiveUntil = 0; } catch {}
+        }
+      } else if (this.bioBoostCdMs > 0) {
+        this.bioBoostCdMs = Math.max(0, this.bioBoostCdMs - dt);
+      }
+      const shiftNowBio = !!keyState['shift'];
+      if (shiftNowBio && !this.bioBoostPrevShift && this.bioBoostCdMs <= 0 && !this.bioBoostActive) {
+        this.bioBoostActive = true;
+        this.bioBoostActiveMs = 0;
+        // Signal EnemyManager for aura VFX window
+        try { (window as any).__bioBoostActiveUntil = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + 4000; } catch {}
+        // Small burst particles via global particle manager if available
+        try {
+          const pm = (this.gameContext as any)?.particleManager;
+          if (pm) {
+            const burst = 14;
+            for (let i = 0; i < burst; i++) {
+              const a = (i / burst) * Math.PI * 2;
+              const r = 10 + (i % 2) * 6;
+              pm.spawn(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r, 1, '#73FF00', { sizeMin: 1, sizeMax: 2.2, lifeMs: 360, speedMin: 1, speedMax: 2.6 });
+            }
+          }
+        } catch {}
+      }
+      this.bioBoostPrevShift = shiftNowBio;
+    }
+
     // Cyber Runner: Dash update
     if (this.characterData?.id === 'cyber_runner' && this.runnerDashActive) {
       this.runnerDashTimeMs += dt;
@@ -469,8 +561,18 @@ export class Player {
         const flipNow = this.lastDirX < 0;
         const alpha = 0.4 * (1 - t) + 0.2;
         const lifeMs = 300;
-        this.runnerAfterimages.push({ x: this.x, y: this.y, rotation: this.rotation - Math.PI/2, flip: flipNow, ageMs: 0, lifeMs, alpha });
-        if (this.runnerAfterimages.length > 64) this.runnerAfterimages.splice(0, this.runnerAfterimages.length - 64);
+        const gi = this.runnerAfterimagesPool.pop() || { x: 0, y: 0, rotation: 0, flip: false, ageMs: 0, lifeMs: 0, alpha: 1 };
+        gi.x = this.x; gi.y = this.y; gi.rotation = this.rotation - Math.PI/2; gi.flip = flipNow; gi.ageMs = 0; gi.lifeMs = lifeMs; gi.alpha = alpha;
+        this.runnerAfterimages.push(gi);
+        if (this.runnerAfterimages.length > 64) {
+          // Move oldest overflow entries back into pool for reuse
+          const overflow = this.runnerAfterimages.length - 64;
+          for (let k = 0; k < overflow; k++) {
+            const reclaimed = this.runnerAfterimages[k];
+            if (this.runnerAfterimagesPool.length < 96) this.runnerAfterimagesPool.push(reclaimed);
+          }
+          this.runnerAfterimages.splice(0, overflow);
+        }
       }
 
       if (this.runnerDashTimeMs >= this.runnerDashDurationMs) {
@@ -532,11 +634,15 @@ export class Player {
         const g = this.runnerAfterimages[i];
         g.ageMs += dt;
       }
-      // remove expired in place
+      // remove expired in place while pooling
       let w = 0;
       for (let r = 0; r < this.runnerAfterimages.length; r++) {
         const g = this.runnerAfterimages[r];
-        if (g.ageMs < g.lifeMs) this.runnerAfterimages[w++] = g;
+        if (g.ageMs < g.lifeMs) {
+          this.runnerAfterimages[w++] = g;
+        } else {
+          if (this.runnerAfterimagesPool.length < 96) this.runnerAfterimagesPool.push(g);
+        }
       }
       this.runnerAfterimages.length = w;
     }
@@ -614,9 +720,51 @@ export class Player {
       }
       this.bioOutbreakPrevKey = spaceNow;
     }
+    // Rogue Hacker: Ghost Protocol (Shift) — activation and ticking
+    if (!inputLocked && this.characterData?.id === 'rogue_hacker') {
+      // Lazy init once we know character
+      if (!this.ghostProtocol) {
+        this.ghostProtocol = new GhostProtocolAbility(this as any, {
+          durationMs: 3000,
+          cooldownMs: 10000, // 10s CD per request
+          auraRadius: 160,   // smaller zone per request
+          dps: 180,
+          tickMs: 220,
+          slowPct: 0.35,
+          glitchMs: 1200,
+          moveSpeedMul: 0.55,
+        });
+      }
+      // Live scaling: tie to class weapon level and evolution for damage and visuals
+      try {
+        const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+  const evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
+  const lvl = aw ? (aw.get(WeaponType.HACKER_BACKDOOR) || aw.get(WeaponType.HACKER_VIRUS) || 1) : 1;
+        // Use Hacker Virus level curve as a baseline and amplify a bit for ability impact
+        const spec: any = (WEAPON_SPECS as any)[WeaponType.HACKER_VIRUS];
+        const ls = spec?.getLevelStats ? spec.getLevelStats(Math.max(1, Math.min(7, lvl))) : { damage: 32, cooldown: 32 };
+  // Match ability DPS closely to weapon DPS at that level (no extra bonus)
+  const weaponDps = (ls.damage * 60) / Math.max(1, (ls.cooldown || 32));
+  const targetDps = Math.round(weaponDps);
+  // Keep zone smaller by default; slight bump when evolved for clarity
+  const baseRadius = 160;
+  const radius = evolved ? Math.round(baseRadius * 1.10) : baseRadius;
+  const tickMs = 200;
+  this.ghostProtocol.updateScaling({ dps: targetDps, auraRadius: radius, tickMs, evolved });
+      } catch { /* ignore */ }
+      const shiftNow = !!keyState['shift'];
+      if (shiftNow && !this.ghostPrevShift) {
+        this.ghostProtocol.tryActivate();
+      }
+      this.ghostPrevShift = shiftNow;
+      // Per-frame tick (even when not active, it's a cheap guard)
+      this.ghostProtocol.update(dt);
+    }
     // Passive HP regeneration (applies continuously; supports fractional accumulation)
     if ((this.regen || 0) > 0 && this.hp < this.maxHp) {
-      const heal = (this.regen || 0) * (dt / 1000);
+      const timeSec = (this as any).gameContext?.getGameTime?.() ?? (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+      const eff = getHealEfficiency(timeSec);
+      const heal = (this.regen || 0) * (dt / 1000) * eff;
       this.hp = Math.min(this.maxHp, this.hp + heal);
     }
     // Heavy Gunner heat model (hold-to-boost):
@@ -650,8 +798,9 @@ export class Player {
       }
     }
 
-    // Auto-aim target
-    let target = this.findNearestEnemy();
+  // Auto-aim target, prefer one that won't explode before charge completes
+  // Use a conservative avoid window equal to charge time (1.5s) since we pick before starting charge
+  let target = this.findSniperTargetAvoidingSoonExploding(1500);
     // Fallback: if no enemy is found, but a boss is active, target the boss so weapons still fire
     if (!target) {
       try {
@@ -666,37 +815,83 @@ export class Player {
       this.rotation = Math.atan2(target.y - this.y, target.x - this.x);
     }
 
-    // Immediate sniper charge start when stationary (Ghost/Shadow), independent of cooldown
+    // Immediate sniper charge start when stationary (Ghost/Shadow/Evolved), independent of cooldown
     if (target) {
+      // Suppress sniper charge entirely during Ghost Protocol (Rogue Hacker)
+      if (this.characterData?.id === 'rogue_hacker' && (this as any)._ghostProtocolActive) {
+        // Cancel any in-progress charge
+        (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0;
+      } else {
       const moveMagForSniper = Math.hypot(this.vx || 0, this.vy || 0);
       if (moveMagForSniper <= 0.01 && !(this as any)._sniperCharging) {
         if (this.activeWeapons.has(WeaponType.GHOST_SNIPER)) {
           // Ghost: allow pre-charging regardless of cooldown; will hold until ready
           const spec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
           const lvl = this.activeWeapons.get(WeaponType.GHOST_SNIPER) ?? 1;
+          // Re-evaluate target at fire moment; if about to explode, pick a safer target
+          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+          else {
+            const anyT: any = target as any; const nowT = performance.now();
+            if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
+              target = this.findSniperTargetAvoidingSoonExploding(0);
+            }
+          }
+          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
           const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
-          this.handleGhostSniperFire(baseAngle, target, spec, lvl);
+          this.handleGhostSniperFire(baseAngle, target, spec, lvl, WeaponType.GHOST_SNIPER);
+        } else if (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+          // Evolved Ghost: identical charge/beam loop; uses evolved spec and visuals + mark logic
+          const spec = WEAPON_SPECS[WeaponType.SPECTRAL_EXECUTIONER];
+          const lvl = this.activeWeapons.get(WeaponType.SPECTRAL_EXECUTIONER) ?? 1;
+          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+          else {
+            const anyT: any = target as any; const nowT = performance.now();
+            if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
+              target = this.findSniperTargetAvoidingSoonExploding(0);
+            }
+          }
+          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
+          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+          this.handleGhostSniperFire(baseAngle, target, spec, lvl, WeaponType.SPECTRAL_EXECUTIONER);
         } else if (this.activeWeapons.has(WeaponType.VOID_SNIPER)) {
           // Shadow: start charging immediately when stationary; charge loop cycles while waiting for cooldown.
           const spec = WEAPON_SPECS[WeaponType.VOID_SNIPER];
           const lvl = this.activeWeapons.get(WeaponType.VOID_SNIPER) ?? 1;
+          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+          else {
+            const anyT: any = target as any; const nowT = performance.now();
+            if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
+              target = this.findSniperTargetAvoidingSoonExploding(0);
+            }
+          }
+          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
           const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
-          this.handleVoidSniperFire(baseAngle, target, spec, lvl);
+          this.handleVoidSniperFire(baseAngle, target, spec, lvl, WeaponType.VOID_SNIPER);
+        } else if (this.activeWeapons.has(WeaponType.BLACK_SUN)) {
+          // Evolved Shadow (Black Sun): multi-beam snipe to 5 unique targets
+          const spec = WEAPON_SPECS[WeaponType.BLACK_SUN];
+          const lvl = this.activeWeapons.get(WeaponType.BLACK_SUN) ?? 1;
+          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
+          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+          this.handleBlackSunSniperMultiFire(baseAngle, target, spec, lvl);
         }
       }
+    }
     }
 
   // Fire weapons when off cooldown. Most weapons require a target; Scrap-Saw and Drone can self-spawn.
   const isRogueHacker = this.characterData?.id === 'rogue_hacker';
-  for (const [weaponType, level] of this.activeWeapons) {
+  const suppressFire = isRogueHacker && !!((this as any)._ghostProtocolActive);
+  if (!suppressFire) for (const [weaponType, level] of this.activeWeapons) {
         // Quantum Halo: persistent orbs are managed by BulletManager; never fire like a normal weapon
         if (weaponType === WeaponType.QUANTUM_HALO) continue;
-        // Rogue Hacker: skip class weapon here (zones are auto-cast by EnemyManager); allow other weapons
-        if (isRogueHacker && weaponType === WeaponType.HACKER_VIRUS) continue;
+  // Rogue Hacker: skip class weapons here (zones are auto-cast by EnemyManager); allow other weapons
+  if (isRogueHacker && (weaponType === WeaponType.HACKER_VIRUS || weaponType === WeaponType.HACKER_BACKDOOR)) continue;
         if (!this.shootCooldowns.has(weaponType)) this.shootCooldowns.set(weaponType, 0);
         const cd = this.shootCooldowns.get(weaponType) || 0;
-        // Sniper special-case: if a charge is in progress, don't attempt to fire or reset cooldown here
-        if ((weaponType === WeaponType.GHOST_SNIPER || weaponType === WeaponType.VOID_SNIPER) && (this as any)._sniperCharging) {
+  // Sniper special-case: if a charge is in progress, don't attempt to fire or reset cooldown here
+  if ((weaponType === WeaponType.GHOST_SNIPER || weaponType === WeaponType.SPECTRAL_EXECUTIONER || weaponType === WeaponType.VOID_SNIPER || weaponType === WeaponType.BLACK_SUN) && (this as any)._sniperCharging) {
           continue;
         }
         if (cd <= 0) {
@@ -718,12 +913,16 @@ export class Player {
           // Apply attack speed modifiers; if in ms, adjust directly; if in frames, adjust frames then convert
           let effCd: number;
           const rateSource = (this.getFireRateModifier?.() ?? this.fireRateModifier);
-          const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource != null ? rateSource : 1)));
+          let rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource != null ? rateSource : 1)));
+          // Bio Boost: double fire rate while active
+          if (this.characterData?.id === 'bio_engineer' && this.bioBoostActive) {
+            rateMul *= this.bioBoostFireRateMul;
+          }
           // Heavy Gunner: minigun spins up while boosting — increase fire rate with heat
           let rateMulWithBoost = rateMul;
-          if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN) {
-            const t = this.getGunnerBoostT();
-            rateMulWithBoost *= (1 + (this.gunnerBoostFireRate - 1) * t);
+          if (this.characterData?.id === 'heavy_gunner' && (weaponType === WeaponType.GUNNER_MINIGUN || weaponType === WeaponType.GUNNER_LAVA_MINIGUN)) {
+            const tShaped = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : this.getGunnerBoostT();
+            rateMulWithBoost *= (1 + (this.gunnerBoostFireRate - 1) * tShaped);
           }
           if (typeof baseCdMs === 'number') { effCd = baseCdMs / rateMulWithBoost; }
           else { const effCdFrames = (baseCdFrames as number) / rateMulWithBoost; effCd = effCdFrames * FRAME_MS; }
@@ -758,9 +957,9 @@ export class Player {
               const dist = Math.hypot(dx, dy);
               const isGunner = this.characterData?.id === 'heavy_gunner';
               let rangeMul = 1;
-              if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
-                const t = this.getGunnerBoostT();
-                rangeMul = 1 + (this.gunnerBoostRange - 1) * t;
+              if (isGunner && (weaponType === WeaponType.GUNNER_MINIGUN || weaponType === WeaponType.GUNNER_LAVA_MINIGUN)) {
+                const tShaped = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : this.getGunnerBoostT();
+                rangeMul = 1 + (this.gunnerBoostRange - 1) * tShaped;
               }
               const effectiveRange = spec.range * rangeMul;
               canFire = dist <= effectiveRange;
@@ -808,7 +1007,7 @@ export class Player {
           }
         }
       }
-    }
+  }
 
   /**
    * Handles chest pickup event, granting rewards or upgrades to the player.
@@ -958,23 +1157,34 @@ export class Player {
   // Rogue Hacker: allow other weapons; the class weapon is managed as an auto-cast zone spawner
     const spec = WEAPON_SPECS[type];
     if (!spec) return;
+    // Global safety: if this is a base weapon that evolves and we already own the evolved weapon, do not add the base again
+    try {
+      if (spec && spec.maxLevel > 1 && spec.evolution) {
+        const evolvedOwned = (this.activeWeapons.get(spec.evolution.evolvedWeaponType) || 0) > 0;
+        if (evolvedOwned) {
+          return;
+        }
+      }
+    } catch {}
     // If selecting an evolved weapon directly, and its base is owned, perform a swap
     try {
       // Find a base weapon that evolves into this 'type'
       let baseForEvolved: WeaponType | undefined;
-      let requiredPassiveName: string | undefined;
+  let requiredPassiveName: string | undefined;
+  let minPassiveLevel: number = 1;
       for (const k in WEAPON_SPECS) {
         const ws = (WEAPON_SPECS as any)[k];
         if (ws && ws.evolution && ws.evolution.evolvedWeaponType === type) {
           baseForEvolved = Number(k) as WeaponType;
           requiredPassiveName = ws.evolution.requiredPassive;
+          minPassiveLevel = 1; // All evolutions require only Lv.1 passive
           break;
         }
       }
       if (baseForEvolved !== undefined && this.activeWeapons.has(baseForEvolved)) {
-        // Verify passive >= 1 (eligible)
+        // Verify passive level (eligible)
         const req = requiredPassiveName ? this.activePassives.find(p => p.type === requiredPassiveName) : undefined;
-        if (!requiredPassiveName || (req && req.level >= 1)) {
+        if (!requiredPassiveName || (req && req.level >= (minPassiveLevel || 1))) {
           const baseWeaponSpec = WEAPON_SPECS[baseForEvolved];
           const evolvedWeaponSpec = WEAPON_SPECS[type];
           // Swap: remove base, add evolved level 1 (ignore max weapon count)
@@ -1001,7 +1211,7 @@ export class Player {
     } else if (currentLevel === spec.maxLevel) {
       // Still check for evolution if it's at max level and hasn't evolved yet
       if (spec.evolution) {
-        this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive);
+        this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive, (spec.evolution as any).minPassiveLevel || 1);
       }
     }
     // Initialize cooldown if weapon is new
@@ -1010,7 +1220,7 @@ export class Player {
     }
   }
 
-  private tryEvolveWeapon(baseWeaponType: WeaponType, evolvedWeaponType: WeaponType, requiredPassiveName: string): void {
+  private tryEvolveWeapon(baseWeaponType: WeaponType, evolvedWeaponType: WeaponType, requiredPassiveName: string, minPassiveLevel: number = 1): void {
     const baseWeaponSpec = WEAPON_SPECS[baseWeaponType];
     const evolvedWeaponSpec = WEAPON_SPECS[evolvedWeaponType];
 
@@ -1022,8 +1232,8 @@ export class Player {
     const passive = this.activePassives.find(p => p.type === requiredPassiveName);
     const requiredPassiveSpec = PASSIVE_SPECS.find(p => p.name === requiredPassiveName);
 
-  // Evolution eligibility: base weapon at max level and required passive at level >= 1
-  if (passive && passive.level >= 1) {
+  // Evolution eligibility: base weapon at max level and required passive at level >= minPassiveLevel
+  if (passive && passive.level >= (minPassiveLevel || 1)) {
       // Conditions met for evolution
       Logger.info(`Evolving ${baseWeaponSpec.name} to ${evolvedWeaponSpec.name}!`);
 
@@ -1119,37 +1329,11 @@ export class Player {
     } catch { maxRange = Infinity; }
     const maxRangeSq = Number.isFinite(maxRange) ? (maxRange * maxRange) : Infinity;
 
-    // Priority targets: treasures (destructible) and then chests (if present). Prefer nearest within range.
-    try {
-      const em = (this.gameContext as any)?.enemyManager;
-      if (em && typeof em.getTreasures === 'function') {
-        const treasures = em.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number;radius:number }>;
-        let bestT: any = null; let bestD2T = Number.POSITIVE_INFINITY;
-        for (let i = 0; i < treasures.length; i++) {
-          const t = treasures[i];
-          if (!t || !t.active || (t as any).hp <= 0) continue;
-          const dx = (t.x ?? 0) - (this.x ?? 0);
-          const dy = (t.y ?? 0) - (this.y ?? 0);
-          const d2 = dx*dx + dy*dy;
-          if (d2 <= maxRangeSq && d2 < bestD2T) { bestD2T = d2; bestT = t; }
-        }
-        if (bestT) return (bestT as unknown as Enemy); // Cast to Enemy for aiming (x,y used)
-      }
-      // If no treasure in range, consider chests as secondary priority
-      if (em && typeof em.getChests === 'function') {
-        const chests = em.getChests() as Array<{ x:number;y:number;active:boolean;radius:number }>;
-        let bestC: any = null; let bestD2C = Number.POSITIVE_INFINITY;
-        for (let i = 0; i < chests.length; i++) {
-          const c = chests[i];
-          if (!c || !c.active) continue;
-          const dx = (c.x ?? 0) - (this.x ?? 0);
-          const dy = (c.y ?? 0) - (this.y ?? 0);
-          const d2 = dx*dx + dy*dy;
-          if (d2 <= maxRangeSq && d2 < bestD2C) { bestD2C = d2; bestC = c; }
-        }
-        if (bestC) return (bestC as unknown as Enemy);
-      }
-    } catch {}
+  // Treat chests and treasures as regular candidates (no priority). We'll merge them into selection below.
+  let em: any = undefined;
+  try { em = (this.gameContext as any)?.enemyManager; } catch {}
+  const hasTreasures = !!(em && typeof em.getTreasures === 'function');
+  const hasChests = !!(em && typeof em.getChests === 'function');
 
     // Prefer boss first only in 'toughest' mode and when within effective range
     if (aimMode === 'toughest') {
@@ -1180,6 +1364,38 @@ export class Player {
         const hpMax = (e as any).maxHp ?? e.hp;
         if (hpMax > bestHp) { bestHp = hpMax; pick = e; }
       }
+      // Consider treasures (have hp) for toughest selection as well
+      if (hasTreasures) {
+        try {
+          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number; maxHp:number }>;
+          for (let i = 0; i < treasures.length; i++) {
+            const t = treasures[i];
+            if (!t || !t.active || t.hp <= 0) continue;
+            const dx = (t.x ?? 0) - (this.x ?? 0);
+            const dy = (t.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 > maxRangeSq) continue;
+            const hpMax = (t as any).maxHp ?? t.hp;
+            if (hpMax > bestHp) { bestHp = hpMax; pick = (t as unknown as Enemy); }
+          }
+        } catch { /* ignore */ }
+      }
+      // Chests typically don't have HP; include them with very low effective HP so they don't outrank real enemies
+      if (hasChests) {
+        try {
+          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
+          for (let i = 0; i < chests.length; i++) {
+            const c = chests[i];
+            if (!c || !c.active) continue;
+            const dx = (c.x ?? 0) - (this.x ?? 0);
+            const dy = (c.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 > maxRangeSq) continue;
+            // Pick only if nothing tougher has been found yet
+            if (bestHp < 0) { pick = (c as unknown as Enemy); bestHp = 0; }
+          }
+        } catch { /* ignore */ }
+      }
       if (pick) return pick;
       // 2) Fallback: closest within range
       let bestD2 = Number.POSITIVE_INFINITY;
@@ -1191,6 +1407,33 @@ export class Player {
         const d2 = dx * dx + dy * dy;
         if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = e; }
       }
+      // Include treasures and chests in closest-within-range fallback
+      if (hasTreasures) {
+        try {
+          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+          for (let i = 0; i < treasures.length; i++) {
+            const t = treasures[i];
+            if (!t || !t.active || t.hp <= 0) continue;
+            const dx = (t.x ?? 0) - (this.x ?? 0);
+            const dy = (t.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
+          }
+        } catch { /* ignore */ }
+      }
+      if (hasChests) {
+        try {
+          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
+          for (let i = 0; i < chests.length; i++) {
+            const c = chests[i];
+            if (!c || !c.active) continue;
+            const dx = (c.x ?? 0) - (this.x ?? 0);
+            const dy = (c.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
+          }
+        } catch { /* ignore */ }
+      }
       if (pick) return pick;
       // 3) Last resort: closest overall
       bestD2 = Number.POSITIVE_INFINITY; pick = null;
@@ -1201,6 +1444,33 @@ export class Player {
         const dy = (e.y ?? 0) - (this.y ?? 0);
         const d2 = dx * dx + dy * dy;
         if (d2 < bestD2) { bestD2 = d2; pick = e; }
+      }
+      // Include treasures and chests in last-resort search
+      if (hasTreasures) {
+        try {
+          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+          for (let i = 0; i < treasures.length; i++) {
+            const t = treasures[i];
+            if (!t || !t.active || t.hp <= 0) continue;
+            const dx = (t.x ?? 0) - (this.x ?? 0);
+            const dy = (t.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
+          }
+        } catch { /* ignore */ }
+      }
+      if (hasChests) {
+        try {
+          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
+          for (let i = 0; i < chests.length; i++) {
+            const c = chests[i];
+            if (!c || !c.active) continue;
+            const dx = (c.x ?? 0) - (this.x ?? 0);
+            const dy = (c.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
+          }
+        } catch { /* ignore */ }
       }
     } else {
       // 'closest' mode: include boss as a candidate too so it can be targeted
@@ -1223,8 +1493,64 @@ export class Player {
         const d2 = dx * dx + dy * dy;
         if (d2 < bestD2) { bestD2 = d2; pick = e; }
       }
+      // Also consider treasures and chests for closest selection
+      if (hasTreasures) {
+        try {
+          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+          for (let i = 0; i < treasures.length; i++) {
+            const t = treasures[i];
+            if (!t || !t.active || t.hp <= 0) continue;
+            const dx = (t.x ?? 0) - (this.x ?? 0);
+            const dy = (t.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
+          }
+        } catch { /* ignore */ }
+      }
+      if (hasChests) {
+        try {
+          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
+          for (let i = 0; i < chests.length; i++) {
+            const c = chests[i];
+            if (!c || !c.active) continue;
+            const dx = (c.x ?? 0) - (this.x ?? 0);
+            const dy = (c.y ?? 0) - (this.y ?? 0);
+            const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
+          }
+        } catch { /* ignore */ }
+      }
     }
     return pick;
+  }
+
+  /**
+   * Sniper targeting helper: prefer a target that won't explode (Spectral mark) before a shot after avoidMs.
+   * Falls back to nearest alive enemy if none match. Only filters by Spectral mark timing (predictable).
+   */
+  private findSniperTargetAvoidingSoonExploding(avoidMs: number): Enemy | null {
+    const em: any = this.gameContext?.enemyManager;
+    const list: Enemy[] = (em && typeof em.getEnemies === 'function') ? em.getEnemies() : [];
+    if (!list || list.length === 0) return null;
+    const now = performance.now();
+    let best: Enemy | null = null;
+    let bestD2 = Infinity;
+    for (let i = 0; i < list.length; i++) {
+      const e = list[i];
+      if (!e || !e.active || e.hp <= 0) continue;
+      // If Spectral is active, skip targets whose mark will execute before we shoot
+      if (this.activeWeapons && this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+        const anyE: any = e as any;
+        const until: number = anyE._specterMarkUntil || 0;
+        if (until > 0 && (until - now) <= (avoidMs + 80)) continue;
+      }
+      const dx = e.x - this.x; const dy = e.y - this.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) { bestD2 = d2; best = e; }
+    }
+    if (best) return best;
+    // Fallback to nearest alive if all candidates were soon-exploding
+    return this.findNearestEnemy();
   }
 
   private shootAt(target: Enemy, weaponType: WeaponType) {
@@ -1236,9 +1562,10 @@ export class Player {
       const bm = this.gameContext.bulletManager;
       const spec = WEAPON_SPECS[weaponType as keyof typeof WEAPON_SPECS];
       if (spec) {
-        const dx = target.x - this.x;
-        const dy = target.y - this.y;
-        const baseAngle = Math.atan2(dy, dx);
+  // Compute base aim; some weapons override with predictive lead
+  let dx = target.x - this.x;
+  let dy = target.y - this.y;
+  let baseAngle = Math.atan2(dy, dx);
         // Resolve per-level scaling (salvo, spread, damage). Speed handled in BulletManager.
         const weaponLevel = this.activeWeapons.get(weaponType) ?? 1;
         let toShoot = spec.salvo;
@@ -1254,12 +1581,26 @@ export class Player {
         const isGunner = this.characterData?.id === 'heavy_gunner';
         if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
           const t = this.getGunnerBoostT();
+          // Use shaped power curve for damage scaling (stronger near max heat)
+          const tPow = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : t;
           if (t > 0) {
-            bulletDamage *= (1 + (this.gunnerBoostDamage - 1) * t);
+            bulletDamage *= (1 + (this.gunnerBoostDamage - 1) * tPow);
             // Interpolate spread factor: 1 -> gunnerBoostSpread
             const spreadMul = 1 - (1 - this.gunnerBoostSpread) * t;
             spread *= spreadMul;
           }
+        }
+
+        // Predictive aiming for Data Sorcerer laser kit
+        if (weaponType === WeaponType.GLYPH_COMPILER || weaponType === WeaponType.ORACLE_ARRAY) {
+          try {
+            const specAny: any = (WEAPON_SPECS as any)[weaponType];
+            const lvl = this.activeWeapons.get(weaponType) ?? 1;
+            const scaled = specAny?.getLevelStats ? specAny.getLevelStats(lvl) : {};
+            const projSpeed = (scaled.speed != null ? scaled.speed : specAny?.speed) || 18;
+            const lead = this.computeInterceptAngle(this.x, this.y, target, projSpeed);
+            if (lead != null) baseAngle = lead;
+          } catch { /* ignore and stick to direct aim */ }
         }
 
         // Staggered burst logic for Blaster (LASER): fire salvo shots sequentially with small gap instead of simultaneously
@@ -1314,14 +1655,30 @@ export class Player {
           return; // Skip normal projectile loop
         }
 
+        // Heavy Gunner evolution: Lava Laser Minigun — sustained micro-beam DPS, refreshed on cadence
+        if (weaponType === WeaponType.GUNNER_LAVA_MINIGUN) {
+          this.handleLavaMinigunFire(baseAngle, target, spec, weaponLevel);
+          return; // handled by beam path
+        }
+
   // Ghost Operative: heavyweight sniper — must be stationary; charge then instant hitscan beam with pierce
         if (weaponType === WeaponType.GHOST_SNIPER) {
-          this.handleGhostSniperFire(baseAngle, target, spec, weaponLevel);
+          this.handleGhostSniperFire(baseAngle, target, spec, weaponLevel, WeaponType.GHOST_SNIPER);
+          return; // handled by beam path
+        }
+        // Spectral Executioner (evolved Ghost Sniper): same charge/beam path with mark+execute behavior
+        if (weaponType === WeaponType.SPECTRAL_EXECUTIONER) {
+          this.handleGhostSniperFire(baseAngle, target, spec, weaponLevel, WeaponType.SPECTRAL_EXECUTIONER);
           return; // handled by beam path
         }
         // Shadow Operative: Void Sniper — same charge/aim, applies DoT only and purple beam visuals
         if (weaponType === WeaponType.VOID_SNIPER) {
-          this.handleVoidSniperFire(baseAngle, target, spec, weaponLevel);
+          this.handleVoidSniperFire(baseAngle, target, spec, weaponLevel, WeaponType.VOID_SNIPER);
+          return; // handled by beam path
+        }
+        // Black Sun: evolved Shadow sniper — multi-beam to 5 unique targets, no stacking
+        if (weaponType === WeaponType.BLACK_SUN) {
+          this.handleBlackSunSniperMultiFire(baseAngle, target, WEAPON_SPECS[WeaponType.BLACK_SUN], weaponLevel);
           return; // handled by beam path
         }
         // Rogue Hacker: weapon spawns paralysis/DoT zones only; no bullets
@@ -1330,16 +1687,17 @@ export class Player {
           return; // no projectile spawn
         }
 
+  const baseCos = Math.cos(baseAngle);
+  const baseSin = Math.sin(baseAngle);
+  const perpX0 = -baseSin;
+  const perpY0 =  baseCos;
   for (let i = 0; i < toShoot; i++) {
           const angle = baseAngle + (i - (toShoot - 1) / 2) * spread;
           // For Runner Gun: spawn from left/right gun barrels instead of exact center
           let originX = this.x;
           let originY = this.y;
-          if (weaponType === WeaponType.RUNNER_GUN) {
+          if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE) {
             const sideOffsetBase = 22; // pixel distance from center to each gun barrel
-            // Perpendicular vector to firing direction
-            const perpX = -Math.sin(baseAngle);
-            const perpY =  Math.cos(baseAngle);
             // Alternate barrels when firing a single shot per trigger; for multi-shot, use index-based sides
             let sideSign: number;
             if (toShoot <= 1) {
@@ -1351,36 +1709,37 @@ export class Player {
               // Convert to sign (-1 or 1) to anchor fully at each side
               sideSign = centeredIndex < 0 ? -1 : 1;
             }
-            originX += perpX * sideOffsetBase * sideSign;
-            originY += perpY * sideOffsetBase * sideSign;
+            originX += perpX0 * sideOffsetBase * sideSign;
+            originY += perpY0 * sideOffsetBase * sideSign;
           } else if (weaponType === WeaponType.DUAL_PISTOLS) {
             // Akimbo Deagle: two barrels left/right simultaneously (no zig-zag across bursts)
             const sideOffsetBase = 18;
-            const perpX = -Math.sin(baseAngle);
-            const perpY =  Math.cos(baseAngle);
+            const perpX = perpX0;
+            const perpY = perpY0;
             const centeredIndex = (i - (toShoot - 1) / 2);
             const sideSign = centeredIndex < 0 ? -1 : 1;
             originX += perpX * sideOffsetBase * sideSign;
             originY += perpY * sideOffsetBase * sideSign;
-            originX += Math.cos(baseAngle) * 10;
-            originY += Math.sin(baseAngle) * 10;
+            originX += baseCos * 10;
+            originY += baseSin * 10;
           } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
             // Titan Mech dual heavy cannons: alternate each shot left/right
             // Determine perpendicular to firing direction
-            const perpX = -Math.sin(baseAngle);
-            const perpY =  Math.cos(baseAngle);
+            const perpX = perpX0;
+            const perpY = perpY0;
             const barrelOffset = 30; // distance from center to each cannon
             originX += perpX * barrelOffset * this.mechMortarSide;
             originY += perpY * barrelOffset * this.mechMortarSide;
             // Slight forward offset to place at muzzle tip
-            originX += Math.cos(baseAngle) * 18;
-            originY += Math.sin(baseAngle) * 18;
+            originX += baseCos * 18;
+            originY += baseSin * 18;
             // Flip for next shot
             this.mechMortarSide *= -1;
           }
           // Converging fire: if Runner Gun, recompute angle so each barrel aims exactly at target (covers middle)
           let finalAngle = angle;
-          if (weaponType === WeaponType.RUNNER_GUN) {
+          // Data Sorcerer: keep predictive base, but adjust per-barrel convergence only for non-DS weapons
+          if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE) {
             const tdx = target.x - originX;
             const tdy = target.y - originY;
             finalAngle = Math.atan2(tdy, tdx);
@@ -1395,7 +1754,6 @@ export class Player {
             const tdy = target.y - originY;
             finalAngle = Math.atan2(tdy, tdx);
           }
-          // Heavy Gunner: add extra random jitter on minigun aim while boosting for a punchier spray feel
           if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
             const t = this.getGunnerBoostT();
             const j = this.gunnerBoostJitter * t;
@@ -1422,13 +1780,14 @@ export class Player {
               const scaled = tachSpec?.getLevelStats ? tachSpec.getLevelStats(lvl) : { damage: bulletDamage };
               const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
               const volleyMul = 2.0; // keep current x2 burst feel
-              const dmgBase = Math.round(baseDmgLeveled * volleyMul * (this.globalDamageMultiplier || 1));
+              const dmgBase = Math.round(baseDmgLeveled * volleyMul * (this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier || 1)));
               const angles = [base - spreadAng, base, base + spreadAng];
               for (let ai=0; ai<angles.length; ai++) {
                 const a = angles[ai];
                 const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
                 if (b) {
                   (b as any)._isVolley = true;
+                  (b as any)._lifestealFrac = 0.01; // 1% lifesteal on charged volley
                   b.damage = dmgBase;
                   // Speed boost so volley uses the faster spear speed
                   const boost = 1.35; // ~35% faster than base Tachyon
@@ -1451,17 +1810,73 @@ export class Player {
               (this as any).techCharged = false;
               window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
             } else {
+              // Oracle Array: evolved multi-lane predictive burst (mirror lanes around base)
+              if (weaponType === WeaponType.ORACLE_ARRAY) {
+                const specAny: any = (WEAPON_SPECS as any)[WeaponType.ORACLE_ARRAY];
+                const lvl = weaponLevel;
+                const scaled = specAny?.getLevelStats ? specAny.getLevelStats(lvl) : { lanes: 7, salvo: 1 };
+                // Add 4 more projectiles: default to 7 lanes if spec not present
+                const lanes = Math.max(1, Math.round((scaled as any).lanes || 7));
+                // Slightly wider fan for evolved array
+                const laneSpread = (8 * Math.PI) / 180; // 8 degrees per lane step
+                const half = Math.floor(lanes / 2);
+                // Keep total volley DPS stable by scaling per-lane damage relative to original 3-lane design
+                const dScale = 3 / Math.max(1, lanes);
+                const perLaneDamage = Math.max(1, Math.round(bulletDamage * dScale));
+                let fired = 0;
+                for (let li = -half; li <= half; li++) {
+                  if (lanes % 2 === 0 && li === 0) continue; // keep count to lanes
+                  const a = finalAngle + li * laneSpread;
+                  const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, weaponType, perLaneDamage, weaponLevel);
+                  if (b) {
+                    fired++;
+                    // Make outer lanes visually wider (thicker beams) to sell the array feel
+                    try {
+                      const vis: any = (b as any).projectileVisual || {};
+                      const baseThick = Math.max(2, vis.thickness || 2);
+                      const abs = Math.abs(li);
+                      // Step thickness: center thinnest, outer lanes thicker
+                      const thick = abs >= 3 ? baseThick * 2.2 : abs >= 2 ? baseThick * 1.6 : baseThick;
+                      vis.thickness = Math.round(thick);
+                      // Slightly extend outer beam length for readability
+                      if (vis.length != null) vis.length = Math.round(vis.length * (abs >= 2 ? 1.15 : 1.0));
+                      (b as any).projectileVisual = vis;
+                    } catch { /* ignore visual tweaks */ }
+                  }
+                }
+                if (fired === 0) {
+                  bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, perLaneDamage, weaponLevel);
+                }
+              } else {
               {
                 const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
+                // Living Sludge: make adjacent globs slower with shorter range to form a puddle arrow
+                if (weaponType === WeaponType.LIVING_SLUDGE && b && toShoot > 1) {
+                  const center = Math.floor(toShoot / 2);
+                  const isSide = (i !== center);
+                  if (isSide) {
+                    const speedScale = 0.85;   // a bit slower side globs
+                    const rangeMul = 0.80;     // shorter range for side globs
+                    b.vx *= speedScale; b.vy *= speedScale;
+                    if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rangeMul * rangeMul);
+                    if (b.life != null) b.life = Math.round(b.life * rangeMul);
+                  }
+                }
+                if (weaponType === WeaponType.RUNNER_OVERDRIVE && b) {
+                  const pm = this.gameContext?.particleManager;
+                  if (pm) pm.spawn(originX, originY, 1, 'rgba(178,34,34,0.85)', { sizeMin: 0.8, sizeMax: 1.8, life: 40, speedMin: 1.0, speedMax: 2.4 });
+                }
                 if (isGunner && b && weaponType === WeaponType.GUNNER_MINIGUN) {
                   const t = this.getGunnerBoostT();
                   const rMul = 1 + (this.gunnerBoostRange - 1) * t;
+                  const tPow = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : t;
                   if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul*rMul);
                   if (b.life != null) b.life = Math.round(b.life * rMul);
                   // Safety: if minigun, reassert 2x damage on the spawned bullet to ensure doubling sticks
-                  const dmgMul = (1 + (this.gunnerBoostDamage - 1) * t);
+                  const dmgMul = (1 + (this.gunnerBoostDamage - 1) * tPow);
                   b.damage = (b.damage ?? bulletDamage) * dmgMul;
                 }
+              }
               }
               // Increment Tech meter per non-special spear shot (Tachyon or Singularity)
               if ((weaponType === WeaponType.TACHYON_SPEAR || weaponType === WeaponType.SINGULARITY_SPEAR) && (this as any).addTechHits) {
@@ -1510,12 +1925,16 @@ export class Player {
     target: Enemy
   ) {
     const angle = baseAngle + (index - (total - 1)) / 2 * spread;
+    const baseCos = Math.cos(baseAngle);
+    const baseSin = Math.sin(baseAngle);
+    const perpX0 = -baseSin;
+    const perpY0 =  baseCos;
     let originX = this.x;
     let originY = this.y;
-    if (weaponType === WeaponType.RUNNER_GUN) {
+  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE) {
       const sideOffsetBase = 22;
-      const perpX = -Math.sin(baseAngle);
-      const perpY = Math.cos(baseAngle);
+      const perpX = perpX0;
+      const perpY = perpY0;
       let sideSign: number;
       if (total <= 1) {
         sideSign = this.runnerSide;
@@ -1528,28 +1947,56 @@ export class Player {
       originY += perpY * sideOffsetBase * sideSign;
     } else if (weaponType === WeaponType.DUAL_PISTOLS) {
       const sideOffset = 18;
-      const perpX = -Math.sin(baseAngle);
-      const perpY = Math.cos(baseAngle);
+      const perpX = perpX0;
+      const perpY = perpY0;
       originX += perpX * sideOffset * this.akimboSide;
       originY += perpY * sideOffset * this.akimboSide;
-      originX += Math.cos(baseAngle) * 10;
-      originY += Math.sin(baseAngle) * 10;
+      originX += baseCos * 10;
+      originY += baseSin * 10;
       this.akimboSide *= -1;
     } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
-      const perpX = -Math.sin(baseAngle);
-      const perpY = Math.cos(baseAngle);
+      const perpX = perpX0;
+      const perpY = perpY0;
       const barrelOffset = 30;
       originX += perpX * barrelOffset * this.mechMortarSide;
       originY += perpY * barrelOffset * this.mechMortarSide;
-      originX += Math.cos(baseAngle) * 18;
-      originY += Math.sin(baseAngle) * 18;
+      originX += baseCos * 18;
+      originY += baseSin * 18;
       this.mechMortarSide *= -1;
     }
     let finalAngle = angle;
-  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.DUAL_PISTOLS || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
+    // Predictive adjust for DS lasers at the per-shot level (staggered or multi-barrel paths)
+    if (weaponType === WeaponType.GLYPH_COMPILER || weaponType === WeaponType.ORACLE_ARRAY) {
+      try {
+        const specAny: any = (WEAPON_SPECS as any)[weaponType];
+        const lvl = weaponLevel;
+        const scaled = specAny?.getLevelStats ? specAny.getLevelStats(lvl) : {};
+        const projSpeed = (scaled.speed != null ? scaled.speed : specAny?.speed) || 18;
+        const tgt = target;
+        const a = this.computeInterceptAngle(originX, originY, tgt, projSpeed);
+        if (a != null) finalAngle = a;
+      } catch { /* ignore */ }
+    }
+  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE || weaponType === WeaponType.DUAL_PISTOLS || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
       const tdx = target.x - originX;
       const tdy = target.y - originY;
       finalAngle = Math.atan2(tdy, tdx);
+    }
+    // Runner Overdrive: motion-biased aim — when moving fast, nudge aim toward movement vector (lane bias)
+    if (weaponType === WeaponType.RUNNER_OVERDRIVE) {
+      const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
+      const base = this.baseMoveSpeed || this.speed || 1;
+      // Start biasing at 60% base speed; fully applied at 100%+
+      const t = Math.max(0, Math.min(1, (moveMag - 0.6 * base) / Math.max(1e-6, 0.4 * base)));
+      if (t > 0) {
+        const moveAngle = Math.atan2(this.vy || 0, this.vx || 0);
+        // Shortest angular difference and blend up to 6 degrees
+        let d = ((moveAngle - finalAngle + Math.PI) % (Math.PI * 2));
+        if (d < 0) d += Math.PI * 2;
+        d -= Math.PI;
+        const maxBias = (6 * Math.PI) / 180; // 6°
+        finalAngle = finalAngle + Math.max(-maxBias, Math.min(maxBias, d)) * t;
+      }
     }
     // Heavy Gunner: extra jitter on minigun while boosting, scales with heat t
     if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN) {
@@ -1583,6 +2030,7 @@ export class Player {
         const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
         if (b) {
           (b as any)._isVolley = true;
+          (b as any)._lifestealFrac = 0.01; // 1% lifesteal on charged volley
           b.damage = dmgBase;
           const boost = 1.35;
           b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
@@ -1607,19 +2055,103 @@ export class Player {
 
     // Default single projectile spawn
     const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
+    // Living Sludge: side globs travel a bit slower and shorter to create a puddle arrow pattern
+    if (weaponType === WeaponType.LIVING_SLUDGE && b && total > 1) {
+      const center = Math.floor(total / 2);
+      const isSide = (index !== center);
+      if (isSide) {
+        const speedScale = 0.85;  // slightly slower
+        const rangeMul = 0.80;    // shorter range
+        b.vx *= speedScale; b.vy *= speedScale;
+        if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rangeMul * rangeMul);
+        if (b.life != null) b.life = Math.round(b.life * rangeMul);
+      }
+    }
+    // Runner Overdrive: dash surge — within 2s after Runner dash, grant +crit and +projectile speed to evolved shots only
+    if (weaponType === WeaponType.RUNNER_OVERDRIVE && b) {
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      if (now < (this.runnerOverdriveSurgeUntil || 0)) {
+        // Speed boost ~20%
+        const speedBoost = 1.2;
+        b.vx *= speedBoost; b.vy *= speedBoost;
+        // Per-bullet crit bonus so only Overdrive shots benefit
+        (b as any).critBonus = ((b as any).critBonus || 0) + 0.15; // +15% crit chance
+        // Tiny visual kick (optional): extend trail slightly if present
+        if (b.projectileVisual) {
+          const vis: any = { ...(b.projectileVisual as any) };
+          if (typeof vis.trailLength === 'number') vis.trailLength = Math.min(48, (vis.trailLength || 20) + 6);
+          b.projectileVisual = vis;
+        }
+      }
+    }
     if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN && b) {
       const t = this.getGunnerBoostT();
+      const tPow = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : t;
       if (t > 0) {
         const rMul = 1 + (this.gunnerBoostRange - 1) * t;
         if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul * rMul);
         if (b.life != null) b.life = Math.round(b.life * rMul);
-        const dmgMul = 1 + (this.gunnerBoostDamage - 1) * t;
+        const dmgMul = 1 + (this.gunnerBoostDamage - 1) * tPow;
         b.damage = (b.damage ?? bulletDamage) * dmgMul;
   // Add temporary piercing +2 during boost
   const addPierce = 2;
   if ((b as any).pierceRemaining == null) (b as any).pierceRemaining = 0;
   (b as any).pierceRemaining += addPierce;
       }
+    }
+  }
+
+  /**
+   * Compute an intercept angle from shooter (sx,sy) toward a moving target using its last-frame velocity.
+   * Returns null if a stable intercept cannot be computed.
+   */
+  private computeInterceptAngle(sx: number, sy: number, target: Enemy, projectileSpeed: number): number | null {
+    try {
+      const tx = (target as any).x ?? 0;
+      const ty = (target as any).y ?? 0;
+      const px = (target as any)._prevX;
+      const py = (target as any)._prevY;
+      const now = performance.now();
+      const lastDt = (window as any).__lastFrameDtMs || 16.67;
+      let vx = 0, vy = 0;
+      if (typeof px === 'number' && typeof py === 'number' && lastDt > 0) {
+        vx = (tx - px) / (lastDt / 1000);
+        vy = (ty - py) / (lastDt / 1000);
+      }
+      const rx = tx - sx;
+      const ry = ty - sy;
+      const v2 = vx*vx + vy*vy;
+      const r2 = rx*rx + ry*ry;
+      const s = Math.max(0.001, projectileSpeed);
+      // Solve t for |r + v t| = s t → (v·v - s^2) t^2 + 2 r·v t + r·r = 0
+      const a = v2 - s*s;
+      const b = 2*(rx*vx + ry*vy);
+      const c = r2;
+      let t: number;
+      if (Math.abs(a) < 1e-6) {
+        // Linear fallback
+        if (Math.abs(b) < 1e-6) {
+          // Target stationary relative; shoot directly
+          return Math.atan2(ry, rx);
+        }
+        t = -c / b;
+      } else {
+        const disc = b*b - 4*a*c;
+        if (disc < 0) return Math.atan2(ry, rx);
+        const sqrt = Math.sqrt(disc);
+        const t1 = (-b + sqrt) / (2*a);
+        const t2 = (-b - sqrt) / (2*a);
+        // pick the smallest positive time
+        t = Number.POSITIVE_INFINITY;
+        if (t1 > 0 && t1 < t) t = t1;
+        if (t2 > 0 && t2 < t) t = t2;
+        if (!isFinite(t) || t <= 0) return Math.atan2(ry, rx);
+      }
+      const aimX = tx + vx * t;
+      const aimY = ty + vy * t;
+      return Math.atan2(aimY - sy, aimX - sx);
+    } catch {
+      return null;
     }
   }
 
@@ -1688,6 +2220,42 @@ export class Player {
               game.enemyManager.takeDamage(e, dmg, false, false, WeaponType.RAILGUN, this.x, this.y, weaponLevel);
             }
           }
+          // Boss intersection damage
+          try {
+            const bossMgr: any = (window as any).__bossManager;
+            const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+            if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+              const relX = boss.x - originX;
+              const relY = boss.y - originY;
+              const proj = relX * cosA + relY * sinA;
+              if (proj >= 0 && proj <= range) {
+                const ortho = Math.abs(-sinA * relX + cosA * relY);
+                if (ortho <= (thickness + (boss.radius || 160))) {
+                  const deltaSec = (now - beamObj.lastTick)/1000;
+                  const dmg = dps * deltaSec;
+                  (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dmg, false, WeaponType.RAILGUN, originX, originY, weaponLevel);
+                }
+              }
+            }
+          } catch {}
+          // Also tick treasures intersecting the beam
+          try {
+            const emAny: any = game.enemyManager;
+            if (emAny && typeof emAny.getTreasures === 'function') {
+              const treasures = emAny.getTreasures() as Array<{ x:number;y:number;radius:number;active:boolean;hp:number }>;
+              const deltaSec = (now - beamObj.lastTick)/1000;
+              const dmgT = dps * deltaSec;
+              for (let ti = 0; ti < treasures.length; ti++) {
+                const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                const relX = t.x - originX; const relY = t.y - originY;
+                const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
+                const ortho = Math.abs(-sinA * relX + cosA * relY);
+                if (ortho <= (thickness + t.radius) && typeof emAny.damageTreasure === 'function') {
+                  emAny.damageTreasure(t, dmgT);
+                }
+              }
+            }
+          } catch { /* ignore treasure beam errors */ }
           beamObj.lastTick = now;
         }
       };
@@ -1702,8 +2270,8 @@ export class Player {
    * Beam (melter): fires a short-lived continuous beam that locks a single target and applies DPS each frame.
    * Visuals: tight white-hot core with faint amber, small impact bloom and occasional sparks.
    */
-  /** Ghost Sniper: brief steady aim + instant hitscan beam that pierces with damage falloff. */
-  private handleGhostSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+  /** Ghost Sniper: brief steady aim + instant hitscan beam that pierces all targets with no damage falloff. */
+  private handleGhostSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number, weaponKind: WeaponType = WeaponType.GHOST_SNIPER) {
     // Prevent overlapping charges
     if ((this as any)._sniperCharging) return;
     // Only allow starting charge if not moving
@@ -1765,20 +2333,140 @@ export class Player {
   const rateSource2 = (this.getFireRateModifier?.() ?? this.fireRateModifier);
   const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource2 != null ? rateSource2 : 1)));
         const effCd = typeof baseCdMs === 'number' ? (baseCdMs / rateMul) : ((baseCdFrames as number) / rateMul) * FRAME_MS;
-        this.shootCooldowns.set(WeaponType.GHOST_SNIPER, effCd);
+        this.shootCooldowns.set(weaponKind, effCd);
       }
       const game: any = this.gameContext;
       if (!game) return;
-      const beamAngle = Math.atan2(target.y - originY, target.x - originX);
+      // Spectral Executioner: 5-shot burst to 5 different targets
+      if (weaponKind === WeaponType.SPECTRAL_EXECUTIONER) {
+        const enemies: Enemy[] = game.enemyManager?.getEnemies() || [];
+        const nowPick = performance.now();
+        // Build candidate list filtered by soon-to-explode mark and no-repeat window
+        const candidates: Enemy[] = [];
+        for (let i = 0; i < enemies.length; i++) {
+          const e = enemies[i];
+          if (!e || !e.active || e.hp <= 0) continue;
+          const anyE: any = e as any;
+          const until: number = anyE._specterMarkUntil || 0;
+          const nr: number = anyE._specterNoRepeatUntil || 0;
+          if (until > 0 && (until - nowPick) <= 100) continue; // about to explode
+          if (nr > nowPick) continue; // anti-repeat window
+          // In range check against sniper range
+          const dx = e.x - originX; const dy = e.y - originY;
+          const d2 = dx*dx + dy*dy; if (d2 > (spec.range || 1200) * (spec.range || 1200)) continue;
+          candidates.push(e);
+        }
+        // Sort by distance and pick up to 5 distinct
+        candidates.sort((a,b) => {
+          const da = (a.x - originX)*(a.x - originX) + (a.y - originY)*(a.y - originY);
+          const db = (b.x - originX)*(b.x - originX) + (b.y - originY)*(b.y - originY);
+          return da - db;
+        });
+        const picks: Enemy[] = [];
+        for (let i = 0; i < candidates.length && picks.length < 5; i++) picks.push(candidates[i]);
+        // Consider boss if fewer than 5
+        let boss: any = null;
+        try {
+          const bm: any = (window as any).__bossManager; boss = bm && bm.getBoss ? bm.getBoss() : null;
+        } catch {}
+        if (picks.length < 5 && boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+          const bAny: any = boss; const untilB = bAny._specterMarkUntil || 0; const nrB = bAny._specterNoRepeatUntil || 0;
+          const nowB = performance.now();
+          const dx = (boss.x ?? originX) - originX; const dy = (boss.y ?? originY) - originY;
+          const inRange = (dx*dx + dy*dy) <= (spec.range || 1200) * (spec.range || 1200);
+          if (!(untilB > 0 && (untilB - nowB) <= 100) && !(nrB > nowB) && inRange) {
+            // Insert boss as a pseudo Enemy entry via separate flow below
+          } else {
+            boss = null;
+          }
+        } else {
+          boss = null;
+        }
+        if (picks.length === 0 && !boss) return; // nothing valid
+        // Damage budget per shot: split single-shot power across the burst
+        const baseDamage = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
+        const gdmSN = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+        const heavyMult = 1.6;
+        const perShot = (baseDamage * heavyMult * gdmSN) / Math.max(1, (picks.length + (boss ? 1 : 0)));
+        // Visuals container
+        if (!game._activeBeams) game._activeBeams = [];
+        // Fire at picked enemies
+        for (let i = 0; i < picks.length; i++) {
+          const e = picks[i];
+          const ang = Math.atan2(e.y - originY, e.x - originX);
+          const dist = Math.hypot(e.x - originX, e.y - originY);
+          // Damage only the targeted enemy
+          const distCrit = dist > 600 ? 1.25 : 1.0;
+          game.enemyManager.takeDamage(e, perShot * distCrit, distCrit > 1.0, false, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel);
+          if (game && game.dpsHistory) game.dpsHistory.push({ time: performance.now(), damage: perShot * distCrit });
+          // Mark if survived and not in anti-repeat window
+          try {
+            const anyE: any = e as any; if (anyE.active && anyE.hp > 0) {
+              const specExec: any = (WEAPON_SPECS as any)[WeaponType.SPECTRAL_EXECUTIONER];
+              const stats = specExec?.getLevelStats ? specExec.getLevelStats(1) : { markMs: 1200 };
+              const nowMs = performance.now();
+              const nr = anyE._specterNoRepeatUntil || 0;
+              if (!(nr > nowMs)) {
+                anyE._specterMarkUntil = nowMs + (stats.markMs || 1200);
+                anyE._specterMarkFrom = { x: originX, y: originY, time: nowMs };
+                anyE._specterOwner = (this as any)._instanceId || 1;
+              }
+            }
+          } catch {}
+          // Beam visual
+          game._activeBeams.push({ type: 'sniper_exec', x: originX, y: originY, angle: ang, range: dist, start: performance.now(), duration: 1000, lastTick: performance.now(), weaponLevel, thickness: 10 });
+        }
+        // Optionally include boss as one of the shots
+        if (boss) {
+          const bx = boss.x ?? originX; const by = boss.y ?? originY;
+          const ang = Math.atan2(by - originY, bx - originX);
+          const dist = Math.hypot(bx - originX, by - originY);
+          const distCrit = dist > 600 ? 1.25 : 1.0;
+          try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, perShot * distCrit, distCrit > 1.0, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel); } catch {
+            boss.hp -= perShot * distCrit;
+            window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: perShot * distCrit, isCritical: distCrit > 1.0, x: bx, y: by } }));
+          }
+          // Mark boss if survived and not in anti-repeat
+          try {
+            const bAny: any = boss; if (bAny.active && bAny.hp > 0) {
+              const specExec: any = (WEAPON_SPECS as any)[WeaponType.SPECTRAL_EXECUTIONER];
+              const stats = specExec?.getLevelStats ? specExec.getLevelStats(1) : { markMs: 1200 };
+              const nowMs = performance.now();
+              const nr = bAny._specterNoRepeatUntil || 0;
+              if (!(nr > nowMs)) {
+                bAny._specterMarkUntil = nowMs + (stats.markMs || 1200);
+                bAny._specterMarkFrom = { x: originX, y: originY, time: nowMs };
+                bAny._specterOwner = (this as any)._instanceId || 1;
+              }
+            }
+          } catch {}
+          game._activeBeams.push({ type: 'sniper_exec', x: originX, y: originY, angle: ang, range: dist, start: performance.now(), duration: 1000, lastTick: performance.now(), weaponLevel, thickness: 10 });
+        }
+        // Recoil: nudge player slightly based on the first pick if any
+        const lead = picks[0] || null; if (lead) { const ang = Math.atan2(lead.y - originY, lead.x - originX); this.x -= Math.cos(ang) * 6; this.y -= Math.sin(ang) * 6; }
+        // Impact feel once
+        window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+        return;
+      }
+      // Ghost Sniper or other variants: single piercing beam path
+      // Retarget at fire moment: skip targets about to explode from Spectral mark (Ghost uses Spectral when evolved not present)
+      let fireTarget: any = target;
+      try {
+        if (!fireTarget || !fireTarget.active || fireTarget.hp <= 0) {
+          fireTarget = this.findSniperTargetAvoidingSoonExploding(0) || this.findNearestEnemy();
+        }
+      } catch { /* ignore */ }
+      if (!fireTarget || !fireTarget.active || fireTarget.hp <= 0) return;
+      const beamAngle = Math.atan2(fireTarget.y - originY, fireTarget.x - originX);
       const range = spec.range || 1200;
   const baseDamage = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
   const gdmSN = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
       const heavyMult = 1.6; // toned down for DPS balance
   let remaining = baseDamage * heavyMult * gdmSN;
-      const falloff = 0.5; // -50% per pierce for stronger falloff
+  const falloff = 1.0; // No falloff: full damage to every pierced target
       const thickness = 6;  // tight precision line
 
-      // Damage enemies along the line instantly
+  // Damage enemies along the line instantly
       const enemies = game.enemyManager?.getEnemies() || [];
       const cosA = Math.cos(beamAngle);
       const sinA = Math.sin(beamAngle);
@@ -1797,16 +2485,54 @@ export class Player {
         }
       }
       candidates.sort((a,b) => a.proj - b.proj);
-      for (let i = 0; i < candidates.length && remaining > 0.5; i++) {
+  // Track the first-hit enemy to apply Specter Mark for evolved variant
+  let firstHitEnemy: any = null;
+  for (let i = 0; i < candidates.length && remaining > 0.5; i++) {
         const e = candidates[i].e;
         // Long-range sweet spot crit: extra sting if shot traveled far (> 600px)
   const distCrit = candidates[i].proj > 600 ? 1.25 : 1.0; // reduced long-shot bonus
         const dmg = remaining * distCrit;
-        game.enemyManager.takeDamage(e, dmg, distCrit > 1.0, false, WeaponType.GHOST_SNIPER, originX, originY, weaponLevel);
+  const wType = (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? WeaponType.SPECTRAL_EXECUTIONER : WeaponType.GHOST_SNIPER);
+  game.enemyManager.takeDamage(e, dmg, distCrit > 1.0, false, wType, originX, originY, weaponLevel);
         // bleed a bit of damage into damage history for HUD DPS
         if (game && game.dpsHistory) game.dpsHistory.push({ time: performance.now(), damage: dmg });
         remaining *= falloff;
+        if (!firstHitEnemy) firstHitEnemy = e;
       }
+
+      // Spectral Executioner: apply Specter Mark to first hit target, only if it survived the initial shot
+      if (firstHitEnemy && this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+        const anyE: any = firstHitEnemy as any;
+        if (anyE && anyE.active && (anyE.hp > 0)) {
+          try {
+            const specExec: any = (WEAPON_SPECS as any)[WeaponType.SPECTRAL_EXECUTIONER];
+            const stats = specExec?.getLevelStats ? specExec.getLevelStats(1) : { markMs: 1200, execMult: 2.2, chainCount: 2, chainMult: 0.6 };
+            const nowMs = performance.now();
+            anyE._specterMarkUntil = nowMs + (stats.markMs || 1200);
+            anyE._specterMarkFrom = { x: originX, y: originY, time: nowMs };
+            anyE._specterOwner = (this as any)._instanceId || 1;
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Also damage treasures intersecting the beam
+      try {
+        const emAny: any = game.enemyManager;
+        if (emAny && typeof emAny.getTreasures === 'function') {
+          const treasures = emAny.getTreasures() as Array<{ x:number;y:number;radius:number;active:boolean;hp:number }>;
+          const dmgTreasure = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
+          const dmgVal = dmgTreasure * heavyMult * gdmSN;
+          for (let ti = 0; ti < treasures.length; ti++) {
+            const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+            const relX = t.x - originX; const relY = t.y - originY;
+            const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
+            const ortho = Math.abs(-sinA * relX + cosA * relY);
+            if (ortho <= (thickness + t.radius) && typeof emAny.damageTreasure === 'function') {
+              emAny.damageTreasure(t, dmgVal);
+            }
+          }
+        }
+      } catch { /* ignore treasure beam errors */ }
 
       // Optional: boss intersection
       try {
@@ -1819,8 +2545,28 @@ export class Player {
           const ortho = Math.abs(-sinA * relX + cosA * relY);
           if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius||160))) {
             const bossDmg = (baseDamage * heavyMult * gdmSN) * 0.7; // include global damage passive
-            boss.hp -= bossDmg;
-            window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: bossDmg, isCritical: proj > 600, x: boss.x, y: boss.y } }));
+            try {
+              const wType = (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? WeaponType.SPECTRAL_EXECUTIONER : WeaponType.GHOST_SNIPER);
+              (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, bossDmg, (proj > 600), wType, originX, originY, weaponLevel);
+            } catch {
+              // Fallback in unlikely absence
+              boss.hp -= bossDmg;
+              window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: bossDmg, isCritical: proj > 600, x: boss.x, y: boss.y } }));
+            }
+            // Spectral Executioner parity: if no enemy was marked first and evolved is active, mark the boss (only if still alive)
+            try {
+              if (!firstHitEnemy && this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+                const specExec: any = (WEAPON_SPECS as any)[WeaponType.SPECTRAL_EXECUTIONER];
+                const stats = specExec?.getLevelStats ? specExec.getLevelStats(1) : { markMs: 1200 };
+                const nowMs = performance.now();
+                const bAny: any = boss as any;
+                if (bAny && bAny.active && (bAny.hp > 0)) {
+                  bAny._specterMarkUntil = nowMs + (stats.markMs || 1200);
+                  bAny._specterMarkFrom = { x: originX, y: originY, time: nowMs };
+                  bAny._specterOwner = (this as any)._instanceId || 1;
+                }
+              }
+            } catch { /* ignore */ }
           }
         }
       } catch {}
@@ -1832,7 +2578,7 @@ export class Player {
       // Visual: short-lived sniper beam
       if (!game._activeBeams) game._activeBeams = [];
       const beamObj = {
-        type: 'sniper',
+  type: (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? 'sniper_exec' : 'sniper'),
         x: originX,
         y: originY,
         angle: beamAngle,
@@ -1850,8 +2596,8 @@ export class Player {
     requestAnimationFrame(chargeStep);
   }
 
-  /** Void Sniper: identical to Ghost Sniper but applies DoT instead of instant damage. */
-  private handleVoidSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+  /** Void Sniper: identical to Ghost Sniper but applies DoT; when evolved to Black Sun, spawns seeds that slow, tick, then collapse. */
+  private handleVoidSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number, weaponKind: WeaponType = WeaponType.VOID_SNIPER) {
     // Reuse charging gate: must be stationary during 1.5s aim
     if ((this as any)._sniperCharging) return;
     const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
@@ -1913,18 +2659,18 @@ export class Player {
   const rateSource3 = (this.getFireRateModifier?.() ?? this.fireRateModifier);
   const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource3 != null ? rateSource3 : 1)));
         const effCd = typeof baseCdMs === 'number' ? (baseCdMs / rateMul) : ((baseCdFrames as number) / rateMul) * FRAME_MS;
-        this.shootCooldowns.set(WeaponType.VOID_SNIPER, effCd);
+        // Map cooldown to the active weapon kind (Void Sniper or Black Sun)
+        this.shootCooldowns.set(weaponKind, effCd);
       }
       const game: any = this.gameContext; if (!game) return;
       const beamAngle = Math.atan2(target.y - originY, target.x - originX);
   const range = spec.range || 1200;
   const ghostSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
   const baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
-  // Slightly reduce per-tick damage to balance faster cadence overall; include global damage scaling
   const gdmVS = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
   const perTick = 0.40 * baseDamageGhost * gdmVS;
-      const ticks = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).ticks : 3) || 3;
-      const tickIntervalMs = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).tickIntervalMs : 1000) || 1000;
+  const ticks = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).ticks : 3) || 3;
+  const tickIntervalMs = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).tickIntervalMs : 1000) || 1000;
       const thickness = 6;
   const enemies = game.enemyManager?.getEnemies() || [];
       const cosA = Math.cos(beamAngle);
@@ -1939,44 +2685,89 @@ export class Player {
         if (ortho <= thickness + e.radius) candidates.push({ e, proj });
       }
       candidates.sort((a,b)=> a.proj - b.proj);
-      // Schedule DoT on each hit enemy
+      // If evolved to Black Sun, we spawn seeds at first impact points instead of applying traditional DoT.
+  const evolvedToBlackSun = (weaponKind === WeaponType.BLACK_SUN) || this.activeWeapons.has(WeaponType.BLACK_SUN);
+  // Schedule DoT (non-evolved) or spawn Black Sun seeds (evolved) on each hit enemy
       const nowBase = performance.now();
       for (let i = 0; i < candidates.length; i++) {
         const e = candidates[i].e as any;
-        // Attach a simple voidDoT structure to enemy; merge stacks by resetting timer and max ticks
-        const dot = e._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
-        if (!dot) {
-          // New stack: create DoT state and apply an immediate tick so the enemy cannot "dodge" the first damage
-          e._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 } as any;
+        if (evolvedToBlackSun) {
           try {
+            const bsSpec: any = WEAPON_SPECS[WeaponType.BLACK_SUN];
+            const params = bsSpec?.getLevelStats ? bsSpec.getLevelStats(weaponLevel) : bsSpec;
+            const seedTicks = params?.seedTicks ?? 4;
+            const tickFrac = params?.seedTickFrac ?? 0.12;
+            const seedTickDmg = Math.max(1, Math.round(baseDamageGhost * tickFrac * gdmVS));
+            const fuseMs = params?.fuseMs ?? 1200;
+            const pullRadius = params?.pullRadius ?? 200;
+            const pullStrength = params?.pullStrength ?? 220;
+            const collapseRadius = params?.collapseRadius ?? 220;
+            const collapseDmg = Math.max(1, Math.round((params?.collapseMult ?? 1.8) * baseDamageGhost * gdmVS));
             const gm: any = this.gameContext?.enemyManager;
-            if (gm) {
-              gm.takeDamage(e as Enemy, perTick, false, false, WeaponType.VOID_SNIPER);
+            if (gm && typeof gm.spawnBlackSunSeed === 'function') {
+              gm.spawnBlackSunSeed(e.x, e.y, { fuseMs, pullRadius, pullStrength, collapseRadius, slowPct: (params?.seedSlowPct ?? 0.25), tickIntervalMs: (params?.seedTickIntervalMs ?? 300), ticks: seedTicks, tickDmg: seedTickDmg, collapseDmg });
             }
-          } catch {}
-          // Consume one tick immediately
-          if (e._voidSniperDot.left > 0) e._voidSniperDot.left--;
-        } else {
-          // Stacking: add per-tick damage; refresh next tick time; keep at least current max remaining ticks
-          dot.left = Math.max(dot.left, ticks);
-          dot.dmg = (dot.dmg || 0) + perTick;
-          dot.next = nowBase + tickIntervalMs;
-          dot.stacks = (dot.stacks || 1) + 1;
-          // Apply an immediate tick with the updated per-tick amount
-          try {
-            const gm: any = this.gameContext?.enemyManager;
-            if (gm) {
-              gm.takeDamage(e as Enemy, dot.dmg, false, false, WeaponType.VOID_SNIPER);
-            }
-          } catch {}
-          if (dot.left > 0) dot.left--;
+          } catch { /* ignore spawn errors */ }
+    } else {
+          // Attach a simple voidDoT structure to enemy; merge stacks by resetting timer and max ticks
+          const dot = e._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
+          if (!dot) {
+            e._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 } as any;
+      // No immediate impact damage -> prevents initial knockback; only DoT ticks will apply damage
+      if (e._voidSniperDot.left > 0) e._voidSniperDot.left--;
+          } else {
+            dot.left = Math.max(dot.left, ticks);
+            dot.dmg = (dot.dmg || 0) + perTick;
+            dot.next = nowBase + tickIntervalMs;
+            dot.stacks = (dot.stacks || 1) + 1;
+      // No immediate impact damage when stacking
+      if (dot.left > 0) dot.left--;
+          }
+          // Brief paralysis on impact (0.5s)
+          e._paralyzedUntil = Math.max(e._paralyzedUntil || 0, nowBase + 500);
+          e._lastHitByWeapon = WeaponType.VOID_SNIPER as any;
         }
-        // Brief paralysis on impact (0.5s)
-        e._paralyzedUntil = Math.max(e._paralyzedUntil || 0, nowBase + 500);
-        e._lastHitByWeapon = WeaponType.VOID_SNIPER as any;
+      }
+      // If evolved and no enemy was intersected, plant a seed at max beam range so ability is visible
+      if (evolvedToBlackSun && candidates.length === 0) {
+        try {
+          const bsSpec: any = WEAPON_SPECS[WeaponType.BLACK_SUN];
+          const params = bsSpec?.getLevelStats ? bsSpec.getLevelStats(weaponLevel) : bsSpec;
+          const seedTicks = params?.seedTicks ?? 4;
+          const tickFrac = params?.seedTickFrac ?? 0.12;
+          const seedTickDmg = Math.max(1, Math.round(baseDamageGhost * tickFrac * gdmVS));
+          const fuseMs = params?.fuseMs ?? 1200;
+          const pullRadius = params?.pullRadius ?? 200;
+          const pullStrength = params?.pullStrength ?? 220;
+          const collapseRadius = params?.collapseRadius ?? 220;
+          const collapseDmg = Math.max(1, Math.round((params?.collapseMult ?? 1.8) * baseDamageGhost * gdmVS));
+          const sx = originX + Math.cos(beamAngle) * range;
+          const sy = originY + Math.sin(beamAngle) * range;
+          const gm: any = this.gameContext?.enemyManager;
+          if (gm && typeof gm.spawnBlackSunSeed === 'function') {
+            gm.spawnBlackSunSeed(sx, sy, { fuseMs, pullRadius, pullStrength, collapseRadius, slowPct: (params?.seedSlowPct ?? 0.25), tickIntervalMs: (params?.seedTickIntervalMs ?? 300), ticks: seedTicks, tickDmg: seedTickDmg, collapseDmg });
+          }
+        } catch { /* ignore miss-seed errors */ }
       }
 
-      // Boss intersection: apply the same DoT to boss if the beam crosses it
+      // Also hit treasures that intersect the beam with immediate per-tick damage (no stacking)
+      try {
+        const emAny: any = game.enemyManager;
+        if (emAny && typeof emAny.getTreasures === 'function') {
+          const treasures = emAny.getTreasures() as Array<{ x:number;y:number;radius:number;active:boolean;hp:number }>;
+          for (let ti = 0; ti < treasures.length; ti++) {
+            const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+            const relX = t.x - originX; const relY = t.y - originY;
+            const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
+            const ortho = Math.abs(-sinA * relX + cosA * relY);
+            if (ortho <= (thickness + t.radius) && typeof emAny.damageTreasure === 'function') {
+              emAny.damageTreasure(t, Math.max(1, Math.round(perTick)));
+            }
+          }
+        }
+      } catch { /* ignore treasure beam errors */ }
+
+  // Boss intersection: apply DoT (non-evolved) or seed spawn (evolved) to boss if the beam crosses it
       try {
         const bossMgr: any = (window as any).__bossManager;
         const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
@@ -1984,36 +2775,208 @@ export class Player {
           const relX = boss.x - originX; const relY = boss.y - originY;
           const proj = relX * cosA + relY * sinA;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
-          if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius || 160))) {
+      if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius || 160))) {
             const bAny: any = boss as any;
-            const dotB = bAny._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
-            if (!dotB) {
-              bAny._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 };
-              // Immediate first tick on boss via EnemyManager.takeBossDamage
-              try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, perTick, false, false, weaponLevel); } catch {}
-              if ((bAny._voidSniperDot as any).left > 0) (bAny._voidSniperDot as any).left--;
-            } else {
-              dotB.left = Math.max(dotB.left, ticks);
-              dotB.dmg = (dotB.dmg || 0) + perTick;
-              dotB.next = nowBase + tickIntervalMs;
-              dotB.stacks = (dotB.stacks || 1) + 1;
-              try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dotB.dmg, false, false, weaponLevel); } catch {}
-              if (dotB.left > 0) dotB.left--;
+            if (evolvedToBlackSun) {
+              try {
+                const bsSpec: any = WEAPON_SPECS[WeaponType.BLACK_SUN];
+                const params = bsSpec?.getLevelStats ? bsSpec.getLevelStats(weaponLevel) : bsSpec;
+                const seedTicks = params?.seedTicks ?? 4;
+                const tickFrac = params?.seedTickFrac ?? 0.12;
+                const seedTickDmg = Math.max(1, Math.round(baseDamageGhost * tickFrac * gdmVS));
+                const fuseMs = params?.fuseMs ?? 1200;
+                const pullRadius = params?.pullRadius ?? 200;
+                const pullStrength = params?.pullStrength ?? 220;
+                const collapseRadius = params?.collapseRadius ?? 220;
+                const collapseDmg = Math.max(1, Math.round((params?.collapseMult ?? 1.8) * baseDamageGhost * gdmVS));
+                const gm: any = this.gameContext?.enemyManager;
+                if (gm && typeof gm.spawnBlackSunSeed === 'function') {
+                  gm.spawnBlackSunSeed(boss.x, boss.y, { fuseMs, pullRadius, pullStrength, collapseRadius, slowPct: (params?.seedSlowPct ?? 0.25), tickIntervalMs: (params?.seedTickIntervalMs ?? 300), ticks: seedTicks, tickDmg: seedTickDmg, collapseDmg });
+                }
+              } catch { /* ignore boss spawn errors */ }
+      } else {
+              const dotB = bAny._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
+              if (!dotB) {
+                bAny._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 };
+        // No immediate impact damage on boss either to avoid initial knockback
+        if ((bAny._voidSniperDot as any).left > 0) (bAny._voidSniperDot as any).left--;
+              } else {
+                dotB.left = Math.max(dotB.left, ticks);
+                dotB.dmg = (dotB.dmg || 0) + perTick;
+                dotB.next = nowBase + tickIntervalMs;
+                dotB.stacks = (dotB.stacks || 1) + 1;
+        // No immediate impact damage on boss when stacking
+        if (dotB.left > 0) dotB.left--;
+              }
+              (boss as any)._lastHitByWeapon = WeaponType.VOID_SNIPER;
+              try { this.gameContext?.particleManager?.spawn(boss.x, boss.y, 1, '#B266FF'); } catch {}
             }
-            (boss as any)._lastHitByWeapon = WeaponType.VOID_SNIPER;
-            // Subtle visual ping on boss
-            try { this.gameContext?.particleManager?.spawn(boss.x, boss.y, 1, '#B266FF'); } catch {}
           }
         }
       } catch {}
       // Recoil & visuals
       this.x -= Math.cos(beamAngle) * 8; this.y -= Math.sin(beamAngle) * 8;
       if (!game._activeBeams) game._activeBeams = [];
-      const beamObj = { type: 'voidsniper', x: originX, y: originY, angle: beamAngle, range, start: performance.now(), duration: 1500, lastTick: performance.now(), weaponLevel, thickness: 10 };
+  const beamObj = { type: 'voidsniper', x: originX, y: originY, angle: beamAngle, range, start: performance.now(), duration: 1500, lastTick: performance.now(), weaponLevel, thickness: 10 };
       game._activeBeams.push(beamObj);
       window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
     };
     requestAnimationFrame(chargeStep);
+  }
+
+  /** Black Sun Sniper: fires 5 beams to 5 different targets; beams cannot layer; each beam deals Void Sniper L7 damage. */
+  private handleBlackSunSniperMultiFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+    // Charge gating: identical to Void/Ghost – must be nearly stationary
+    if ((this as any)._sniperCharging) return;
+    const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
+    if (moveMag > 0.01) {
+      (this as any)._sniperState = 'blocked';
+      (this as any)._sniperChargeStart = undefined;
+      (this as any)._sniperChargeMax = 0;
+      return;
+    }
+    (this as any)._sniperCharging = true;
+    (this as any)._sniperState = 'charging';
+    const surge = this.isShadowSurgeActive();
+    const chargeTimeMs = surge ? 375 : 1050;
+    (this as any)._sniperChargeStart = performance.now();
+    (this as any)._sniperChargeMax = chargeTimeMs;
+    const originX = this.x, originY = this.y - 8;
+    const start = performance.now();
+    const finish = () => {
+      (this as any)._sniperCharging = false;
+      (this as any)._sniperState = 'idle';
+      (this as any)._sniperChargeStart = undefined;
+      (this as any)._sniperChargeMax = 0;
+      // Start cooldown mapped to Black Sun spec
+      const FRAME_MS = 1000 / 60;
+      const specStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
+      let baseCdMs: number | undefined = (specStats && typeof (specStats as any).cooldownMs === 'number') ? (specStats as any).cooldownMs : (typeof (spec as any).cooldownMs === 'number' ? (spec as any).cooldownMs : undefined);
+      let baseCdFrames: number | undefined = baseCdMs == null ? (specStats && typeof (specStats as any).cooldown === 'number' ? (specStats as any).cooldown : (spec?.cooldown ?? 60)) : undefined;
+      const rateSource = (this.getFireRateModifier?.() ?? this.fireRateModifier);
+      const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource != null ? rateSource : 1)));
+      const effCd = typeof baseCdMs === 'number' ? (baseCdMs / rateMul) : ((baseCdFrames as number) / rateMul) * FRAME_MS;
+      this.shootCooldowns.set(WeaponType.BLACK_SUN, effCd);
+
+      const game: any = this.gameContext; if (!game) return;
+      // Compute base angle toward current or rechecked target
+      let fireTarget: Enemy | null = target && target.active && target.hp > 0 ? target : (this.findSniperTargetAvoidingSoonExploding(0) || this.findNearestEnemy());
+      if (!fireTarget) return;
+      const baseAng = Math.atan2(fireTarget.y - originY, fireTarget.x - originX);
+      const range = (spec?.range ?? 1200);
+
+  // Damage: Void Sniper level 7 base damage
+      const vsSpec = WEAPON_SPECS[WeaponType.VOID_SNIPER] as any;
+      const vsL7 = vsSpec?.getLevelStats ? vsSpec.getLevelStats(7) : { damage: vsSpec?.damage ?? 95 };
+      const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+      const beamDamage = Math.max(1, Math.round((vsL7.damage || 95) * gdm));
+  // DoT parameters: mirror Void Sniper per-tick profile at current weapon level
+  const ghostSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER] as any;
+  const baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
+  const voidSpec = WEAPON_SPECS[WeaponType.VOID_SNIPER] as any;
+  const voidLvl = voidSpec?.getLevelStats ? voidSpec.getLevelStats(weaponLevel) : { ticks: 3, tickIntervalMs: 1000 } as any;
+  const ticks = (voidLvl?.ticks ?? 3) || 3;
+  const tickIntervalMs = (voidLvl?.tickIntervalMs ?? 1000) || 1000;
+  const perTick = Math.max(1, Math.round(0.40 * baseDamageGhost * gdm));
+
+      // Select up to 5 unique targets: prioritize along/near the base ray, then nearest others
+      const enemies = (game.enemyManager?.getEnemies?.() || []) as Enemy[];
+      const bossMgr: any = (window as any).__bossManager;
+      const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+      const selected: Enemy[] = [];
+      const used = new Set<Enemy>();
+
+      const cosA = Math.cos(baseAng), sinA = Math.sin(baseAng);
+      const thickness = 6;
+      const rayAligned: Array<{e: Enemy, proj: number}> = [];
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i]; if (!e || !e.active || e.hp <= 0) continue;
+        const relX = e.x - originX, relY = e.y - originY;
+        const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
+        const ortho = Math.abs(-sinA * relX + cosA * relY);
+        if (ortho <= thickness + e.radius) rayAligned.push({ e, proj });
+      }
+      rayAligned.sort((a,b)=>a.proj-b.proj);
+      for (let i=0;i<rayAligned.length && selected.length<5;i++){ const e = rayAligned[i].e; if (!used.has(e)) { used.add(e); selected.push(e); } }
+      // Fill remaining slots by nearest enemies not already chosen
+      if (selected.length < 5) {
+        const remaining = [] as Array<{e: Enemy, d2: number}>;
+        for (let i = 0; i < enemies.length; i++) {
+          const e = enemies[i]; if (!e || !e.active || e.hp <= 0 || used.has(e)) continue;
+          const dx = e.x - originX, dy = e.y - originY; const d2 = dx*dx + dy*dy;
+          if (Math.sqrt(d2) <= range) remaining.push({ e, d2 });
+        }
+        remaining.sort((a,b)=>a.d2-b.d2);
+        for (let i=0;i<remaining.length && selected.length<5;i++){ used.add(remaining[i].e); selected.push(remaining[i].e); }
+      }
+      // Consider boss as a candidate if active
+      if (selected.length < 5 && boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+        selected.push(boss as any as Enemy);
+      }
+
+      if (selected.length === 0) return;
+
+      // Fire beams toward each selected unique target. Beams cannot layer: clamp aim per target.
+      if (!game._activeBeams) game._activeBeams = [];
+      const now = performance.now();
+      const visualsOnly = { type: 'sniper_black_sun', thickness: 8 } as any;
+
+      for (let i = 0; i < selected.length; i++) {
+        const t = selected[i];
+        const ang = Math.atan2(t.y - originY, t.x - originX);
+        // Damage application: single instantaneous hit to the target (no pierce), then apply Void Sniper-style DoT
+        try {
+          const em: any = game.enemyManager;
+          if (t === (boss as any)) {
+            em.takeBossDamage?.(t, beamDamage, false, WeaponType.BLACK_SUN, originX, originY);
+            // Apply DoT on boss
+            const bAny: any = t as any;
+            const nowB = performance.now();
+            const dotB = bAny._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
+            if (!dotB) {
+              bAny._voidSniperDot = { next: nowB + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 };
+              if ((bAny._voidSniperDot as any).left > 0) (bAny._voidSniperDot as any).left--; // consume immediate tick slot
+            } else {
+              dotB.left = Math.max(dotB.left, ticks);
+              dotB.dmg = (dotB.dmg || 0) + perTick;
+              dotB.next = nowB + tickIntervalMs;
+              dotB.stacks = (dotB.stacks || 1) + 1;
+              if (dotB.left > 0) dotB.left--; // consume immediate tick slot
+            }
+          } else {
+            em.takeDamage?.(t, beamDamage, false, false, WeaponType.BLACK_SUN, originX, originY);
+            // Apply DoT and short paralysis on regular enemies
+            const eAny: any = t as any;
+            const nowE = performance.now();
+            const dot = eAny._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
+            if (!dot) {
+              eAny._voidSniperDot = { next: nowE + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 } as any;
+              if (eAny._voidSniperDot.left > 0) eAny._voidSniperDot.left--; // consume immediate tick slot
+            } else {
+              dot.left = Math.max(dot.left, ticks);
+              dot.dmg = (dot.dmg || 0) + perTick;
+              dot.next = nowE + tickIntervalMs;
+              dot.stacks = (dot.stacks || 1) + 1;
+              if (dot.left > 0) dot.left--; // consume immediate tick slot
+            }
+            eAny._paralyzedUntil = Math.max(eAny._paralyzedUntil || 0, nowE + 500);
+            eAny._lastHitByWeapon = WeaponType.BLACK_SUN as any;
+          }
+          // Small camera kick
+          window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 80, intensity: 2 } }));
+        } catch {}
+
+        // Visual beam registration (short-lived)
+        const dx = t.x - originX, dy = t.y - originY; const dist = Math.hypot(dx, dy);
+        game._activeBeams.push({ type: visualsOnly.type, x: originX, y: originY, angle: ang, range: dist, start: now, duration: 160, lastTick: now, weaponLevel, thickness: visualsOnly.thickness });
+      }
+    };
+    const step = () => {
+      const now = performance.now();
+      if (now - start < chargeTimeMs) { requestAnimationFrame(step); return; }
+      finish();
+    };
+    requestAnimationFrame(step);
   }
 
   // Tick cooldowns and temporary buffs for class abilities
@@ -2057,15 +3020,108 @@ export class Player {
     if (d <= range) { zx = target.x; zy = target.y; }
     else { const s = range / d; zx = this.x + dx * s; zy = this.y + dy * s; }
   }
+  // Spawn the zone now
   try { window.dispatchEvent(new CustomEvent('spawnHackerZone', { detail: { x: zx, y: zy, radius, lifeMs } })); } catch {}
-    // Small feedback pulse at cast point
-    const pm = this.gameContext?.particleManager;
-    if (pm) {
-      for (let i = 0; i < 8; i++) {
-        const ang = Math.random() * Math.PI * 2;
-        pm.spawn(zx + Math.cos(ang)*6, zy + Math.sin(ang)*6, 1, '#FFA500', { sizeMin: 0.6, sizeMax: 1.2, life: 36, speedMin: 0.4, speedMax: 1.0 });
-      }
+  // Small feedback pulse at cast point
+  const pm = this.gameContext?.particleManager;
+  if (pm) {
+    for (let i = 0; i < 8; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      pm.spawn(zx + Math.cos(ang)*6, zy + Math.sin(ang)*6, 1, '#FFA500', { sizeMin: 0.6, sizeMax: 1.2, life: 36, speedMin: 0.4, speedMax: 1.0 });
     }
+  }
+  }
+
+  /** Heavy Gunner evolution: Lava Laser Minigun — sustained micro-beam that ticks DPS while firing. */
+  private handleLavaMinigunFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+    const game: any = this.gameContext; if (!game) return;
+    // Beam origin: slight forward from player center to feel like muzzle
+    const originX = this.x + Math.cos(baseAngle) * 10;
+    const originY = this.y + Math.sin(baseAngle) * 10;
+    const beamAngle = Math.atan2(target.y - originY, target.x - originX);
+    const stats = spec?.getLevelStats ? spec.getLevelStats(Math.max(1, weaponLevel)) : spec;
+    const rangeBase = (stats?.length || spec.range || 240);
+    // Scale range with Heavy Gunner boost to reward heat uptime
+  const t = this.getGunnerBoostT();
+  const tPow = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : t;
+    const range = rangeBase * (1 + (this.gunnerBoostRange - 1) * t);
+    // Damage per second target based on spec damage at current level (converted via cooldown cadence)
+    const FRAME_MS = 1000 / 60;
+    const cdMs = (stats?.cooldownMs != null ? stats.cooldownMs : (stats?.cooldown || 5) * FRAME_MS);
+    // Convert per-shot damage to per-second baseline, then apply gunner boost damage scaling
+    const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+    let perShot = Math.max(1, (stats?.damage ?? spec.damage ?? 6) * gdm);
+  // Use shaped curve for damage to feel more overpowered at higher heat
+  perShot *= (1 + (this.gunnerBoostDamage - 1) * tPow);
+    const dps = perShot * (1000 / Math.max(1, cdMs));
+    // Beam lifetime short; we refresh on each fire cadence so it appears continuous
+    const durationMs = Math.max(100, Math.min(260, cdMs + 60));
+    const beamStart = performance.now();
+    if (!game._activeBeams) game._activeBeams = [];
+    // Capture current Heavy Gunner heat ratio (0..1) if available
+    const gh = (this as any).getGunnerHeat ? (this as any).getGunnerHeat() : undefined;
+    const heatT = gh && gh.max > 0 ? Math.max(0, Math.min(1, gh.value / gh.max)) : 0;
+    const beamObj = {
+      type: 'melter', // reuse melter render path (hot core + rim), but palette overridden below in render
+      lavaHint: true,
+      heatT,
+      x: originX,
+      y: originY,
+      angle: beamAngle,
+      range,
+      start: beamStart,
+      duration: durationMs,
+      lastTick: beamStart,
+      weaponLevel,
+      thickness: Math.max(6, (stats?.thickness || 8)),
+      visLen: range,
+      dealDamage: (now: number) => {
+        // Live‑update heat for color blending
+        try {
+          const g: any = (this as any).getGunnerHeat ? (this as any).getGunnerHeat() : undefined;
+          if (g && g.max > 0) beamObj.heatT = Math.max(0, Math.min(1, g.value / g.max));
+        } catch {}
+        const enemies = game.enemyManager?.getEnemies() || [];
+        const cosA = Math.cos(beamAngle);
+        const sinA = Math.sin(beamAngle);
+        const thickness = (beamObj.thickness || 8);
+        // Damage this frame based on elapsed since last tick
+        const deltaSec = Math.max(0, (now - beamObj.lastTick) / 1000);
+        const dmgThisFrame = dps * deltaSec;
+        if (dmgThisFrame <= 0) { beamObj.lastTick = now; return; }
+        for (let i = 0; i < enemies.length; i++) {
+          const e = enemies[i];
+          if (!e || !e.active || e.hp <= 0) continue;
+          const relX = e.x - originX;
+          const relY = e.y - originY;
+          const proj = relX * cosA + relY * sinA; // distance along beam
+          if (proj < 0 || proj > range) continue;
+          const ortho = Math.abs(-sinA * relX + cosA * relY);
+          if (ortho <= thickness + e.radius) {
+            game.enemyManager.takeDamage(e, dmgThisFrame, false, false, WeaponType.GUNNER_LAVA_MINIGUN, originX, originY, weaponLevel);
+          }
+        }
+        // Boss check
+        try {
+          const bossMgr: any = (window as any).__bossManager;
+          const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
+          if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+            const relX = boss.x - originX;
+            const relY = boss.y - originY;
+            const proj = relX * cosA + relY * sinA;
+            const ortho = Math.abs(-sinA * relX + cosA * relY);
+              if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius || 160))) {
+                (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dmgThisFrame, false, WeaponType.GUNNER_LAVA_MINIGUN, originX, originY, weaponLevel);
+                (boss as any)._lastHitByWeapon = WeaponType.GUNNER_LAVA_MINIGUN;
+              }
+          }
+        } catch {}
+        beamObj.lastTick = now;
+      }
+    };
+    game._activeBeams.push(beamObj);
+    // Subtle muzzle ember effect
+    try { this.gameContext?.particleManager?.spawn(originX, originY, 1, '#FF4500', { sizeMin: 0.6, sizeMax: 1.2, life: 26, speedMin: 0.6, speedMax: 1.4 }); } catch {}
   }
 
   /**
@@ -2075,6 +3131,8 @@ export class Player {
   public takeDamage(amount: number) {
   // Invulnerability window (i-frames)
   const now = performance.now();
+  // Global revive cinematic: player is invulnerable/unhittable
+  try { if ((window as any).__reviveCinematicActive) return; } catch {}
   // Dash/ability-based i-frames override
   if (this.invulnerableUntilMs && now < this.invulnerableUntilMs) return;
   const last = (this as any)._lastDamageTime || 0;
@@ -2087,6 +3145,38 @@ export class Player {
     (this as any)._shieldBlockFlashTime = now;
     window.dispatchEvent(new CustomEvent('shieldBlock', { detail: { x: this.x, y: this.y } }));
     return;
+  }
+  // Armor passive: percent reduction applied before HP subtraction
+  const armor = (this as any).armorReduction as number | undefined;
+  if (armor && armor > 0) {
+    amount = Math.max(0, amount * (1 - Math.max(0, Math.min(0.8, armor))));
+  }
+  // Lethal check with Revive passive (single revive with 5m cooldown)
+  if (amount >= this.hp) {
+    const hasRevive = !!(this as any).hasRevivePassive;
+    const reviveCd = (this as any).reviveCooldownMs ?? (5 * 60 * 1000);
+    const reviveHealFrac = (this as any).reviveHealFrac ?? 0.6;
+    const reviveIFramesMs = (this as any).reviveIFramesMs ?? 2000;
+    const lastReviveAt = (this as any)._lastReviveAt || -Infinity;
+    const ready = hasRevive && (now - lastReviveAt >= reviveCd);
+    if (ready) {
+      // Consume revive: restore HP and grant brief invulnerability
+      (this as any)._lastReviveAt = now;
+      try {
+        const timeSec = (this as any).gameContext?.getGameTime?.() ?? (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+        const eff = getHealEfficiency(timeSec);
+        this.hp = Math.max(1, Math.floor(this.maxHp * reviveHealFrac * eff));
+      } catch {
+        this.hp = Math.max(1, Math.floor(this.maxHp * reviveHealFrac));
+      }
+      // Trigger short i-frames and a visual pulse
+      this.invulnerableUntilMs = now + reviveIFramesMs;
+      (this as any)._reviveFlashTime = now;
+      try { window.dispatchEvent(new CustomEvent('playerRevived', { detail: { x: this.x, y: this.y } })); } catch {}
+      // Start standard post-hit i-frames too
+      (this as any)._lastDamageTime = now;
+      return;
+    }
   }
   (this as any)._lastDamageTime = now;
   this.hp -= amount;
@@ -2147,12 +3237,38 @@ export class Player {
   public getBaseMaxHp(): number { return this.baseMaxHp; }
   /** Returns innate (pre-passive) bullet damage */
   public getBaseBulletDamage(): number { return this.baseBulletDamage; }
-  /** Returns global damage multiplier */
-  public getGlobalDamageMultiplier(): number { return this.globalDamageMultiplier; }
+  /** Returns global damage multiplier (includes conditional Overclock bonus). */
+  public getGlobalDamageMultiplier(): number {
+    const base = this.globalDamageMultiplier || 1;
+    const anyThis: any = this as any;
+    const lvl: number = anyThis.overclockLevel || 0;
+    if (lvl > 0) {
+      const threshold: number = anyThis.overclockHpThreshold ?? 0.5;
+      const hpFrac = this.maxHp > 0 ? (this.hp / this.maxHp) : 1;
+      if (hpFrac <= threshold) {
+        const bonus = anyThis.overclockDamageBonus || 0;
+        return base * (1 + bonus);
+      }
+    }
+    return base;
+  }
   /** Returns global area multiplier (AoE radius scale) */
   public getGlobalAreaMultiplier(): number { return this.globalAreaMultiplier; }
-  /** Returns global fire-rate modifier (cooldown scale; >1 = faster) */
-  public getFireRateModifier(): number { return this.fireRateModifier; }
+  /** Returns global fire-rate modifier (cooldown scale; >1 = faster). Includes Overclock bonus under 50% HP. */
+  public getFireRateModifier(): number {
+    const base = this.fireRateModifier || 1;
+    const anyThis: any = this as any;
+    const lvl: number = anyThis.overclockLevel || 0;
+    if (lvl > 0) {
+      const threshold: number = anyThis.overclockHpThreshold ?? 0.5;
+      const hpFrac = this.maxHp > 0 ? (this.hp / this.maxHp) : 1;
+      if (hpFrac <= threshold) {
+        const bonus = anyThis.overclockFireRateBonus || 0;
+        return base * (1 + bonus);
+      }
+    }
+    return base;
+  }
 
   /**
    * Draws the player character using a PNG sprite from /assets/player/{characterId}.png.
@@ -2166,7 +3282,9 @@ export class Player {
     // Debug: log assetKey and image path used for rendering
   const prefix = (location.protocol === 'file:' ? './assets/player/' : '/assets/player/');
   const img = this.gameContext?.assetLoader?.getImage(prefix + assetKey + '.png') as HTMLImageElement | undefined;
-    if (img && img.complete && img.naturalWidth > 0) {
+  if (img && img.complete && img.naturalWidth > 0) {
+      // Rogue Hacker: draw Ghost Protocol pool under the sprite
+      try { if (this.characterData?.id === 'rogue_hacker' && this.ghostProtocol) { this.ghostProtocol.draw(ctx as any); } } catch {}
       // Shadow Operative: draw tentacle aura under the main sprite when Umbral Surge is active
       if (this.characterData?.id === 'shadow_operative' && (typeof performance !== 'undefined' ? performance.now() : Date.now()) < this.shadowSurgeUntil && this.shadowTentacles?.length) {
         const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -2227,6 +3345,43 @@ export class Player {
       }
   ctx.save();
   ctx.translate(this.x, this.y);
+  // Slow Aura visual (under-sprite): soft cyan ring showing effective slow radius
+  try {
+    const anyThis: any = this as any;
+    const slowLvl: number = anyThis.slowAuraLevel | 0;
+    if (slowLvl > 0) {
+      const baseR: number = anyThis.slowAuraBaseRadius ?? 352; // keep in sync with PassiveConfig
+      const addR: number = anyThis.slowAuraRadiusPerLevel ?? 48;
+      const areaMul: number = (this.getGlobalAreaMultiplier?.() ?? (this.globalAreaMultiplier || 1));
+      const rEff = (baseR + addR * slowLvl) * (areaMul || 1);
+      const avgMs = (window as any).__avgFrameMs || 16;
+      const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+      const visR = Math.max(40, rEff * 0.98); // slight inset for aesthetics
+      const inner = Math.max(8, Math.min(24, this.size * 0.2));
+      const prevComp = ctx.globalCompositeOperation;
+      ctx.globalCompositeOperation = 'lighter';
+      // Radial gradient: soft cyan core fading to transparent edge
+      const grad = ctx.createRadialGradient(0, 0, inner, 0, 0, visR);
+      const alpha = vfxLow ? 0.10 : 0.16;
+      grad.addColorStop(0.0, `rgba(120, 240, 255, ${alpha * 0.60})`);
+      grad.addColorStop(0.35, `rgba(60, 200, 255, ${alpha * 0.35})`);
+      grad.addColorStop(0.9, 'rgba(0, 160, 255, 0.08)');
+      grad.addColorStop(1.0, 'rgba(0, 160, 255, 0.0)');
+      ctx.fillStyle = grad as any;
+      ctx.beginPath();
+      ctx.arc(0, 0, visR, 0, Math.PI * 2);
+      ctx.fill();
+      // Optional outline hint on higher settings
+      if (!vfxLow) {
+        ctx.strokeStyle = 'rgba(0, 200, 255, 0.22)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, visR * 0.995, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = prevComp;
+    }
+  } catch {}
   // Align sprite artwork “front” with projectile aim. For our assets, use -90° so the sprite
   // points toward the shot direction (0 rad = right in math coords, sprites base-face up).
   const spriteFacingOffset = -Math.PI / 2; // adjust per-asset if needed
@@ -2258,7 +3413,66 @@ export class Player {
   // Compose facing flip (left/right) with walk-cycle flip
   const flipX = (this.isFlipped ? -1 : 1) * (this.walkFlip ? -1 : 1);
   if (flipX < 0) ctx.scale(-1, 1);
-  ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+  // Invisible during Ghost Protocol: skip drawing main sprite; draw a faint silhouette for orientation
+  const ghosting = this.characterData?.id === 'rogue_hacker' && !!((this as any)._ghostProtocolActive);
+  if (!ghosting) {
+    ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+  } else {
+    // silhouette ring
+    const prevCompG = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = 'rgba(120,240,255,0.25)';
+    ctx.beginPath();
+    ctx.arc(0, 0, this.size * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = prevCompG;
+    ctx.globalAlpha = 1;
+  }
+      // Overclock visual aura: fiery halo when passive is owned; intensifies under threshold
+      try {
+        const anyThis: any = this as any;
+        const lvl: number = anyThis.overclockLevel || 0;
+        if (lvl > 0) {
+          const threshold: number = anyThis.overclockHpThreshold ?? 0.5;
+          const hpFrac = this.maxHp > 0 ? (this.hp / this.maxHp) : 1;
+          const avgMs = (window as any).__avgFrameMs || 16;
+          const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+          const baseRadius = this.size * 0.65; // around the body
+          const under = hpFrac <= threshold;
+          // Intensity scales with level and whether we're under threshold
+          const lvlScale = 0.12 + (lvl * 0.06);
+          const intensity = under ? (0.4 + lvlScale) : (0.18 + lvlScale * 0.6);
+          const pulse = Math.sin(((typeof performance !== 'undefined' ? performance.now() : Date.now()) + (this.x + this.y) * 3) / 120) * 0.5 + 0.5; // 0..1
+          const alpha = Math.max(0.1, Math.min(0.85, intensity * (0.7 + 0.3 * pulse)));
+          const outerR = baseRadius * (under ? 1.35 : 1.15);
+          const innerR = Math.max(6, baseRadius * 0.25);
+          // Ring + glow (single pass; very cheap). Use additive blend for warmth.
+          const prevComp2 = ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation = 'lighter';
+          // Soft radial fill
+          const grad2 = ctx.createRadialGradient(0, 0, innerR, 0, 0, outerR);
+          grad2.addColorStop(0, `rgba(255, 180, 60, ${alpha * 0.45})`);
+          grad2.addColorStop(0.6, `rgba(255, 100, 20, ${alpha * 0.25})`);
+          grad2.addColorStop(1, 'rgba(255, 60, 0, 0)');
+          ctx.fillStyle = grad2 as any;
+          ctx.beginPath();
+          ctx.arc(0, 0, outerR, 0, Math.PI * 2);
+          ctx.fill();
+          // Optional flicker ring when under threshold (skipped on low VFX)
+          if (!vfxLow && under) {
+            const ringR = outerR * (0.88 + 0.06 * pulse);
+            ctx.globalAlpha = alpha * 0.7;
+            ctx.strokeStyle = `rgba(255,120,40,${Math.max(0.2, 0.5 * pulse)})`;
+            ctx.lineWidth = 2 + 1.5 * pulse;
+            ctx.beginPath();
+            ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
+          ctx.globalCompositeOperation = prevComp2;
+        }
+      } catch {}
       if (flashing) {
         const alpha = 0.45 * (1 - since / 200) + 0.2; // fade out
         ctx.globalCompositeOperation = 'lighter';
@@ -2278,10 +3492,10 @@ export class Player {
   // Choose orbit (pivot) and blade length so tip reaches the exact ring: radius + bladeLen = ring
   const bladeLen = Math.max(80, cycloneRadiusVisual * 0.5);
   const radius = Math.max(32, cycloneRadiusVisual - bladeLen);
-        const bob = Math.sin(now / 90) * 2; // tiny bob to sell weight
-        // Trails disabled for perf
-        const trailCount = 0;
-        const trailFade = 0.0;
+  const bob = Math.sin(now / 90) * 2; // tiny bob to sell weight
+  // Cyan afterimage trails for swords (values finalized after vfxLow is known)
+  let trailCount = 0;   // number of ghost blades behind current
+  let trailFade = 0.0;  // opacity falloff factor for ghosts
         // Pre-render a single sword into an offscreen canvas to cut per-frame draw cost
         const selfAny: any = this as any;
         let swordCanvas: HTMLCanvasElement | null = selfAny._cycloneSwordCanvas || null;
@@ -2329,6 +3543,7 @@ export class Player {
   const avgMs = (window as any).__avgFrameMs || 16;
   const severeLoad = avgMs > 55;
   const vfxLow = severeLoad || !!(window as any).__vfxLowMode;
+  if (!vfxLow) { trailCount = 3; trailFade = 0.32; }
   const prevComp = ctx.globalCompositeOperation;
   if (!vfxLow) ctx.globalCompositeOperation = 'lighter';
         // Neutralize the sprite rotation once for the cyclone visuals to keep orbit math simple
@@ -2344,6 +3559,18 @@ export class Player {
           if (mirror) ctx.scale(-1, 1);
           const off = selfAny._cycloneSwordCanvas as HTMLCanvasElement;
           if (off) {
+            // Soft cyan aura behind blade tip
+            if (!vfxLow) {
+              ctx.save();
+              ctx.globalCompositeOperation = 'lighter';
+              ctx.shadowColor = 'rgba(0,255,255,0.45)';
+              ctx.shadowBlur = 12;
+              ctx.fillStyle = 'rgba(0,255,255,0.12)';
+              ctx.beginPath();
+              ctx.ellipse(0, -bladeLen * 0.8, 10, 16, 0, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.restore();
+            }
             ctx.drawImage(off, -off.width/2, -swordCanvasPivotY);
           }
           ctx.restore();
@@ -2364,6 +3591,21 @@ export class Player {
           ctx.globalAlpha *= alpha;
           drawSword(a, false);
           drawSword(a + Math.PI, true);
+          ctx.restore();
+        }
+        // Add faint sweeping arcs along the ring to sell motion
+        if (!vfxLow) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.strokeStyle = 'rgba(0,255,255,0.18)';
+          ctx.lineWidth = 2;
+          const arcSpan = 0.55; // radians per sweep
+          for (let k = -1; k <= 1; k += 2) {
+            const arcAng = baseAngle + Math.PI/2 + k * 0.15;
+            ctx.beginPath();
+            ctx.arc(0, 0, cycloneRadiusVisual - 4, arcAng - arcSpan/2, arcAng + arcSpan/2);
+            ctx.stroke();
+          }
           ctx.restore();
         }
         // Current swords
@@ -2426,10 +3668,11 @@ Player.prototype.activateAbility = function(this: Player & any) {
       // System Hack: massive EMP-like hack that damages and disables nearby enemies instantly
       if (this.hackerHackCdMs <= 0) {
         this.hackerHackCdMs = this.hackerHackCdMaxMs;
-        const lvl = this.activeWeapons.get(WeaponType.HACKER_VIRUS) ?? 1;
-        const gdm = (this as any).globalDamageMultiplier || 1;
+        // Scale damage by class weapon level; if evolved owned, use its stored level
+        const lvl = (this.activeWeapons.get(WeaponType.HACKER_BACKDOOR) ?? this.activeWeapons.get(WeaponType.HACKER_VIRUS) ?? 1);
+  const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier || 1);
         // Scale damage moderately with level; wide radius; 2s paralysis baseline
-        const radius = 360;
+  const radius = 720;
         const base = 70 + 28 * (Math.max(1, Math.min(7, lvl)) - 1); // 70 → 238
         const damage = Math.round(base * gdm);
         const paralyzeMs = 2000;
@@ -2717,6 +3960,9 @@ Player.prototype.activateAbility = function(this: Player & any) {
   // Invulnerability during dash
   this.invulnerableUntilMs = performance.now() + 300; // 300ms i-frames
 
+  // Trigger Runner Overdrive surge: 2s window after a dash enabling evolved Runner shots to gain bonuses
+  this.runnerOverdriveSurgeUntil = performance.now() + 2000;
+
   // Screen shake effect
   try {
     window.dispatchEvent(new CustomEvent('screenShake', { detail: { intensity: 0.4, durationMs: 300 } }));
@@ -2727,6 +3973,19 @@ Player.prototype.activateAbility = function(this: Player & any) {
     const soundManager = (this.gameContext as any)?.soundManager;
     if (soundManager?.play) {
       soundManager.play('dash', 0.8);
+    }
+  } catch {}
+
+  // Subtle red trail burst cue for Overdrive surge
+  try {
+    const pm = this.gameContext?.particleManager;
+    if (pm) {
+      const count = 10;
+      for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 12 + Math.random() * 24;
+        pm.spawn(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r, 1, 'rgba(178,34,34,0.85)', { sizeMin: 1.0, sizeMax: 2.0, life: 36, speedMin: 0.8, speedMax: 1.6 });
+      }
     }
   } catch {}
 };

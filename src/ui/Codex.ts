@@ -215,7 +215,6 @@ export class Codex {
   #codex-panel input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#3ED1E4;border:1px solid rgba(0,255,255,.55);box-shadow:0 0 6px rgba(62,209,228,.55)}
   /* Enemy icon variants */
   .enemy-icon{image-rendering:pixelated}
-  .enemy-large{filter:hue-rotate(160deg) saturate(1.6) brightness(1.08) drop-shadow(0 0 10px rgba(94,235,255,.45))}
   /* Boss hero layout */
   .cdx-boss-card{position:relative;border:1px solid rgba(0,255,255,.28);background:linear-gradient(180deg, rgba(0,22,28,.75), rgba(0,12,16,.85));border-radius:10px;padding:12px;overflow:hidden;grid-column:span 2}
   .cdx-boss-hero{display:grid;grid-template-columns:200px 1fr;gap:14px;align-items:center}
@@ -730,6 +729,12 @@ export class Codex {
     if (t.includes('crit') || t.includes('dagger') || t.includes('sniper')) add('Crit');
     if (t.includes('drone') || t.includes('kamikaze')) add('Cooldown');
     if (t.includes('orbit') || t.includes('halo')) add('Duration');
+    // Poison/Slow/Sludge: benefit strongly from larger zones and uptime; Slow Aura stacks control
+    if (t.includes('poison') || t.includes('slow') || t.includes('sludge') || t.includes('toxin')) {
+      add('Area');
+      add('Fire Rate');
+      add('Slow Aura');
+    }
     return pcs.join(' ');
   }
   private renderUseCaseGuide(spec:any): string {
@@ -764,8 +769,11 @@ export class Codex {
     for (let i = 0; i < PASSIVE_SPECS.length; i++) {
       const p = PASSIVE_SPECS[i];
       if (q && !(p.name.toLowerCase().includes(q) || (p.description||'').toLowerCase().includes(q))) continue;
-      // Placeholder passive icon for all passives (uniform look in Codex)
-      const icon = `
+      // Use the passive's actual icon (normalized for hosting mode)
+      const iconSrc = p.icon ? AssetLoader.normalizePath(p.icon.startsWith('/') ? p.icon : ('/' + p.icon.replace(/^\.\//, ''))) : '';
+      const icon = iconSrc
+        ? `<img src="${this.escape(iconSrc)}" alt="${this.escape(p.name)}" width="52" height="52"/>`
+        : `
         <svg viewBox='0 0 64 64' width='52' height='52' role='img' aria-label='Passive Icon'>
           <defs>
             <linearGradient id='cdxPassiveGrad' x1='0' y1='1' x2='0' y2='0'>
@@ -808,11 +816,13 @@ export class Codex {
     const parts: string[] = ['<div class="cdx-grid">'];
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
-      // Select image per archetype
-      const imgSrc = a.id === 'small'
-        ? AssetLoader.normalizePath('/assets/enemies/enemy_spider.png')
-        : AssetLoader.normalizePath('/assets/enemies/enemy_default.png');
-      const cls = a.id === 'large' ? 'enemy-icon enemy-large' : 'enemy-icon';
+      // Select image per archetype (distinct silhouettes; no filter tweaks)
+      const imgSrc = (
+        a.id === 'small' ? AssetLoader.normalizePath('/assets/enemies/enemy_spider.png') :
+        a.id === 'large' ? AssetLoader.normalizePath('/assets/enemies/enemy_eye.png') :
+        AssetLoader.normalizePath('/assets/enemies/enemy_default.png')
+      );
+      const cls = 'enemy-icon';
       parts.push(`
         <div class="cdx-card">
           <div class="icon"><img class="${cls}" src="${imgSrc}" alt="${this.escape(a.name)}"/></div>
@@ -890,12 +900,42 @@ export class Codex {
       case 2: return `Global damage ×${(1 + level * 0.196).toFixed(2)} (${(level*19.6).toFixed(1)}%)`;
       case 3: return `Fire rate ×${(1 + level * 0.182).toFixed(2)} (${(level*18.2).toFixed(1)}% faster)`;
       case 10: return `Area radius ×${(1 + Math.min(level,3)*0.10).toFixed(2)} (cap at L3)`;
-      case 4: return `On-kill explosion enabled`;
+      case 4: {
+        const dmg = [0,40,55,70][Math.max(0, Math.min(3, level))];
+        const rad = [0,70,85,100][Math.max(0, Math.min(3, level))];
+        return `On-kill explosion: +${dmg}% base damage, ${rad}px radius (pre-Area)`;
+      }
       case 5: return `Pickup radius ${120 + level*36}px`;
   case 6: return `Shield proc chance ${(Math.min(0.5, level*0.055)*100).toFixed(1)}%`;
       case 7: return `Crit chance +${(Math.min(0.55, level*0.0525)*100).toFixed(1)}%, crit mult ×${Math.min(3.1, 1.5 + level*0.133).toFixed(2)}`;
       case 8: return `Piercing +${level} extra enemies`;
   case 9: return `Regen ${(level * 0.25).toFixed(3)} HP/s`;
+      case 11: {
+        const red = Math.min(0.8, level * 0.06);
+        return `Armor: reduce incoming damage by ${(red*100).toFixed(1)}%`;
+      }
+      case 12: {
+        // Level 1 only
+        return `Revive once on lethal hit: heal to 60% HP and gain 2s i-frames (5m cooldown)`;
+      }
+      case 13: {
+        const radius = 352 + 48 * level;
+        const strength = (0.16 + level * 0.07);
+        return `Slow Aura: ${radius}px radius; slows enemies by ${(strength*100).toFixed(0)}%`;
+      }
+      case 14: {
+        // Overclock — under 50% HP, gain fire‑rate and damage. Matches PassiveConfig tables.
+        // L1: +15% FR, +10% DMG; L2: +25% FR, +16% DMG; L3: +35% FR, +22% DMG
+        const fr = [0, 15, 25, 35][Math.max(0, Math.min(3, level))];
+        const dmg = [0, 10, 16, 22][Math.max(0, Math.min(3, level))];
+        return `Below 50% HP: Fire rate +${fr}%, Damage +${dmg}%`;
+      }
+      case 15: {
+        // Lifesteal — heal for a fraction of all damage dealt. 0.2% → 1.0% across L1–L5
+        const tablePct = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+        const pct = tablePct[Math.max(0, Math.min(5, level))];
+        return `Heal ${pct}% of damage dealt`;
+      }
     }
     return '—';
   }
@@ -961,40 +1001,49 @@ export class Codex {
     // If not loaded, kick off async fetch and show loading placeholder
     if (!this.bossItems && !this.bossLoading) {
       this.bossLoading = true;
-      // Resolve manifest URL using AssetLoader.normalizePath to respect base prefix and file://
-      const url = (typeof location !== 'undefined' && location.protocol === 'file:')
-        ? AssetLoader.normalizePath('assets/manifest.json')
-        : AssetLoader.normalizePath('/assets/manifest.json');
-      fetch(url).then(r => r.ok ? r.json() : null).then((manifest) => {
-        const items: Array<{ key: string; name: string; file: string; w?: number; h?: number; frames?: number; telegraph?: boolean }> = [];
-        if (manifest && manifest.boss) {
-          for (const key in manifest.boss) {
-            const info = manifest.boss[key];
-            if (!info || !info.file) continue;
-            items.push({ key, name: key, file: info.file, w: info.w, h: info.h, frames: info.frames, telegraph: info.telegraph });
+      // Prefer AssetLoader to fetch and parse manifest; it updates basePrefix and normalizes paths
+      try {
+        const loader = new AssetLoader();
+        loader.loadManifest().then((manifest) => {
+          const items: Array<{ key: string; name: string; file: string; w?: number; h?: number; frames?: number; telegraph?: boolean }> = [];
+          if (manifest && manifest.boss) {
+            for (const key in manifest.boss) {
+              const info = manifest.boss[key];
+              if (!info || !info.file) continue;
+              const raw = String(info.file);
+              const normalized = AssetLoader.normalizePath(raw.startsWith('/') ? raw : '/' + raw.replace(/^\.\//, ''));
+              items.push({ key, name: key, file: normalized, w: info.w, h: info.h, frames: info.frames, telegraph: info.telegraph });
+            }
+          } else {
+            // Try known boss key via manifest lookup if shape differs
+            const p1 = loader.getAsset('phase1');
+            if (p1) items.push({ key: 'phase1', name: 'phase1', file: AssetLoader.normalizePath(p1) });
           }
-        }
-        // Fallback: if manifest missing or empty, attempt known default
-        if (!items.length) {
-          items.push({ key: 'phase1', name: 'phase1', file: 'assets/boss/boss_phase1.png' });
-        }
-        // Normalize file paths per hosting mode
-        this.bossItems = items.map(it => ({ ...it, file: AssetLoader.normalizePath(it.file.startsWith('/') ? it.file : '/' + it.file.replace(/^\.\//, '')) }));
-      }).catch(() => {
-        // Fallback: single known boss asset path
+          if (!items.length) {
+            // Fallback: single known boss asset path
+            items.push({ key: 'phase1', name: 'phase1', file: AssetLoader.normalizePath('/assets/boss/boss_phase1.png') });
+          }
+          this.bossItems = items;
+        }).catch(() => {
+          // Hard fallback without manifest
+          this.bossItems = [{ key: 'phase1', name: 'phase1', file: AssetLoader.normalizePath('/assets/boss/boss_phase1.png') }];
+        }).finally(() => {
+          this.bossLoading = false;
+          this.render();
+        });
+      } catch {
+        // Ultimate fallback if even constructing loader fails
         this.bossItems = [{ key: 'phase1', name: 'phase1', file: AssetLoader.normalizePath('/assets/boss/boss_phase1.png') }];
-      }).finally(() => {
         this.bossLoading = false;
-        // Re-render once data is ready
         this.render();
-      });
+      }
     }
 
     if (!this.bossItems) {
       return '<div class="cdx-note">Loading bosses…</div>';
     }
 
-    // Augment with known four-boss roster if present assets exist
+    // Augment with known four-boss roster (names/roles) for richer Codex, even if manifest lacks entries
     let items = this.bossItems.slice();
     try {
       const known: Array<{ key: string; name: string; file: string }> = [

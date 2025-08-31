@@ -13,6 +13,45 @@ Format: Keep a Changelog style with semantic, grouped bullets. Dates are in YYYY
 - tweak(psionic): Dimmed psionic debuff (mark) glow—smaller radius, thinner ring, and lower alpha for less visual noise.
 - fix(weapon): Akimbo Deagle bullets rendered with 180° wrong sprite rotation—added rotationOffset so art faces travel direction.
 
+## [0.4.0] - 2025-08-30 — Evolution Patch
+
+Highlights
+
+- Evolution and parity sweep across weapons, beams, AoE, and boss/treasure interactions.
+- New passives and a cinematic, safe revive experience.
+
+Added
+
+- passive(armor): Flat damage reduction applied pre‑HP; value listed in Codex.
+- passive(revive): One‑time revive with 5m cooldown; restores 60% HP and grants brief i‑frames.
+- passive(slow‑aura): Constant slow field around the player; scales with Area.
+
+Evolved/Balance
+
+- bio(living‑sludge): Puddle merge much easier with a soft cap around 800px; puddles slow targets by 20%.
+- bio(living‑sludge): Evolved sludge crawls; movement speed set to 40% of base while in sludge.
+- bio(poison): Infinite poison stacking enabled when using Living Sludge evolution; DoT level curve steepened when evolved.
+- evo(gating): Fixed Serpent Chain evolution requirements; now offered only when prerequisites are met.
+
+Systems and Parity
+
+- revive: 5s “angelic” cinematic — freezes simulation, disables inputs, grants invulnerability, spawns a “soul” visual, and ends with a viewport detonation clearing the screen.
+- safety: Suppressed boss/enemy contact and knockbacks during revive; boss respects global freeze/invulnerability.
+- boss(parity): Centralized boss damage via EnemyManager.takeBossDamage; ensured AoE zones, explosions, shockwaves, Titan Mortar, and plasma detonation all damage the boss.
+- beams(parity): Ghost Sniper, Void Sniper, and Railgun now route boss hits through the centralized path; Railgun adds boss intersection; Void Sniper passes correct parameters and applies immediate DoT tick.
+- treasure(parity): Beams, pulses, AoE zones, explosions, shockwaves, and Titan Mortar consistently damage treasures.
+- cleanup: Removed remaining direct boss.hp mutations in projectile/beam code paths.
+
+UI/Docs
+
+- codex: Filled values for new passives and evolutions; clarified labels and effects.
+- main‑menu: Patch notes panel updated and version tag set to 0.4.0.
+
+Performance
+
+- enemy/beam: Micro‑optimizations in hot loops (query reuse, guard checks, allocation avoidance, classic for‑loops in inner paths).
+
+
 ## [0.3.1] - 2025-08-27
 
 - feat(weaver): Resonant Web implemented as persistent orbitals with radial pulses, mark refresh, and polygon web rendering. Orbs are collisionless like Quantum Halo.

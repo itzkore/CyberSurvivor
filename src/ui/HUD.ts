@@ -1,6 +1,8 @@
 import { Player } from '../game/Player';
 import { AssetLoader } from '../game/AssetLoader';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
+import { WeaponType } from '../game/WeaponType';
+import { getHealEfficiency } from '../game/Balance';
 import { Enemy } from '../game/EnemyManager'; // Import Enemy type
 
 export class HUD {
@@ -153,8 +155,24 @@ export class HUD {
         const g: any = (this.player as any).getGunnerHeat();
         const ratio = g.max > 0 ? g.value / g.max : 0;
         const label = g.overheated ? 'OVERHEATED' : 'OVERHEAT (Spacebar)';
-        // Orange heat theme
-        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff9300', '#3a1a00', '#ffb347', label);
+        // Lava/Overdrive theme: switch to dark‑neon red when overheated, otherwise warm orange
+        const isHot = !!g.overheated;
+        const fg = isHot ? '#ff3b3b' : '#ff9300';
+        const bg = isHot ? '#2a0004' : '#3a1a00';
+        const accent = isHot ? '#ff1a1a' : '#ffb347';
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, fg, bg, accent, label);
+        // Subtle pulse/glow when overheated
+        if (isHot) {
+          const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+          const pulse = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(now * 0.015));
+          ctx.save();
+          ctx.strokeStyle = `rgba(255,26,26,${(0.35 + 0.35 * pulse).toFixed(3)})`;
+          ctx.lineWidth = 2;
+          ctx.shadowColor = 'rgba(255,0,0,0.65)';
+          ctx.shadowBlur = 12 + 18 * pulse;
+          ctx.strokeRect(classX + 0.5, hpBarY + 0.5, maxW - 1, 22 - 1);
+          ctx.restore();
+        }
       } else if (id === 'cyber_runner' && (this.player as any).getRunnerDash) {
         // Dash cooldown: show time until ready (fills up as it recharges)
         const d: any = (this.player as any).getRunnerDash();
@@ -200,10 +218,12 @@ export class HUD {
       } else if (id === 'shadow_operative' && (this.player as any).getVoidSniperCharge) {
         const s: any = (this.player as any).getVoidSniperCharge();
         let ratio = 0;
-        let label = 'VOID SNIPER READY';
+  // If evolved to Black Sun, reflect that in the label
+  const evolved = !!(this.player as any)?.activeWeapons?.has(WeaponType.BLACK_SUN);
+        let label = evolved ? 'BLACK SUN READY' : 'VOID SNIPER READY';
         if (s.state === 'charging') {
           ratio = s.max > 0 ? s.value / s.max : 0;
-          label = `VOID CHARGING ${Math.ceil((s.max - s.value)/1000)}s`;
+          label = evolved ? `BLACK SUN CHARGING ${Math.ceil((s.max - s.value)/1000)}s` : `VOID CHARGING ${Math.ceil((s.max - s.value)/1000)}s`;
         } else if (s.moving) {
           ratio = 0;
           label = 'HOLD STILL';
@@ -227,26 +247,42 @@ export class HUD {
         const m: any = (this.player as any).getBioOutbreakMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
         const label = m.active ? 'OUTBREAK ACTIVE' : (m.ready ? 'OUTBREAK READY (Spacebar)' : `OUTBREAK ${Math.ceil((m.max - m.value)/1000)}s`);
-        // Bio/acid green theme for Bio Engineer
+        // Bio/acid green theme for Bio Engineer (Outbreak)
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#73ff00', '#143300', '#adff2f', label);
-        // Tiny biohazard icon hint to the left of the bar when active/ready
+        // Second bar: BIO Boost cooldown/active state (Shift)
+        if ((this.player as any).getBioBoostMeter) {
+          const bm: any = (this.player as any).getBioBoostMeter();
+          const ratio2 = bm.max > 0 ? bm.value / bm.max : 0;
+          const label2 = bm.active ? 'BIO BOOST ACTIVE' : (bm.ready ? 'BIO BOOST READY (Shift)' : `BIO BOOST ${Math.ceil((bm.max - bm.value)/1000)}s`);
+          // Place directly above Outbreak bar with neon toxic theme
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#b6ff00', '#1a3300', '#73ff00', label2);
+        }
+        // Tiny biohazard icon hint centered in the gap between HP and class bars (no overlap)
         try {
-          const iconX = classX - 18;
+          const hpEndX = 20 + hpBarWidth;
+          const gap = Math.max(0, classX - hpEndX);
+          // Baseline icon visual width ~22px; scale to fit within the actual gap (min 60% size)
+          const baseVisualW = 22;
+          const scale = Math.max(0.6, Math.min(1, gap / baseVisualW));
+          const iconX = hpEndX + gap * 0.5; // center within gap
           const iconY = hpBarY + 11;
+          const armOffset = 6 * scale; // distance of trefoil lobes from center
+          const lobeR = 5 * scale;      // radius of each lobe
+          const coreR = 2.6 * scale;    // center dot radius
           ctx.save();
-          ctx.globalAlpha = m.active ? 0.95 : (m.ready ? 0.75 : 0.35);
+          ctx.globalAlpha = m.active ? 0.95 : (m.ready ? 0.75 : 0.5);
           ctx.strokeStyle = m.active ? '#B6FF00' : '#73FF00';
           ctx.fillStyle = m.active ? 'rgba(182,255,0,0.18)' : 'rgba(115,255,0,0.10)';
-          ctx.lineWidth = 2;
-          // Simple trefoil-like symbol using three small arcs
+          ctx.lineWidth = 2 * Math.max(0.75, scale);
+          // Simple trefoil symbol (three lobes)
           for (let i = 0; i < 3; i++) {
             const ang = i * (Math.PI * 2 / 3);
             ctx.beginPath();
-            ctx.arc(iconX + Math.cos(ang) * 6, iconY + Math.sin(ang) * 6, 5, 0, Math.PI * 2);
+            ctx.arc(iconX + Math.cos(ang) * armOffset, iconY + Math.sin(ang) * armOffset, lobeR, 0, Math.PI * 2);
             ctx.stroke();
           }
           ctx.beginPath();
-          ctx.arc(iconX, iconY, 2.6, 0, Math.PI * 2);
+          ctx.arc(iconX, iconY, coreR, 0, Math.PI * 2);
           ctx.fill();
           ctx.restore();
         } catch { /* ignore */ }
@@ -260,13 +296,59 @@ export class HUD {
         } else {
           this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff4de3', '#2a0b28', '#ff94f0', label);
         }
-      } else if (id === 'rogue_hacker' && (this.player as any).getHackerHackMeter) {
+  } else if (id === 'rogue_hacker' && (this.player as any).getHackerHackMeter) {
+        // Detect evolution ownership for theming
+        let evolved = false;
+        try { const aw = (this.player as any).activeWeapons as Map<number, number> | undefined; evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR)); } catch {}
+        // Dedicated class bar: Ghost Protocol (Shift) — draw ABOVE System Hack
+        const gp = (this.player as any).getGhostProtocolMeter ? (this.player as any).getGhostProtocolMeter() : null;
+        if (gp) {
+          const ratioGP = gp.max > 0 ? gp.value / gp.max : 0;
+          const labelGP = gp.active ? 'GHOST PROTOCOL ACTIVE' : (gp.ready ? 'GHOST PROTOCOL READY (Shift)' : `GHOST PROTOCOL ${Math.ceil((gp.max - gp.value)/1000)}s`);
+      // Orange base; dark neon red if evolved. Draw above System Hack to avoid XP overlap
+      const gpY = hpBarY - 26;
+      if (evolved) this.drawThemedBar(ctx, classX, gpY, maxW, 22, ratioGP, '#FF1333', '#1a0006', '#FF667F', labelGP);
+      else this.drawThemedBar(ctx, classX, gpY, maxW, 22, ratioGP, '#cc6d00', '#1a0c00', '#ffae55', labelGP);
+        }
+        // Primary class bar: System Hack (Spacebar) — now BELOW GP (or at top if GP missing)
         const m: any = (this.player as any).getHackerHackMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
-        const label = m.ready ? 'SYSTEM HACK READY (Spacebar)' : `SYSTEM HACK ${Math.ceil((m.max - m.value)/1000)}s`;
-        // Orange/amber theme for Hacker
-        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ffa500', '#2a1400', '#ffd280', label);
+  const label = m.ready ? 'SYSTEM HACK READY (Spacebar)' : `SYSTEM HACK ${Math.ceil((m.max - m.value)/1000)}s`;
+    // Keep System Hack anchored at hpBarY; GP sits above when present
+    const sysHackY = hpBarY;
+  if (evolved) this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratio, '#FF1333', '#2a0008', '#FF667F', label);
+  else this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratio, '#ffa500', '#2a1400', '#ffd280', label);
       }
+
+      // Revive cooldown bar (right-aligned), visible if Revive passive is owned
+      try {
+        const pAny: any = this.player as any;
+        if (pAny.hasRevivePassive) {
+          const reviveCd = pAny.reviveCooldownMs ?? (5 * 60 * 1000);
+          const lastAt = pAny._lastReviveAt || -Infinity;
+          const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+          const rem = Math.max(0, reviveCd - (nowMs - lastAt));
+          const ready = rem <= 0;
+          const ratio = ready ? 1 : 1 - (rem / reviveCd);
+          // Right side alignment
+          const barW = Math.min(280, Math.max(120, width * 0.22));
+          const x = width - barW - 20;
+          const y = hpBarY;
+          const label = ready ? 'REVIVE READY' : `REVIVE ${Math.ceil(rem/1000)}s`;
+          this.drawThemedBar(ctx, x, y, barW, 22, ratio, '#66ffcc', '#092a21', '#26ffe9', label);
+          // Subtle pulse when ready
+          if (ready) {
+            const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.01);
+            ctx.save();
+            ctx.strokeStyle = `rgba(38,255,233,${(0.25 + 0.35 * pulse).toFixed(3)})`;
+            ctx.lineWidth = 2;
+            ctx.shadowColor = 'rgba(38,255,233,0.65)';
+            ctx.shadowBlur = 12 + 18 * pulse;
+            ctx.strokeRect(x + 0.5, y + 0.5, barW - 1, 22 - 1);
+            ctx.restore();
+          }
+        }
+      } catch { /* ignore */ }
     } catch { /* ignore */ }
 
   // XP Bar
@@ -324,6 +406,24 @@ export class HUD {
     }
   } catch { /* ignore */ }
   this.drawUpgradeHistory(ctx, upgrades, upgradesPanelX, upgradesPanelY, minimapPositionSize);
+
+    // Healing Efficiency bar (center-right). Shows global healing multiplier as percentage.
+    try {
+      // Compute efficiency in [0.1,1.0] from gameplay time in seconds
+      const eff = Math.max(0.1, Math.min(1, getHealEfficiency(gameTime)));
+      const pct = Math.round(eff * 100);
+      // Dynamic theme: teal (>=75%), amber (50-74%), red (<50%)
+      let fg = '#26ffe9', bg = '#07333a', accent = '#00b3a3';
+      if (pct < 75 && pct >= 50) { fg = '#ffd166'; bg = '#332600'; accent = '#ffb703'; }
+      else if (pct < 50) { fg = '#ff4d4d'; bg = '#2a0004'; accent = '#ff1a1a'; }
+      // Size and position: center-right, consistent with right-side margins
+      const barW = Math.min(260, Math.max(140, width * 0.22));
+      const x = width - barW - 20;
+      const h = 22;
+      const y = Math.round(height * 0.40); // slightly above exact center to avoid overlap with bottom HUD
+      const label = `HEALING ${pct}%`;
+      this.drawThemedBar(ctx, x, y, barW, h, eff, fg, bg, accent, label);
+    } catch { /* ignore */ }
 
     // Auto-aim toggle indicator (right-anchored, near class bars) — ensure visible during active gameplay for all operatives
     try {
@@ -452,12 +552,16 @@ export class HUD {
       ctx.fill();
     }
 
-  // XP Orbs (yellow) above enemy dots with last-10s flicker/pulse
+  // XP Orbs (crisp cyan, no glow) above enemy dots with last-10s flicker/pulse
     try {
       const em: any = (window as any).__gameInstance?.getEnemyManager?.();
-      const gems = em?.getGems ? em.getGems() : [];
+      const gems = em?.getActiveGems ? em.getActiveGems() : (em?.getGems ? em.getGems() : []);
       if (gems && gems.length) {
         const now = performance.now();
+        ctx.save();
+        ctx.fillStyle = '#8cf6ff';
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
         for (let i = 0; i < gems.length; i++) {
           const g = gems[i];
           if (!g.active) continue;
@@ -476,19 +580,14 @@ export class HUD {
               a = ((Math.floor(now / 120) & 1) === 0) ? 1 : 0.5;
             }
           }
-          // Draw as filled yellow dot with subtle glow
           const sx = minimapX + dx * mapScale;
           const sy = minimapY + dy * mapScale;
-          ctx.save();
           ctx.globalAlpha = a;
-          ctx.fillStyle = '#FFD700';
-          ctx.shadowColor = '#FFD700';
-          ctx.shadowBlur = 6;
           ctx.beginPath();
           ctx.arc(sx, sy, r, 0, Math.PI*2);
           ctx.fill();
-          ctx.restore();
         }
+        ctx.restore();
       }
     } catch { /* ignore */ }
 

@@ -11,8 +11,12 @@ export class SoundManager {
   private static bgMusic: Howl | null = null;
   // Track attempted src for cache busting / reloads
   private static currentSrc: string | null = null;
+  // Optional onend callback for radio/playlist behavior
+  private static onEndCb: (() => void) | null = null;
   // Lightweight shared AudioContext for UI SFX (fallbacks to Howler.ctx when available)
   private static uiCtx: (AudioContext | null) = null;
+  // Global music volume (0..1)
+  private static musicVolume = 0.5;
 
   /**
    * Loads and starts background music. Only plays if not already playing.
@@ -30,7 +34,7 @@ export class SoundManager {
     SoundManager.bgMusic = new Howl({
       src: sources,
       loop: true,
-      volume: 0.5,
+  volume: SoundManager.musicVolume,
       html5: true,
       preload: true,
       onloaderror: (id, err) => {
@@ -57,7 +61,7 @@ export class SoundManager {
       SoundManager.bgMusic = new Howl({
         src: sources,
         loop: true,
-        volume: 0.5,
+  volume: SoundManager.musicVolume,
         html5: true,
         onplay: () => Logger.debug('[SoundManager] Background music playing src=', sources),
         onplayerror: (id, err) => {
@@ -71,12 +75,82 @@ export class SoundManager {
           document.addEventListener('pointerdown', retry, { once: true });
           document.addEventListener('keydown', retry, { once: true });
         },
+        onend: () => { try { SoundManager.onEndCb?.(); } catch {/* ignore */} },
         onloaderror: (id, err) => Logger.error('[SoundManager] Music load error: ' + err)
       });
       Logger.debug('[SoundManager] playMusic sources=', sources, 'forceReload=', forceReload);
     }
     try { if (SoundManager.bgMusic && !SoundManager.bgMusic.playing()) SoundManager.bgMusic.play(); } catch { /* ignore */ }
   }
+
+  /** Play an arbitrary track with optional loop/volume and end callback (used by RadioService). */
+  public static playTrack(src: string, opts?: { loop?: boolean; volume?: number; forceReload?: boolean; onend?: ()=>void }) {
+    const relSrc = src.startsWith('/') ? src.slice(1) : src;
+  const loop = opts?.loop ?? true;
+  const volume = Math.max(0, Math.min(1, opts?.volume ?? SoundManager.musicVolume));
+    const forceReload = !!opts?.forceReload;
+    SoundManager.onEndCb = opts?.onend || null;
+    if (!SoundManager.bgMusic || forceReload || (SoundManager.currentSrc && SoundManager.currentSrc !== relSrc) || (SoundManager.bgMusic && SoundManager.bgMusic.loop() !== loop)) {
+      if (SoundManager.bgMusic) { try { SoundManager.bgMusic.unload(); } catch { /* ignore */ } }
+      SoundManager.currentSrc = relSrc;
+      const versioned = relSrc + (forceReload ? ('?v=' + Date.now()) : '');
+      const sources = [versioned.startsWith('assets/') ? '/' + versioned : versioned, versioned];
+  SoundManager.bgMusic = new Howl({
+        src: sources,
+        loop,
+        volume,
+        html5: true,
+        onend: () => { try { SoundManager.onEndCb?.(); } catch {/* ignore */} },
+        onplayerror: () => {
+          const retry = () => {
+            document.removeEventListener('pointerdown', retry);
+            document.removeEventListener('keydown', retry);
+            setTimeout(()=>{ try { SoundManager.bgMusic?.play(); } catch {/* ignore */} }, 50);
+          };
+          document.addEventListener('pointerdown', retry, { once: true });
+          document.addEventListener('keydown', retry, { once: true });
+        },
+        onloaderror: (id, err) => Logger.error('[SoundManager] Track load error: ' + err)
+      });
+    } else {
+      try { SoundManager.bgMusic.volume(volume); } catch { /* ignore */ }
+    }
+    try { if (SoundManager.bgMusic && !SoundManager.bgMusic.playing()) SoundManager.bgMusic.play(); } catch { /* ignore */ }
+  }
+
+  /** Pause current music if playing */
+  public static pause() {
+    try { if (SoundManager.bgMusic && SoundManager.bgMusic.playing()) SoundManager.bgMusic.pause(); } catch { /* ignore */ }
+  }
+
+  /** Resume current music if paused */
+  public static resume() {
+    try { if (SoundManager.bgMusic && !SoundManager.bgMusic.playing()) SoundManager.bgMusic.play(); } catch { /* ignore */ }
+  }
+
+  /** Toggle play/pause */
+  public static togglePlay() {
+    try {
+      if (!SoundManager.bgMusic) return;
+      if (SoundManager.bgMusic.playing()) SoundManager.bgMusic.pause(); else SoundManager.bgMusic.play();
+    } catch { /* ignore */ }
+  }
+
+  /** Returns true if any bg music is currently playing */
+  public static isPlaying(): boolean {
+    try { return !!SoundManager.bgMusic && SoundManager.bgMusic.playing(); } catch { return false; }
+  }
+
+  /** Set bg music volume (0..1) */
+  public static setVolume(v: number) {
+    const vol = Math.max(0, Math.min(1, v));
+    SoundManager.musicVolume = vol;
+    try { if (SoundManager.bgMusic) SoundManager.bgMusic.volume(vol); } catch { /* ignore */ }
+  try { window.dispatchEvent(new CustomEvent('volumechange', { detail: vol })); } catch { /* ignore */ }
+  }
+
+  /** Get current global music volume (0..1) */
+  public static getVolume(): number { return SoundManager.musicVolume; }
 
   /**
    * Stops background music playback.
@@ -87,6 +161,10 @@ export class SoundManager {
     }
   }
 
+  // Back-compat wrappers used in UI/services
+  public static pauseMusic() { SoundManager.pause(); }
+  public static resumeMusic() { SoundManager.resume(); }
+
   /** Quick status for console debugging */
   public static debugStatus() {
     const sm: any = SoundManager.bgMusic;
@@ -94,7 +172,7 @@ export class SoundManager {
       loaded: !!sm && sm.state && sm.state(),
       playing: !!sm && sm.playing && sm.playing(),
       src: SoundManager.currentSrc,
-      volume: !!sm && sm.volume && sm.volume()
+  volume: !!sm && sm.volume && sm.volume()
     });
   }
 

@@ -76,9 +76,10 @@ export class CharacterSelectPanel {
 
     this.panelElement.innerHTML = `
       <div class="character-select-adaptive" id="character-select-adaptive">
+      <div class="matrix-bg-overlay"></div>
       <div class="carousel-header">
-        <h1 class="carousel-title">SELECT YOUR CHARACTER</h1>
-        <div class="carousel-subtitle">Choose your operative for the mission</div>
+        <h1 class="carousel-title">OPERATIVES</h1>
+        <div class="carousel-subtitle">Choose your operative — optimized for the neon grid</div>
       </div>
       
       <div class="carousel-container">
@@ -93,6 +94,11 @@ export class CharacterSelectPanel {
             </div>
             <h2 class="character-name" id="mainCharacterName">Character Name</h2>
             <div class="character-class" id="characterClass">Class</div>
+            <div class="stat-chips" id="stat-chips-cs">
+              <div class="chip"><span>HEALTH</span><b id="chip-hp-cs">—</b></div>
+              <div class="chip"><span>DAMAGE</span><b id="chip-dmg-cs">—</b></div>
+              <div class="chip alt"><span>MOBILITY</span><b id="chip-move-cs">—</b></div>
+            </div>
           </div>
           
           <div class="carousel-thumbnails" id="thumbnailContainer">
@@ -102,7 +108,8 @@ export class CharacterSelectPanel {
         
         <div class="info-panel">
           <div class="info-tabs">
-            <button class="info-tab active" data-tab="basic">STATS</button>
+            <button class="info-tab active" data-tab="basic">OPERATIVE</button>
+            <button class="info-tab" data-tab="abilities">ABILITIES</button>
             <button class="info-tab" data-tab="weapon">WEAPON</button>
             <button class="info-tab" data-tab="lore">LORE</button>
           </div>
@@ -215,6 +222,15 @@ export class CharacterSelectPanel {
     if (mainName) mainName.textContent = character.name;
     if (mainClass) mainClass.textContent = character.playstyle;
 
+  // Update quick stat chips under portrait
+  const sQuick = character.stats as any;
+  const hpEl = document.getElementById('chip-hp-cs');
+  const dmgEl = document.getElementById('chip-dmg-cs');
+  const movEl = document.getElementById('chip-move-cs');
+  if (hpEl) (hpEl as HTMLElement).textContent = String(Math.round(sQuick.hp ?? sQuick.maxHp ?? 0));
+  if (dmgEl) (dmgEl as HTMLElement).textContent = String(sQuick.damageIndex ?? sQuick.damage ?? '—');
+  if (movEl) (movEl as HTMLElement).textContent = String(sQuick.movementIndex ?? sQuick.speed ?? '—');
+
     // Update thumbnails
     document.querySelectorAll('.thumbnail').forEach((thumb, index) => {
       thumb.classList.toggle('active', index === this.selectedCharacterIndex);
@@ -240,7 +256,7 @@ export class CharacterSelectPanel {
     const tabContent = document.getElementById('tabContent');
     if (!character || !tabContent) return;
 
-    switch(this.currentTab) {
+  switch(this.currentTab) {
       case 'basic': {
   const s = character.stats as any; // Allow derived fields (critChance, survivability, powerScore, damageIndex, movementIndex)
         tabContent.innerHTML = `
@@ -260,6 +276,24 @@ export class CharacterSelectPanel {
             <div class="stat-box"><div class="stat-label">Power</div><div class="stat-value">${s.powerScore ?? '—'}</div></div>
           </div>
           <p class="compact-text character-desc">${character.description}</p>
+          <div class="tab-spacer"></div>
+        `;
+        break; }
+
+      case 'abilities': {
+        const ability = character.specialAbility || 'Unique combat technique honed for this operative.';
+        tabContent.innerHTML = `
+          <h3>Abilities</h3>
+          <div class="ability-panel compact-text">
+            <div class="ability-callout">
+              <div class="ability-title">Signature</div>
+              <div class="ability-body">${this.escapeHtml(ability)}</div>
+            </div>
+            <ul class="ability-tips">
+              <li>Synergize with your class weapon to maximize uptime.</li>
+              <li>Time activations during dense enemy waves or boss windows.</li>
+            </ul>
+          </div>
           <div class="tab-spacer"></div>
         `;
         break; }
@@ -312,6 +346,8 @@ export class CharacterSelectPanel {
   private buildLoreSynergyHint(c: CharacterData): string | '' {
     // Lightweight cross-class callouts by default weapon
     switch (c.defaultWeapon) {
+      case WeaponType.GLYPH_COMPILER:
+        return 'Synergy: Establish control with Sigils/Orbs when offered, then let the Compiler solve lanes and burst elites.';
       case WeaponType.HACKER_VIRUS:
         return 'Synergy: Tag bosses with Rogue Hacker zones, then let Psionic Weaver or Data Sorcerer capitalize on the debuff window.';
       case WeaponType.QUANTUM_HALO:

@@ -67,5 +67,32 @@ export class AoEZone {
          }
        }
      }
+    // Also apply to boss if within radius
+    try {
+      const bm: any = (window as any).__bossManager;
+      const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+      if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+        const dxB = (boss.x ?? 0) - this.x; const dyB = (boss.y ?? 0) - this.y;
+        const rB = (boss.radius || 160);
+        if (dxB*dxB + dyB*dyB <= (this.radius + rB) * (this.radius + rB)) {
+          (this.enemyManager as any).takeBossDamage?.(boss, this.damage, false, undefined, this.x, this.y);
+        }
+      }
+    } catch { /* ignore boss AoE errors */ }
+    // Also apply to treasures within radius
+    try {
+      const emAny: any = this.enemyManager as any;
+      if (emAny && typeof emAny.getTreasures === 'function') {
+        const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+        const r2 = this.radius * this.radius;
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+          const dx = t.x - this.x; const dy = t.y - this.y;
+          if (dx*dx + dy*dy <= r2 && typeof emAny.damageTreasure === 'function') {
+            emAny.damageTreasure(t, this.damage);
+          }
+        }
+      }
+    } catch { /* ignore treasure AoE errors */ }
    }
  }

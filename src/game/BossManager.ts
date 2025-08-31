@@ -2,6 +2,7 @@ import { Player } from './Player';
 import { ParticleManager } from './ParticleManager';
 import { AssetLoader } from './AssetLoader';
 import { BOSS_SPAWN_INTERVAL_SEC } from './Balance';
+import { WeaponType } from './WeaponType';
 
 export type Boss = { x: number; y: number; hp: number; maxHp: number; radius: number; active: boolean; telegraph: number; state: 'TELEGRAPH' | 'ACTIVE' | 'DEAD'; attackTimer: number; _damageFlash?: number; specialCharge?: number; specialReady?: boolean; lastContactHitTime?: number; id?: string } | null;
 
@@ -28,15 +29,15 @@ export class BossManager {
     | 'NOVA_CHARGE' | 'NOVA_RELEASE'
     | 'MULTINOVA_CHARGE' | 'MULTINOVA_RELEASE'
     | 'LINEUP' | 'DASH'
-  | 'CONE_WINDUP' | 'CONE_RELEASE'
-  | 'RIFTS_WINDUP' | 'RIFTS_RELEASE'
-  // New epic spells per-boss
-  | 'SUPERNOVA_CHARGE' | 'SUPERNOVA_RELEASE'    // Beta (nova)
-  | 'EARTH_WINDUP' | 'EARTH_RELEASE'            // Alpha (balanced)
-  | 'RIFT_BARRAGE_WINDUP' | 'RIFT_BARRAGE_RELEASE' // Gamma (summoner)
-  | 'CROSS_WINDUP' | 'CROSS_RELEASE'            // Omega (dasher)
-  | 'VOLLEY_WINDUP' | 'VOLLEY_RELEASE'          // Beta: mortar bullet volley
-  = 'IDLE';
+    | 'CONE_WINDUP' | 'CONE_RELEASE'
+    | 'RIFTS_WINDUP' | 'RIFTS_RELEASE'
+    // New epic spells per-boss
+    | 'SUPERNOVA_CHARGE' | 'SUPERNOVA_RELEASE'    // Beta (nova)
+    | 'EARTH_WINDUP' | 'EARTH_RELEASE'            // Alpha (balanced)
+    | 'RIFT_BARRAGE_WINDUP' | 'RIFT_BARRAGE_RELEASE' // Gamma (summoner)
+    | 'CROSS_WINDUP' | 'CROSS_RELEASE'            // Omega (dasher)
+    | 'VOLLEY_WINDUP' | 'VOLLEY_RELEASE'          // Beta: mortar bullet volley
+    = 'IDLE';
   private spellTimerMs: number = 0;
   private novaRadius: number = 0;
   private novaMaxRadius: number = 320; // slightly reduced for fairness
@@ -110,6 +111,29 @@ export class BossManager {
   private readonly volleyLifeMs: number = 3000; // projectile lifespan
   // Fan spread arc for volley shots (radians). Wide arc for better readability
   private readonly volleyFanArcRad: number = Math.PI * 0.6; // ~108°
+  // --- Player damage routing helpers ---
+  /** True if player should currently take damage (not during revive cinematic or i-frames). */
+  private isPlayerVulnerable(): boolean {
+    try {
+      const now = performance.now();
+      const anyP: any = this.player as any;
+      if (anyP.invulnerableUntilMs && now < anyP.invulnerableUntilMs) return false;
+      if ((window as any).__reviveCinematicActive) return false;
+    } catch { /* ignore */ }
+    return true;
+  }
+  /** Apply damage to player via Player.takeDamage when available, else subtract HP directly. */
+  private damagePlayer(amount: number) {
+    if (amount <= 0) return;
+    try {
+      if (!this.isPlayerVulnerable()) return;
+      const p: any = this.player as any;
+      if (typeof p.takeDamage === 'function') { p.takeDamage(amount); }
+      else { this.player.hp -= amount; }
+    } catch {
+      this.player.hp -= amount;
+    }
+  }
   private showAlert(text: string, color = '#5EEBFF', durationMs = 1800) {
     const now = performance.now();
     this.alerts.push({ text, color, born: now, until: now + durationMs });
@@ -248,12 +272,32 @@ export class BossManager {
   if (!this.boss.specialReady) {
         // Move slower
         if (!isSpellActive && dist > 0) {
-          const stepX = (dx / dist) * 0.7;
-          const stepY = (dy / dist) * 0.7;
+          // Base boss chase speed (px/frame)
+          let speed = 0.7;
+          // Status effects affecting boss movement
+          const bAny: any = this.boss as any;
+          const now = performance.now();
+          // Rogue Hacker paralysis: hard stop
+          if (bAny._paralyzedUntil && bAny._paralyzedUntil > now) {
+            speed = 0;
+          } else {
+            // Poison slow + evolved Bio (Living Sludge) 20% floor when poisoned or in sludge
+            let slow = 0;
+            const stacks = (bAny._poisonStacks | 0) || 0;
+            if (stacks > 0) slow = Math.max(slow, Math.min(0.20, stacks * 0.01));
+            try {
+              const hasSludge = (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) === true;
+              if (hasSludge) {
+                if (stacks > 0 || ((bAny._inSludgeUntil || 0) > now)) slow = Math.max(slow, 0.20);
+              }
+            } catch { /* ignore */ }
+            speed *= (1 - slow);
+          }
+          const stepX = (dx / dist) * speed;
+          const stepY = (dy / dist) * speed;
           this.boss.x += stepX;
           this.boss.y += stepY;
           // Track last non-zero horizontal direction for facing
-          const bAny: any = this.boss as any;
           if (Math.abs(stepX) > 0.0001) bAny._facingX = stepX < 0 ? -1 : 1;
           // Walk-cycle flip at fixed interval while moving
           const mvMag = Math.hypot(stepX, stepY);
@@ -291,7 +335,7 @@ export class BossManager {
           // Unleash special attack (e.g., massive area damage)
           if (dist < this.getSpecialRadius()) {
             const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-            this.player.hp -= Math.round(80 * specialScale); // Scaled special damage
+            this.damagePlayer(Math.round(80 * specialScale)); // Scaled special damage
             if (this.particleManager) this.particleManager.spawn(this.player.x, this.player.y, 2, '#FF0000'); // Reduced particles
             window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 300, intensity: 10 } })); // Screen shake on special attack
           }
@@ -353,14 +397,14 @@ export class BossManager {
           // still apply tiny positional separation to avoid sticking
           if (dist > 0) {
             const nx = dx / dist; const ny = dy / dist;
-            this.player.x -= nx * 6; this.player.y -= ny * 6;
+            if (!(window as any).__reviveCinematicActive) { this.player.x -= nx * 6; this.player.y -= ny * 6; }
             this.boss.x += nx * 4; this.boss.y += ny * 4;
           }
         } else {
         if (!this.boss.lastContactHitTime || now - this.boss.lastContactHitTime >= 1000) {
           this.boss.lastContactHitTime = now;
-          this.player.hp -= 30; // fixed contact damage
-          this.player.hp -= Math.round(30 * (1 + 0.18 * (this.bossSpawnCount - 1))) - 30; // apply additional scaled damage over base
+          this.damagePlayer(30); // fixed contact damage base
+          this.damagePlayer(Math.round(30 * (1 + 0.18 * (this.bossSpawnCount - 1))) - 30); // additional scaled damage over base
           this.boss._damageFlash = 12; // flash when successful hit
           // Knockback only when damage actually applied
           if (dist > 0) {
@@ -368,8 +412,7 @@ export class BossManager {
             const ny = dy / dist;
             const playerKb = 64; // stronger push to emphasize hit
             const bossKb = 24;
-            this.player.x -= nx * playerKb;
-            this.player.y -= ny * playerKb;
+            if (!(window as any).__reviveCinematicActive) { this.player.x -= nx * playerKb; this.player.y -= ny * playerKb; }
             this.boss.x += nx * bossKb;
             this.boss.y += ny * bossKb;
           }
@@ -1145,7 +1188,7 @@ export class BossManager {
           const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
           if (d <= this.getNovaInnerRadius()) {
             const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-            this.player.hp -= Math.round(45 * specialScale); // reduced inner blast damage
+            this.damagePlayer(Math.round(45 * specialScale)); // reduced inner blast damage
             window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 180, intensity: 6 } }));
           }
         }
@@ -1163,7 +1206,7 @@ export class BossManager {
   if (!this.novaHitApplied && d >= (prevR - band) && d <= (this.novaRadius + band)) {
           this.novaHitApplied = true;
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-          this.player.hp -= Math.round(35 * specialScale); // reduced ring damage
+          this.damagePlayer(Math.round(35 * specialScale)); // reduced ring damage
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 5 } }));
         }
   this.lastNovaR = this.novaRadius;
@@ -1202,7 +1245,7 @@ export class BossManager {
             if (!inGap) {
               this.multiNovaHit[i] = true;
               const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-              this.player.hp -= Math.round(40 * specialScale);
+              this.damagePlayer(Math.round(40 * specialScale));
               window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 160, intensity: 6 } }));
             }
           }
@@ -1247,9 +1290,9 @@ export class BossManager {
         if (!this.novaHitApplied && d >= (rPrev - band) && d <= (r + band)) {
           this.novaHitApplied = true;
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-          this.player.hp -= Math.round(72 * specialScale);
+          this.damagePlayer(Math.round(72 * specialScale));
           // Strong knockback
-          if (d > 0) { const nx = (this.player.x - this.boss.x)/d, ny=(this.player.y - this.boss.y)/d; this.player.x += nx*120; this.player.y += ny*120; }
+          if (!(window as any).__reviveCinematicActive) { if (d > 0) { const nx = (this.player.x - this.boss.x)/d, ny=(this.player.y - this.boss.y)/d; this.player.x += nx*120; this.player.y += ny*120; } }
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 320, intensity: 9 } }));
         }
         this.lastSuperNovaR = r;
@@ -1353,13 +1396,12 @@ export class BossManager {
         const d = Math.hypot(this.player.x - this.boss.x, this.player.y - this.boss.y);
         if (!this.dashDidHitOnce && d < this.player.radius + this.boss.radius) {
           this.dashDidHitOnce = true; // only once per dash
-          this.player.hp -= 40; // stronger dash contact damage
+          this.damagePlayer(40); // stronger dash contact damage
           // Apply a moderate knockback to give recovery space
           if (d > 0) {
             const nx = (this.player.x - this.boss.x) / d;
             const ny = (this.player.y - this.boss.y) / d;
-            this.player.x += nx * 72;
-            this.player.y += ny * 72;
+            if (!(window as any).__reviveCinematicActive) { this.player.x += nx * 72; this.player.y += ny * 72; }
           }
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 5 } }));
         }
@@ -1404,8 +1446,8 @@ export class BossManager {
             let da = Math.abs(((ang - a + Math.PI) % (Math.PI*2)) - Math.PI);
             if (da <= this.coneArcRad) {
               const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-              this.player.hp -= Math.round(55 * specialScale);
-              const kb = 90; this.player.x += Math.cos(a) * kb; this.player.y += Math.sin(a) * kb;
+              this.damagePlayer(Math.round(55 * specialScale));
+              if (!(window as any).__reviveCinematicActive) { const kb = 90; this.player.x += Math.cos(a) * kb; this.player.y += Math.sin(a) * kb; }
               window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 220, intensity: 7 } }));
             }
           }
@@ -1480,7 +1522,7 @@ export class BossManager {
         const rr = (hz.radius || 10) + this.player.radius;
         if (dx*dx + dy*dy <= rr*rr) {
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
-          this.player.hp -= Math.round((hz.damage || 18) * specialScale);
+          this.damagePlayer(Math.round((hz.damage || 18) * specialScale));
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 3 } }));
           try { window.dispatchEvent(new CustomEvent('mortarExplosion', { detail: { x: hz.x, y: hz.y, radius: 80, damage: 0, color: '#FFDD66' } })); } catch {}
           this.hazards.splice(i, 1);
@@ -1498,7 +1540,7 @@ export class BossManager {
       if (active) {
         if (hz.kind === 'aoe' && hz.radius) {
           const d = Math.hypot(this.player.x - hz.x, this.player.y - hz.y);
-          if (d <= hz.radius) this.player.hp -= hz.damage;
+          if (d <= hz.radius) this.damagePlayer(hz.damage);
         } else if (hz.kind === 'line' && hz.x2 != null && hz.y2 != null && hz.width) {
           const px = this.player.x, py = this.player.y;
           const x1 = hz.x, y1 = hz.y, x2 = hz.x2, y2 = hz.y2;
@@ -1509,7 +1551,7 @@ export class BossManager {
           let t = c2 > 0 ? c1 / c2 : 0; t = Math.max(0, Math.min(1, t));
           const projx = x1 + t * vx; const projy = y1 + t * vy;
           const dist = Math.hypot(px - projx, py - projy);
-          if (dist <= (hz.width/2 + this.player.radius)) this.player.hp -= hz.damage;
+          if (dist <= (hz.width/2 + this.player.radius)) this.damagePlayer(hz.damage);
         }
       }
       if (!live) this.hazards.splice(i, 1);
