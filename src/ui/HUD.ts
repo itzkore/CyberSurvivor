@@ -13,6 +13,8 @@ export class HUD {
   public showMinimap: boolean = true; // Always on now
   private baseWorldW?: number; // freeze initial world size for minimap scale
   private baseWorldH?: number;
+  // Bounds of the upgrades panel (under the minimap) to align dependent UI elements
+  private upgradesPanelBounds?: { x: number; y: number; w: number; h: number };
 
   constructor(player: Player, loader?: AssetLoader) {
     this.player = player;
@@ -173,6 +175,15 @@ export class HUD {
           ctx.strokeRect(classX + 0.5, hpBarY + 0.5, maxW - 1, 22 - 1);
           ctx.restore();
         }
+      } else if (id === 'titan_mech' && (this.player as any).getFortressMeter) {
+        const fm: any = (this.player as any).getFortressMeter();
+        const ratio = fm.max > 0 ? fm.value / fm.max : 0;
+        const label = fm.active ? 'FORTRESS ACTIVE' : (fm.ready ? 'FORTRESS READY (Shift)' : `FORTRESS ${Math.ceil((fm.max - fm.value)/1000)}s`);
+        // Dark red theme when active, otherwise muted steel/purple
+        const fg = fm.active ? '#ff3b3b' : '#b266ff';
+        const bg = fm.active ? '#2a0004' : '#220a33';
+        const accent = fm.active ? '#ff1a1a' : '#d5a6ff';
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, fg, bg, accent, label);
       } else if (id === 'cyber_runner' && (this.player as any).getRunnerDash) {
         // Dash cooldown: show time until ready (fills up as it recharges)
         const d: any = (this.player as any).getRunnerDash();
@@ -407,7 +418,7 @@ export class HUD {
   } catch { /* ignore */ }
   this.drawUpgradeHistory(ctx, upgrades, upgradesPanelX, upgradesPanelY, minimapPositionSize);
 
-    // Healing Efficiency bar (center-right). Shows global healing multiplier as percentage.
+  // Healing Efficiency bar (aligned under right-side upgrades panel). Shows global healing multiplier as percentage.
     try {
       // Compute efficiency in [0.1,1.0] from gameplay time in seconds
       const eff = Math.max(0.1, Math.min(1, getHealEfficiency(gameTime)));
@@ -416,11 +427,19 @@ export class HUD {
       let fg = '#26ffe9', bg = '#07333a', accent = '#00b3a3';
       if (pct < 75 && pct >= 50) { fg = '#ffd166'; bg = '#332600'; accent = '#ffb703'; }
       else if (pct < 50) { fg = '#ff4d4d'; bg = '#2a0004'; accent = '#ff1a1a'; }
-      // Size and position: center-right, consistent with right-side margins
-      const barW = Math.min(260, Math.max(140, width * 0.22));
-      const x = width - barW - 20;
+      // Size and position: match and sit directly below the upgrades panel
       const h = 22;
-      const y = Math.round(height * 0.40); // slightly above exact center to avoid overlap with bottom HUD
+      let barW = minimapPositionSize; // fallback width if bounds missing
+      let x = upgradesPanelX;          // fallback x
+      let y = Math.round(height * 0.40); // fallback y
+      if (this.upgradesPanelBounds) {
+        barW = this.upgradesPanelBounds.w;
+        x = this.upgradesPanelBounds.x;
+        const desiredY = this.upgradesPanelBounds.y + this.upgradesPanelBounds.h + 8;
+        // Prevent overlap with HP/class bars at bottom-left
+        const maxY = Math.max(0, hpBarY - h - 8);
+        y = Math.min(desiredY, maxY);
+      }
       const label = `HEALING ${pct}%`;
       this.drawThemedBar(ctx, x, y, barW, h, eff, fg, bg, accent, label);
     } catch { /* ignore */ }
@@ -690,6 +709,9 @@ export class HUD {
       // Build condensed map of highest levels for weapons & passives
       const weaponLevels: Record<string, number> = {};
       const passiveLevels: Record<string, number> = {};
+      // Track base->evolved transitions so we can hide the base entry once evolved is obtained
+      const evolvedMap: Record<string, string> = Object.create(null);
+      const suppressBase: Set<string> = new Set();
       for (const raw of upgrades) {
         if (raw.startsWith('Weapon Upgrade:')) {
           const m = raw.match(/Weapon Upgrade:\s+(.+) Lv\.(\d+)/);
@@ -699,9 +721,23 @@ export class HUD {
             if (!weaponLevels[name] || weaponLevels[name] < lvl) weaponLevels[name] = lvl;
           }
         } else if (raw.startsWith('Weapon Evolution:')) {
-          // treat evolution as new weapon at level 1 if needed
-          const m = raw.match(/Weapon Evolution:\s+.+ -> (.+)/);
-          if (m) weaponLevels[m[1].trim()] = weaponLevels[m[1].trim()] || 1;
+          // Parse both base and evolved names, ensure evolved exists and base is suppressed
+          // Formats seen: "Weapon Evolution: Base -> Evolved"
+          const m = raw.match(/Weapon Evolution:\s+(.+) -> (.+)/);
+          if (m) {
+            const base = m[1].trim();
+            const evolved = m[2].trim();
+            evolvedMap[base] = evolved;
+            suppressBase.add(base);
+            if (!weaponLevels[evolved]) weaponLevels[evolved] = 1;
+          } else {
+            // Fallback: previous behavior capturing only evolved
+            const m2 = raw.match(/Weapon Evolution:\s+.+ -> (.+)/);
+            if (m2) {
+              const evolved = m2[1].trim();
+              if (!weaponLevels[evolved]) weaponLevels[evolved] = 1;
+            }
+          }
         } else if (raw.startsWith('Passive Unlock:')) {
           const m = raw.match(/Passive Unlock:\s+(.+) Lv\.(\d+)/);
           if (m) {
@@ -716,6 +752,13 @@ export class HUD {
             const lvl = parseInt(m[2], 10);
             if (!passiveLevels[name] || passiveLevels[name] < lvl) passiveLevels[name] = lvl;
           }
+        }
+      }
+      // Suppress base weapons that evolved; keep the evolved entry only
+      if (suppressBase.size > 0) {
+        // Remove base names from weaponLevels
+        for (const base of suppressBase) {
+          if (weaponLevels[base] != null) delete weaponLevels[base];
         }
       }
       // Compose display lines
@@ -766,7 +809,9 @@ export class HUD {
     const headerSpace = 50;
     const desiredHeight = headerSpace + displayUpgrades.length * lineHeight + 12;
     const maxHeight = 340;
-    const panelHeight = Math.min(maxHeight, desiredHeight);
+  const panelHeight = Math.min(maxHeight, desiredHeight);
+  // Save bounds for dependent UI alignment (e.g., Healing bar)
+  this.upgradesPanelBounds = { x: panelX, y: panelY, w: panelWidth, h: panelHeight };
     const maxVisibleLines = Math.floor((panelHeight - headerSpace - 12) / lineHeight);
     if (displayUpgrades.length > maxVisibleLines) {
       // Keep most recent (end of array) lines, add ellipsis marker at top

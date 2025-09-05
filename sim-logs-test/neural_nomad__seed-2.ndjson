@@ -1,0 +1,8 @@
+{"t":0,"type":"start","data":{"id":"neural_nomad","name":"Neural Nomad","seed":2,"durationSec":10,"difficulty":1}}
+{"t":1.0000020000000007,"type":"tick","data":{"level":1,"hp":105,"enemies":1,"kills":0}}
+{"t":3.000006000000005,"type":"tick","data":{"level":1,"hp":105,"enemies":10,"kills":0}}
+{"t":5.0000100000000085,"type":"tick","data":{"level":1,"hp":105,"enemies":14,"kills":0}}
+{"t":7.000014000000013,"type":"tick","data":{"level":1,"hp":105,"enemies":19,"kills":0}}
+{"t":7.4333482000000135,"type":"tick","data":{"kills":1,"delta":1,"level":1,"enemies":21}}
+{"t":9.000018000000017,"type":"tick","data":{"level":1,"hp":105,"enemies":24,"kills":1}}
+{"t":10.000020000000019,"type":"end","data":{"kills":1,"level":1,"damageTaken":0,"xpOrbsCollected":0,"peakEnemies":26}}

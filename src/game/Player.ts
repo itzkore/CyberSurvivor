@@ -33,6 +33,12 @@ export class Player {
   private baseSpriteSize: number = 64;
   /** Character visual/physical scale (1.0 = default). Used to scale sprite size and hurtbox radius. */
   private characterScale: number = 1.0;
+  /** Fortress scale tween (0..1). Lerps visual growth so size change is clearly visible. */
+  private fortressScaleT: number = 0;
+  /** Accumulator for periodic Fortress stomps (fires every ~1000ms while active). */
+  private fortressStompAccMs: number = 0;
+  /** Gate an immediate stomp on activation. */
+  private fortressDidInitialStomp: boolean = false;
 
   /**
    * Movement speed of the player (units per tick)
@@ -76,6 +82,14 @@ export class Player {
   public attackSpeed: number = 1; // Attack speed multiplier (1 = base)
   // Plasma weapon heat (0..1)
   public plasmaHeat: number = 0;
+  /** Knockback resistance: 0 = none, 1 = immune. Requested +100% => default to 1.0 */
+  public knockbackResistance: number = 1.0;
+
+  /** Returns a multiplicative knockback factor [0..1] after applying resistance. */
+  public getKnockbackMultiplier(): number {
+    const r = typeof this.knockbackResistance === 'number' ? this.knockbackResistance : 0;
+    return Math.max(0, Math.min(1, 1 - r));
+  }
 
   private gameContext: any; // Holds references to managers like bulletManager, assetLoader
 
@@ -259,6 +273,17 @@ export class Player {
   public getWeaverLatticeMeter() {
     return { value: this.latticeActive ? this.latticeActiveMs : (this.latticeCdMaxMs - this.latticeCdMs), max: this.latticeActive ? 4000 : this.latticeCdMaxMs, ready: this.latticeCdMs <= 0 && !this.latticeActive, active: this.latticeActive };
   }
+  // Titan Mech: Fortress Stance (Shift) — 14s cooldown, 4s duration
+  public getFortressMeter() {
+    const anyThis: any = this as any;
+    const active = !!anyThis.fortressActive;
+    const cdMax = anyThis.fortressCdMaxMs || 14000;
+    const durMax = anyThis.fortressActiveMsMax || 4000;
+    const value = active ? (anyThis.fortressActiveMs || 0) : (cdMax - (anyThis.fortressCdMs || 0));
+    const max = active ? durMax : cdMax;
+    const ready = !active && ((anyThis.fortressCdMs || 0) <= 0);
+    return { value, max, ready, active };
+  }
 
   // Ghost Operative: Phase Cloak (Spacebar) — 15s cooldown, 5s duration, speed boost
   private cloakCdMaxMs: number = 15000;
@@ -428,8 +453,11 @@ export class Player {
     const moveScale = dt / 16.6667;
   // Apply temporary BIO Boost speed multiplier if active (Bio Engineer only)
   const speedMul = (this.characterData?.id === 'bio_engineer' && this.bioBoostActive) ? this.bioBoostSpeedMul : 1;
-  this.vx = inputLocked ? 0 : ax * this.speed * speedMul;
-  this.vy = inputLocked ? 0 : ay * this.speed * speedMul;
+  let moveMul = speedMul;
+  // Fortress stance: reduce movement while braced to emphasize anchoring
+  if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) moveMul *= 0.55;
+  this.vx = inputLocked ? 0 : ax * this.speed * moveMul;
+  this.vy = inputLocked ? 0 : ay * this.speed * moveMul;
     this.x += this.vx * moveScale;
     this.y += this.vy * moveScale;
     // Walk-cycle flip while moving
@@ -693,6 +721,104 @@ export class Player {
     if (this.characterData?.id === 'rogue_hacker' && this.hackerHackCdMs > 0) {
       this.hackerHackCdMs = Math.max(0, this.hackerHackCdMs - dt);
     }
+    // Titan Mech: Fortress Stance timers (4s active, 14s cooldown)
+    if (this.characterData?.id === 'titan_mech') {
+      if ((this as any).fortressActive) {
+        (this as any).fortressActiveMs = ((this as any).fortressActiveMs || 0) + dt;
+    // Periodic stomp: once per second while Fortress is active
+        this.fortressStompAccMs += dt;
+        const ex = (this.gameContext as any)?.explosionManager;
+        const em: any = (this.gameContext as any)?.enemyManager;
+        // On activation, fire an immediate stomp once
+        if (!this.fortressDidInitialStomp) {
+          this.fortressDidInitialStomp = true;
+          try {
+      // Use a fixed base radius; ExplosionManager applies area multipliers once globally.
+      const radius = 300;
+            // Base damage budget: use Mortar stats unless the evolved Howitzer is actually owned
+            const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+            const hasEvolved = !!(aw && aw.has(WeaponType.SIEGE_HOWITZER));
+            const specBase: any = WEAPON_SPECS[hasEvolved ? WeaponType.SIEGE_HOWITZER : WeaponType.MECH_MORTAR];
+      const lvlRaw = aw ? (hasEvolved ? (aw.get(WeaponType.SIEGE_HOWITZER) || 1) : (aw.get(WeaponType.MECH_MORTAR) || 1)) : 1;
+      const lvl = Math.min(7, Math.max(1, lvlRaw));
+      const ls = specBase?.getLevelStats ? specBase.getLevelStats(lvl) : { damage: 220 } as any;
+            const gdm = this.getGlobalDamageMultiplier?.() ?? (this as any).globalDamageMultiplier ?? 1;
+      // Gentle scaling: 0.6x at L1 → 1.0x at L7
+      const scale = 0.6 + (lvl - 1) * (0.4 / 6);
+  const stompDamage = Math.max(1, Math.round(((ls.damage || 220) * scale) * gdm * this.getTitanOnlyDamageNerf()));
+            // Route damage through ExplosionManager only (avoids double-ticks); boss takes a reduced fraction
+            ex?.triggerShockwave(this.x, this.y, stompDamage, radius, '#8B0000', 0.25);
+            // Strong outward knockback impulse to sell the stomp
+            if (em && typeof em.getEnemies === 'function') {
+              const enemies = em.getEnemies();
+              const r2 = radius * radius;
+              for (let i = 0; i < enemies.length; i++) {
+                const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
+                const dx = e.x - this.x, dy = e.y - this.y; const d2 = dx*dx + dy*dy; if (d2 > r2) continue;
+                const d = Math.max(1, Math.sqrt(d2)); const nx = dx / d, ny = dy / d;
+                const boost = 2600; // a bit stronger than Data Sigil finale
+                const existingRadial = ((e as any).knockbackVx || 0) * nx + ((e as any).knockbackVy || 0) * ny;
+                const added = boost * (existingRadial > 0 ? (em as any).knockbackStackScale || 0.55 : 1);
+                const maxV = (em as any).knockbackMaxVelocity || 4200;
+                const baseMs = (em as any).knockbackBaseMs || 140;
+                const newMag = Math.min(maxV, Math.max(existingRadial, 0) + added);
+                (e as any).knockbackVx = nx * newMag; (e as any).knockbackVy = ny * newMag;
+                (e as any).knockbackTimer = Math.max((e as any).knockbackTimer || 0, baseMs + 110);
+                // Damage already applied via shockwave; skip duplicate direct damage
+              }
+            }
+            // Boss damage handled by triggerShockwave bossDamageFrac
+            window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 180, intensity: 5.5 } }));
+          } catch { /* ignore */ }
+        }
+    while (this.fortressStompAccMs >= 1000) {
+          this.fortressStompAccMs -= 1000;
+          try {
+      // Use fixed base radius; ExplosionManager applies area multipliers.
+      const radius = 300;
+            const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+            const hasEvolved = !!(aw && aw.has(WeaponType.SIEGE_HOWITZER));
+            const specBase: any = WEAPON_SPECS[hasEvolved ? WeaponType.SIEGE_HOWITZER : WeaponType.MECH_MORTAR];
+      const lvlRaw = aw ? (hasEvolved ? (aw.get(WeaponType.SIEGE_HOWITZER) || 1) : (aw.get(WeaponType.MECH_MORTAR) || 1)) : 1;
+      const lvl = Math.min(7, Math.max(1, lvlRaw));
+      const ls = specBase?.getLevelStats ? specBase.getLevelStats(lvl) : { damage: 220 } as any;
+            const gdm = this.getGlobalDamageMultiplier?.() ?? (this as any).globalDamageMultiplier ?? 1;
+      const scale = 0.6 + (lvl - 1) * (0.4 / 6);
+  const stompDamage = Math.max(1, Math.round(((ls.damage || 220) * scale) * gdm * this.getTitanOnlyDamageNerf()));
+            ex?.triggerShockwave(this.x, this.y, stompDamage, radius, '#8B0000', 0.25);
+            // Outward impulse knockback
+            if (em && typeof em.getEnemies === 'function') {
+              const enemies = em.getEnemies();
+              const r2 = radius * radius;
+              for (let i = 0; i < enemies.length; i++) {
+                const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
+                const dx = e.x - this.x, dy = e.y - this.y; const d2 = dx*dx + dy*dy; if (d2 > r2) continue;
+                const d = Math.max(1, Math.sqrt(d2)); const nx = dx / d, ny = dy / d;
+                const boost = 2600;
+                const existingRadial = ((e as any).knockbackVx || 0) * nx + ((e as any).knockbackVy || 0) * ny;
+                const added = boost * (existingRadial > 0 ? (em as any).knockbackStackScale || 0.55 : 1);
+                const maxV = (em as any).knockbackMaxVelocity || 4200;
+                const baseMs = (em as any).knockbackBaseMs || 140;
+                const newMag = Math.min(maxV, Math.max(existingRadial, 0) + added);
+                (e as any).knockbackVx = nx * newMag; (e as any).knockbackVy = ny * newMag;
+                (e as any).knockbackTimer = Math.max((e as any).knockbackTimer || 0, baseMs + 110);
+                // Damage already applied via shockwave; skip duplicate direct damage
+              }
+            }
+            // Boss damage handled by triggerShockwave bossDamageFrac
+            window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 160, intensity: 5 } }));
+          } catch { /* ignore */ }
+        }
+        if ((this as any).fortressActiveMs >= 4000) {
+          (this as any).fortressActive = false; (this as any).fortressActiveMs = 0; (this as any).fortressCdMs = (this as any).fortressCdMaxMs || 14000;
+          try { window.dispatchEvent(new CustomEvent('fortressEnd')); } catch {}
+        }
+      } else if (((this as any).fortressCdMs || 0) > 0) {
+        (this as any).fortressCdMs = Math.max(0, ((this as any).fortressCdMs || 0) - dt);
+        // Reset stomp accumulators while inactive
+        this.fortressStompAccMs = 0; this.fortressDidInitialStomp = false;
+      }
+    }
     // Bio Engineer: Outbreak timers and input (Spacebar). 5s active, 15s cooldown.
     if (this.characterData?.id === 'bio_engineer') {
       if (this.bioOutbreakActive) {
@@ -720,7 +846,7 @@ export class Player {
       }
       this.bioOutbreakPrevKey = spaceNow;
     }
-    // Rogue Hacker: Ghost Protocol (Shift) — activation and ticking
+  // Rogue Hacker: Ghost Protocol (Shift) — activation and ticking
     if (!inputLocked && this.characterData?.id === 'rogue_hacker') {
       // Lazy init once we know character
       if (!this.ghostProtocol) {
@@ -738,19 +864,18 @@ export class Player {
       // Live scaling: tie to class weapon level and evolution for damage and visuals
       try {
         const aw: Map<number, number> | undefined = (this as any).activeWeapons;
-  const evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
-  const lvl = aw ? (aw.get(WeaponType.HACKER_BACKDOOR) || aw.get(WeaponType.HACKER_VIRUS) || 1) : 1;
-        // Use Hacker Virus level curve as a baseline and amplify a bit for ability impact
+        const evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
+        const lvl = aw ? (aw.get(WeaponType.HACKER_BACKDOOR) || aw.get(WeaponType.HACKER_VIRUS) || 1) : 1;
+        // Base on Hacker Virus DPS and multiply when evolved so ability never gets weaker
         const spec: any = (WEAPON_SPECS as any)[WeaponType.HACKER_VIRUS];
         const ls = spec?.getLevelStats ? spec.getLevelStats(Math.max(1, Math.min(7, lvl))) : { damage: 32, cooldown: 32 };
-  // Match ability DPS closely to weapon DPS at that level (no extra bonus)
-  const weaponDps = (ls.damage * 60) / Math.max(1, (ls.cooldown || 32));
-  const targetDps = Math.round(weaponDps);
-  // Keep zone smaller by default; slight bump when evolved for clarity
-  const baseRadius = 160;
-  const radius = evolved ? Math.round(baseRadius * 1.10) : baseRadius;
-  const tickMs = 200;
-  this.ghostProtocol.updateScaling({ dps: targetDps, auraRadius: radius, tickMs, evolved });
+        const baseDps = (ls.damage * 60) / Math.max(1, (ls.cooldown || 32));
+        const targetDps = Math.round(baseDps * (evolved ? 1.75 : 1.25));
+        // Keep zone smaller by default; slight bump when evolved for clarity
+        const baseRadius = 160;
+        const radius = evolved ? Math.round(baseRadius * 1.15) : baseRadius;
+        const tickMs = evolved ? 180 : 200;
+        this.ghostProtocol.updateScaling({ dps: targetDps, auraRadius: radius, tickMs, evolved });
       } catch { /* ignore */ }
       const shiftNow = !!keyState['shift'];
       if (shiftNow && !this.ghostPrevShift) {
@@ -759,6 +884,27 @@ export class Player {
       this.ghostPrevShift = shiftNow;
       // Per-frame tick (even when not active, it's a cheap guard)
       this.ghostProtocol.update(dt);
+    }
+    // Titan Mech: Fortress Stance (Shift) — brace to reduce damage and steady cannons
+    if (!inputLocked && this.characterData?.id === 'titan_mech') {
+      const shiftNow = !!keyState['shift'];
+      const cdMs = (this as any).fortressCdMs || 0;
+      const active = !!(this as any).fortressActive;
+      if (shiftNow && !this.ghostPrevShift && !active && cdMs <= 0) {
+        (this as any).fortressActive = true; (this as any).fortressActiveMs = 0; (this as any).fortressCdMaxMs = 14000;
+  // Reset stomp gates so activation fires immediate stomp
+  this.fortressStompAccMs = 0;
+  this.fortressDidInitialStomp = false;
+        try { window.dispatchEvent(new CustomEvent('fortressStart', { detail: { x: this.x, y: this.y } })); } catch {}
+      }
+      // Store last shift for both hacker and titan paths
+      this.ghostPrevShift = shiftNow;
+    }
+    // Smoothly animate Titan Mech visual growth in/out while Fortress toggles
+    if (this.characterData?.id === 'titan_mech') {
+      const rate = Math.max(0.0001, dt / 150); // ~150ms to reach target scale
+      if ((this as any).fortressActive) this.fortressScaleT = Math.min(1, this.fortressScaleT + rate);
+      else this.fortressScaleT = Math.max(0, this.fortressScaleT - rate);
     }
     // Passive HP regeneration (applies continuously; supports fractional accumulation)
     if ((this.regen || 0) > 0 && this.hp < this.maxHp) {
@@ -798,10 +944,19 @@ export class Player {
       }
     }
 
-  // Auto-aim target, prefer one that won't explode before charge completes
-  // Use a conservative avoid window equal to charge time (1.5s) since we pick before starting charge
-  let target = this.findSniperTargetAvoidingSoonExploding(1500);
-    // Fallback: if no enemy is found, but a boss is active, target the boss so weapons still fire
+  // Generic auto-aim target for most weapons (includes enemies, boss, treasures)
+  let target = this.findNearestEnemy();
+  if (target) {
+    // Face target for non-sniper weapons and general aim visuals
+    this.rotation = Math.atan2(target.y - this.y, target.x - this.x);
+  }
+
+  // Sniper-only pre-aim and charge logic uses a stricter target filter to avoid soon-exploding marks
+  {
+    // Auto-aim target, prefer one that won't explode before charge completes
+    // Use a conservative avoid window equal to charge time (1.5s) since we pick before starting charge
+    let target = this.findSniperTargetAvoidingSoonExploding(1500);
+    // Fallback: if no enemy is found, try boss, then treasures
     if (!target) {
       try {
         const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
@@ -810,8 +965,24 @@ export class Player {
         }
       } catch {}
     }
+    if (!target) {
+      try {
+        const emAny: any = (this.gameContext as any)?.enemyManager;
+        if (emAny && typeof emAny.getTreasures === 'function') {
+          const treasures = emAny.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+          let bestT: any = null; let bestD2 = Infinity;
+          for (let i = 0; i < treasures.length; i++) {
+            const t = treasures[i];
+            if (!t || !t.active || (t as any).hp <= 0) continue;
+            const dx = (t.x - this.x); const dy = (t.y - this.y); const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; bestT = t; }
+          }
+          if (bestT) target = bestT as any;
+        }
+      } catch { /* ignore treasure lookup */ }
+    }
     if (target) {
-      // Face target
+      // Face sniper target for steady aim
       this.rotation = Math.atan2(target.y - this.y, target.x - this.x);
     }
 
@@ -822,70 +993,139 @@ export class Player {
         // Cancel any in-progress charge
         (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0;
       } else {
-      const moveMagForSniper = Math.hypot(this.vx || 0, this.vy || 0);
-      if (moveMagForSniper <= 0.01 && !(this as any)._sniperCharging) {
-        if (this.activeWeapons.has(WeaponType.GHOST_SNIPER)) {
-          // Ghost: allow pre-charging regardless of cooldown; will hold until ready
-          const spec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
-          const lvl = this.activeWeapons.get(WeaponType.GHOST_SNIPER) ?? 1;
-          // Re-evaluate target at fire moment; if about to explode, pick a safer target
-          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
-          else {
-            const anyT: any = target as any; const nowT = performance.now();
-            if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
-              target = this.findSniperTargetAvoidingSoonExploding(0);
+        const moveMagForSniper = Math.hypot(this.vx || 0, this.vy || 0);
+        if (moveMagForSniper <= 0.01 && !(this as any)._sniperCharging) {
+          if (this.activeWeapons.has(WeaponType.GHOST_SNIPER)) {
+            // Ghost: allow pre-charging regardless of cooldown; will hold until ready
+            const spec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
+            const lvl = this.activeWeapons.get(WeaponType.GHOST_SNIPER) ?? 1;
+            // Re-evaluate target at fire moment; if about to explode, pick a safer target
+            if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+            else {
+              const anyT: any = target as any; const nowT = performance.now();
+              if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
+                target = this.findSniperTargetAvoidingSoonExploding(0);
+              }
             }
-          }
-          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
-          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
-          this.handleGhostSniperFire(baseAngle, target, spec, lvl, WeaponType.GHOST_SNIPER);
-        } else if (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
-          // Evolved Ghost: identical charge/beam loop; uses evolved spec and visuals + mark logic
-          const spec = WEAPON_SPECS[WeaponType.SPECTRAL_EXECUTIONER];
-          const lvl = this.activeWeapons.get(WeaponType.SPECTRAL_EXECUTIONER) ?? 1;
-          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
-          else {
-            const anyT: any = target as any; const nowT = performance.now();
-            if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
-              target = this.findSniperTargetAvoidingSoonExploding(0);
+            if (!target) { // final fallback: treasure
+              try {
+                const emAny: any = (this.gameContext as any)?.enemyManager;
+                if (emAny && typeof emAny.getTreasures === 'function') {
+                  const treasures = emAny.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+                  let bestT: any = null; let bestD2 = Infinity;
+                  for (let i = 0; i < treasures.length; i++) {
+                    const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const dx = (t.x - this.x); const dy = (t.y - this.y); const d2 = dx*dx + dy*dy;
+                    if (d2 < bestD2) { bestD2 = d2; bestT = t; }
+                  }
+                  if (bestT) target = bestT as any;
+                }
+              } catch {}
             }
-          }
-          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
-          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
-          this.handleGhostSniperFire(baseAngle, target, spec, lvl, WeaponType.SPECTRAL_EXECUTIONER);
-        } else if (this.activeWeapons.has(WeaponType.VOID_SNIPER)) {
-          // Shadow: start charging immediately when stationary; charge loop cycles while waiting for cooldown.
-          const spec = WEAPON_SPECS[WeaponType.VOID_SNIPER];
-          const lvl = this.activeWeapons.get(WeaponType.VOID_SNIPER) ?? 1;
-          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
-          else {
-            const anyT: any = target as any; const nowT = performance.now();
-            if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
-              target = this.findSniperTargetAvoidingSoonExploding(0);
+            if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
+            const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+            this.handleGhostSniperFire(baseAngle, target, spec, lvl, WeaponType.GHOST_SNIPER);
+          } else if (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+            // Evolved Ghost: identical charge/beam loop; uses evolved spec and visuals + mark logic
+            const spec = WEAPON_SPECS[WeaponType.SPECTRAL_EXECUTIONER];
+            const lvl = this.activeWeapons.get(WeaponType.SPECTRAL_EXECUTIONER) ?? 1;
+            if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+            else {
+              const anyT: any = target as any; const nowT = performance.now();
+              if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
+                target = this.findSniperTargetAvoidingSoonExploding(0);
+              }
             }
+            if (!target) {
+              // final fallback: treasure
+              try {
+                const emAny: any = (this.gameContext as any)?.enemyManager;
+                if (emAny && typeof emAny.getTreasures === 'function') {
+                  const treasures = emAny.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+                  let bestT: any = null; let bestD2 = Infinity;
+                  for (let i = 0; i < treasures.length; i++) {
+                    const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const dx = (t.x - this.x); const dy = (t.y - this.y); const d2 = dx*dx + dy*dy;
+                    if (d2 < bestD2) { bestD2 = d2; bestT = t; }
+                  }
+                  if (bestT) target = bestT as any;
+                }
+              } catch {}
+            }
+            if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
+            const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+            this.handleGhostSniperFire(baseAngle, target, spec, lvl, WeaponType.SPECTRAL_EXECUTIONER);
+          } else if (this.activeWeapons.has(WeaponType.VOID_SNIPER)) {
+            // Shadow: start charging immediately when stationary; charge loop cycles while waiting for cooldown.
+            const spec = WEAPON_SPECS[WeaponType.VOID_SNIPER];
+            const lvl = this.activeWeapons.get(WeaponType.VOID_SNIPER) ?? 1;
+            if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+            else {
+              const anyT: any = target as any; const nowT = performance.now();
+              if ((anyT._specterMarkUntil || 0) > 0 && (anyT._specterMarkUntil - nowT) <= 80) {
+                target = this.findSniperTargetAvoidingSoonExploding(0);
+              }
+            }
+            if (!target) {
+              // final fallback: treasure
+              try {
+                const emAny: any = (this.gameContext as any)?.enemyManager;
+                if (emAny && typeof emAny.getTreasures === 'function') {
+                  const treasures = emAny.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+                  let bestT: any = null; let bestD2 = Infinity;
+                  for (let i = 0; i < treasures.length; i++) {
+                    const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const dx = (t.x - this.x); const dy = (t.y - this.y); const d2 = dx*dx + dy*dy;
+                    if (d2 < bestD2) { bestD2 = d2; bestT = t; }
+                  }
+                  if (bestT) target = bestT as any;
+                }
+              } catch {}
+            }
+            if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
+            const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+            this.handleVoidSniperFire(baseAngle, target, spec, lvl, WeaponType.VOID_SNIPER);
+          } else if (this.activeWeapons.has(WeaponType.BLACK_SUN)) {
+            // Evolved Shadow (Black Sun): multi-beam snipe to 5 unique targets
+            const spec = WEAPON_SPECS[WeaponType.BLACK_SUN];
+            const lvl = this.activeWeapons.get(WeaponType.BLACK_SUN) ?? 1;
+            if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
+            if (!target) {
+              // final fallback: treasure
+              try {
+                const emAny: any = (this.gameContext as any)?.enemyManager;
+                if (emAny && typeof emAny.getTreasures === 'function') {
+                  const treasures = emAny.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+                  let bestT: any = null; let bestD2 = Infinity;
+                  for (let i = 0; i < treasures.length; i++) {
+                    const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const dx = (t.x - this.x); const dy = (t.y - this.y); const d2 = dx*dx + dy*dy;
+                    if (d2 < bestD2) { bestD2 = d2; bestT = t; }
+                  }
+                  if (bestT) target = bestT as any;
+                }
+              } catch {}
+            }
+            if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
+            const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
+            this.handleBlackSunSniperMultiFire(baseAngle, target, spec, lvl);
           }
-          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
-          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
-          this.handleVoidSniperFire(baseAngle, target, spec, lvl, WeaponType.VOID_SNIPER);
-        } else if (this.activeWeapons.has(WeaponType.BLACK_SUN)) {
-          // Evolved Shadow (Black Sun): multi-beam snipe to 5 unique targets
-          const spec = WEAPON_SPECS[WeaponType.BLACK_SUN];
-          const lvl = this.activeWeapons.get(WeaponType.BLACK_SUN) ?? 1;
-          if (!target || !target.active || target.hp <= 0) target = this.findSniperTargetAvoidingSoonExploding(0);
-          if (!target) { (this as any)._sniperCharging = false; (this as any)._sniperState = 'idle'; (this as any)._sniperChargeStart = undefined; (this as any)._sniperChargeMax = 0; return; }
-          const baseAngle = Math.atan2(target.y - this.y, target.x - this.x);
-          this.handleBlackSunSniperMultiFire(baseAngle, target, spec, lvl);
         }
       }
     }
-    }
+  }
 
   // Fire weapons when off cooldown. Most weapons require a target; Scrap-Saw and Drone can self-spawn.
   const isRogueHacker = this.characterData?.id === 'rogue_hacker';
   const suppressFire = isRogueHacker && !!((this as any)._ghostProtocolActive);
   if (!suppressFire) for (const [weaponType, level] of this.activeWeapons) {
-        // Quantum Halo: persistent orbs are managed by BulletManager; never fire like a normal weapon
-        if (weaponType === WeaponType.QUANTUM_HALO) continue;
+  // Skip disabled or special-case managed weapons
+  const specSkip = WEAPON_SPECS[weaponType as unknown as WeaponType] as any;
+  if (specSkip && specSkip.disabled) continue;
+  // Quantum Halo: persistent orbs are managed by BulletManager; never fire like a normal weapon
+  if (weaponType === WeaponType.QUANTUM_HALO) continue;
+  // Sorcerer Orb: persistent orbit + beams managed by BulletManager
+  if (weaponType === WeaponType.SORCERER_ORB) continue;
   // Rogue Hacker: skip class weapons here (zones are auto-cast by EnemyManager); allow other weapons
   if (isRogueHacker && (weaponType === WeaponType.HACKER_VIRUS || weaponType === WeaponType.HACKER_BACKDOOR)) continue;
         if (!this.shootCooldowns.has(weaponType)) this.shootCooldowns.set(weaponType, 0);
@@ -978,26 +1218,59 @@ export class Player {
             continue;
           }
           if (fireTarget) {
-            // Neural Nomad: fire to multiple nearest enemies per attack (2 at L1 → up to 5 at L7)
+            // Neural Nomad: fire to multiple nearest targets per attack (2 → 5 based on level).
+            // Targets include enemies, the active boss, and treasures. If fewer targets exist, duplicate closest to keep count consistent.
             if (this.characterData?.id === 'neural_nomad' && weaponType === WeaponType.NOMAD_NEURAL) {
               const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
-              // Collect alive enemies and sort by distance
-              const maxShots = Math.min(5, Math.max(2, 1 + Math.floor(level))); // L1~2:2, ... L5+:5
-              const pairs: Array<{e: any, d2: number}> = [];
+              const maxShots = Math.min(5, Math.max(2, 1 + Math.floor(level))); // L1:2, L2:3, L3:4, L4+:5
+              const rangeSq = (spec && typeof spec.range === 'number') ? (spec.range * spec.range) : Number.POSITIVE_INFINITY;
+              const pairs: Array<{ e: any; d2: number }> = [];
+              // Enemies
               for (let i = 0; i < enemies.length; i++) {
                 const e = enemies[i]; if (!e || !(e as any).active || e.hp <= 0) continue;
-                const dx = e.x - this.x; const dy = e.y - this.y; const d2 = dx*dx + dy*dy;
-                // within effective range
-                if (spec && typeof spec.range === 'number' && d2 > (spec.range*spec.range)) continue;
+                const dx = (e.x - this.x); const dy = (e.y - this.y); const d2 = dx*dx + dy*dy;
+                if (d2 > rangeSq) continue; // enforce weapon range
                 pairs.push({ e, d2 });
               }
-              pairs.sort((a,b) => a.d2 - b.d2);
-              const shots = Math.min(maxShots, pairs.length);
+              // Active boss (if any)
+              try {
+                const bm: any = (window as any).__bossManager;
+                const boss = bm?.getActiveBoss?.() ?? bm?.getBoss?.();
+                if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+                  const dxB = (boss.x ?? 0) - (this.x ?? 0);
+                  const dyB = (boss.y ?? 0) - (this.y ?? 0);
+                  const d2B = dxB*dxB + dyB*dyB;
+                  if (d2B <= rangeSq) pairs.push({ e: boss as any, d2: d2B });
+                }
+              } catch { /* ignore boss lookup */ }
+              // Treasures (valid shoot targets, low priority compared to enemies/boss in sort by distance)
+              try {
+                const emAny: any = (this.gameContext as any)?.enemyManager;
+                if (emAny && typeof emAny.getTreasures === 'function') {
+                  const treasures = emAny.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
+                  for (let ti = 0; ti < treasures.length; ti++) {
+                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const dxT = (t.x - this.x); const dyT = (t.y - this.y); const d2T = dxT*dxT + dyT*dyT;
+                    if (d2T <= rangeSq) pairs.push({ e: t as any, d2: d2T });
+                  }
+                }
+              } catch { /* ignore treasure lookup */ }
+              // Sort by distance
+              pairs.sort((a, b) => a.d2 - b.d2);
+              // If nothing collected (edge-case), fall back to the primary fireTarget
+              if (pairs.length === 0) {
+                const e: any = fireTarget as any; // should exist due to canFire gate
+                const ang = Math.atan2((e.y ?? this.y) - this.y, (e.x ?? this.x) - this.x);
+                this.spawnSingleProjectile(this.gameContext.bulletManager, weaponType, (WEAPON_SPECS[weaponType].damage || this.bulletDamage), level, ang, 0, 1, 0, e);
+                this.shootCooldowns.set(weaponType, effCd);
+                continue;
+              }
+              // Fire exactly maxShots, repeating nearest targets if fewer unique candidates
+              const shots = maxShots;
               for (let si = 0; si < shots; si++) {
-                const e = pairs[si].e;
-                const ang = Math.atan2(e.y - this.y, e.x - this.x);
-                // Fire a single projectile at this enemy
-                this.spawnSingleProjectile(this.gameContext.bulletManager, weaponType, (WEAPON_SPECS[weaponType].damage || this.bulletDamage), level, ang, 0, 1, 0, e as any);
+                const pick = pairs[si % pairs.length].e;
+                const ang = Math.atan2((pick.y ?? this.y) - this.y, (pick.x ?? this.x) - this.x);
+                this.spawnSingleProjectile(this.gameContext.bulletManager, weaponType, (WEAPON_SPECS[weaponType].damage || this.bulletDamage), level, ang, 0, 1, 0, pick as any);
               }
               this.shootCooldowns.set(weaponType, effCd);
               continue;
@@ -1211,7 +1484,8 @@ export class Player {
     } else if (currentLevel === spec.maxLevel) {
       // Still check for evolution if it's at max level and hasn't evolved yet
       if (spec.evolution) {
-        this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive, (spec.evolution as any).minPassiveLevel || 1);
+        // Normalize: all evolutions require only the specified passive at Lv.1
+        this.tryEvolveWeapon(type, spec.evolution.evolvedWeaponType, spec.evolution.requiredPassive, 1);
       }
     }
     // Initialize cooldown if weapon is new
@@ -1232,8 +1506,9 @@ export class Player {
     const passive = this.activePassives.find(p => p.type === requiredPassiveName);
     const requiredPassiveSpec = PASSIVE_SPECS.find(p => p.name === requiredPassiveName);
 
-  // Evolution eligibility: base weapon at max level and required passive at level >= minPassiveLevel
-  if (passive && passive.level >= (minPassiveLevel || 1)) {
+  // Evolution eligibility: base weapon at max level and required passive at level >= 1 (normalized)
+  const needLevel = 1; // enforce Lv.1 globally regardless of config
+  if (passive && passive.level >= needLevel) {
       // Conditions met for evolution
       Logger.info(`Evolving ${baseWeaponSpec.name} to ${evolvedWeaponSpec.name}!`);
 
@@ -1303,13 +1578,27 @@ export class Player {
 
   // Removed setPlayerLook as player look is now based on shape/color
 
-  private findNearestEnemy(): Enemy | null {
-    // Global auto-aim: toggle between 'closest' and 'toughest'; add range-aware fallback for 'toughest'
-    const aimMode: 'closest' | 'toughest' = ((this.gameContext as any)?.aimMode) || ((window as any).__aimMode) || 'closest';
+  /**
+   * Unified target acquisition for all weapons.
+   * - mode 'closest' picks the nearest valid candidate (enemies, boss, treasures, chests).
+   * - mode 'toughest' prefers highest-HP within range, then closest within range, then closest overall.
+   * - avoidExplodingBeforeMs filters enemies marked by Spectral Executioner expiring within the window.
+   */
+  private findBestTarget(options?: {
+    mode?: 'closest' | 'toughest';
+    includeBoss?: boolean;
+    includeTreasures?: boolean;
+    includeChests?: boolean;
+    avoidExplodingBeforeMs?: number;
+  }): Enemy | null {
+    const mode: 'closest' | 'toughest' = options?.mode || ((this.gameContext as any)?.aimMode) || ((window as any).__aimMode) || 'closest';
+    const includeBoss = options?.includeBoss !== false;
+    const includeTreasures = options?.includeTreasures !== false;
+    const includeChests = options?.includeChests !== false;
+    const avoidMs = Math.max(0, options?.avoidExplodingBeforeMs || 0);
 
-    // Compute an effective maximum weapon range for target selection.
-    // If any weapon has no defined range, treat as Infinity. Include dynamic range boost for Heavy Gunner's minigun.
-    let maxRange = 0; // 0 -> no range info found yet
+    // Compute effective max weapon range (Infinity if any weapon lacks finite range)
+    let maxRange = 0;
     try {
       if (this.activeWeapons && this.activeWeapons.size > 0) {
         for (const [w, _lvl] of this.activeWeapons) {
@@ -1318,210 +1607,170 @@ export class Player {
           if (this.characterData?.id === 'heavy_gunner' && w === WeaponType.GUNNER_MINIGUN) {
             const t = this.getGunnerBoostT();
             const rangeMul = 1 + (this.gunnerBoostRange - 1) * t;
-            if (Number.isFinite(r)) r *= rangeMul; // only scale finite ranges
+            if (Number.isFinite(r)) r *= rangeMul;
           }
           if (!Number.isFinite(r)) { maxRange = Infinity; break; }
           if (r > maxRange) maxRange = r;
         }
       } else {
-        maxRange = Infinity; // no weapons -> don't constrain selection
+        maxRange = Infinity;
       }
     } catch { maxRange = Infinity; }
     const maxRangeSq = Number.isFinite(maxRange) ? (maxRange * maxRange) : Infinity;
 
-  // Treat chests and treasures as regular candidates (no priority). We'll merge them into selection below.
-  let em: any = undefined;
-  try { em = (this.gameContext as any)?.enemyManager; } catch {}
-  const hasTreasures = !!(em && typeof em.getTreasures === 'function');
-  const hasChests = !!(em && typeof em.getChests === 'function');
+    const em: any = (this.gameContext as any)?.enemyManager;
+    const enemies: Enemy[] = this.enemyProvider ? [...this.enemyProvider()] : [];
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
-    // Prefer boss first only in 'toughest' mode and when within effective range
-    if (aimMode === 'toughest') {
-      try {
-        const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
-        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-          const dxB = (boss.x ?? 0) - (this.x ?? 0);
-          const dyB = (boss.y ?? 0) - (this.y ?? 0);
-          const d2B = dxB * dxB + dyB * dyB;
-          if (d2B <= maxRangeSq) return boss as any;
-        }
-      } catch {}
+    // Optional boss candidate (ACTIVE only)
+    const boss = includeBoss ? ((this.gameContext as any)?.bossManager?.getActiveBoss?.() || null) : null;
+    const bossValid = !!(boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE');
+
+    // Helper: filter Spectral-marked enemies expiring soon when avoidMs > 0
+    const enemyOk = (e: any): boolean => {
+      if (!e || !e.active || e.hp <= 0) return false;
+      if (avoidMs > 0 && this.activeWeapons && this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+        const until: number = e._specterMarkUntil || 0;
+        if (until > 0 && (until - now) <= (avoidMs + 80)) return false;
+      }
+      return true;
+    };
+
+    // Early boss pick in toughest mode if within range (keeps old behavior)
+    if (mode === 'toughest' && bossValid) {
+      const dxB = (boss.x ?? 0) - (this.x ?? 0);
+      const dyB = (boss.y ?? 0) - (this.y ?? 0);
+      const d2B = dxB * dxB + dyB * dyB;
+      if (d2B <= maxRangeSq) return boss as any;
     }
 
-    const enemies = this.enemyProvider ? [...this.enemyProvider()] : [];
-    let pick: Enemy | null = null;
+    // Build auxiliary lists when needed
+    let treasures: Array<{ x:number; y:number; active:boolean; hp:number; maxHp?:number }> = [];
+    let chests: Array<{ x:number; y:number; active:boolean }> = [];
+    try {
+      if (includeTreasures && em && typeof em.getTreasures === 'function') treasures = em.getTreasures() || [];
+      if (includeChests && em && typeof em.getChests === 'function') chests = em.getChests() || [];
+    } catch { /* ignore */ }
 
-    if (aimMode === 'toughest') {
-      // 1) Try toughest within range
+    if (mode === 'toughest') {
+      // 1) Toughest within range
+      let pick: Enemy | null = null;
       let bestHp = -1;
       for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i];
-        if (!e || !(e as any).active || e.hp <= 0) continue;
+        const e = enemies[i]; if (!enemyOk(e)) continue;
         const dx = (e.x ?? 0) - (this.x ?? 0);
         const dy = (e.y ?? 0) - (this.y ?? 0);
-        const d2 = dx * dx + dy * dy;
-        if (d2 > maxRangeSq) continue;
-        const hpMax = (e as any).maxHp ?? e.hp;
-        if (hpMax > bestHp) { bestHp = hpMax; pick = e; }
+        const d2 = dx*dx + dy*dy; if (d2 > maxRangeSq) continue;
+        const hpMax = (e as any).maxHp ?? e.hp; if (hpMax > bestHp) { bestHp = hpMax; pick = e; }
       }
-      // Consider treasures (have hp) for toughest selection as well
-      if (hasTreasures) {
-        try {
-          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number; maxHp:number }>;
-          for (let i = 0; i < treasures.length; i++) {
-            const t = treasures[i];
-            if (!t || !t.active || t.hp <= 0) continue;
-            const dx = (t.x ?? 0) - (this.x ?? 0);
-            const dy = (t.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 > maxRangeSq) continue;
-            const hpMax = (t as any).maxHp ?? t.hp;
-            if (hpMax > bestHp) { bestHp = hpMax; pick = (t as unknown as Enemy); }
-          }
-        } catch { /* ignore */ }
+      if (includeTreasures) {
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+          const dx = (t.x ?? 0) - (this.x ?? 0);
+          const dy = (t.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy; if (d2 > maxRangeSq) continue;
+          const hpMax = t.maxHp ?? t.hp; if (hpMax > bestHp) { bestHp = hpMax; pick = (t as unknown as Enemy); }
+        }
       }
-      // Chests typically don't have HP; include them with very low effective HP so they don't outrank real enemies
-      if (hasChests) {
-        try {
-          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
-          for (let i = 0; i < chests.length; i++) {
-            const c = chests[i];
-            if (!c || !c.active) continue;
-            const dx = (c.x ?? 0) - (this.x ?? 0);
-            const dy = (c.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 > maxRangeSq) continue;
-            // Pick only if nothing tougher has been found yet
-            if (bestHp < 0) { pick = (c as unknown as Enemy); bestHp = 0; }
-          }
-        } catch { /* ignore */ }
+      if (includeChests) {
+        for (let i = 0; i < chests.length; i++) {
+          const c = chests[i]; if (!c || !c.active) continue;
+          const dx = (c.x ?? 0) - (this.x ?? 0);
+          const dy = (c.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy; if (d2 > maxRangeSq) continue;
+          if (bestHp < 0) { pick = (c as unknown as Enemy); bestHp = 0; }
+        }
       }
       if (pick) return pick;
-      // 2) Fallback: closest within range
-      let bestD2 = Number.POSITIVE_INFINITY;
+
+      // 2) Closest within range
+      let bestD2 = Number.POSITIVE_INFINITY; pick = null;
       for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i];
-        if (!e || !(e as any).active || e.hp <= 0) continue;
+        const e = enemies[i]; if (!enemyOk(e)) continue;
         const dx = (e.x ?? 0) - (this.x ?? 0);
         const dy = (e.y ?? 0) - (this.y ?? 0);
-        const d2 = dx * dx + dy * dy;
-        if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = e; }
+        const d2 = dx*dx + dy*dy; if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = e; }
       }
-      // Include treasures and chests in closest-within-range fallback
-      if (hasTreasures) {
-        try {
-          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
-          for (let i = 0; i < treasures.length; i++) {
-            const t = treasures[i];
-            if (!t || !t.active || t.hp <= 0) continue;
-            const dx = (t.x ?? 0) - (this.x ?? 0);
-            const dy = (t.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
-          }
-        } catch { /* ignore */ }
+      if (includeTreasures) {
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+          const dx = (t.x ?? 0) - (this.x ?? 0);
+          const dy = (t.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy; if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
+        }
       }
-      if (hasChests) {
-        try {
-          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
-          for (let i = 0; i < chests.length; i++) {
-            const c = chests[i];
-            if (!c || !c.active) continue;
-            const dx = (c.x ?? 0) - (this.x ?? 0);
-            const dy = (c.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
-          }
-        } catch { /* ignore */ }
+      if (includeChests) {
+        for (let i = 0; i < chests.length; i++) {
+          const c = chests[i]; if (!c || !c.active) continue;
+          const dx = (c.x ?? 0) - (this.x ?? 0);
+          const dy = (c.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy; if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
+        }
       }
       if (pick) return pick;
-      // 3) Last resort: closest overall
+
+      // 3) Closest overall
       bestD2 = Number.POSITIVE_INFINITY; pick = null;
       for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i];
-        if (!e || !(e as any).active || e.hp <= 0) continue;
+        const e = enemies[i]; if (!enemyOk(e)) continue;
         const dx = (e.x ?? 0) - (this.x ?? 0);
         const dy = (e.y ?? 0) - (this.y ?? 0);
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) { bestD2 = d2; pick = e; }
+        const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = e; }
       }
-      // Include treasures and chests in last-resort search
-      if (hasTreasures) {
-        try {
-          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
-          for (let i = 0; i < treasures.length; i++) {
-            const t = treasures[i];
-            if (!t || !t.active || t.hp <= 0) continue;
-            const dx = (t.x ?? 0) - (this.x ?? 0);
-            const dy = (t.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
-          }
-        } catch { /* ignore */ }
-      }
-      if (hasChests) {
-        try {
-          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
-          for (let i = 0; i < chests.length; i++) {
-            const c = chests[i];
-            if (!c || !c.active) continue;
-            const dx = (c.x ?? 0) - (this.x ?? 0);
-            const dy = (c.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
-          }
-        } catch { /* ignore */ }
-      }
-    } else {
-      // 'closest' mode: include boss as a candidate too so it can be targeted
-      let bestD2 = Number.POSITIVE_INFINITY;
-      // Consider boss (ACTIVE only)
-      try {
-        const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
-        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-          const dxB = (boss.x ?? 0) - (this.x ?? 0);
-          const dyB = (boss.y ?? 0) - (this.y ?? 0);
-          const d2B = dxB * dxB + dyB * dyB;
-          bestD2 = d2B; pick = boss as any;
+      if (includeTreasures) {
+        for (let i = 0; i < treasures.length; i++) {
+          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+          const dx = (t.x ?? 0) - (this.x ?? 0);
+          const dy = (t.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
         }
-      } catch {}
-      for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i];
-        if (!e || !(e as any).active || e.hp <= 0) continue;
-        const dx = (e.x ?? 0) - (this.x ?? 0);
-        const dy = (e.y ?? 0) - (this.y ?? 0);
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) { bestD2 = d2; pick = e; }
       }
-      // Also consider treasures and chests for closest selection
-      if (hasTreasures) {
-        try {
-          const treasures = em.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
-          for (let i = 0; i < treasures.length; i++) {
-            const t = treasures[i];
-            if (!t || !t.active || t.hp <= 0) continue;
-            const dx = (t.x ?? 0) - (this.x ?? 0);
-            const dy = (t.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
-          }
-        } catch { /* ignore */ }
+      if (includeChests) {
+        for (let i = 0; i < chests.length; i++) {
+          const c = chests[i]; if (!c || !c.active) continue;
+          const dx = (c.x ?? 0) - (this.x ?? 0);
+          const dy = (c.y ?? 0) - (this.y ?? 0);
+          const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
+        }
       }
-      if (hasChests) {
-        try {
-          const chests = em.getChests() as Array<{ x:number; y:number; active:boolean }>;
-          for (let i = 0; i < chests.length; i++) {
-            const c = chests[i];
-            if (!c || !c.active) continue;
-            const dx = (c.x ?? 0) - (this.x ?? 0);
-            const dy = (c.y ?? 0) - (this.y ?? 0);
-            const d2 = dx*dx + dy*dy;
-            if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
-          }
-        } catch { /* ignore */ }
+      return pick;
+    }
+
+    // mode === 'closest'
+    let bestD2 = Number.POSITIVE_INFINITY; let pick: Enemy | null = null;
+    if (bossValid) {
+      const dxB = (boss.x ?? 0) - (this.x ?? 0);
+      const dyB = (boss.y ?? 0) - (this.y ?? 0);
+      const d2B = dxB*dxB + dyB*dyB; bestD2 = d2B; pick = boss as any;
+    }
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i]; if (!enemyOk(e)) continue;
+      const dx = (e.x ?? 0) - (this.x ?? 0);
+      const dy = (e.y ?? 0) - (this.y ?? 0);
+      const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = e; }
+    }
+    if (includeTreasures) {
+      for (let i = 0; i < treasures.length; i++) {
+        const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+        const dx = (t.x ?? 0) - (this.x ?? 0);
+        const dy = (t.y ?? 0) - (this.y ?? 0);
+        const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
+      }
+    }
+    if (includeChests) {
+      for (let i = 0; i < chests.length; i++) {
+        const c = chests[i]; if (!c || !c.active) continue;
+        const dx = (c.x ?? 0) - (this.x ?? 0);
+        const dy = (c.y ?? 0) - (this.y ?? 0);
+        const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
       }
     }
     return pick;
+  }
+
+  // Backward-compat: delegate to unified selector with defaults
+  private findNearestEnemy(): Enemy | null {
+    return this.findBestTarget({ mode: 'closest' });
   }
 
   /**
@@ -1529,28 +1778,7 @@ export class Player {
    * Falls back to nearest alive enemy if none match. Only filters by Spectral mark timing (predictable).
    */
   private findSniperTargetAvoidingSoonExploding(avoidMs: number): Enemy | null {
-    const em: any = this.gameContext?.enemyManager;
-    const list: Enemy[] = (em && typeof em.getEnemies === 'function') ? em.getEnemies() : [];
-    if (!list || list.length === 0) return null;
-    const now = performance.now();
-    let best: Enemy | null = null;
-    let bestD2 = Infinity;
-    for (let i = 0; i < list.length; i++) {
-      const e = list[i];
-      if (!e || !e.active || e.hp <= 0) continue;
-      // If Spectral is active, skip targets whose mark will execute before we shoot
-      if (this.activeWeapons && this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
-        const anyE: any = e as any;
-        const until: number = anyE._specterMarkUntil || 0;
-        if (until > 0 && (until - now) <= (avoidMs + 80)) continue;
-      }
-      const dx = e.x - this.x; const dy = e.y - this.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD2) { bestD2 = d2; best = e; }
-    }
-    if (best) return best;
-    // Fallback to nearest alive if all candidates were soon-exploding
-    return this.findNearestEnemy();
+    return this.findBestTarget({ mode: 'closest', avoidExplodingBeforeMs: avoidMs });
   }
 
   private shootAt(target: Enemy, weaponType: WeaponType) {
@@ -1691,6 +1919,8 @@ export class Player {
   const baseSin = Math.sin(baseAngle);
   const perpX0 = -baseSin;
   const perpY0 =  baseCos;
+  // Apply global damage nerf/buffs for direct-spawn branches (staggered branches use spawnSingleProjectile which applies gdm internally)
+  const gdmLocal = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
   for (let i = 0; i < toShoot; i++) {
           const angle = baseAngle + (i - (toShoot - 1) / 2) * spread;
           // For Runner Gun: spawn from left/right gun barrels instead of exact center
@@ -1722,7 +1952,7 @@ export class Player {
             originY += perpY * sideOffsetBase * sideSign;
             originX += baseCos * 10;
             originY += baseSin * 10;
-          } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
+          } else if ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech') {
             // Titan Mech dual heavy cannons: alternate each shot left/right
             // Determine perpendicular to firing direction
             const perpX = perpX0;
@@ -1748,7 +1978,7 @@ export class Player {
             const tdx = target.x - originX;
             const tdy = target.y - originY;
             finalAngle = Math.atan2(tdy, tdx);
-          } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
+          } else if ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech') {
             // Ensure each mortar shell aims from its barrel directly toward target center
             const tdx = target.x - originX;
             const tdy = target.y - originY;
@@ -1761,12 +1991,13 @@ export class Player {
             finalAngle += (Math.random() * 2 - 1) * j;
           }
           // Smart Rifle: inject artificial arc spread before homing correction so they visibly curve in
-          if (weaponType === WeaponType.RAPID) {
+      if (weaponType === WeaponType.RAPID) {
             const arcSpread = 0.35; // radians total fan baseline
             const arcIndex = (i - (toShoot - 1) / 2);
             const arcAngle = finalAngle + arcIndex * (arcSpread / Math.max(1,(toShoot-1)||1));
             {
-              const b = bm.spawnBullet(originX, originY, originX + Math.cos(arcAngle) * 100, originY + Math.sin(arcAngle) * 100, weaponType, bulletDamage, weaponLevel);
+        const dmg = Math.max(1, Math.round(bulletDamage * gdmLocal));
+        const b = bm.spawnBullet(originX, originY, originX + Math.cos(arcAngle) * 100, originY + Math.sin(arcAngle) * 100, weaponType, dmg, weaponLevel);
               // Smart Rifle has no minigun-based range scaling; bullets are homing and short-range by design.
             }
           } else {
@@ -1822,7 +2053,7 @@ export class Player {
                 const half = Math.floor(lanes / 2);
                 // Keep total volley DPS stable by scaling per-lane damage relative to original 3-lane design
                 const dScale = 3 / Math.max(1, lanes);
-                const perLaneDamage = Math.max(1, Math.round(bulletDamage * dScale));
+                const perLaneDamage = Math.max(1, Math.round(bulletDamage * gdmLocal * dScale));
                 let fired = 0;
                 for (let li = -half; li <= half; li++) {
                   if (lanes % 2 === 0 && li === 0) continue; // keep count to lanes
@@ -1849,7 +2080,8 @@ export class Player {
                 }
               } else {
               {
-                const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
+                const dmg = Math.max(1, Math.round(bulletDamage * gdmLocal));
+                const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, dmg, weaponLevel);
                 // Living Sludge: make adjacent globs slower with shorter range to form a puddle arrow
                 if (weaponType === WeaponType.LIVING_SLUDGE && b && toShoot > 1) {
                   const center = Math.floor(toShoot / 2);
@@ -1954,7 +2186,7 @@ export class Player {
       originX += baseCos * 10;
       originY += baseSin * 10;
       this.akimboSide *= -1;
-    } else if (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech') {
+  } else if ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech') {
       const perpX = perpX0;
       const perpY = perpY0;
       const barrelOffset = 30;
@@ -1977,7 +2209,7 @@ export class Player {
         if (a != null) finalAngle = a;
       } catch { /* ignore */ }
     }
-  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE || weaponType === WeaponType.DUAL_PISTOLS || (weaponType === WeaponType.MECH_MORTAR && this.characterData?.id === 'titan_mech')) {
+  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE || weaponType === WeaponType.DUAL_PISTOLS || ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech')) {
       const tdx = target.x - originX;
       const tdy = target.y - originY;
       finalAngle = Math.atan2(tdy, tdx);
@@ -2006,9 +2238,9 @@ export class Player {
         finalAngle += (Math.random() * 2 - 1) * j;
       }
     }
-    // Apply global damage multiplier (percent-based passive)
+  // Apply global damage multiplier (percent-based passive)
   const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-    bulletDamage *= gdm;
+  bulletDamage = Math.max(1, Math.round(bulletDamage * gdm));
 
     if (weaponType === WeaponType.RAPID) {
       const arcSpread = 0.35;
@@ -2023,7 +2255,7 @@ export class Player {
       const spreadAng = 12 * Math.PI / 180;
       const base = finalAngle;
       const lvl = weaponLevel;
-      const dmgBase = (this.bulletDamage || bulletDamage) * 2.0;
+  const dmgBase = Math.max(1, Math.round(((this.bulletDamage || bulletDamage) * 2.0)));
       const angles = [base - spreadAng, base, base + spreadAng];
       for (let ai = 0; ai < angles.length; ai++) {
         const a = angles[ai];
@@ -2054,7 +2286,18 @@ export class Player {
     }
 
     // Default single projectile spawn
-    const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, bulletDamage, weaponLevel);
+    let spawnDamage = bulletDamage;
+    if (this.characterData?.id === 'titan_mech') {
+      const isTitanHeavy = weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER;
+      if (isTitanHeavy) {
+        // Apply Titan-only nerf, then a small extra mortar-specific trim to curb overkill
+        spawnDamage = Math.max(1, Math.round(spawnDamage * this.getTitanOnlyDamageNerf()));
+        // Extra trim (keeps other Titan weapons unchanged). If Fortress is active, this offsets part of the +50% damage.
+        const extraTrim = (this as any).fortressActive ? 0.75 : 0.75; // same factor both states for simplicity
+        spawnDamage = Math.max(1, Math.round(spawnDamage * extraTrim));
+      }
+    }
+    const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, spawnDamage, weaponLevel);
     // Living Sludge: side globs travel a bit slower and shorter to create a puddle arrow pattern
     if (weaponType === WeaponType.LIVING_SLUDGE && b && total > 1) {
       const center = Math.floor(total / 2);
@@ -2160,14 +2403,14 @@ export class Player {
     // Use a state flag on player to prevent re-entry during charge
     if ((this as any)._railgunCharging) return;
     (this as any)._railgunCharging = true;
-  const chargeTimeMs = 1000; // single subtle reverse shockwave at 1s
+  const chargeTimeMs = 2000; // charge for 2s for a heftier rail feel
   let startTime = performance.now();
   let chargedOnce = false;
     const originX = this.x;
     const originY = this.y - 10; // slight upward to eye line
   const ex = (this.gameContext as any)?.explosionManager;
-  // Start a soft ground glow for the entire charge duration for visibility
-  try { ex?.triggerChargeGlow(originX, originY + 8, 28, '#00FFE6', chargeTimeMs); } catch {}
+  // Start a stronger ground glow for the entire charge duration for visibility
+  try { ex?.triggerChargeGlow(originX, originY + 8, 34, '#00FFE6', chargeTimeMs); } catch {}
 
     const chargeStep = () => {
       const now = performance.now();
@@ -2178,15 +2421,16 @@ export class Player {
         return;
       }
   // Fire beam (single persistent beam hitbox for fixed duration)
-  // Emit one subtle reverse shockwave as the charge completes (slightly longer + clearer)
-  try { ex?.triggerMortarImplosion(originX, originY + 6, 84, '#00FFE6', 0.28, 180); } catch {}
+  // Emit a stronger reverse shockwave as the charge completes
+  try { ex?.triggerMortarImplosion(originX, originY + 6, 120, '#00FFE6', 0.38, 220); } catch {}
       (this as any)._railgunCharging = false;
       const beamAngle = Math.atan2(target.y - originY, target.x - originX);
   const beamDurationMs = 160; // reverted to original duration
       const beamStart = performance.now();
       const range = spec.range || 900; // reverted to original range
   const gdmRG = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-  const beamDamageTotal = ((spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 1.25) * gdmRG; // apply global damage passive
+  // Triple the base damage for an epic impact, respecting global damage multiplier
+  const beamDamageTotal = ((spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 3.0) * gdmRG;
       const dps = beamDamageTotal / (beamDurationMs / 1000);
       // Register beam effect object on game context for rendering & ticking
       const game: any = this.gameContext;
@@ -2201,11 +2445,11 @@ export class Player {
         duration: beamDurationMs,
         lastTick: beamStart,
         weaponLevel,
-        dealDamage: (now:number) => {
+  dealDamage: (now:number) => {
           const enemies = game.enemyManager?.getEnemies() || [];
           const cosA = Math.cos(beamAngle);
           const sinA = Math.sin(beamAngle);
-          const thickness = 9; // much thinner collision core for precision
+          const thickness = 12; // slightly thicker collision core for reliability
           for (const e of enemies) {
             if (!e.active || e.hp <= 0) continue;
             const relX = e.x - originX;
@@ -2260,23 +2504,41 @@ export class Player {
         }
       };
       game._activeBeams.push(beamObj);
-      // Screen shake & flash
-  window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 4 } }));
-    };
-    requestAnimationFrame(chargeStep);
+    // Screen shake & flash
+  window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 180, intensity: 7 } }));
+      // In headless tests there may be no Game.update loop ticking beams. If so, run a short RAF loop to tick this beam's damage until it expires.
+      try {
+        const gAny: any = game as any;
+        const hasAutoTick = !!(gAny && gAny.__loopTicksBeams);
+        if (!hasAutoTick) {
+          // Use fixed-size synthetic steps driven by setTimeout, independent of performance.now.
+          let elapsed = 0;
+          const stepMs = 16; // ~60Hz
+          const tickFn = () => {
+            // If removed, stop ticking
+            if (!game._activeBeams || game._activeBeams.indexOf(beamObj) === -1) return;
+            // Advance synthetic timeline and apply damage
+            const nextElapsed = Math.min(beamObj.duration, elapsed + stepMs);
+            const syntheticNow = beamObj.start + nextElapsed;
+            try { if (typeof beamObj.dealDamage === 'function') beamObj.dealDamage(syntheticNow); } catch {}
+            elapsed = nextElapsed;
+            if (elapsed >= beamObj.duration) return; // finished
+            setTimeout(tickFn, stepMs);
+          };
+          setTimeout(tickFn, stepMs);
+        }
+      } catch { /* ignore headless tick wiring errors */ }
+    }
   }
 
-  /**
-   * Beam (melter): fires a short-lived continuous beam that locks a single target and applies DPS each frame.
-   * Visuals: tight white-hot core with faint amber, small impact bloom and occasional sparks.
-   */
-  /** Ghost Sniper: brief steady aim + instant hitscan beam that pierces all targets with no damage falloff. */
+  /** Ghost Sniper and Spectral Executioner: charge, then fire a piercing beam. */
   private handleGhostSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number, weaponKind: WeaponType = WeaponType.GHOST_SNIPER) {
-    // Prevent overlapping charges
     if ((this as any)._sniperCharging) return;
     // Only allow starting charge if not moving
     const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
-    if (moveMag > 0.01) {
+    // While Phase Cloak is active, tolerate a tiny drift to better handle enemy charging pressure
+    const moveThreshold = this.cloakActive ? 0.12 : 0.01;
+    if (moveMag > moveThreshold) {
       (this as any)._sniperState = 'blocked';
       (this as any)._sniperChargeStart = undefined;
       (this as any)._sniperChargeMax = 0;
@@ -2284,7 +2546,12 @@ export class Player {
     }
     (this as any)._sniperCharging = true;
     (this as any)._sniperState = 'charging';
-    const chargeTimeMs = 1500; // 1.5s steady-aim time
+    // Base 1.5s steady-aim; during Phase Cloak reduce the charge a bit to safely line up under pressure
+    let chargeTimeMs = 1500;
+    if (this.cloakActive) {
+      // 25% faster while cloaked (min 900ms guard)
+      chargeTimeMs = Math.max(900, Math.round(chargeTimeMs * 0.75));
+    }
   (this as any)._sniperChargeStart = performance.now();
   (this as any)._sniperChargeMax = chargeTimeMs;
   let startTime = performance.now();
@@ -2309,8 +2576,9 @@ export class Player {
         }
       }
       // Cancel charging if movement detected
-      const mv = Math.hypot(this.vx || 0, this.vy || 0);
-      if (mv > 0.01) {
+  const mv = Math.hypot(this.vx || 0, this.vy || 0);
+  const mvThresh = this.cloakActive ? 0.12 : 0.01;
+  if (mv > mvThresh) {
         (this as any)._sniperCharging = false;
         (this as any)._sniperState = 'blocked';
         (this as any)._sniperChargeStart = undefined;
@@ -2341,16 +2609,14 @@ export class Player {
       if (weaponKind === WeaponType.SPECTRAL_EXECUTIONER) {
         const enemies: Enemy[] = game.enemyManager?.getEnemies() || [];
         const nowPick = performance.now();
-        // Build candidate list filtered by soon-to-explode mark and no-repeat window
+  // Build candidate list filtered by soon-to-explode mark (allow anti-repeat targets; NR blocks re-marking, not damage)
         const candidates: Enemy[] = [];
         for (let i = 0; i < enemies.length; i++) {
           const e = enemies[i];
           if (!e || !e.active || e.hp <= 0) continue;
           const anyE: any = e as any;
           const until: number = anyE._specterMarkUntil || 0;
-          const nr: number = anyE._specterNoRepeatUntil || 0;
           if (until > 0 && (until - nowPick) <= 100) continue; // about to explode
-          if (nr > nowPick) continue; // anti-repeat window
           // In range check against sniper range
           const dx = e.x - originX; const dy = e.y - originY;
           const d2 = dx*dx + dy*dy; if (d2 > (spec.range || 1200) * (spec.range || 1200)) continue;
@@ -2364,30 +2630,34 @@ export class Player {
         });
         const picks: Enemy[] = [];
         for (let i = 0; i < candidates.length && picks.length < 5; i++) picks.push(candidates[i]);
-        // Consider boss if fewer than 5
-        let boss: any = null;
+        // Consider boss inclusion always: if already 5 picks, replace the farthest one
+        let boss: any = null; let bossIncluded = false;
         try {
-          const bm: any = (window as any).__bossManager; boss = bm && bm.getBoss ? bm.getBoss() : null;
+          const bm: any = (window as any).__bossManager; boss = bm && (bm.getActiveBoss || bm.getBoss) ? (bm.getActiveBoss ? bm.getActiveBoss() : bm.getBoss()) : null;
         } catch {}
-        if (picks.length < 5 && boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-          const bAny: any = boss; const untilB = bAny._specterMarkUntil || 0; const nrB = bAny._specterNoRepeatUntil || 0;
+        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+          const bAny: any = boss; const untilB = bAny._specterMarkUntil || 0;
           const nowB = performance.now();
-          const dx = (boss.x ?? originX) - originX; const dy = (boss.y ?? originY) - originY;
-          const inRange = (dx*dx + dy*dy) <= (spec.range || 1200) * (spec.range || 1200);
-          if (!(untilB > 0 && (untilB - nowB) <= 100) && !(nrB > nowB) && inRange) {
-            // Insert boss as a pseudo Enemy entry via separate flow below
-          } else {
-            boss = null;
+          const dxB = (boss.x ?? originX) - originX; const dyB = (boss.y ?? originY) - originY;
+          const inRange = (dxB*dxB + dyB*dyB) <= (spec.range || 1200) * (spec.range || 1200);
+          const eligible = !(untilB > 0 && (untilB - nowB) <= 100) && inRange;
+          if (eligible) {
+            if (picks.length < 5) {
+              bossIncluded = true; // add boss as an extra shot
+            } else if (picks.length >= 5) {
+              // Replace farthest pick to guarantee boss inclusion
+              // picks are sorted nearest->farthest, so pop last
+              picks.pop();
+              bossIncluded = true;
+            }
           }
-        } else {
-          boss = null;
         }
-        if (picks.length === 0 && !boss) return; // nothing valid
+        if (picks.length === 0 && !bossIncluded) return; // nothing valid
         // Damage budget per shot: split single-shot power across the burst
         const baseDamage = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
         const gdmSN = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
         const heavyMult = 1.6;
-        const perShot = (baseDamage * heavyMult * gdmSN) / Math.max(1, (picks.length + (boss ? 1 : 0)));
+  const perShot = (baseDamage * heavyMult * gdmSN) / Math.max(1, (picks.length + (bossIncluded ? 1 : 0)));
         // Visuals container
         if (!game._activeBeams) game._activeBeams = [];
         // Fire at picked enemies
@@ -2417,7 +2687,7 @@ export class Player {
           game._activeBeams.push({ type: 'sniper_exec', x: originX, y: originY, angle: ang, range: dist, start: performance.now(), duration: 1000, lastTick: performance.now(), weaponLevel, thickness: 10 });
         }
         // Optionally include boss as one of the shots
-        if (boss) {
+  if (bossIncluded && boss) {
           const bx = boss.x ?? originX; const by = boss.y ?? originY;
           const ang = Math.atan2(by - originY, bx - originX);
           const dist = Math.hypot(bx - originX, by - originY);
@@ -2433,7 +2703,7 @@ export class Player {
               const stats = specExec?.getLevelStats ? specExec.getLevelStats(1) : { markMs: 1200 };
               const nowMs = performance.now();
               const nr = bAny._specterNoRepeatUntil || 0;
-              if (!(nr > nowMs)) {
+              if (!(nr > nowMs) && !((bAny._specterMarkUntil || 0) > nowMs)) {
                 bAny._specterMarkUntil = nowMs + (stats.markMs || 1200);
                 bAny._specterMarkFrom = { x: originX, y: originY, time: nowMs };
                 bAny._specterOwner = (this as any)._instanceId || 1;
@@ -2553,17 +2823,21 @@ export class Player {
               boss.hp -= bossDmg;
               window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: bossDmg, isCritical: proj > 600, x: boss.x, y: boss.y } }));
             }
-            // Spectral Executioner parity: if no enemy was marked first and evolved is active, mark the boss (only if still alive)
+            // Spectral Executioner: always mark the boss on intersection (respect anti-repeat and existing mark)
             try {
-              if (!firstHitEnemy && this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+              if (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
                 const specExec: any = (WEAPON_SPECS as any)[WeaponType.SPECTRAL_EXECUTIONER];
                 const stats = specExec?.getLevelStats ? specExec.getLevelStats(1) : { markMs: 1200 };
                 const nowMs = performance.now();
                 const bAny: any = boss as any;
                 if (bAny && bAny.active && (bAny.hp > 0)) {
-                  bAny._specterMarkUntil = nowMs + (stats.markMs || 1200);
-                  bAny._specterMarkFrom = { x: originX, y: originY, time: nowMs };
-                  bAny._specterOwner = (this as any)._instanceId || 1;
+                  const nr = bAny._specterNoRepeatUntil || 0;
+                  // If not in anti-repeat and not already marked, apply mark
+                  if (!(nr > nowMs) && !((bAny._specterMarkUntil || 0) > nowMs)) {
+                    bAny._specterMarkUntil = nowMs + (stats.markMs || 1200);
+                    bAny._specterMarkFrom = { x: originX, y: originY, time: nowMs };
+                    bAny._specterOwner = (this as any)._instanceId || 1;
+                  }
                 }
               }
             } catch { /* ignore */ }
@@ -2689,7 +2963,7 @@ export class Player {
   const evolvedToBlackSun = (weaponKind === WeaponType.BLACK_SUN) || this.activeWeapons.has(WeaponType.BLACK_SUN);
   // Schedule DoT (non-evolved) or spawn Black Sun seeds (evolved) on each hit enemy
       const nowBase = performance.now();
-      for (let i = 0; i < candidates.length; i++) {
+  for (let i = 0; i < candidates.length; i++) {
         const e = candidates[i].e as any;
         if (evolvedToBlackSun) {
           try {
@@ -2713,15 +2987,17 @@ export class Player {
           const dot = e._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
           if (!dot) {
             e._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 } as any;
-      // No immediate impact damage -> prevents initial knockback; only DoT ticks will apply damage
-      if (e._voidSniperDot.left > 0) e._voidSniperDot.left--;
+      // Immediate impact damage on hit (single instance) in addition to DoT
+      try { (this.gameContext as any)?.enemyManager?.takeDamage?.(e, Math.max(1, Math.round(baseDamageGhost * 0.6 * gdmVS)), false, false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+      if (e._voidSniperDot.left > 0) e._voidSniperDot.left--; // consume the first-tick slot
           } else {
             dot.left = Math.max(dot.left, ticks);
             dot.dmg = (dot.dmg || 0) + perTick;
             dot.next = nowBase + tickIntervalMs;
             dot.stacks = (dot.stacks || 1) + 1;
-      // No immediate impact damage when stacking
-      if (dot.left > 0) dot.left--;
+      // Apply a reduced immediate hit when stacking to reward focus, but smaller to prevent burst spikes
+      try { (this.gameContext as any)?.enemyManager?.takeDamage?.(e, Math.max(1, Math.round(baseDamageGhost * 0.25 * gdmVS)), false, false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+      if (dot.left > 0) dot.left--; // consume the first-tick slot
           }
           // Brief paralysis on impact (0.5s)
           e._paralyzedUntil = Math.max(e._paralyzedUntil || 0, nowBase + 500);
@@ -2775,7 +3051,7 @@ export class Player {
           const relX = boss.x - originX; const relY = boss.y - originY;
           const proj = relX * cosA + relY * sinA;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
-      if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius || 160))) {
+  if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius || 160))) {
             const bAny: any = boss as any;
             if (evolvedToBlackSun) {
               try {
@@ -2798,15 +3074,17 @@ export class Player {
               const dotB = bAny._voidSniperDot as { next:number; left:number; dmg:number; stacks?: number } | undefined;
               if (!dotB) {
                 bAny._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 };
-        // No immediate impact damage on boss either to avoid initial knockback
-        if ((bAny._voidSniperDot as any).left > 0) (bAny._voidSniperDot as any).left--;
+        // Immediate impact damage on boss as well
+        try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, Math.max(1, Math.round(baseDamageGhost * 0.6 * gdmVS)), false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+        if ((bAny._voidSniperDot as any).left > 0) (bAny._voidSniperDot as any).left--; // consume first tick
               } else {
                 dotB.left = Math.max(dotB.left, ticks);
                 dotB.dmg = (dotB.dmg || 0) + perTick;
                 dotB.next = nowBase + tickIntervalMs;
                 dotB.stacks = (dotB.stacks || 1) + 1;
-        // No immediate impact damage on boss when stacking
-        if (dotB.left > 0) dotB.left--;
+        // Reduced immediate hit on stacking
+        try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, Math.max(1, Math.round(baseDamageGhost * 0.25 * gdmVS)), false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+        if (dotB.left > 0) dotB.left--; // consume first tick
               }
               (boss as any)._lastHitByWeapon = WeaponType.VOID_SNIPER;
               try { this.gameContext?.particleManager?.spawn(boss.x, boss.y, 1, '#B266FF'); } catch {}
@@ -3151,6 +3429,10 @@ export class Player {
   if (armor && armor > 0) {
     amount = Math.max(0, amount * (1 - Math.max(0, Math.min(0.8, armor))));
   }
+  // Titan Mech Fortress: flat damage reduction while braced
+  if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) {
+    amount = Math.max(1, Math.ceil(amount * 0.65));
+  }
   // Lethal check with Revive passive (single revive with 5m cooldown)
   if (amount >= this.hp) {
     const hasRevive = !!(this as any).hasRevivePassive;
@@ -3219,9 +3501,11 @@ export class Player {
         this.addWeapon(data.defaultWeapon);
       }
     }
-    // Apply per-character visual/physical scale
-    // Tech Warrior is 25% larger (sprite + hurtbox)
-    this.characterScale = (data?.id === 'tech_warrior') ? 1.25 : 1.0;
+  // Apply per-character visual/physical scale
+  // Only Titan Mech gets a +50% base size; Tech Warrior stays +25% to match visuals; everyone else 1.0
+  const baseClassScale = (data?.id === 'tech_warrior') ? 1.25 : 1.0;
+  const isTitan = data?.id === 'titan_mech';
+  this.characterScale = (isTitan ? 1.5 : 1.0) * baseClassScale;
     // Recompute sprite size from base
     this.size = Math.round(this.baseSpriteSize * this.characterScale);
     // Cache baseSpeed AFTER scaling applied
@@ -3229,7 +3513,11 @@ export class Player {
   }
 
   /** Returns per-character scale (1.0 = default). */
-  public getCharacterScale(): number { return this.characterScale; }
+  public getCharacterScale(): number {
+    // Dynamic: Titan Mech grows an extra 25% while Fortress is active
+    if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) return this.characterScale * 1.25;
+    return this.characterScale;
+  }
 
   /** Returns innate (pre-passive) movement speed */
   public getBaseMoveSpeed(): number { return this.baseMoveSpeed; }
@@ -3242,18 +3530,34 @@ export class Player {
     const base = this.globalDamageMultiplier || 1;
     const anyThis: any = this as any;
     const lvl: number = anyThis.overclockLevel || 0;
+    let mul = base;
     if (lvl > 0) {
       const threshold: number = anyThis.overclockHpThreshold ?? 0.5;
       const hpFrac = this.maxHp > 0 ? (this.hp / this.maxHp) : 1;
       if (hpFrac <= threshold) {
         const bonus = anyThis.overclockDamageBonus || 0;
-        return base * (1 + bonus);
+        mul *= (1 + bonus);
       }
     }
-    return base;
+    // Fortress stance: more damage while braced
+    if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) mul *= 1.5; // +50%
+    return mul;
+  }
+  /** Titan-only global nerf factor to apply only on Titan-specific abilities and weapons. */
+  private getTitanOnlyDamageNerf(): number {
+    return this.characterData?.id === 'titan_mech' ? 0.49 : 1;
   }
   /** Returns global area multiplier (AoE radius scale) */
-  public getGlobalAreaMultiplier(): number { return this.globalAreaMultiplier; }
+  public getGlobalAreaMultiplier(): number {
+    let mul = this.globalAreaMultiplier;
+    if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) mul *= 1.12;
+    return mul;
+  }
+  /** Global projectile range multiplier (affects max travel distance/life). */
+  public getGlobalRangeMultiplier(): number {
+    if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) return 1.6; // +60% range while braced
+    return 1;
+  }
   /** Returns global fire-rate modifier (cooldown scale; >1 = faster). Includes Overclock bonus under 50% HP. */
   public getFireRateModifier(): number {
     const base = this.fireRateModifier || 1;
@@ -3267,21 +3571,27 @@ export class Player {
         return base * (1 + bonus);
       }
     }
-    return base;
+  // Fortress stance: 300% increase => 4x total fire-rate while active
+  if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) return base * 4.0;
+  return base;
   }
 
   /**
-   * Draws the player character using a PNG sprite from /assets/player/{characterId}.png.
-   * If the sprite is missing, the player is not rendered (invisible fallback).
-   * Applies rotation and scaling for correct orientation.
-   * @param ctx CanvasRenderingContext2D
+   * Draws the player character using a PNG sprite from assets/player/{characterId}.png.
+   * Path is normalized via AssetLoader to support subfolder hosting and file://.
+   * If not cached yet, trigger a lazy load once and skip rendering this frame.
    */
   public draw(ctx: CanvasRenderingContext2D): void {
-  // Use characterData.sprite if present, else id, else fallback to 'cyber_runner'
-  let assetKey = this.characterData?.sprite || this.characterData?.id || 'cyber_runner';
-    // Debug: log assetKey and image path used for rendering
-  const prefix = (location.protocol === 'file:' ? './assets/player/' : '/assets/player/');
-  const img = this.gameContext?.assetLoader?.getImage(prefix + assetKey + '.png') as HTMLImageElement | undefined;
+    const assetKey = this.characterData?.sprite || this.characterData?.id || 'cyber_runner';
+    const rawPath = '/assets/player/' + assetKey + '.png';
+    const AL: any = (window as any).AssetLoader;
+    const normalized = AL ? AL.normalizePath(rawPath) : (location.protocol === 'file:' ? ('.' + rawPath) : rawPath);
+    let img = this.gameContext?.assetLoader?.getImage(normalized) as HTMLImageElement | undefined;
+    if (!img) {
+      // Lazy-load once; cache prevents repeated loads. Skip drawing this frame.
+      try { this.gameContext?.assetLoader?.loadImage(normalized).catch(()=>null); } catch {}
+      return;
+    }
   if (img && img.complete && img.naturalWidth > 0) {
       // Rogue Hacker: draw Ghost Protocol pool under the sprite
       try { if (this.characterData?.id === 'rogue_hacker' && this.ghostProtocol) { this.ghostProtocol.draw(ctx as any); } } catch {}
@@ -3326,8 +3636,18 @@ export class Player {
         }
         ctx.restore();
       }
-      // Draw afterimages first (under main sprite)
-      if (this.runnerAfterimages.length) {
+    // Compute dynamic draw size (applies fortress-scale visually)
+    const intended = (this as any).getCharacterScale ? (this as any).getCharacterScale() : this.characterScale;
+    let drawScale = intended;
+    if (this.characterData?.id === 'titan_mech') {
+      // Blend from base -> base*1.25 using fortressScaleT for a short ease
+      const base = this.characterScale;
+      const target = base * 1.25;
+      drawScale = base + (target - base) * this.fortressScaleT;
+    }
+    const drawSize = Math.round(this.baseSpriteSize * drawScale);
+    // Draw afterimages first (under main sprite)
+    if (this.runnerAfterimages.length) {
         for (let i = 0; i < this.runnerAfterimages.length; i++) {
           const g = this.runnerAfterimages[i];
           const t = Math.min(1, g.ageMs / g.lifeMs);
@@ -3339,7 +3659,7 @@ export class Player {
           if (g.flip) ctx.scale(-1, 1);
           ctx.globalAlpha = Math.max(0, Math.min(1, fade));
           ctx.globalCompositeOperation = 'lighter';
-          ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+  ctx.drawImage(img, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
           ctx.restore();
         }
       }
@@ -3416,7 +3736,7 @@ export class Player {
   // Invisible during Ghost Protocol: skip drawing main sprite; draw a faint silhouette for orientation
   const ghosting = this.characterData?.id === 'rogue_hacker' && !!((this as any)._ghostProtocolActive);
   if (!ghosting) {
-    ctx.drawImage(img, -this.size / 2, -this.size / 2, this.size, this.size);
+    ctx.drawImage(img, -drawSize / 2, -drawSize / 2, drawSize, drawSize);
   } else {
     // silhouette ring
     const prevCompG = ctx.globalCompositeOperation;
@@ -3429,6 +3749,65 @@ export class Player {
     ctx.globalCompositeOperation = prevCompG;
     ctx.globalAlpha = 1;
   }
+    // Fortress Stance epic VFX (Titan Mech): dark red sigil + rim light while active
+      try {
+        const anyThis: any = this as any;
+        if (this.characterData?.id === 'titan_mech' && anyThis.fortressActive) {
+          const avgMs = (window as any).__avgFrameMs || 16;
+          const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+          // Neutralize sprite rotation for world-aligned effects
+          ctx.save();
+          ctx.rotate(- (appliedRotation + spriteFacingOffset));
+      const baseR = drawSize * 0.7;
+          const t = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+          const pulse = (Math.sin(t / 160) * 0.5 + 0.5);
+          const ringR = baseR * (1.1 + 0.08 * pulse);
+          // Ground sigil: dual-tone additive gradient, no fill overdraw
+          const prevCompF = ctx.globalCompositeOperation;
+          ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = vfxLow ? 0.18 : 0.26;
+      // Outer glow disk (very soft) — dark red theme
+      const gradG = ctx.createRadialGradient(0, 0, Math.max(4, baseR * 0.2), 0, 0, ringR * 1.15);
+      gradG.addColorStop(0, 'rgba(255,70,70,0.22)');
+      gradG.addColorStop(0.6, 'rgba(180,30,30,0.12)');
+      gradG.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = gradG as any;
+          if (!vfxLow) {
+            ctx.beginPath();
+            ctx.arc(0, 0, ringR * 1.1, 0, Math.PI * 2);
+            ctx.fill();
+          }
+      // Crisp twin rings (dark red)
+      ctx.lineWidth = vfxLow ? 1 : 2;
+      ctx.strokeStyle = 'rgba(255,80,80,0.7)';
+          ctx.beginPath(); ctx.arc(0, 0, ringR, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(200,30,30,0.45)';
+          ctx.beginPath(); ctx.arc(0, 0, ringR * 0.78, 0, Math.PI * 2); ctx.stroke();
+          // Four cardinal chevrons
+          const chevronR = ringR * 0.86;
+      const len = Math.max(8, drawSize * 0.18);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(255,60,60,0.8)';
+          for (let k = 0; k < 4; k++) {
+            const a = (Math.PI / 2) * k + t / 1000 * 0.6; // slow rotation
+            const cx = Math.cos(a) * chevronR;
+            const cy = Math.sin(a) * chevronR;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + Math.cos(a) * len, cy + Math.sin(a) * len);
+            ctx.stroke();
+          }
+          // Rim light on the mech body
+      ctx.globalAlpha = vfxLow ? 0.18 : 0.32;
+      ctx.strokeStyle = 'rgba(255,80,80,0.95)';
+      ctx.lineWidth = Math.max(1, drawSize * 0.06);
+          ctx.beginPath();
+      ctx.arc(0, 0, drawSize * 0.52, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.globalCompositeOperation = prevCompF;
+          ctx.restore();
+        }
+      } catch {}
       // Overclock visual aura: fiery halo when passive is owned; intensifies under threshold
       try {
         const anyThis: any = this as any;
@@ -3479,7 +3858,7 @@ export class Player {
         ctx.globalAlpha = alpha;
         ctx.fillStyle = '#FFFFFF';
         ctx.beginPath();
-        ctx.arc(0, 0, this.size/2, 0, Math.PI*2);
+        ctx.arc(0, 0, drawSize/2, 0, Math.PI*2);
         ctx.fill();
       }
       // Blade Cyclone visual: two tachyon-like swords orbiting while active (scaled to match hit radius)
@@ -3668,17 +4047,44 @@ Player.prototype.activateAbility = function(this: Player & any) {
       // System Hack: massive EMP-like hack that damages and disables nearby enemies instantly
       if (this.hackerHackCdMs <= 0) {
         this.hackerHackCdMs = this.hackerHackCdMaxMs;
-        // Scale damage by class weapon level; if evolved owned, use its stored level
-        const lvl = (this.activeWeapons.get(WeaponType.HACKER_BACKDOOR) ?? this.activeWeapons.get(WeaponType.HACKER_VIRUS) ?? 1);
-  const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier || 1);
-        // Scale damage moderately with level; wide radius; 2s paralysis baseline
-  const radius = 720;
-        const base = 70 + 28 * (Math.max(1, Math.min(7, lvl)) - 1); // 70 → 238
-        const damage = Math.round(base * gdm);
-        const paralyzeMs = 2000;
+        // Use class weapon DPS to scale the ultimate burst; never let evolved reduce power
+        const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+        const evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
+        const virusSpec: any = (WEAPON_SPECS as any)[WeaponType.HACKER_VIRUS];
+        const virusStatsAt = (lvl:number) => (virusSpec?.getLevelStats ? virusSpec.getLevelStats(Math.max(1, Math.min(7, lvl))) : { damage: 32, cooldown: 32 });
+        const lvlVirus = (aw?.get(WeaponType.HACKER_VIRUS) ?? 1);
+        const lvlEvo = (aw?.get(WeaponType.HACKER_BACKDOOR) ?? 0);
+        // Current weapon DPS (prefer base virus level if present)
+        const curLv = (lvlVirus > 0 ? lvlVirus : (lvlEvo > 0 ? 7 : 1));
+        const cur = virusStatsAt(curLv);
+        const dpsCur = (cur.damage * 60) / Math.max(1, (cur.cooldown || 32));
+        // Max DPS anchor for huge evolved burst
+        const max = virusStatsAt(7);
+        const dpsMax = (max.damage * 60) / Math.max(1, (max.cooldown || 32));
+        const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier || 1);
+        const radius = 720;
+        // Burst seconds budget: larger when evolved to feel "ultimate"
+        const burstSec = evolved ? 4.5 : 2.8;
+        const baseDps = evolved ? dpsMax : dpsCur;
+        // Base damage before any low-level clamping
+        const baseDamage = Math.max(1, Math.round(baseDps * burstSec * gdm));
+        // Early-game clamp: keep System Hack modest at low levels when not evolved
+        let damage = baseDamage;
+        if (!evolved) {
+          if (curLv === 1) {
+            // 5x less at L1
+            damage = Math.max(1, Math.round(baseDamage * 0.2));
+          } else if (curLv === 2) {
+            // Target around 70 damage at L2 baseline
+            const target = 70;
+            const mul = Math.min(1, target / baseDamage);
+            damage = Math.max(1, Math.round(baseDamage * mul));
+          }
+        }
+        const paralyzeMs = evolved ? 2400 : 2000;
         const glitchMs = 520;
         try { window.dispatchEvent(new CustomEvent('rogueHackUltimate', { detail: { x: this.x, y: this.y, radius, damage, paralyzeMs, glitchMs } })); } catch {}
-        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 3.2 } })); } catch {}
+        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: evolved ? 180 : 140, intensity: evolved ? 4.0 : 3.2 } })); } catch {}
       }
       break;
     }

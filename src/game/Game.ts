@@ -178,8 +178,10 @@ export class Game {
 
   constructor(canvas: HTMLCanvasElement) {
   // No external background image; procedural map will be drawn each frame (cached layer)
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d')!;
+  this.canvas = canvas;
+  // GPU-friendly hints: desynchronized to reduce blocking; avoid readbacks.
+  this.ctx = (canvas.getContext('2d', { alpha: true, desynchronized: true, willReadFrequently: false }) as CanvasRenderingContext2D) || canvas.getContext('2d')!;
+  try { (this.ctx as any).imageSmoothingEnabled = false; } catch { /* ignore */ }
   this.designWidth = canvas.width;
   this.designHeight = canvas.height;
     this.state = 'MAIN_MENU';
@@ -1424,7 +1426,8 @@ export class Game {
   const { x, y, damage, hitEnemy, radius } = event.detail;
   // Scale radius by player's global area multiplier if available
   const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
-  const baseR = radius ? Math.max(radius, 200) : 220;
+  // Respect weapon-provided radius fully (no minimum clamp) so early levels can be smaller
+  const baseR = (typeof radius === 'number' ? radius : 220);
   const finalR = baseR * (areaMul || 1);
   // Titan Mech uses dedicated high-impact mortar explosion (full damage, larger visuals)
   this.explosionManager?.triggerTitanMortarExplosion(x, y, damage, finalR);

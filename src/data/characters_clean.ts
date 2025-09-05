@@ -32,7 +32,8 @@ export const CHARACTERS: CharacterData[] = [
   description: 'Turns ruin into salvation. Tethers a Scrap‑Saw and detonates scrap surges to endure.',
   lore: 'They were raised where the wind howls through hollowed towers and the ground cuts like glass. A length of cable, a motor, a blade—call it a weapon, call it a promise. The Scrap‑Saw hums like a heartbeat, tethered to a survivor who refuses to break. When the world closes in, they kindle a blast from the wreckage and patch their wounds with the memory of those who didn’t make it.',
     icon: '/assets/player/wasteland_scavenger.png',
-  defaultWeapon: WeaponType.SCRAP_LASH,
+  // defaultWeapon removed: Scrap Lash retired
+  defaultWeapon: WeaponType.RICOCHET,
     stats: {
       hp: 100,
       maxHp: 100,
@@ -46,7 +47,7 @@ export const CHARACTERS: CharacterData[] = [
     },
     shape: 'square',
     color: '#808080',
-  weaponTypes: [WeaponType.SCRAP_LASH, WeaponType.RICOCHET, WeaponType.SHOTGUN],
+  weaponTypes: [WeaponType.RICOCHET, WeaponType.SHOTGUN],
   specialAbility: 'Scrap Surge — Build scrap, unleash a protective blast, and self‑repair +5 HP',
     playstyle: 'Balanced',
   },

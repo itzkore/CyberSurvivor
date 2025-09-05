@@ -5,41 +5,31 @@
   <!-- CSP dev: attempt without 'unsafe-eval'; if HMR breaks, reintroduce conditionally. -->
   <!-- CSP: dev-friendly (HMR ws + self assets). frame-ancestors enforced via server header, not meta. -->
   <!-- Added https://*.upstash.io to connect-src for leaderboard REST calls -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com https://accounts.google.com/gsi/ https://accounts.google.com/gsi/style; style-src-elem 'self' 'unsafe-inline' https://accounts.google.com https://accounts.google.com/gsi/ https://accounts.google.com/gsi/style; font-src 'self'; img-src 'self' data: https://lh3.googleusercontent.com; media-src 'self'; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://*.upstash.io ws://localhost:5173 http://localhost:5173; frame-src 'self' https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com https://accounts.google.com/gsi/ https://accounts.google.com/gsi/style; style-src-elem 'self' 'unsafe-inline' https://accounts.google.com https://accounts.google.com/gsi/ https://accounts.google.com/gsi/style; font-src 'self'; img-src 'self' data: https://lh3.googleusercontent.com; media-src 'self'; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://*.upstash.io; frame-src 'self' https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Authoritative base for subfolder hosting -->
+  <base href="/cybersurvivor/">
   <!-- Fallback injection of Google Client ID (dev index). Needed so dev server has same meta as production root index -->
   <meta name="google-client-id" content="156752381672-vidmkis66cs201c39ps9vac3230bv6rl.apps.googleusercontent.com">
   <!-- Optional runtime Upstash config (fallback if env not bundled). Remove in production if not needed. -->
   <meta name="upstash-url" content="https://sacred-killdeer-11197.upstash.io">
   <meta name="upstash-token" content="ASu9AAIncDEzYzBmZGQxODhlM2I0YTg2OGQ1Yzg5MTA5YTIxOTUyY3AxMTExOTc">
   <title>Cyber Survivor</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <!-- Optional backend API base (was only in root index) -->
   <meta name="backend-api-base" content="https://itzkore.cz/">
+  <!-- Asset base: authoritative prefix for subfolder hosting -->
+  <meta name="asset-base" content="/cybersurvivor">
+  <!-- Preload self-hosted Orbitron fonts to prevent FOUT on initial loading text (match CSS relative URLs). Place before stylesheet so the browser uses them. -->
+  <!-- Preload fonts with both relative and absolute subfolder paths so the browser matches CSS under /cybersurvivor as well -->
+  <link rel="preload" href="./assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="./assets/fonts/Orbitron/static/Orbitron-SemiBold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="./assets/fonts/Orbitron/static/Orbitron-Bold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="./assets/fonts/Orbitron/static/Orbitron-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="preload" href="./assets/fonts/Orbitron/static/Orbitron-Black.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="./assets/cyberpunk-styles.css" />
-  <!-- Preload self-hosted Orbitron fonts to prevent FOUT on initial loading text -->
-  <link rel="preload" href="/assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf" as="font" type="font/ttf" crossorigin>
-  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-SemiBold.ttf" as="font" type="font/ttf" crossorigin>
-  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-Bold.ttf" as="font" type="font/ttf" crossorigin>
-  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
-  <link rel="preload" href="/assets/fonts/Orbitron/static/Orbitron-Black.ttf" as="font" type="font/ttf" crossorigin>
-  <script>
-    (function(){
-      try{
-        // Kick off early font loads for common weights used in loading/menu/HUD
-        var fs = document.fonts;
-        if (fs && fs.load){
-          var p = Promise.all([
-            fs.load('600 18px \"Orbitron\"'), // HUD/body
-            fs.load('700 20px \"Orbitron\"'), // buttons
-            fs.load('800 24px \"Orbitron\"'), // titles
-            fs.load('900 54px \"Orbitron\"')  // big cinematic/menu headings
-          ]).catch(function(){ /* ignore */ });
-          window.__fontsReadyPromise = p;
-        }
-      }catch(e){ /* ignore */ }
-    })();
-  </script>
+  <!-- Load font preloader as a module to satisfy CSP (no inline scripts) -->
+  <script type="module" src="./font-preload.ts"></script>
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>

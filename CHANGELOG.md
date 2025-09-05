@@ -13,6 +13,50 @@ Format: Keep a Changelog style with semantic, grouped bullets. Dates are in YYYY
 - tweak(psionic): Dimmed psionic debuff (mark) glow—smaller radius, thinner ring, and lower alpha for less visual noise.
 - fix(weapon): Akimbo Deagle bullets rendered with 180° wrong sprite rotation—added rotationOffset so art faces travel direction.
 
+## [0.4.1] - 2025-08-31 — Titan Siege Patch
+
+Highlights
+
+- Titan Mech overhaul: Fortress Stance is now a spectacle with seismic stomps, clear size-up, and dark‑red theming. Mech Mortar evolves into the Siege Howitzer ultimate.
+- Difficulty upshift: bosses are tankier with tighter spell cadence, and enemy pressure ramps much harder across a 15‑minute run.
+
+Added
+
+- titan(fortress): Seismic Stomp triggers once per second while Fortress is active (4s window). 500px radius, heavy damage, strong radial knockback, and dramatic screen shake with dark‑red shockwaves. Scales with Area and Damage.
+- ui(icons): Replaced passive icons with a gritty cyan‑on‑dark set:
+  - Speed = triple arrows to the right (wild shape)
+  - Slow = triple arrows to the left
+  - Magnet = upright U with a hollow center
+
+Changed
+
+- titan(fortress): Clear size gain—Titan grows +25% during Fortress with a smooth tween; all Fortress‑tied VFX/HUD accents are dark red.
+- titan(offense): During Fortress, offensive boosts apply for the window: faster fire cadence, increased damage, and longer effective range for class weapons.
+- titan(collisions): Mortar/Howitzer rounds can hit point‑blank—removed minimum collision/arming gates; continuous swept collision prevents tunneling at close range.
+
+Evolved/Balance
+
+- titan(evolution): Mech Mortar capped at level 7 and now evolves into Siege Howitzer. Howitzer shells have larger explosions and improved trails.
+- boss(difficulty): Base boss HP tripled (x3). Idle windows between spells shortened and overall cadence tightened.
+- enemies(ramp): Enemy pressure curve steepened—linear and quadratic terms increased so the 15‑minute ramp hits much harder.
+
+Systems and Parity
+
+- weapons(parity): Siege Howitzer now spawns from side barrels, accelerates properly, collides reliably, and explodes on range expiry and on impact (full parity with Mortar).
+- explosions: Centralized implosion/explosion/shockwave handling; added pooling and adaptive VFX density. Mortar detonations use multi‑phase shockwaves plus a brief residual burn zone.
+- boss(parity): Shockwaves/explosions correctly damage bosses via the centralized boss damage path; camera shake is routed consistently.
+
+Fixes
+
+- titan(close‑range): Fixed shells failing to register at melee distance; removed arming delays and applied segment‑sweep collision.
+- titan(visuals): Fortress size‑up now visibly applies; HUD/meter switches to dark‑red during active.
+- siege(howitzer): Addressed shots spawning from the center and not exploding; ensured both collision‑triggered and range‑expiry explosions fire.
+
+Performance
+
+- vfx(pooling): Shockwave rings and AoE zones use small pools with early returns in low‑FX mode; inner loops use classic for‑loops and cached lookups.
+- explosions: Reduced overdraw and tuned lifetimes/alpha to keep clarity without tanking FPS; explosion debris counts adapt to frame time.
+
 ## [0.4.0] - 2025-08-30 — Evolution Patch
 
 Highlights

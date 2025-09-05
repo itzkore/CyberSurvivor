@@ -11,8 +11,9 @@ export class ExplosionManager {
   private player: Player; // Add player reference
   private bulletManager?: BulletManager; // For spawning plasma fragments
   private aoeZones: AoEZone[] = []; // Manage active AoE zones
-  // Lightweight shockwave rings (purely visual)
+  // Lightweight shockwave rings (purely visual) with simple pooling
   private shockwaves: { x: number; y: number; startR: number; endR: number; life: number; maxLife: number; color: string; alphaScale?: number }[] = [];
+  private shockwavePool: { x: number; y: number; startR: number; endR: number; life: number; maxLife: number; color: string; alphaScale?: number }[] = [];
   // Transient charge glows (visual-only, e.g., Railgun charge-up)
   private chargeGlows: { x: number; y: number; radius: number; color: string; start: number; duration: number }[] = [];
   // Scheduled ion field pulses (plasma overcharged path)
@@ -27,6 +28,8 @@ export class ExplosionManager {
   }
 
   public triggerExplosion(x: number, y: number, damage: number, hitEnemy?: any, radius: number = 100, color: string = '#FFA07A') {
+  const avgMs = (window as any).__avgFrameMs || 16;
+  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
     // Rebalanced enemy death explosion: slightly larger area, full damage, lower visual intensity (no lingering zone).
     const scaledRadius = Math.max(30, radius * 0.55); // mild area increase
     const scaledDamage = damage; // full damage
@@ -68,17 +71,15 @@ export class ExplosionManager {
         }
       }
     } catch { /* ignore treasure explosion errors */ }
-    // Single faint ring (alpha scaled down)
-    this.shockwaves.push({
-      x,
-      y,
-      startR: Math.max(4, scaledRadius * 0.55),
-      endR: scaledRadius * 1.15,
-      life: 160,
-      maxLife: 160,
-      color,
-      alphaScale: 0.22
-    });
+    // Single faint ring (alpha scaled down) with pooling
+    if (!vfxLow || this.shockwaves.length < 24) {
+      const sw = this.shockwavePool.pop() || { x:0, y:0, startR:0, endR:0, life:0, maxLife:0, color:'#fff' };
+      sw.x = x; sw.y = y; sw.startR = Math.max(4, scaledRadius * 0.55);
+      sw.endR = scaledRadius * 1.05; // slightly shorter for perf
+      const life = vfxLow ? 120 : 160;
+      sw.life = life; sw.maxLife = life; sw.color = color; sw.alphaScale = 0.18;
+      this.shockwaves.push(sw);
+    }
   }
 
   /**
@@ -86,6 +87,12 @@ export class ExplosionManager {
    * Full damage, larger radius, brief lingering burn for extra ticks.
    */
   public triggerTitanMortarExplosion(x: number, y: number, damage: number, radius: number = 220, color: string = '#FFD700') {
+  const avgMs = (window as any).__avgFrameMs || 16;
+  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+    // Balance: mortar explosions were dealing ~5x intended damage. Apply a corrective scaler here
+    // so both Mech Mortar and Siege Howitzer explosions align with per-level targets.
+    const DAMAGE_SCALE = 0.20; // reduce to 20% of incoming (≈5x reduction)
+    const scaledDamage = Math.max(1, Math.round(damage * DAMAGE_SCALE));
     // Immediate full-damage AoE inside radius
     if (this.enemyManager && this.enemyManager.getEnemies) {
       const enemies = this.enemyManager.getEnemies();
@@ -94,7 +101,7 @@ export class ExplosionManager {
         const e = enemies[i];
         if (!e.active || e.hp <= 0) continue;
         const dx = e.x - x; const dy = e.y - y;
-        if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage);
+        if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, scaledDamage);
       }
     }
     // Also damage boss in the blast
@@ -105,7 +112,7 @@ export class ExplosionManager {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (radius + rB) * (radius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+          (this.enemyManager as any).takeBossDamage?.(boss, scaledDamage, false, undefined, x, y);
         }
       }
     } catch { /* ignore boss explosion errors */ }
@@ -119,28 +126,35 @@ export class ExplosionManager {
           const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
           const dxT = t.x - x; const dyT = t.y - y;
           if (dxT*dxT + dyT*dyT <= r2T && typeof emAny.damageTreasure === 'function') {
-            emAny.damageTreasure(t, damage);
+            emAny.damageTreasure(t, scaledDamage);
           }
         }
       }
     } catch { /* ignore treasure explosion errors */ }
-    // Add a short-lived high-damage AoE zone (25% over 0.6s) with transparent fill
-    const burnDamage = damage * 0.25;
+    // Add a short-lived residual AoE zone (15% of scaled damage over 0.6s) with transparent fill
+  const burnDamage = scaledDamage * 0.15;
     this.aoeZones.push(new AoEZone(x, y, radius * 0.55, burnDamage, 600, 'rgba(0,0,0,0)', this.enemyManager, this.player));
 
-    // Multi-phase shockwaves (primary + thermal + dust)
-    this.shockwaves.push({ x, y, startR: Math.max(18, radius * 0.30), endR: radius * 1.1, life: 300, maxLife: 300, color });
-    this.shockwaves.push({ x, y, startR: Math.max(10, radius * 0.15), endR: radius * 0.8, life: 240, maxLife: 240, color: '#FFF5C0' });
-    this.shockwaves.push({ x, y, startR: Math.max(6, radius * 0.10), endR: radius * 1.25, life: 420, maxLife: 420, color: '#D2B48C' }); // dust ring
+    // Multi-phase shockwaves (primary + thermal + dust) – adapt count for perf
+    const addShock = (sx:number, sy:number, sr:number, er:number, life:number, col:string, alpha?:number) => {
+      if (vfxLow && this.shockwaves.length >= 24) return;
+      const sw = this.shockwavePool.pop() || { x:0, y:0, startR:0, endR:0, life:0, maxLife:0, color:'#fff' };
+      sw.x = sx; sw.y = sy; sw.startR = sr; sw.endR = er; const lf = vfxLow ? Math.max(160, Math.round(life*0.7)) : life; sw.life = lf; sw.maxLife = lf; sw.color = col; sw.alphaScale = alpha;
+      this.shockwaves.push(sw);
+    };
+    addShock(x, y, Math.max(18, radius * 0.30), radius * 1.05, 260, color, 0.9);
+    if (!vfxLow) addShock(x, y, Math.max(10, radius * 0.15), radius * 0.78, 220, '#FFF5C0', 0.6);
+    addShock(x, y, Math.max(6, radius * 0.10), radius * 1.15, vfxLow ? 260 : 360, '#D2B48C', 0.35); // dust ring
 
     // Particle bursts
-    this.particleManager.spawn(x, y, 36, '#FFE066', { sizeMin: 5, sizeMax: 10, lifeMs: 260, speedMin: 1, speedMax: 3 });
-    this.particleManager.spawn(x, y, 44, '#FFB347', { sizeMin: 3, sizeMax: 7, lifeMs: 540, speedMin: 1.5, speedMax: 4 });
-    this.particleManager.spawn(x, y, 18, '#FFFFFF', { sizeMin: 2, sizeMax: 5, lifeMs: 180, speedMin: 0.8, speedMax: 2 });
-    this.particleManager.spawn(x, y, 28, '#C0C0C0', { sizeMin: 2, sizeMax: 3, lifeMs: 900, speedMin: 3, speedMax: 7 });
-    this.particleManager.spawn(x, y, 26, '#4A4A4A', { sizeMin: 6, sizeMax: 14, lifeMs: 1100, speedMin: 0.6, speedMax: 1.8 });
-    this.particleManager.spawn(x, y, 42, '#FFDD99', { sizeMin: 1, sizeMax: 3, lifeMs: 1400, speedMin: 1, speedMax: 2.2 });
-    this.particleManager.spawn(x, y, 20, '#FFFFE0', { sizeMin: 1, sizeMax: 2, lifeMs: 160, speedMin: 0.4, speedMax: 1.2 });
+  const scale = vfxLow ? 0.6 : 1;
+  this.particleManager.spawn(x, y, Math.round(36*scale), '#FFE066', { sizeMin: 5, sizeMax: 10, lifeMs: 220, speedMin: 1, speedMax: 3 });
+  this.particleManager.spawn(x, y, Math.round(44*scale), '#FFB347', { sizeMin: 3, sizeMax: 7, lifeMs: vfxLow ? 420 : 540, speedMin: 1.5, speedMax: 4 });
+  this.particleManager.spawn(x, y, Math.round(18*scale), '#FFFFFF', { sizeMin: 2, sizeMax: 5, lifeMs: 160, speedMin: 0.8, speedMax: 2 });
+  this.particleManager.spawn(x, y, Math.round(28*scale), '#C0C0C0', { sizeMin: 2, sizeMax: 3, lifeMs: vfxLow ? 700 : 900, speedMin: 3, speedMax: 7 });
+  this.particleManager.spawn(x, y, Math.round(26*scale), '#4A4A4A', { sizeMin: 6, sizeMax: 14, lifeMs: vfxLow ? 800 : 1100, speedMin: 0.6, speedMax: 1.8 });
+  this.particleManager.spawn(x, y, Math.round(28*scale), '#FFDD99', { sizeMin: 1, sizeMax: 3, lifeMs: vfxLow ? 1100 : 1400, speedMin: 1, speedMax: 2.2 });
+  this.particleManager.spawn(x, y, Math.round(16*scale), '#FFFFE0', { sizeMin: 1, sizeMax: 2, lifeMs: 160, speedMin: 0.4, speedMax: 1.2 });
     if (this.onShake) this.onShake(160, 6);
   }
 
@@ -208,7 +222,9 @@ export class ExplosionManager {
   /**
    * Shockwave-only instant explosion (no lingering filled AoE zone). Applies damage immediately and spawns wave rings.
    */
-  public triggerShockwave(x: number, y: number, damage: number, radius: number = 100, color: string = '#FFA07A') {
+  public triggerShockwave(x: number, y: number, damage: number, radius: number = 100, color: string = '#FFA07A', bossDamageFrac?: number) {
+  const avgMs = (window as any).__avgFrameMs || 16;
+  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
     // Apply global area multiplier to radius
     const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
     const finalRadius = radius * (areaMul || 1);
@@ -222,14 +238,15 @@ export class ExplosionManager {
       }
     }
     // Also damage boss in shockwave radius
-    try {
+  try {
       const bm: any = (window as any).__bossManager;
       const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
       if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (finalRadius + rB) * (finalRadius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+      const bossDmg = (typeof bossDamageFrac === 'number' ? Math.max(0, bossDamageFrac) : 1) * damage;
+      (this.enemyManager as any).takeBossDamage?.(boss, bossDmg, false, undefined, x, y, undefined, true);
         }
       }
     } catch { /* ignore boss shockwave errors */ }
@@ -249,11 +266,18 @@ export class ExplosionManager {
       }
     } catch { /* ignore treasure shockwave errors */ }
     // Shockwave visuals (reuse logic path by manually pushing similar rings)
-    this.shockwaves.push({ x, y, startR: Math.max(6, finalRadius*0.25), endR: finalRadius*1.1, life: 200, maxLife: 200, color });
+    if (!vfxLow || this.shockwaves.length < 24) {
+      const sw = this.shockwavePool.pop() || { x:0, y:0, startR:0, endR:0, life:0, maxLife:0, color:'#fff' };
+      sw.x = x; sw.y = y; sw.startR = Math.max(6, finalRadius*0.22); sw.endR = finalRadius*1.02;
+      const life = vfxLow ? 150 : 200; sw.life = life; sw.maxLife = life; sw.color = color; sw.alphaScale = vfxLow ? 0.6 : 1;
+      this.shockwaves.push(sw);
+    }
   // Removed second ring and screen shake
   }
 
   public update(deltaMs: number = 16.6667): void {
+  const avgMs = (window as any).__avgFrameMs || 16;
+  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
     // Update all active AoE zones
     for (let i = 0; i < this.aoeZones.length; i++) {
       const zone = this.aoeZones[i];
@@ -285,9 +309,15 @@ export class ExplosionManager {
     // Update shockwaves
     for (let i = 0; i < this.shockwaves.length; i++) {
       const sw = this.shockwaves[i];
-      sw.life -= deltaMs;
+      sw.life -= deltaMs * (vfxLow ? 1.15 : 1);
+      if (sw.life <= 0) {
+        // return to pool
+        this.shockwavePool.push(sw);
+        this.shockwaves[i] = this.shockwaves[this.shockwaves.length - 1];
+        this.shockwaves.pop();
+        i--;
+      }
     }
-    this.shockwaves = this.shockwaves.filter(sw => sw.life > 0);
 
     // Prune expired charge glows
   if (this.chargeGlows.length) {
@@ -297,6 +327,8 @@ export class ExplosionManager {
   }
 
   public draw(ctx: CanvasRenderingContext2D): void {
+  const avgMs = (window as any).__avgFrameMs || 16;
+  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
     // Draw all active AoE zones
     for (let i = 0; i < this.aoeZones.length; i++) {
       const zone = this.aoeZones[i];
@@ -333,27 +365,32 @@ export class ExplosionManager {
     // Draw shockwaves after zones and glows (so rings appear atop)
     for (let i = 0; i < this.shockwaves.length; i++) {
       const sw = this.shockwaves[i];
-      const t = 1 - sw.life / sw.maxLife; // 0..1 progress
-  const radius = sw.startR + (sw.endR - sw.startR) * t;
-  const alphaBase = (1 - t) * 0.35;
-  const alpha = alphaBase * (sw.alphaScale != null ? sw.alphaScale : 1);
+      const t = 1 - sw.life / sw.maxLife; // 0..1
+      const radius = sw.startR + (sw.endR - sw.startR) * t;
+      const alphaBase = (1 - t) * (vfxLow ? 0.25 : 0.35);
+      const alpha = alphaBase * (sw.alphaScale != null ? sw.alphaScale : 1);
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-  ctx.lineWidth = Math.max(1, 3 * (1 - t));
-  ctx.beginPath();
-  ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
-  // Dual stroke: inner color glow + crisp white rim
-  ctx.shadowColor = sw.color;
-  ctx.shadowBlur = 10 * (1 - t * 0.7);
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = sw.color;
-  ctx.stroke();
-  // Crisp rim
-  ctx.shadowBlur = 0;
-  ctx.globalAlpha = Math.min(1, alpha * 1.1);
-  ctx.strokeStyle = `rgba(255,255,255,${0.8 * (1 - t)})`;
-  ctx.lineWidth = Math.max(1, 1.5 * (1 - t));
-  ctx.stroke();
+      ctx.lineWidth = Math.max(1, (vfxLow ? 2 : 3) * (1 - t));
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
+      // Single pass stroke on low; dual on normal
+      if (vfxLow) {
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = sw.color;
+        ctx.stroke();
+      } else {
+        ctx.shadowColor = sw.color;
+        ctx.shadowBlur = 10 * (1 - t * 0.7);
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = sw.color;
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = Math.min(1, alpha * 1.1);
+        ctx.strokeStyle = `rgba(255,255,255,${0.8 * (1 - t)})`;
+        ctx.lineWidth = Math.max(1, 1.5 * (1 - t));
+        ctx.stroke();
+      }
       ctx.restore();
     }
   }

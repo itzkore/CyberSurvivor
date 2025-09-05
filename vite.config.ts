@@ -2,7 +2,9 @@ import { defineConfig } from 'vite';
 
 // Pure web build (Electron removed): use root-relative base.
 export default defineConfig({
-  base: '/',
+  // Use relative base so the app works when hosted under a subfolder (e.g., https://site.tld/cs/)
+  // You can override with BASE env: BASE=/my/sub/base/ npm run build
+  base: process.env.BASE || './',
   root: 'src',
   envDir: '.',
   publicDir: '../public',

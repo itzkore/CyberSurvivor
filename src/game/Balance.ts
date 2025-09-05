@@ -11,8 +11,8 @@ export const BOSS_SPAWN_INTERVAL_SEC = 180;
 // Enemy pressure curve coefficients (baseline + linear * minutes + quadratic * minutes^2)
 // Previously linear=60, quadratic=25 produced very steep ramp; we soften to prolong viability.
 export const ENEMY_PRESSURE_BASE = 100;
-export const ENEMY_PRESSURE_LINEAR = 50;      // per minute
-export const ENEMY_PRESSURE_QUADRATIC = 18;   // per minute^2
+export const ENEMY_PRESSURE_LINEAR = 80;      // per minute (harder ramp)
+export const ENEMY_PRESSURE_QUADRATIC = 28;   // per minute^2 (much steeper late-game)
 
 // XP economy adjustments – reduce overall XP gain rate so player progression spreads across ~10m
 // Enemy base XP gem tiers (was small:1, medium:2, large:3). Medium & Large shifted down by 1 tier.

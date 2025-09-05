@@ -382,7 +382,9 @@ class GoogleAuthService {
     if (this.user) return this.user;
     if (!this.clientId) { console.warn('[Auth] Missing client id'); return null; }
     const nonce = Math.random().toString(36).slice(2);
-    let redirectUri = (import.meta as any).env?.VITE_GOOGLE_REDIRECT_URI || (window.location.origin + '/oauth-callback.html');
+  // Honor subfolder hosting by prefixing redirect with asset base if present
+  const prefix = (window as any).AssetLoader?.basePrefix || '';
+  let redirectUri = (import.meta as any).env?.VITE_GOOGLE_REDIRECT_URI || (window.location.origin + (prefix || '') + '/oauth-callback.html');
     try {
       // Allow runtime override for debugging (no rebuild) via localStorage or global var.
       const lsOverride = localStorage.getItem('auth.redirectOverride');
@@ -470,7 +472,7 @@ class GoogleAuthService {
             <p style="font-size:13px;opacity:.85;">No token returned yet. If a Google error page mentioned <code>redirect_uri_mismatch</code> or origin not allowed, add these items in Google Cloud Console &gt; Credentials &gt; OAuth 2.0 Client (Web):</p>
             <ol style="font-size:12px;opacity:.8;padding-left:18px;">
               <li>Authorized JavaScript origins: <code>${location.origin}</code></li>
-              <li>Authorized redirect URIs: <code>${location.origin}/oauth-callback.html</code></li>
+              <li>Authorized redirect URIs: <code>${location.origin}${(((window as any).AssetLoader?.basePrefix||'') || '/cybersurvivor')}/oauth-callback.html</code></li>
               <li>Use the Client ID in your .env (VITE_GOOGLE_CLIENT_ID) or meta tag.</li>
             </ol>
             <p style="font-size:12px;opacity:.75;">After saving, wait 1–2 minutes, hard reload (Ctrl+Shift+R) and try again.</p>

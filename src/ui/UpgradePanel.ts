@@ -238,7 +238,7 @@ export class UpgradePanel {
           const src = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, ''))) : (typeof location!== 'undefined' && location.protocol === 'file:' && raw.startsWith('/assets/') ? ('.' + raw) : raw);
           iconHtml = src ? `<img src="${src}" alt="${opt.name}" />` : '';
         }
-      } else if (opt.type === 'passive') {
+  } else if (opt.type === 'passive') {
         const pSpec = PASSIVE_SPECS.find(p => p.id === opt.id);
         const raw = pSpec?.icon || '';
         const src = raw ? ((window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, ''))) : (typeof location!== 'undefined' && location.protocol === 'file:' && raw.startsWith('/assets/') ? ('.' + raw) : raw)) : '';
@@ -255,7 +255,7 @@ export class UpgradePanel {
             </defs>
             <path d='M30.9 7.2 10.4 30.1c-1.6 1.8-1.6 4.6.1 6.3 1.7 1.7 4.4 1.7 6.1 0l9.9-10.6v29.5c0 2.4 2 4.3 4.4 4.3s4.4-1.9 4.4-4.3V25.8l9.9 10.6c1.7 1.7 4.4 1.7 6.1 0 1.7-1.7 1.7-4.5.1-6.3L31.9 7.2a1.4 1.4 0 0 0-1-.4c-.4 0-.8.1-1 .4Z' fill='url(#gradPassive)' stroke='#00ff99' stroke-width='2' stroke-linejoin='round' stroke-linecap='round' />
           </svg>`;
-        }
+  }
       }
 
       // Build supplemental info rows: unlock/evolution/deltas
@@ -279,7 +279,7 @@ export class UpgradePanel {
             if (!evoSpec?.disabled) {
               const ready = hasPassive && atMax;
               const status = ready ? `<span style=\"color:#57ffb0\">Ready</span>`
-                                   : `<span style=\"color:#ffd166\">Needs ${reqPassive}${atMax?'':', Max Lv.'}</span>`;
+                                   : `<span style=\"color:#ffd166\">Needs ${reqPassive} Lv.1${atMax ? '' : ' + Max Lv.'}</span>`;
               infoParts.push(`<div class=\"upgrade-info\" style=\"opacity:.9\"><strong>Evolve:</strong> ${evoSpec?.name || 'Evolution'} — ${status}</div>`);
             }
           }
@@ -290,7 +290,8 @@ export class UpgradePanel {
             const req = parent?.evolution?.requiredPassive;
             const baseName = parent?.name;
             if (baseName) {
-              infoParts.push(`<div class=\"upgrade-info emph\" style=\"color:#ff6666; text-shadow:0 0 8px rgba(255,0,0,.55)\"><strong>Evolution:</strong> ${baseName} + ${req || 'Prereq'} → ${spec.name}</div>`);
+              const reqLabel = req ? `${req} Lv.1` : 'Prereq Lv.1';
+              infoParts.push(`<div class=\"upgrade-info emph\" style=\"color:#ff6666; text-shadow:0 0 8px rgba(255,0,0,.55)\"><strong>Evolution:</strong> ${baseName} + ${reqLabel} → ${spec.name}</div>`);
             }
           }
 
@@ -303,6 +304,11 @@ export class UpgradePanel {
                 const next = spec.getLevelStats ? spec.getLevelStats(ownedLv + 1) : undefined;
                 const cur = spec.getLevelStats ? spec.getLevelStats(ownedLv) : undefined;
                 if (next && cur) {
+                  // Show clear level-up preview using the actual current level → next level
+                  const maxLv = spec.maxLevel || 1;
+                  if (ownedLv < maxLv) {
+                    infoParts.push(`<div class=\"upgrade-info emph\" style=\"font-weight:700;letter-spacing:.2px;\"><span class=\"delta good\" style=\"color:#57ffb0;\">Lv ${ownedLv} → <strong>${ownedLv + 1}</strong></span></div>`);
+                  }
                   const parts: string[] = [];
                   const addDelta = (label: string, a?: number, b?: number, inv = false) => {
                     if (typeof a !== 'number' || typeof b !== 'number') return;
@@ -338,6 +344,28 @@ export class UpgradePanel {
             const nextLv = Math.min(existing.level + 1, pSpec.maxLevel);
             infoHtml += `<div class="upgrade-info emph" style="font-weight:700;letter-spacing:.2px;"><span class="delta good" style="color:#57ffb0;">Lv +1 → <strong>${nextLv}</strong></span></div>`;
           }
+          // Key evolution highlight: if this passive is required for any evolution for a currently owned base weapon at max level
+          try {
+            const reqName = pSpec.name;
+            if (reqName) {
+              const ownedBases = Array.from(this.player.activeWeapons.entries());
+              let isKey = false;
+              for (let i = 0; i < ownedBases.length && !isKey; i++) {
+                const [wt, lvl] = ownedBases[i] as [WeaponType, number];
+                const spec = WEAPON_SPECS[wt];
+                if (!spec || !spec.evolution) continue;
+                const evo = spec.evolution;
+                if (evo.requiredPassive !== reqName) continue;
+                const maxLv = spec.maxLevel || 1;
+                const evolvedOwned = (this.player.activeWeapons.get(evo.evolvedWeaponType) || 0) > 0;
+                if (!evolvedOwned && lvl >= maxLv) {
+                  const have = this.player.activePassives.find(pp => pp.type === reqName);
+                  if (!have || have.level < (evo.minPassiveLevel || 1)) isKey = true;
+                }
+              }
+              if (isKey) infoHtml += `<div class="upgrade-info" style="color:#57ffb0;font-weight:700;">Key to Evolve</div>`;
+            }
+          } catch { /* ignore */ }
         }
       }
 
@@ -515,22 +543,54 @@ export class UpgradePanel {
       return true;
     };
 
-    // Slot 1: Evolution > class weapon > any weapon > passive > skip
+    // Slot 1: Evolution > (class OR other weapon) > passive > skip
     let picked = false;
     if (availableEvolutions.length) {
       picked = pushUnique(this.makeWeaponOption(availableEvolutions[0]));
     }
-    if (!picked && typeof playerClassWeapon === 'number') {
-      const classSpec = WEAPON_SPECS[playerClassWeapon as WeaponType];
-      const cur = this.player.activeWeapons.get(playerClassWeapon as WeaponType) || 0;
-      const evoOwned = classSpec && classSpec.evolution ? ((this.player.activeWeapons.get(classSpec.evolution.evolvedWeaponType) || 0) > 0) : false;
-      // Respect weapon capacity: only offer class weapon if owned already or we have room
-      const canOfferNew = this.player.activeWeapons.size < MAX_WEAPONS || this.player.activeWeapons.has(playerClassWeapon as WeaponType);
-      if (classSpec && !evoOwned && cur < (classSpec.maxLevel || 1) && canOfferNew) {
-        picked = pushUnique(this.makeWeaponOption(playerClassWeapon as WeaponType));
+    if (!picked) {
+      // Evaluate class weapon eligibility
+      let classEligible = false;
+      let classOption: UpgradeOption | null = null;
+      if (typeof playerClassWeapon === 'number') {
+        const classSpec = WEAPON_SPECS[playerClassWeapon as WeaponType];
+        const cur = this.player.activeWeapons.get(playerClassWeapon as WeaponType) || 0;
+        const evoOwned = classSpec && classSpec.evolution ? ((this.player.activeWeapons.get(classSpec.evolution.evolvedWeaponType) || 0) > 0) : false;
+        const canOfferNew = this.player.activeWeapons.size < MAX_WEAPONS || this.player.activeWeapons.has(playerClassWeapon as WeaponType);
+        classEligible = !!(classSpec && !evoOwned && cur < (classSpec.maxLevel || 1) && canOfferNew);
+        if (classEligible) classOption = this.makeWeaponOption(playerClassWeapon as WeaponType);
+      }
+      // Find a non-class additional weapon candidate from the pool (already shuffled)
+      let otherIdx = weaponPool.findIndex(wt => wt !== (playerClassWeapon as WeaponType));
+      let otherOption: UpgradeOption | null = null;
+      if (otherIdx >= 0) {
+        otherOption = this.makeWeaponOption(weaponPool[otherIdx] as WeaponType);
+        // If the constructed option was rejected (e.g., disabled/evolved-gated), try subsequent entries
+        if (!otherOption) {
+          for (let i = otherIdx + 1; i < weaponPool.length; i++) {
+            if (weaponPool[i] === (playerClassWeapon as WeaponType)) continue;
+            const opt = this.makeWeaponOption(weaponPool[i] as WeaponType);
+            if (opt) { otherIdx = i; otherOption = opt; break; }
+          }
+          if (!otherOption) otherIdx = -1;
+        }
+      }
+      // Decide which to pick: class or other additional weapon
+      if (classOption && otherOption) {
+        const pickClass = Math.random() < 0.5;
+        const chosen = pickClass ? classOption : otherOption;
+        picked = pushUnique(chosen);
+        // If we consumed an entry from weaponPool (otherOption), remove it to avoid duplication later
+        if (!pickClass && otherIdx >= 0) weaponPool.splice(otherIdx, 1);
+      } else if (classOption) {
+        picked = pushUnique(classOption);
+      } else if (otherOption) {
+        picked = pushUnique(otherOption);
+        if (otherIdx >= 0) weaponPool.splice(otherIdx, 1);
       }
     }
     if (!picked) {
+      // Fallbacks
       while (weaponPool.length && !picked) {
         picked = pushUnique(this.makeWeaponOption(weaponPool.shift() as WeaponType));
       }

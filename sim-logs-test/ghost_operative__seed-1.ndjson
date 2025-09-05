@@ -1,0 +1,7 @@
+{"t":0,"type":"start","data":{"id":"ghost_operative","name":"Ghost Operative","seed":1,"durationSec":10,"difficulty":1}}
+{"t":1.0000020000000007,"type":"tick","data":{"level":1,"hp":80,"enemies":2,"kills":0}}
+{"t":3.000006000000005,"type":"tick","data":{"level":1,"hp":80,"enemies":13,"kills":0}}
+{"t":5.0000100000000085,"type":"tick","data":{"level":1,"hp":80,"enemies":15,"kills":0}}
+{"t":7.000014000000013,"type":"tick","data":{"level":1,"hp":80,"enemies":19,"kills":0}}
+{"t":9.000018000000017,"type":"tick","data":{"level":1,"hp":80,"enemies":23,"kills":0}}
+{"t":10.000020000000019,"type":"end","data":{"kills":0,"level":1,"damageTaken":0,"xpOrbsCollected":0,"peakEnemies":23}}

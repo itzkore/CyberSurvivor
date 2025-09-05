@@ -19,9 +19,24 @@ export class AssetLoader {
     // Meta override (authoritative if present)
     const meta = document.querySelector('meta[name="asset-base"]') as HTMLMetaElement | null;
     if (meta?.content) return meta.content.replace(/\/$/, '');
-    const seg = location.pathname.split('/').filter(Boolean)[0];
-    if (seg && seg !== 'index.html') {
-      return '/' + seg; // e.g. '/cs'
+    // HTML <base href> if present (fallback)
+    try {
+      const baseEl = document.querySelector('base[href]') as HTMLBaseElement | null;
+      if (baseEl && baseEl.href) {
+        const u = new URL(baseEl.href);
+        let p = (u.pathname || '');
+        // Strip trailing "/index.html" if present
+        p = p.replace(/\/index\.html?$/i, '');
+        return p.replace(/\/$/, '');
+      }
+    } catch {}
+    // Derive from pathname segments (allow multi-segment, e.g., /games/cs)
+    const parts = location.pathname.split('/').filter(Boolean);
+    if (parts.length > 0) {
+      // If last part is an .html file, drop it
+      const last = parts[parts.length - 1];
+      const segs = /\.html?$/.test(last) ? parts.slice(0, -1) : parts;
+      if (segs.length > 0) return '/' + segs.join('/');
     }
     return '';
   })();
@@ -129,8 +144,8 @@ export class AssetLoader {
       else {
         // Primary attempt using detected basePrefix ('' or '/cs')
         attempts.push(AssetLoader.basePrefix + '/assets/manifest.json');
-        // If basePrefix empty, enqueue known fallback subfolders (user reported '/cs')
-        if (!AssetLoader.basePrefix) attempts.push('/cs/assets/manifest.json');
+  // If basePrefix empty, enqueue known fallback subfolder
+  if (!AssetLoader.basePrefix) attempts.push('/cybersurvivor/assets/manifest.json');
       }
     }
     for (const attempt of attempts) {
@@ -343,3 +358,10 @@ export class AssetLoader {
   return path;
   }
 }
+
+// Expose for UI helpers that guard on window.AssetLoader presence
+try {
+  if (typeof window !== 'undefined') {
+    (window as any).AssetLoader = AssetLoader;
+  }
+} catch {}

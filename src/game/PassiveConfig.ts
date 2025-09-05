@@ -1,5 +1,6 @@
 import { Player } from './Player';
 import { getHealEfficiency } from './Balance';
+import { AssetLoader } from './AssetLoader';
 
 export type PassiveSpec = {
   id: number;
@@ -10,32 +11,28 @@ export type PassiveSpec = {
 };
 
 export const PASSIVE_SPECS: PassiveSpec[] = [
-  { id: 0, name: 'Speed Boost', icon: '/assets/ui/icons/passive_speed.svg', description: 'Move faster. Simple, lifesaving.', maxLevel: 5 },
-  { id: 1, name: 'Max HP', icon: '/assets/ui/icons/passive_hp.svg', description: 'Bulk up your frame to take bigger hits.', maxLevel: 5 },
-  { id: 2, name: 'Damage Up', icon: '/assets/ui/icons/passive_damage.svg', description: 'Global damage increase—every weapon benefits.', maxLevel: 5 },
-  { id: 3, name: 'Fire Rate', icon: '/assets/ui/icons/passive_fire.svg', description: 'Reduce weapon cooldowns for more uptime.', maxLevel: 5 },
-  { id: 4, name: 'AOE On Kill', icon: '/assets/ui/icons/passive_aoe.svg', description: 'Enemies you kill explode. Scales with level (damage and radius).', maxLevel: 3 },
-  { id: 5, name: 'Magnet', icon: '/assets/ui/icons/passive_magnet.svg', description: 'Extend pickup radius—vacuum XP gems sooner.', maxLevel: 5 },
-  { id: 6, name: 'Shield', icon: '/assets/ui/icons/passive_shield.svg', description: 'Chance to block damage completely.', maxLevel: 5 },
-  { id: 7, name: 'Crit', icon: '/assets/ui/icons/passive_crit.svg', description: 'Add critical chance and multiplier.', maxLevel: 5 },
-  { id: 8, name: 'Piercing', icon: '/assets/ui/icons/passive_pierce.svg', description: 'Bullets pass through more enemies.', maxLevel: 3 },
-  { id: 9, name: 'Regen', icon: '/assets/ui/icons/passive_regen.svg', description: 'Slow regenerative healing over time.', maxLevel: 5 },
-  { id: 10, name: 'Area Up', icon: '/assets/ui/icons/passive_area.svg', description: 'Increase area radius of suitable effects.', maxLevel: 3 },
+  { id: 0, name: 'Speed Boost', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_speed.svg'), description: 'Move faster. Simple, lifesaving.', maxLevel: 5 },
+  { id: 1, name: 'Max HP', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_hp.svg'), description: 'Bulk up your frame to take bigger hits.', maxLevel: 5 },
+  { id: 2, name: 'Damage Up', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_damage.svg'), description: 'Global damage increase—every weapon benefits.', maxLevel: 5 },
+  { id: 3, name: 'Fire Rate', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_fire.svg'), description: 'Reduce weapon cooldowns for more uptime.', maxLevel: 5 },
+  { id: 4, name: 'AOE On Kill', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_aoe.svg'), description: 'Enemies you kill explode. Scales with level (damage and radius).', maxLevel: 3 },
+  { id: 5, name: 'Magnet', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_magnet.svg'), description: 'Extend pickup radius—vacuum XP gems sooner.', maxLevel: 5 },
+  { id: 6, name: 'Shield', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_shield.svg'), description: 'Chance to block damage completely.', maxLevel: 5 },
+  { id: 7, name: 'Crit', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_crit.svg'), description: 'Add critical chance and multiplier.', maxLevel: 5 },
+  { id: 8, name: 'Piercing', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_pierce.svg'), description: 'Bullets pass through more enemies.', maxLevel: 3 },
+  { id: 9, name: 'Regen', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_regen.svg'), description: 'Slow regenerative healing over time.', maxLevel: 5 },
+  { id: 10, name: 'Area Up', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_area.svg'), description: 'Increase area radius of suitable effects.', maxLevel: 3 },
   // New general passives
-  { id: 11, name: 'Armor', icon: '/assets/ui/icons/passive_armor.svg', description: 'Reduce incoming damage.', maxLevel: 5 },
-  { id: 12, name: 'Revive', icon: '/assets/ui/icons/passive_revive.svg', description: 'Survive a lethal hit. 5-minute cooldown.', maxLevel: 1 },
-  { id: 13, name: 'Slow Aura', icon: '/assets/ui/icons/passive_slow.svg', description: 'Slow nearby enemies in an aura around you.', maxLevel: 3 },
-  { id: 14, name: 'Overclock', icon: '/assets/ui/icons/passive_overclock.svg', description: 'Below 50% HP: increased attack speed and damage. Scales with level.', maxLevel: 3 },
+  { id: 11, name: 'Armor', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_armor.svg'), description: 'Reduce incoming damage.', maxLevel: 5 },
+  { id: 12, name: 'Revive', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_revive.svg'), description: 'Survive a lethal hit. 5-minute cooldown.', maxLevel: 1 },
+  { id: 13, name: 'Slow Aura', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_slow.svg'), description: 'Slow nearby enemies in an aura around you.', maxLevel: 3 },
+  { id: 14, name: 'Overclock', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_overclock.svg'), description: 'Below 50% HP: increased attack speed and damage. Scales with level.', maxLevel: 3 },
   // New: Lifesteal — heal for a small fraction of damage dealt (applies to all sources)
-  { id: 15, name: 'Lifesteal', icon: '/assets/ui/icons/passive_lifesteal.svg', description: 'Heal a small % of all damage dealt. 0.1% at L1 up to 0.5% at L5.', maxLevel: 5 }
+  { id: 15, name: 'Lifesteal', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_lifesteal.svg'), description: 'Heal a small % of all damage dealt. 0.1% at L1 up to 0.5% at L5.', maxLevel: 5 }
 ];
 
 // Normalize asset paths for file:// protocol (Electron packaged)
-if (typeof location !== 'undefined' && location.protocol === 'file:') {
-  for (const p of PASSIVE_SPECS) {
-    if (p.icon && p.icon.startsWith('/assets/')) p.icon = '.' + p.icon; // becomes ./assets/...
-  }
-}
+// Paths normalized via AssetLoader; no file:// special-casing needed
 
 export function applyPassive(player: Player, passiveId: number, level: number) {
   switch (passiveId) {

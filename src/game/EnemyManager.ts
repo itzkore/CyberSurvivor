@@ -112,7 +112,143 @@ export class EnemyManager {
   // Rogue Hacker paralysis/DoT zones (spawned under enemies on virus impact)
   // pulseUntil: draw a stronger spawn pulse/line for first ~220ms to improve visibility
   // stamp: unique per-zone id for O(1) per-enemy contact memoization (replaces Set<string> allocations)
-  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; stamp:number; pulseUntil?: number; seed?: number }[] = [];
+  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; stamp:number; pulseUntil?: number; seed?: number; nextProcAt?: number }[] = [];
+  // Cached sprites for Rogue Hacker zone rings to avoid heavy per-frame vector drawing
+  private hackerZoneSpriteCache: Map<string, HTMLCanvasElement> = new Map();
+  private getHackerZoneSprite(radius: number, evolved: boolean): HTMLCanvasElement {
+    const key = `${Math.round(radius)}|${evolved ? 1 : 0}`;
+    const cached = this.hackerZoneSpriteCache.get(key);
+    if (cached) return cached;
+    const r = Math.max(20, Math.round(radius));
+    const size = r * 2 + 16; // padding for glow
+    const cnv = document.createElement('canvas');
+    cnv.width = size; cnv.height = size;
+    const ctx = cnv.getContext('2d');
+    if (!ctx) { this.hackerZoneSpriteCache.set(key, cnv); return cnv; }
+    const cx = size >> 1, cy = size >> 1;
+    // Colors (backdoor = dark neon red palette)
+    let colRing = '#FF9A1F', colGlow = '#FF9A1F', colFill = '#FF7700';
+    if (evolved) { colRing = '#FF1133'; colGlow = '#FF3355'; colFill = '#550011'; }
+    // Outer ring with glow (primary identity)
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = colRing;
+    ctx.shadowColor = colGlow;
+    ctx.shadowBlur = 18;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+
+    // Restore richer base look: layered techno rings and nodes (static, cheap; only for non‑evolved)
+    if (!evolved) {
+      // Inner thin ring
+      ctx.save();
+      ctx.globalAlpha = 0.28;
+      ctx.strokeStyle = '#FFD891';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.82, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+
+      // Segmented dash ring
+      ctx.save();
+      ctx.globalAlpha = 0.26;
+      ctx.strokeStyle = '#FFA844';
+      ctx.lineWidth = 2.0;
+      const segs = 24;
+      const rr = r * 0.92;
+      for (let i = 0; i < segs; i++) {
+        const a0 = (i / segs) * Math.PI * 2 + 0.02;
+        const a1 = a0 + (Math.PI * 2) / segs * 0.55; // 55% dash, 45% gap
+        ctx.beginPath(); ctx.arc(cx, cy, rr, a0, a1); ctx.stroke();
+      }
+      ctx.restore();
+
+      // Small node dots around inner ring
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      const nodes = 8; const rn = r * 0.64;
+      for (let i = 0; i < nodes; i++) {
+        const a = (i / nodes) * Math.PI * 2;
+        const nx = cx + Math.cos(a) * rn;
+        const ny = cy + Math.sin(a) * rn;
+        ctx.fillStyle = '#FFE6AA';
+        ctx.shadowColor = '#FFD280';
+        ctx.shadowBlur = 6;
+        ctx.beginPath(); ctx.arc(nx, ny, 2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    } else {
+      // Evolved: extra-good neon design — layered segmented arcs, inner glow rings, and highlight nodes
+      // Inner bright ring
+      ctx.save();
+      ctx.globalAlpha = 0.34;
+      ctx.strokeStyle = '#FF3355';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath(); ctx.arc(cx, cy, r * 0.84, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+
+      // Dual segmented arcs
+      ctx.save();
+      const rr1 = r * 0.94, rr2 = r * 0.74;
+      const segsHi = 28;
+      ctx.globalAlpha = 0.32; ctx.strokeStyle = '#FF3355'; ctx.lineWidth = 2.2;
+      for (let i = 0; i < segsHi; i++) {
+        const a0 = (i / segsHi) * Math.PI * 2 + 0.01;
+        const a1 = a0 + (Math.PI * 2) / segsHi * 0.60;
+        ctx.beginPath(); ctx.arc(cx, cy, rr1, a0, a1); ctx.stroke();
+      }
+      ctx.globalAlpha = 0.26; ctx.strokeStyle = '#FF6680'; ctx.lineWidth = 1.8;
+      for (let i = 0; i < segsHi; i++) {
+        const a0 = (i / segsHi) * Math.PI * 2 + 0.04;
+        const a1 = a0 + (Math.PI * 2) / segsHi * 0.46;
+        ctx.beginPath(); ctx.arc(cx, cy, rr2, a0, a1); ctx.stroke();
+      }
+      ctx.restore();
+
+      // Hex-style short chords (suggests circuitry)
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.strokeStyle = '#FF99AA';
+      ctx.lineWidth = 1.4;
+      const hex = 6; const rHex = r * 0.60; const chord = r * 0.10;
+      for (let i = 0; i < hex; i++) {
+        const a = (i / hex) * Math.PI * 2;
+        const nx = cx + Math.cos(a) * rHex;
+        const ny = cy + Math.sin(a) * rHex;
+        const tx = nx + Math.cos(a + Math.PI / 2) * chord;
+        const ty = ny + Math.sin(a + Math.PI / 2) * chord;
+        ctx.beginPath(); ctx.moveTo(nx, ny); ctx.lineTo(tx, ty); ctx.stroke();
+      }
+      ctx.restore();
+
+      // Rim highlight nodes
+      ctx.save();
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = '#FFB3C0';
+      ctx.shadowColor = '#FF3355'; ctx.shadowBlur = 8;
+      const rimNodes = 10; const rn2 = r * 0.98;
+      for (let i = 0; i < rimNodes; i++) {
+        const a = (i / rimNodes) * Math.PI * 2 + 0.07;
+        const nx = cx + Math.cos(a) * rn2;
+        const ny = cy + Math.sin(a) * rn2;
+        ctx.beginPath(); ctx.arc(nx, ny, 1.8, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Soft inner fill as very faint ring to sell presence
+    ctx.save();
+    ctx.globalAlpha = evolved ? 0.20 : 0.24;
+    const grad = ctx.createRadialGradient(cx, cy, r * 0.55, cx, cy, r * 0.95);
+    grad.addColorStop(0, `${colFill}10`);
+    grad.addColorStop(1, `${colFill}00`);
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.96, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    this.hackerZoneSpriteCache.set(key, cnv);
+    return cnv;
+  }
   // Rogue Hacker auto-cast state: gate next cast until previous zone has expired and cooldown passed
   private hackerAutoCooldownUntil: number = 0;
   // Monotonic counter for Rogue Hacker zone stamps
@@ -167,7 +303,9 @@ export class EnemyManager {
   }
   private readonly poisonTickIntervalMs: number = 500; // damage application cadence
   private readonly poisonDurationMs: number = 4000; // duration refreshed per stack add
-  private readonly poisonDpsPerStack: number = 3.2; // per-stack DPS baseline
+  private readonly poisonDpsPerStack: number = 6.4; // per-stack DPS baseline (100% buff)
+  /** Scheduler for puddle -> treasure corrosion ticks (aligned to poison tick cadence). */
+  private puddleTreasureNextTickMs: number = 0;
   private readonly poisonMaxStacks: number = 10; // base cap; can be increased dynamically when evolved
   private readonly poisonSlowPerStack: number = 0.01; // 1% slow per stack
   private readonly poisonSlowCap: number = 0.20; // max 20% slow
@@ -324,7 +462,7 @@ export class EnemyManager {
           const dx = en.x - x; const dy = en.y - y;
           if (dx > radius || dx < -radius || dy > radius || dy < -radius) continue;
           if (dx*dx + dy*dy <= r2) {
-            this.takeDamage(en, dmg, false, false, WeaponType.QUANTUM_HALO, x, y);
+            this.takeDamage(en, dmg, false, false, WeaponType.QUANTUM_HALO, x, y, undefined, true);
             const anyE: any = en as any; // brief teal flash
             anyE._poisonFlashUntil = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + 70;
           }
@@ -352,7 +490,7 @@ export class EnemyManager {
             const dxB = boss.x - x; const dyB = boss.y - y;
             if (!(dxB > radius || dxB < -radius || dyB > radius || dyB < -radius)) {
               if (dxB*dxB + dyB*dyB <= r2) {
-                this.takeBossDamage(boss, dmg, false, WeaponType.QUANTUM_HALO, x, y);
+                this.takeBossDamage(boss, dmg, false, WeaponType.QUANTUM_HALO, x, y, undefined, true);
               }
             }
           }
@@ -448,13 +586,27 @@ export class EnemyManager {
         if (!e1.active || e1.hp <= 0) continue;
         const dx = e1.x - d.x, dy = e1.y - d.y;
         if (dx*dx + dy*dy <= r2) {
-          this.takeDamage(e1, d.damage, false, false, WeaponType.HACKER_VIRUS);
+          this.takeDamage(e1, d.damage, false, false, WeaponType.HACKER_VIRUS, undefined, undefined, undefined, true);
           const anyE: any = e1 as any;
           anyE._paralyzedUntil = Math.max(anyE._paralyzedUntil || 0, now + d.paralyzeMs);
           anyE._rgbGlitchUntil = now + Math.max(260, d.glitchMs|0);
           anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 2) % 7;
         }
       }
+      // Apply to treasures in radius
+      try {
+        const emAny: any = this as any;
+        if (typeof emAny.getTreasures === 'function') {
+          const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+          for (let ti = 0; ti < treasures.length; ti++) {
+            const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+            const dxT = t.x - d.x, dyT = t.y - d.y;
+            if (dxT*dxT + dyT*dyT <= r2 && typeof emAny.damageTreasure === 'function') {
+              emAny.damageTreasure(t, d.damage);
+            }
+          }
+        }
+      } catch { /* ignore treasure ultimate errors */ }
       // Apply to boss as well
       try {
         const bm: any = (window as any).__bossManager;
@@ -462,7 +614,7 @@ export class EnemyManager {
         if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
           const bdx = boss.x - d.x, bdy = boss.y - d.y;
           if (bdx*bdx + bdy*bdy <= r2) {
-            this.takeBossDamage(boss, d.damage, false, WeaponType.HACKER_VIRUS, d.x, d.y);
+            this.takeBossDamage(boss, d.damage, false, WeaponType.HACKER_VIRUS, d.x, d.y, undefined, true);
             const bAny: any = boss as any;
             bAny._paralyzedUntil = Math.max(bAny._paralyzedUntil || 0, now + d.paralyzeMs);
             bAny._rgbGlitchUntil = now + Math.max(260, d.glitchMs|0);
@@ -620,13 +772,13 @@ export class EnemyManager {
         const x = s.x, y = s.y;
         // Prefer spatial grid query for nearby enemies
         const candidates = query(x, y, radius + 32);
-        for (let j = 0; j < candidates.length; j++) {
+      for (let j = 0; j < candidates.length; j++) {
           const e = candidates[j];
           if (!e.active || e.hp <= 0) continue;
           const dx = e.x - x; const dy = e.y - y;
           if (dx > radius || dx < -radius || dy > radius || dy < -radius) continue;
           if (dx*dx + dy*dy <= r2) {
-            this.takeDamage(e, dmg, false, false, WeaponType.DATA_SIGIL, x, y);
+        this.takeDamage(e, dmg, false, false, WeaponType.DATA_SIGIL, x, y, undefined, true);
             (e as any)._lastHitByWeapon = WeaponType.DATA_SIGIL;
           }
         }
@@ -637,10 +789,40 @@ export class EnemyManager {
           if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
             const dxB = boss.x - x; const dyB = boss.y - y;
             if (!(dxB > radius || dxB < -radius || dyB > radius || dyB < -radius)) {
-              if (dxB*dxB + dyB*dyB <= r2) this.takeBossDamage(boss, dmg, false, WeaponType.DATA_SIGIL, x, y);
+              if (dxB*dxB + dyB*dyB <= r2) this.takeBossDamage(boss, dmg, false, WeaponType.DATA_SIGIL, x, y, undefined, true);
             }
           }
         } catch { /* ignore */ }
+        // Treasure parity: apply pulse damage within radius
+        try {
+          const emAny: any = this as any;
+          if (typeof emAny.getTreasures === 'function') {
+            const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+            for (let ti = 0; ti < treasures.length; ti++) {
+              const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+              const dxT = t.x - x; const dyT = t.y - y;
+              if (dxT > radius || dxT < -radius || dyT > radius || dyT < -radius) continue;
+              if (dxT*dxT + dyT*dyT <= r2 && typeof emAny.damageTreasure === 'function') {
+                emAny.damageTreasure(t, dmg);
+              }
+            }
+          }
+        } catch { /* ignore treasure pulse errors */ }
+        // Treasure parity: apply pulse damage within radius
+        try {
+          const emAny: any = this as any;
+          if (typeof emAny.getTreasures === 'function') {
+            const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+            for (let ti = 0; ti < treasures.length; ti++) {
+              const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+              const dxT = t.x - x; const dyT = t.y - y;
+              if (dxT > radius || dxT < -radius || dyT > radius || dyT < -radius) continue;
+              if (dxT*dxT + dyT*dyT <= r2 && typeof emAny.damageTreasure === 'function') {
+                emAny.damageTreasure(t, dmg);
+              }
+            }
+          }
+        } catch { /* ignore treasure pulse errors */ }
         // Visual micro-shockwave via ExplosionManager if available
         try {
           const game: any = (window as any).__gameInstance || (window as any).__game;
@@ -668,7 +850,7 @@ export class EnemyManager {
             const e = this.enemies[j]; if (!e.active) continue;
             const dx = e.x - s.x, dy = e.y - s.y; const d2 = dx*dx + dy*dy;
             if (d2 <= r2) {
-              this.takeDamage(e, finaleDmg, false, false, WeaponType.DATA_SIGIL, s.x, s.y);
+              this.takeDamage(e, finaleDmg, false, false, WeaponType.DATA_SIGIL, s.x, s.y, undefined, true);
               // Extra outward impulse to sell the "massive knockback"
               const d = Math.max(1, Math.sqrt(d2));
               const nx = dx / d, ny = dy / d;
@@ -685,7 +867,7 @@ export class EnemyManager {
             const bm: any = (window as any).__bossManager;
             const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
             if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
-              const dxB = boss.x - s.x, dyB = boss.y - s.y; if (dxB*dxB + dyB*dyB <= r2) this.takeBossDamage(boss, finaleDmg, false, WeaponType.DATA_SIGIL, s.x, s.y);
+              const dxB = boss.x - s.x, dyB = boss.y - s.y; if (dxB*dxB + dyB*dyB <= r2) this.takeBossDamage(boss, finaleDmg, false, WeaponType.DATA_SIGIL, s.x, s.y, undefined, true);
             }
           } catch { /* ignore */ }
         } catch { /* ignore */ }
@@ -727,10 +909,10 @@ export class EnemyManager {
     let z = this.hackerZones.find(z=>!z.active);
     const now = performance.now();
     if (!z){
-  z = { x, y, radius, created: now, lifeMs, active: true, stamp: (this.hackerZoneStampCounter++), pulseUntil: now + 220, seed: Math.floor(now % 100000) };
+  z = { x, y, radius, created: now, lifeMs, active: true, stamp: (this.hackerZoneStampCounter++), pulseUntil: now + 220, seed: Math.floor(now % 100000), nextProcAt: now };
       this.hackerZones.push(z);
     } else {
-  z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.stamp = (this.hackerZoneStampCounter++); z.pulseUntil = now + 220; z.seed = Math.floor(now % 100000);
+  z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.stamp = (this.hackerZoneStampCounter++); z.pulseUntil = now + 220; z.seed = Math.floor(now % 100000); z.nextProcAt = now;
     }
   }
 
@@ -856,7 +1038,7 @@ export class EnemyManager {
 
   /** Load single enemy_default.png and create scaled canvases per size category. */
   private loadSharedEnemyImage() {
-    const path = (location.protocol === 'file:' ? './assets/enemies/enemy_default.png' : '/assets/enemies/enemy_default.png');
+    const path = AssetLoader.normalizePath('/assets/enemies/enemy_default.png');
     const img = new Image();
     img.onload = () => {
       const defs: Array<{type: Enemy['type']; radius: number}> = [
@@ -921,7 +1103,7 @@ export class EnemyManager {
       this.sharedEnemyImageLoaded = true;
       // Try to override the 'small' type with enemy_spider.png if present
       try {
-        const spiderPath = (location.protocol === 'file:' ? './assets/enemies/enemy_spider.png' : '/assets/enemies/enemy_spider.png');
+        const spiderPath = AssetLoader.normalizePath('/assets/enemies/enemy_spider.png');
         const simg = new Image();
         simg.onload = () => {
           const radius = 20; // match 'small' enemy radius
@@ -964,7 +1146,7 @@ export class EnemyManager {
       } catch { /* ignore */ }
     // Try to override the 'large' type with enemy_eye.png if present
       try {
-        const eyePath = (location.protocol === 'file:' ? './assets/enemies/enemy_eye.png' : '/assets/enemies/enemy_eye.png');
+        const eyePath = AssetLoader.normalizePath('/assets/enemies/enemy_eye.png');
         const eimg = new Image();
         eimg.onload = () => {
           const radius = 36; // match 'large' enemy radius
@@ -1196,7 +1378,17 @@ export class EnemyManager {
    * @param sourceX X of damage source (bullet / player). Required for directional knockback.
    * @param sourceY Y of damage source (bullet / player).
    */
-  public takeDamage(enemy: Enemy, amount: number, isCritical: boolean = false, ignoreActiveCheck: boolean = false, sourceWeaponType?: WeaponType, sourceX?: number, sourceY?: number, weaponLevel?: number): void {
+  public takeDamage(
+    enemy: Enemy,
+    amount: number,
+    isCritical: boolean = false,
+    ignoreActiveCheck: boolean = false,
+    sourceWeaponType?: WeaponType,
+    sourceX?: number,
+    sourceY?: number,
+    weaponLevel?: number,
+    isIndirect?: boolean // AoE, DoT, zones, shockwaves, stomps, chain pulses, etc.
+  ): void {
     if (!ignoreActiveCheck && (!enemy.active || enemy.hp <= 0)) return; // Only damage active, alive enemies unless ignored
 
     // Armor shred debuff reduces incoming damage slightly when active
@@ -1220,14 +1412,18 @@ export class EnemyManager {
       }
     } catch { /* ignore */ }
     enemy.hp -= amount;
-    // Global lifesteal passive: heal player for a fraction of damage dealt
+  // Global lifesteal passive: heal player for a fraction of damage dealt
     try {
       const p: any = this.player as any;
       const ls = p?.lifestealFrac || 0;
       if (ls > 0 && amount > 0) {
         const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
         const eff = getHealEfficiency(timeSec);
-        const heal = amount * ls * eff;
+    // AoE and any non-direct damage contributes only 25% to lifesteal
+    // Heuristic: explicit isIndirect flag wins; otherwise treat missing weapon type as indirect (typical for explosions/burn ticks)
+    const indirect = !!isIndirect || sourceWeaponType === undefined;
+    const contribScale = indirect ? 0.25 : 1.0;
+    const heal = amount * contribScale * ls * eff;
         if (heal > 0) p.hp = Math.min(p.maxHp || p.hp, p.hp + heal);
       }
     } catch { /* ignore heal errors */ }
@@ -1311,7 +1507,9 @@ export class EnemyManager {
   const massScale = 24 / Math.max(8, enemy.radius);
   // Strongly dampen beams to avoid runaway stacking; apply extra damping for Bio ticks
   const beamDampen = isBioTick ? 0.08 : 0.3;
-        let impulse = baseForcePerSec * massScale * beamDampen;
+  // Apply spawn-time knockback resistance (0..0.8) scaled over run time
+  const kbResist = (enemy as any)?._kbResist || 0;
+  let impulse = baseForcePerSec * massScale * beamDampen * Math.max(0, 1 - kbResist);
         // Radial-only stacking: project any existing knockback onto radial axis, discard sideways component
         let existingRadial = 0;
         if (enemy.knockbackTimer && enemy.knockbackTimer > 0 && (enemy.knockbackVx || enemy.knockbackVy)) {
@@ -1341,7 +1539,8 @@ export class EnemyManager {
     sourceWeaponType?: WeaponType,
     sourceX?: number,
     sourceY?: number,
-    weaponLevel?: number
+    weaponLevel?: number,
+    isIndirect?: boolean // AoE/DoT contributions scaled for lifesteal
   ): void {
     if (!boss || boss.hp <= 0 || boss.state !== 'ACTIVE') return;
     // Armor shred increases damage taken while active (mirror enemy logic)
@@ -1350,14 +1549,16 @@ export class EnemyManager {
       amount *= 1.12;
     }
     boss.hp -= amount;
-    // Apply global lifesteal on boss damage as well
+  // Apply global lifesteal on boss damage as well
     try {
       const p: any = this.player as any;
       const ls = p?.lifestealFrac || 0;
       if (ls > 0 && amount > 0) {
         const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
         const eff = getHealEfficiency(timeSec);
-        const heal = amount * ls * eff;
+    const indirect = !!isIndirect || sourceWeaponType === undefined;
+    const contribScale = indirect ? 0.25 : 1.0;
+    const heal = amount * contribScale * ls * eff;
         if (heal > 0) p.hp = Math.min(p.maxHp || p.hp, p.hp + heal);
       }
     } catch { /* ignore heal errors */ }
@@ -1480,8 +1681,8 @@ export class EnemyManager {
         // Radius +50% for a bigger pop; color in gold palette
         ex.triggerShockwave(primary.x, primary.y, execDamage, 165, '#FFD199');
       } else {
-        // Fallback: direct damage if explosion manager is unavailable
-        this.takeDamage(primary, execDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y);
+  // Fallback: direct damage if explosion manager is unavailable (treat as AoE/indirect for lifesteal)
+  this.takeDamage(primary, execDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y, undefined, true);
       }
       // Light particles for feedback
       this.particleManager?.spawn(primary.x, primary.y, 4, '#FFE6AA', { sizeMin: 1, sizeMax: 2, lifeMs: 240, speedMin: 0.7, speedMax: 1.4 });
@@ -1524,7 +1725,7 @@ export class EnemyManager {
           if (ex && typeof ex.triggerShockwave === 'function') {
             ex.triggerShockwave(e.x, e.y, chainDamage, 135, '#FFE8B3');
           } else {
-            this.takeDamage(e, chainDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, primary.x, primary.y);
+            this.takeDamage(e, chainDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, primary.x, primary.y, undefined, true);
           }
           this.particleManager?.spawn(e.x, e.y, 3, '#FFE6AA', { sizeMin: 0.8, sizeMax: 1.6, lifeMs: 200, speedMin: 0.6, speedMax: 1.1 });
         } catch { /* ignore */ }
@@ -1541,8 +1742,10 @@ export class EnemyManager {
       const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
       if (!boss || !boss.active || boss.hp <= 0 || boss.state !== 'ACTIVE') return;
       const bAny: any = boss as any;
-      const until = bAny._specterMarkUntil || 0;
-      if (!(until > 0)) return;
+  const until = bAny._specterMarkUntil || 0;
+  if (!(until > 0)) return; // no mark present
+  const now = performance.now();
+  if (now < until) return; // mark not yet expired; keep it active
       // Consume mark
       const origin = (bAny._specterMarkFrom as { x:number;y:number;time:number } | undefined) || { x: this.player.x, y: this.player.y, time: performance.now() };
       bAny._specterMarkUntil = 0; bAny._specterMarkFrom = undefined;
@@ -1565,7 +1768,7 @@ export class EnemyManager {
         if (ex && typeof ex.triggerShockwave === 'function') {
           ex.triggerShockwave(boss.x, boss.y, execDamage, 180, '#FFD199');
         } else {
-          this.takeBossDamage(boss, execDamage, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y);
+          this.takeBossDamage(boss, execDamage, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y, undefined, true);
         }
         this.particleManager?.spawn(boss.x, boss.y, 5, '#FFE6AA', { sizeMin: 1, sizeMax: 2.2, lifeMs: 240, speedMin: 0.8, speedMax: 1.4 });
       } catch { /* ignore AoE errors */ }
@@ -1611,7 +1814,7 @@ export class EnemyManager {
       const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
       const dps = this.poisonDpsPerStack * baseLevelMul * evolvedMul * inSludgeAmp * dmgMul * stacks;
   const perTick = dps * (this.poisonTickIntervalMs / 1000);
-      this.takeBossDamage(boss, perTick, false, WeaponType.BIO_TOXIN, boss.x, boss.y);
+      this.takeBossDamage(boss, perTick, false, WeaponType.BIO_TOXIN, boss.x, boss.y, undefined, true);
   // Progressive toxicity on boss: each tick adds +1 stack (up to cap)
   this.applyBossPoison(boss, 1);
       // Visual: reuse green flash channel
@@ -1719,7 +1922,7 @@ export class EnemyManager {
       const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
       const dps = perStackBase * baseLevelMul * evolvedMul * inSludgeAmp * dmgMul * stacks;
           const perTick = dps * (this.poisonTickIntervalMs / 1000);
-          this.takeDamage(e as Enemy, perTick, false, false, WeaponType.BIO_TOXIN);
+          this.takeDamage(e as Enemy, perTick, false, false, WeaponType.BIO_TOXIN, undefined, undefined, undefined, true);
           // Progressive toxicity: each tick increases stacks by +1 (up to cap)
           this.applyPoison(e as Enemy, 1);
           // Slimy FX: tiny neon-green droplets on evolved poison ticks
@@ -1833,6 +2036,28 @@ export class EnemyManager {
 
   private updatePoisonPuddles(deltaMs: number) {
     const now = performance.now();
+    // Corrosion tick cadence for treasures aligns with poison ticks
+    const doTreasureTick = now >= this.puddleTreasureNextTickMs;
+    if (doTreasureTick) this.puddleTreasureNextTickMs = now + this.poisonTickIntervalMs;
+    // Precompute per-tick corrosion values once
+    let perTickTreasureNormal = 0, perTickTreasureSludge = 0;
+    if (doTreasureTick) {
+      try {
+        const lvlLS = this.player?.activeWeapons?.get(WeaponType.LIVING_SLUDGE);
+        const lvlBT = this.player?.activeWeapons?.get(WeaponType.BIO_TOXIN);
+        const level = (lvlLS ?? lvlBT ?? 1);
+        const hasSludge = (this.player?.activeWeapons?.has(WeaponType.LIVING_SLUDGE)) === true;
+        const baseLevelMul = 1 + Math.max(0, (level - 1)) * (hasSludge ? 0.55 : 0.35);
+        const evolvedMul = hasSludge ? 1.35 : 1.0;
+        const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
+        const perTickBase = this.poisonDpsPerStack * baseLevelMul * evolvedMul * dmgMul * (this.poisonTickIntervalMs / 1000);
+        perTickTreasureNormal = perTickBase * 1; // treat as 1-stack equivalent
+        perTickTreasureSludge = perTickBase * 2;  // sludge acts like 2 stacks
+      } catch {
+        perTickTreasureNormal = Math.max(1, Math.round(this.poisonDpsPerStack * (this.poisonTickIntervalMs / 1000)));
+        perTickTreasureSludge = perTickTreasureNormal * 2;
+      }
+    }
     // Flow pass for sludge
     for (const puddle of this.poisonPuddles) {
       if (!puddle.active) continue;
@@ -1907,6 +2132,29 @@ export class EnemyManager {
           }
         }
       } catch { /* ignore */ }
+      // Treasure corrosion parity: tick damage to treasures overlapping this puddle
+      if (doTreasureTick) {
+        try {
+          const emAny: any = this as any;
+          if (typeof emAny.getTreasures === 'function') {
+            const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+            if (treasures && treasures.length) {
+              const rP = puddle.radius; const rP2 = rP * rP;
+              const dmg = puddle.isSludge ? perTickTreasureSludge : perTickTreasureNormal;
+              if (dmg > 0) {
+                for (let ti = 0; ti < treasures.length; ti++) {
+                  const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                  const dxT = t.x - puddle.x; const dyT = t.y - puddle.y; const rr = rP + (t.radius || 0);
+                  if (dxT*dxT + dyT*dyT <= rr * rr && typeof emAny.damageTreasure === 'function') {
+                    emAny.damageTreasure(t, dmg);
+                    didDamage = true;
+                  }
+                }
+              }
+            }
+          }
+        } catch { /* ignore treasure corrosion */ }
+      }
       // Visual feedback if puddle is damaging
       if (didDamage && this.particleManager) {
         this.particleManager.spawn(puddle.x, puddle.y, 1, puddle.isSludge ? '#66FF6A' : '#00FF00');
@@ -1980,7 +2228,8 @@ export class EnemyManager {
   const now = performance.now();
   // Adaptive per-frame budget for costly overlays (psionic glows)
   const frameMsBudget = this.avgFrameMs || 16;
-  const psionicGlowBudgetMax = frameMsBudget > 40 ? 6 : frameMsBudget > 28 ? 12 : frameMsBudget > 18 ? 24 : Number.POSITIVE_INFINITY;
+  const vfxLow = frameMsBudget > 28 || !!(window as any).__vfxLowMode;
+  const psionicGlowBudgetMax = vfxLow ? (frameMsBudget > 40 ? 4 : 10) : (frameMsBudget > 28 ? 12 : frameMsBudget > 18 ? 24 : Number.POSITIVE_INFINITY);
   let psionicGlowBudget = psionicGlowBudgetMax;
   // Sandbox low-FX detection
   const __gm = (window as any).__gameInstance?.gameMode;
@@ -1996,7 +2245,7 @@ export class EnemyManager {
       const padY = pad?.y ?? (this.player.y - 140); // fallback on first frames
       if (!(padX < minX || padX > maxX || padY < minY || padY > maxY)) {
         ctx.save();
-        if (!lowFX) {
+  if (!lowFX && !vfxLow) {
           ctx.globalCompositeOperation = 'screen';
           const r = 22 + Math.sin(now * 0.006) * 2;
           // Outer glow ring
@@ -2038,21 +2287,22 @@ export class EnemyManager {
         const baseR = 56;
         const r = baseR * (0.9 + 0.2 * tLeft) * pulse;
         ctx.save();
-        ctx.globalCompositeOperation = 'screen';
+        ctx.globalCompositeOperation = vfxLow ? 'source-over' : 'screen';
         // Outer aura ring
-        ctx.globalAlpha = 0.28;
-        ctx.shadowColor = '#73FF00';
-        ctx.shadowBlur = 18;
+        ctx.globalAlpha = vfxLow ? 0.18 : 0.28;
+        if (!vfxLow) { ctx.shadowColor = '#73FF00'; ctx.shadowBlur = 18; }
         ctx.strokeStyle = '#B6FF00';
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.stroke();
         // Inner glow disk
-        const grad = ctx.createRadialGradient(px, py, 6, px, py, r * 0.9);
-        grad.addColorStop(0, 'rgba(182,255,0,0.22)');
-        grad.addColorStop(1, 'rgba(182,255,0,0)');
-        ctx.globalAlpha = 0.22;
-        ctx.fillStyle = grad;
-        ctx.beginPath(); ctx.arc(px, py, r * 0.92, 0, Math.PI * 2); ctx.fill();
+        if (!vfxLow) {
+          const grad = ctx.createRadialGradient(px, py, 6, px, py, r * 0.9);
+          grad.addColorStop(0, 'rgba(182,255,0,0.22)');
+          grad.addColorStop(1, 'rgba(182,255,0,0)');
+          ctx.globalAlpha = 0.22;
+          ctx.fillStyle = grad;
+          ctx.beginPath(); ctx.arc(px, py, r * 0.92, 0, Math.PI * 2); ctx.fill();
+        }
         // Speed streaks along velocity
         const vx = this.player.vx || 0; const vy = this.player.vy || 0;
         const spd = Math.hypot(vx, vy);
@@ -2066,7 +2316,7 @@ export class EnemyManager {
             const y0 = py + Math.sin(offA) * (r * 0.5);
             const x1 = x0 + Math.cos(offA) * len;
             const y1 = y0 + Math.sin(offA) * len;
-            ctx.globalAlpha = 0.20 * (1 - s / streaks);
+            ctx.globalAlpha = (vfxLow ? 0.12 : 0.20) * (1 - s / streaks);
             ctx.strokeStyle = s % 2 === 0 ? '#ADFF2F' : '#73FF00';
             ctx.lineWidth = 2 - (s * 0.12);
             ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
@@ -2085,12 +2335,11 @@ export class EnemyManager {
         const pulse = 1 + Math.sin(now2 * 0.009) * 0.06;
         const r = this.bioOutbreakRadius * pulse;
         ctx.save();
-        ctx.globalCompositeOperation = 'screen';
+        ctx.globalCompositeOperation = vfxLow ? 'source-over' : 'screen';
         // Outer neon glow ring (toxic green -> yellow)
-        ctx.globalAlpha = 0.22;
-        ctx.shadowColor = '#8CFF3B';
-        ctx.shadowBlur = 24;
-        ctx.lineWidth = 4;
+        ctx.globalAlpha = vfxLow ? 0.14 : 0.22;
+        if (!vfxLow) { ctx.shadowColor = '#8CFF3B'; ctx.shadowBlur = 24; }
+        ctx.lineWidth = vfxLow ? 2 : 4;
         ctx.strokeStyle = '#B6FF00';
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
@@ -2098,14 +2347,14 @@ export class EnemyManager {
 
         // Hazard stripe ring: alternating arc dashes around the circle
         ctx.shadowBlur = 0;
-        const segs = 24; // keep small for perf
+        const segs = vfxLow ? 16 : 24; // fewer segments under load
         const baseA = (now2 * 0.002) % (Math.PI * 2);
         for (let s = 0; s < segs; s++) {
           // Alternate bright lime and yellow-green
           const on = (s & 1) === 0;
           ctx.strokeStyle = on ? '#73FF00' : '#ADFF2F';
-          ctx.globalAlpha = on ? 0.26 : 0.16;
-          ctx.lineWidth = on ? 3 : 2;
+          ctx.globalAlpha = on ? (vfxLow ? 0.18 : 0.26) : (vfxLow ? 0.10 : 0.16);
+          ctx.lineWidth = on ? (vfxLow ? 2 : 3) : 1.5;
           const a0 = baseA + (s / segs) * Math.PI * 2;
           const a1 = a0 + (Math.PI * 2) / segs * 0.66; // leave gaps
           ctx.beginPath();
@@ -2119,13 +2368,13 @@ export class EnemyManager {
         const triW = 5;
         const triBase = now2 * 0.0015; // slow rotation
         ctx.lineWidth = triW;
-        ctx.shadowBlur = 14;
+        ctx.shadowBlur = vfxLow ? 0 : 14;
         ctx.shadowColor = '#73FF00';
         for (let k = 0; k < 3; k++) {
           const ang = triBase + k * (Math.PI * 2 / 3);
           const a0 = ang - 0.85;
           const a1 = ang + 0.85;
-          ctx.globalAlpha = 0.20;
+          ctx.globalAlpha = vfxLow ? 0.12 : 0.20;
           ctx.strokeStyle = '#66FF66';
           ctx.beginPath();
           ctx.arc(px, py, (triRInner + triROuter) * 0.5, a0, a1);
@@ -2134,14 +2383,14 @@ export class EnemyManager {
 
         // Floating spores along the ring (tiny glowing motes drifting clockwise)
         ctx.shadowBlur = 10;
-        const moteCount = 14;
+        const moteCount = vfxLow ? 8 : 14;
         const motSpeed = 0.0007; // radians/ms
         for (let m = 0; m < moteCount; m++) {
           const ang = baseA + now2 * motSpeed + (m * (Math.PI * 2 / moteCount));
           const rr = r * (0.97 + ((m & 1) ? -0.015 : 0.015));
           const mx = px + Math.cos(ang) * rr;
           const my = py + Math.sin(ang) * rr;
-          ctx.globalAlpha = 0.22 + 0.10 * ((m & 1) ^ 1);
+          ctx.globalAlpha = (vfxLow ? 0.14 : 0.22) + (vfxLow ? 0.06 : 0.10) * ((m & 1) ^ 1);
           ctx.fillStyle = (m % 3 === 0) ? '#C8FF00' : '#66FF88';
           ctx.beginPath();
           ctx.arc(mx, my, 2, 0, Math.PI * 2);
@@ -2159,23 +2408,21 @@ export class EnemyManager {
         const pulse = 1 + Math.sin(now * 0.008) * 0.05; // subtle 5% radius pulse
         const r = baseR * pulse;
         ctx.save();
-        ctx.globalCompositeOperation = 'screen';
+  ctx.globalCompositeOperation = vfxLow ? 'source-over' : 'screen';
         // Outer glow ring
-        ctx.globalAlpha = 0.20;
+  ctx.globalAlpha = vfxLow ? 0.12 : 0.20;
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
         ctx.strokeStyle = '#cc66ff';
         ctx.lineWidth = 6;
-        ctx.shadowColor = '#cc66ff';
-        ctx.shadowBlur = 28;
+  if (!vfxLow) { ctx.shadowColor = '#cc66ff'; ctx.shadowBlur = 28; }
         ctx.stroke();
         // Inner faint fill for presence
-        ctx.globalAlpha = 0.08;
+  ctx.globalAlpha = vfxLow ? 0.05 : 0.08;
         ctx.beginPath();
         ctx.arc(px, py, r * 0.96, 0, Math.PI * 2);
         ctx.fillStyle = '#8a2be2';
-        ctx.shadowColor = '#8a2be2';
-        ctx.shadowBlur = 16;
+  if (!vfxLow) { ctx.shadowColor = '#8a2be2'; ctx.shadowBlur = 16; }
         ctx.fill();
         ctx.restore();
       }
@@ -2236,7 +2483,9 @@ export class EnemyManager {
     }
     ctx.restore();
   }
-  // Draw Rogue Hacker zones (techno ring under enemies) — boosted visibility
+  // Draw Rogue Hacker zones (techno ring under enemies) — optimized sprite path
+  const isBackdoor = (() => { try { const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined; return !!(aw && aw.has(WeaponType.HACKER_BACKDOOR)); } catch { return false; } })();
+  const lowFxZones = (this.avgFrameMs || 16) > 28 || !!(window as any).__vfxLowMode;
   for (let i=0;i<this.hackerZones.length;i++){
     const z = this.hackerZones[i];
     if (!z.active) continue;
@@ -2244,138 +2493,109 @@ export class EnemyManager {
     if (age > z.lifeMs) continue; // will be culled in update
     if (z.x < minX || z.x > maxX || z.y < minY || z.y > maxY) continue;
     const t = age / z.lifeMs;
-    const pulse = 1 + Math.sin(now * 0.02 + i) * 0.10;
+    const pulse = 1 + Math.sin(now * 0.02 + i) * 0.08;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    // Determine palette: base (orange) or evolved Backdoor (dark neon red)
-    let colRing = '#FF9A1F', colGlow = '#FF9A1F', colFill = '#FF7700', colPulse = '#FFD891', colLink = '#FFA500', colText = '#FFF0C2', colSpoke = '#FFAA55';
-    let glitch1 = '#ff2a2a', glitch2 = '#2aff2a', glitch3 = '#2a66ff';
-    try {
-      const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
-      if (aw && aw.has(WeaponType.HACKER_BACKDOOR)) {
-        // Dark neon red theme
-        colRing = '#FF1133';
-        colGlow = '#FF3355';
-        colFill = '#550011';
-        colPulse = '#FF5577';
-        colLink = '#FF3355';
-        colText = '#FFD0DC';
-        colSpoke = '#FF5577';
-        glitch1 = '#ff2a2a';
-        glitch2 = '#ff2ae6';
-        glitch3 = '#ff6699';
+    // precompute palette
+    const colPulse = isBackdoor ? '#FF5577' : '#FFD891';
+    const colLink = isBackdoor ? '#FF3355' : '#FFA500';
+    const colText = isBackdoor ? '#FFD0DC' : '#FFF0C2';
+    const colSpoke = isBackdoor ? '#FF5577' : '#FFAA55';
+    // cached sprite draw
+    const sprite = this.getHackerZoneSprite(z.radius, isBackdoor);
+    const baseSize = sprite.width;
+    const targetSize = z.radius * 2 * pulse + 16;
+    const s = Math.max(0.5, targetSize / baseSize);
+    ctx.globalAlpha = 0.9 * (1 - t);
+    ctx.translate(z.x, z.y);
+    ctx.scale(s, s);
+    ctx.drawImage(sprite, -baseSize/2, -baseSize/2);
+    ctx.setTransform(1,0,0,1,0,0);
+    // subtle inner line
+  if (!lowFxZones) {
+      ctx.globalAlpha = 0.12 * (1 - t);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(z.x, z.y, z.radius * 0.75, 0, Math.PI*2);
+      ctx.strokeStyle = isBackdoor ? '#FF3355' : '#FFD891'; ctx.stroke();
+    }
+    // Hacker code glyphs + command text (adaptive; skip when under load)
+  if (!lowFxZones) {
+      ctx.globalAlpha = 0.24 * (1 - t);
+      const seed = (z.seed || 0);
+      const frameMs = this.avgFrameMs || 16;
+      const glyphs = frameMs > 40 ? 2 : frameMs > 28 ? 4 : 8;
+      const cmds = [
+        'nmap -sV',
+        'ssh -p 2222',
+        'sqlmap --dump',
+        'hydra -l admin',
+        'curl -k -X POST',
+        'nc -lvvp 4444',
+        'base64 -d',
+        'openssl rsautl',
+        'grep -R \'token\'',
+        'iptables -F'
+      ];
+      ctx.font = '10px monospace';
+      for (let g=0; g<glyphs; g++){
+        const ang = (now * 0.0012) + ((seed + g*53) % 628) * 0.01;
+        const rad = z.radius * (0.28 + ((seed>> (g%7)) & 1) * 0.52);
+        const gx = z.x + Math.cos(ang) * rad;
+        const gy = z.y + Math.sin(ang) * rad;
+        const text = frameMs > 40 ? '' : cmds[(seed + g) % cmds.length];
+        ctx.save();
+        ctx.translate(gx, gy);
+        ctx.rotate(ang + Math.PI/2);
+        ctx.shadowColor = colPulse;
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = colText;
+        if (text) ctx.fillText(text, -text.length*3, 0);
+        ctx.restore();
       }
-    } catch { /* ignore */ }
-    // Stronger ring and subtle fill so it stands out on bright backgrounds
-    ctx.globalAlpha = 0.34 * (1 - t);
-    ctx.beginPath();
-    ctx.arc(z.x, z.y, z.radius * pulse, 0, Math.PI * 2);
-    ctx.strokeStyle = colRing; // ring color
-    ctx.lineWidth = 6;
-    ctx.shadowColor = colGlow;
-    ctx.shadowBlur = 22;
-    ctx.stroke();
-    // RGB glitch ring: slight channel offsets for brain‑fry vibe
-    ctx.globalAlpha = 0.26 * (1 - t);
-    const r = z.radius * (0.90 + 0.08 * Math.sin(now * 0.025 + i));
-    ctx.lineWidth = 2.0;
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = glitch1; ctx.beginPath(); ctx.arc(z.x - 1, z.y, r, 0, Math.PI*2); ctx.stroke();
-    ctx.strokeStyle = glitch2; ctx.beginPath(); ctx.arc(z.x, z.y, r*0.985, 0, Math.PI*2); ctx.stroke();
-    ctx.strokeStyle = glitch3; ctx.beginPath(); ctx.arc(z.x + 1, z.y, r, 0, Math.PI*2); ctx.stroke();
-    // faint fill
-    ctx.globalAlpha = 0.16 * (1 - t);
-    ctx.beginPath(); ctx.arc(z.x, z.y, z.radius * 0.92, 0, Math.PI*2);
-    ctx.fillStyle = colFill;
-    ctx.fill();
-    // Hacker code glyphs + command text (adaptive count under load)
-    ctx.globalAlpha = 0.28 * (1 - t);
-    const seed = (z.seed || 0);
-    const frameMs = this.avgFrameMs || 16;
-    const glyphs = frameMs > 40 ? 4 : frameMs > 28 ? 8 : 12;
-    const cmds = [
-      'nmap -sV',
-      'ssh -p 2222',
-      'sqlmap --dump',
-      'hydra -l admin',
-      'curl -k -X POST',
-      'nc -lvvp 4444',
-      'base64 -d',
-      'openssl rsautl',
-      'grep -R \'token\'',
-      'iptables -F'
-    ];
-    ctx.font = '10px monospace';
-    for (let g=0; g<glyphs; g++){
-      const ang = (now * 0.0012) + ((seed + g*53) % 628) * 0.01;
-      const rad = z.radius * (0.28 + ((seed>> (g%7)) & 1) * 0.52);
-      const gx = z.x + Math.cos(ang) * rad;
-      const gy = z.y + Math.sin(ang) * rad;
-      const text = frameMs > 40 ? '' : cmds[(seed + g) % cmds.length];
-      ctx.save();
-      ctx.translate(gx, gy);
-      ctx.rotate(ang + Math.PI/2);
-      // Neon glow text
-      ctx.shadowColor = colPulse;
-      ctx.shadowBlur = 10;
-      ctx.fillStyle = colText;
-      if (text) ctx.fillText(text, -text.length*3, 0);
-      ctx.restore();
     }
     // Spawn pulse: brief expanding bright ring + hack-link line from player
     if ((z.pulseUntil || 0) > now) {
       const left = Math.max(0, Math.min(1, (z.pulseUntil! - now) / 220));
-      const r = z.radius * (1.0 + (1 - left) * 0.35);
-      ctx.globalAlpha = 0.48 * left;
-      ctx.beginPath();
-      ctx.arc(z.x, z.y, r, 0, Math.PI * 2);
-      ctx.strokeStyle = colPulse;
-      ctx.lineWidth = 3;
-      ctx.shadowColor = colPulse;
-      ctx.shadowBlur = 14;
-      ctx.stroke();
+      const rr = z.radius * (1.0 + (1 - left) * 0.35);
+      ctx.globalAlpha = 0.46 * left;
+      ctx.beginPath(); ctx.arc(z.x, z.y, rr, 0, Math.PI * 2);
+      ctx.strokeStyle = colPulse; ctx.lineWidth = 3; ctx.shadowColor = colPulse; ctx.shadowBlur = 12; ctx.stroke();
       // Hack-link line (very brief)
-      ctx.globalAlpha = 0.24 * left;
-      ctx.beginPath();
-      ctx.moveTo(this.player.x, this.player.y);
-      ctx.lineTo(z.x, z.y);
-      ctx.strokeStyle = colLink;
-      ctx.lineWidth = 2.5;
-      ctx.shadowBlur = 6;
-      ctx.stroke();
+      ctx.globalAlpha = 0.22 * left;
+      ctx.beginPath(); ctx.moveTo(this.player.x, this.player.y); ctx.lineTo(z.x, z.y);
+      ctx.strokeStyle = colLink; ctx.lineWidth = 2.5; ctx.shadowBlur = 6; ctx.stroke();
       // Code burst rays
-      ctx.globalAlpha = 0.18 * left;
-      const rays = 8;
-      for (let m=0;m<rays;m++){
-        const ang = (seed*0.017 + m) * (Math.PI*2/rays) + now*0.0015;
-        ctx.beginPath();
-        ctx.moveTo(z.x + Math.cos(ang) * (z.radius*0.3), z.y + Math.sin(ang) * (z.radius*0.3));
-        ctx.lineTo(z.x + Math.cos(ang) * r, z.y + Math.sin(ang) * r);
-        ctx.strokeStyle = colSpoke; ctx.lineWidth = 1.5; ctx.stroke();
+  if (!lowFxZones) {
+        ctx.globalAlpha = 0.16 * left;
+        const rays = 8;
+        for (let m=0;m<rays;m++){
+          const ang = ((z.seed || 0)*0.017 + m) * (Math.PI*2/rays) + now*0.0015;
+          ctx.beginPath();
+          ctx.moveTo(z.x + Math.cos(ang) * (z.radius*0.3), z.y + Math.sin(ang) * (z.radius*0.3));
+          ctx.lineTo(z.x + Math.cos(ang) * rr, z.y + Math.sin(ang) * rr);
+          ctx.strokeStyle = colSpoke; ctx.lineWidth = 1.5; ctx.stroke();
+        }
       }
     }
-    // Circuit spokes (low-cost): 6 short lines rotating slowly
-    ctx.globalAlpha = 0.22 * (1 - t);
-    const spokes = 6; const inner = z.radius * 0.25; const outer = z.radius * 0.85;
-    for (let k=0;k<spokes;k++){
-      const ang = (now * 0.002) + (Math.PI * 2 * k / spokes) + i * 0.37;
-      ctx.beginPath();
-      ctx.moveTo(z.x + Math.cos(ang) * inner, z.y + Math.sin(ang) * inner);
-      ctx.lineTo(z.x + Math.cos(ang) * outer, z.y + Math.sin(ang) * outer);
-      ctx.strokeStyle = colSpoke;
-      ctx.lineWidth = 2.0;
-      ctx.stroke();
+    // Circuit spokes (low-cost)
+  if (!lowFxZones) {
+      ctx.globalAlpha = 0.18 * (1 - t);
+      const spokes = 6; const inner = z.radius * 0.25; const outer = z.radius * 0.85;
+      for (let k=0;k<spokes;k++){
+        const ang = (now * 0.002) + (Math.PI * 2 * k / spokes) + i * 0.37;
+        ctx.beginPath();
+        ctx.moveTo(z.x + Math.cos(ang) * inner, z.y + Math.sin(ang) * inner);
+        ctx.lineTo(z.x + Math.cos(ang) * outer, z.y + Math.sin(ang) * outer);
+        ctx.strokeStyle = colSpoke; ctx.lineWidth = 2.0; ctx.stroke();
+      }
     }
     // Vulnerability tint overlay (subtle) when evolved spec is present
-    try {
-      const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined;
-      if (aw && aw.has(WeaponType.HACKER_BACKDOOR)) {
-        ctx.globalAlpha = 0.08 * (1 - t);
-        ctx.beginPath(); ctx.arc(z.x, z.y, z.radius*0.86, 0, Math.PI*2);
-        ctx.fillStyle = 'rgba(255, 0, 64, 0.8)';
-        ctx.fill();
-      }
-    } catch { /* ignore */ }
+    if (isBackdoor) {
+      ctx.globalAlpha = 0.08 * (1 - t);
+      ctx.beginPath(); ctx.arc(z.x, z.y, z.radius*0.86, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255, 0, 64, 0.8)';
+      ctx.fill();
+    }
     ctx.restore();
   }
   // Rogue Hacker ultimate VFX (global): brief expanding RGB EMP ring + code burst
@@ -3158,6 +3378,31 @@ export class EnemyManager {
           (e as any)._lastHitByWeapon = WeaponType.PSIONIC_WAVE;
         }
       }
+      // Boss parity for lattice periodic tick
+      try {
+        const bm: any = (window as any).__bossManager;
+        const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+          const dxB = boss.x - px; const dyB = boss.y - py; const rB = (boss.radius || 160);
+          if (dxB*dxB + dyB*dyB <= (latticeR + rB) * (latticeR + rB)) {
+            this.takeBossDamage(boss, tickDamage);
+          }
+        }
+      } catch { /* ignore boss lattice errors */ }
+      // Treasure parity for lattice periodic tick
+      try {
+        const emAny: any = this as any;
+        if (typeof emAny.getTreasures === 'function') {
+          const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+          for (let ti = 0; ti < treasures.length; ti++) {
+            const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+            const dxT = t.x - px; const dyT = t.y - py; const rT = (t.radius || 0);
+            if (dxT*dxT + dyT*dyT <= (latticeR + rT) * (latticeR + rT) && typeof emAny.damageTreasure === 'function') {
+              emAny.damageTreasure(t, tickDamage);
+            }
+          }
+        }
+      } catch { /* ignore treasure lattice errors */ }
       this.latticeNextTickMs = nowMs + tickInterval;
     }
   } else {
@@ -3313,8 +3558,10 @@ export class EnemyManager {
         const lastHit = (enemy as any)._lastPlayerHitTime || 0;
         if (now - lastHit >= 1000) {
           (enemy as any)._lastPlayerHitTime = now;
-          // Clamp enemy damage into 1-10 range
-          const dmg = Math.min(10, Math.max(1, enemy.damage || 1));
+          // Compute damage with special rule: basic (small) enemies deal 2× damage, then clamp into 1..10
+          let baseDmg = enemy.damage || 1;
+          if (enemy.type === 'small') baseDmg *= 2;
+          const dmg = Math.min(10, Math.max(1, Math.round(baseDmg)));
           // Skip damage during revive cinematic
           const reviving = !!(window as any).__reviveCinematicActive;
           if (!reviving) this.player.takeDamage(dmg);
@@ -3324,7 +3571,7 @@ export class EnemyManager {
             const kdx = (this.player.x - enemy.x);
             const kdy = (this.player.y - enemy.y);
             const kd = Math.hypot(kdx, kdy) || 1;
-            const kb = 24; // pixels immediate displacement
+            const kb = 24 * (this.player.getKnockbackMultiplier ? this.player.getKnockbackMultiplier() : 1); // respect player KB resistance
             this.player.x += (kdx / kd) * kb;
             this.player.y += (kdy / kd) * kb;
           }
@@ -3563,7 +3810,7 @@ export class EnemyManager {
               const dx = e.x - z.x; const dy = e.y - z.y;
               const rr = rEff + (e.radius || 0);
               if (dx*dx + dy*dy <= rr * rr) {
-                this.takeDamage(e, perTick, false, false, WeaponType.HACKER_VIRUS, z.x, z.y);
+                this.takeDamage(e, perTick, false, false, WeaponType.HACKER_VIRUS, z.x, z.y, undefined, true);
               }
             }
             // Boss sustain tick
@@ -3573,10 +3820,24 @@ export class EnemyManager {
               if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
                 const dxB = boss.x - z.x; const dyB = boss.y - z.y; const rBoss = (boss.radius || 160);
                 if (dxB*dxB + dyB*dyB <= (rEff + rBoss) * (rEff + rBoss)) {
-                  this.takeBossDamage(boss, perTick, false, WeaponType.HACKER_VIRUS, z.x, z.y);
+                  this.takeBossDamage(boss, perTick, false, WeaponType.HACKER_VIRUS, z.x, z.y, undefined, true);
                 }
               }
             } catch { /* ignore */ }
+            // Treasure sustain tick
+            try {
+              const emAny: any = this as any;
+              if (typeof emAny.getTreasures === 'function') {
+                const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
+                for (let ti = 0; ti < treasures.length; ti++) {
+                  const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                  const dxT = t.x - z.x, dyT = t.y - z.y; const rT = (t.radius || 0);
+                  if (dxT*dxT + dyT*dyT <= (rEff + rT) * (rEff + rT) && typeof emAny.damageTreasure === 'function') {
+                    emAny.damageTreasure(t, perTick);
+                  }
+                }
+              }
+            } catch { /* ignore treasure sustain errors */ }
           }
         }
       }
@@ -3594,7 +3855,7 @@ export class EnemyManager {
           dot.ticksLeft--;
           // Preserve original spacing if not overridden (dot was created with the right cadence)
           dot.nextTick += Math.max(60, (dot.cadenceMs ?? 500));
-          this.takeDamage(e as Enemy, dot.perTick, false, false, WeaponType.HACKER_VIRUS);
+          this.takeDamage(e as Enemy, dot.perTick, false, false, WeaponType.HACKER_VIRUS, undefined, undefined, undefined, true);
           // RGB glitch flash for hacker DoT (no green poison flash)
           e._rgbGlitchUntil = now + 260;
           e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
@@ -3616,7 +3877,7 @@ export class EnemyManager {
         while (ndot.left > 0 && now >= ndot.next && guard-- > 0) {
           ndot.left--;
           ndot.next += 500;
-          this.takeDamage(e as Enemy, ndot.dmg, false, false, WeaponType.NOMAD_NEURAL);
+          this.takeDamage(e as Enemy, ndot.dmg, false, false, WeaponType.NOMAD_NEURAL, undefined, undefined, undefined, true);
           // teal flash channel reuse
           e._rgbGlitchUntil = now + 200;
           e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
@@ -3638,7 +3899,7 @@ export class EnemyManager {
         while (vdot.left > 0 && now >= vdot.next && guard-- > 0) {
           vdot.left--;
           vdot.next += 1000; // default 1s cadence
-          this.takeDamage(e as Enemy, vdot.dmg, false, false, WeaponType.VOID_SNIPER);
+          this.takeDamage(e as Enemy, vdot.dmg, false, false, WeaponType.VOID_SNIPER, undefined, undefined, undefined, true);
           // Visual feedback: purple flash reuse channel
           e._poisonFlashUntil = now + 120;
         }
@@ -3659,7 +3920,7 @@ export class EnemyManager {
         while (odot.left > 0 && now >= odot.next && guard-- > 0) {
           odot.left--;
           odot.next += 500;
-          this.takeDamage(e as Enemy, odot.dmg, false, false, WeaponType.ORACLE_ARRAY);
+          this.takeDamage(e as Enemy, odot.dmg, false, false, WeaponType.ORACLE_ARRAY, undefined, undefined, undefined, true);
           // Soft golden glitch flash
           e._rgbGlitchUntil = now + 160; e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
         }
@@ -3678,7 +3939,7 @@ export class EnemyManager {
         while (gdot.left > 0 && now >= gdot.next && guard-- > 0) {
           gdot.left--;
           gdot.next += 500;
-          this.takeDamage(e as Enemy, gdot.dmg, false, false, WeaponType.GLYPH_COMPILER);
+          this.takeDamage(e as Enemy, gdot.dmg, false, false, WeaponType.GLYPH_COMPILER, undefined, undefined, undefined, true);
           e._rgbGlitchUntil = now + 120; e._rgbGlitchPhase = ((e._rgbGlitchPhase || 0) + 1) % 7;
         }
         if (gdot.left <= 0) e._glyphDot = undefined;
@@ -3702,7 +3963,7 @@ export class EnemyManager {
             while (ndot.left > 0 && now >= ndot.next && guard-- > 0) {
               ndot.left--;
               ndot.next += 500;
-              this.takeBossDamage(boss, ndot.dmg, false, WeaponType.NOMAD_NEURAL, boss.x, boss.y);
+              this.takeBossDamage(boss, ndot.dmg, false, WeaponType.NOMAD_NEURAL, boss.x, boss.y, undefined, true);
               bAny._rgbGlitchUntil = now + 200; bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
             }
             if (ndot.left <= 0 || (bAny._neuralDebuffUntil || 0) < now) {
@@ -3716,7 +3977,7 @@ export class EnemyManager {
           while (hdot.ticksLeft > 0 && now >= hdot.nextTick && guard-- > 0) {
             hdot.ticksLeft--;
             hdot.nextTick += 500;
-            this.takeBossDamage(boss, hdot.perTick, false, WeaponType.HACKER_VIRUS, boss.x, boss.y);
+            this.takeBossDamage(boss, hdot.perTick, false, WeaponType.HACKER_VIRUS, boss.x, boss.y, undefined, true);
             // Amplified RGB glitch feedback channel on boss as well
             bAny._rgbGlitchUntil = now + 260;
             bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
@@ -3730,7 +3991,7 @@ export class EnemyManager {
           while (vdotB.left > 0 && now >= vdotB.next && guard2-- > 0) {
             vdotB.left--;
             vdotB.next += 1000;
-            this.takeBossDamage(boss, vdotB.dmg, false, WeaponType.VOID_SNIPER, boss.x, boss.y);
+            this.takeBossDamage(boss, vdotB.dmg, false, WeaponType.VOID_SNIPER, boss.x, boss.y, undefined, true);
             // Use damage flash maintained inside takeBossDamage
           }
           if (vdotB.left <= 0) bAny._voidSniperDot = undefined;
@@ -3743,7 +4004,7 @@ export class EnemyManager {
           while (odotB.left > 0 && now >= odotB.next && g3-- > 0) {
             odotB.left--;
             odotB.next += 500;
-            this.takeBossDamage(boss, odotB.dmg, false, WeaponType.ORACLE_ARRAY, boss.x, boss.y);
+            this.takeBossDamage(boss, odotB.dmg, false, WeaponType.ORACLE_ARRAY, boss.x, boss.y, undefined, true);
             bAny._rgbGlitchUntil = now + 160; bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
           }
           if (odotB.left <= 0) bAny._oracleDot = undefined;
@@ -3756,7 +4017,7 @@ export class EnemyManager {
           while (gdotB.left > 0 && now >= gdotB.next && g4-- > 0) {
             gdotB.left--;
             gdotB.next += 500;
-            this.takeBossDamage(boss, gdotB.dmg, false, WeaponType.GLYPH_COMPILER, boss.x, boss.y);
+            this.takeBossDamage(boss, gdotB.dmg, false, WeaponType.GLYPH_COMPILER, boss.x, boss.y, undefined, true);
             bAny._rgbGlitchUntil = now + 120; bAny._rgbGlitchPhase = ((bAny._rgbGlitchPhase || 0) + 1) % 7;
           }
           if (gdotB.left <= 0) bAny._glyphDot = undefined;
@@ -4020,6 +4281,23 @@ export class EnemyManager {
           break;
         }
     }
+    // Emphasize HP/damage/knockback resistance growth over time; keep speed mostly flat
+    {
+      const minutes = Math.max(0, gameTime / 60);
+      // HP grows strongly into late game; tuned to ~6x at 10m
+      const hpMul = 1 + 0.20 * minutes + 0.03 * minutes * minutes;
+      // Damage grows modestly; tuned to ~2.6x at 10m
+      const dmgMul = 1 + 0.06 * minutes + 0.01 * minutes * minutes;
+      // Knockback resistance ramps up; cap to avoid complete immunity
+      const kbResist = Math.min(0.75, 0.05 * minutes + 0.008 * minutes * minutes);
+      enemy.hp = Math.max(1, Math.round(enemy.hp * hpMul));
+      enemy.maxHp = enemy.hp;
+      enemy.damage = Math.max(1, Math.round(enemy.damage * dmgMul));
+      (enemy as any)._kbResist = kbResist;
+      // Keep speed conservative: optional tiny uptick late, capped
+      const speedMul = 1 + Math.min(0.12, 0.01 * minutes);
+      enemy.speed *= speedMul;
+    }
   // Spawn placement with safe distance logic
   const minSafeDist = 520; // do not spawn closer than this to player
   const spawnDistance = 900; // base desired distance
@@ -4082,6 +4360,8 @@ export class EnemyManager {
   const eAny: any = enemy as any;
   eAny._poisonStacks = 0; eAny._poisonExpire = 0; eAny._poisonNextTick = 0;
   eAny._burnStacks = 0; eAny._burnExpire = 0; eAny._burnNextTick = 0; eAny._burnTickDamage = 0;
+  // Ensure kb resist exists on newly spawned enemies even if gameTime was 0
+  if ((eAny as any)._kbResist === undefined) (eAny as any)._kbResist = 0;
     this.enemies.push(enemy);
     this.enemySpatialGrid.insert(enemy); // Add to spatial grid for optimized zone queries
   }

@@ -3,7 +3,11 @@ import { Game } from './game/Game';
 import { MainMenu } from './ui/MainMenu';
 import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import CharacterSelectPanel
 import { Codex } from './ui/Codex';
+import { AssetLoader } from './game/AssetLoader';
 import { Logger } from './core/Logger'; // Import Logger
+import { PreloadManager } from './game/PreloadManager';
+import { GPUPrewarm } from './game/GPUPrewarm';
+import { showGPUOverlay } from './ui/GPUOverlay';
 import { ensurePauseOverlay } from './ui/PauseOverlay';
 import { ensureGameOverOverlay } from './ui/GameOverOverlay';
 import { ensureSandboxOverlay } from './ui/SandboxOverlay';
@@ -227,72 +231,15 @@ window.onload = async () => {
   Logger.info('[main.ts] Initial state set to MAIN_MENU');
 
   try {
-    // Progressive manifest load & image prefetch with updates
-  updateLoading(0.05, 'Loading manifest');
-    try {
-      await (game as any).assetLoader?.loadManifest();
-    } catch (e){ Logger.warn('[main.ts] Manifest load fail (continuing)', e); }
-  updateLoading(0.15, 'Preparing environment');
-    // Core init
+    // Centralized preload: images, audio primes, and effects video
+    await PreloadManager.preloadAll((game as any).assetLoader, (p, label) => updateLoading(p, label));
+    // Initialize systems after all assets are primed for best first-frame stability
+    updateLoading(0.94, 'Initializing systems');
     await game.init();
-  updateLoading(0.32, 'Initializing systems');
-    try {
-      const loader: any = (game as any).assetLoader;
-      const manifest = loader?.manifest;
-      if (manifest) {
-        const files:string[] = [];
-        const walk=(o:any)=>{ for(const k in o){ const v=o[k]; if(!v) continue; if(v.file) files.push(v.file); else if(typeof v==='object') walk(v);} };
-        walk(manifest);
-        const total = files.length || 1;
-        const prefix = (window as any).AssetLoader?.basePrefix || '';
-        let loaded = 0;
-        for (let i=0;i<files.length;i+=4){
-          const batch = files.slice(i,i+4).map(f=> loader.loadImage(prefix + (f.startsWith('/')? f : '/'+f)).catch(()=>null));
-          await Promise.all(batch);
-          loaded = Math.min(files.length, i+4);
-          updateLoading(0.32 + 0.58*(loaded/total), 'Loading assets '+loaded+'/'+total);
-        }
-      }
-    } catch (e){ Logger.warn('[main.ts] Progressive asset load issue', e); }
-  // Preload non-image media (e.g., Umbral Surge MP4) using multiple candidate paths
-    try {
-      updateLoading(0.92, 'Priming effects');
-      const AL: any = (window as any).AssetLoader;
-      const norm = (p:string)=> AL ? AL.normalizePath(p) : p;
-      const surgeCandidates: string[] = [
-    // Real filename present in public assets
-    norm('/assets/ui/umbral_surge.mp4.mp4'),
-    norm('assets/ui/umbral_surge.mp4.mp4'),
-    // Fallbacks for single extension (older/dev builds)
-    norm('/assets/ui/umbral_surge.mp4'),
-    norm('assets/ui/umbral_surge.mp4')
-      ];
-      const vid = document.createElement('video');
-      (vid as any).playsInline = true; vid.muted = true; vid.preload = 'auto'; vid.crossOrigin = 'anonymous';
-      let idx = 0;
-      const tryNext = (): Promise<void> => new Promise((resolve) => {
-        if (idx >= surgeCandidates.length) { resolve(); return; }
-        const src = surgeCandidates[idx++];
-        let done = false;
-        const cleanup = () => {
-          vid.removeEventListener('loadedmetadata', onMeta);
-          vid.removeEventListener('canplay', onMeta);
-          vid.removeEventListener('error', onErr);
-        };
-        const onMeta = () => { if (done) return; done = true; cleanup(); resolve(); };
-        const onErr = () => { if (done) return; done = true; cleanup(); tryNext().then(resolve); };
-        vid.addEventListener('loadedmetadata', onMeta, { once: true });
-        vid.addEventListener('canplay', onMeta, { once: true });
-        vid.addEventListener('error', onErr, { once: true });
-        try { vid.src = src; vid.load(); } catch { onErr(); }
-        // Safety timeout
-        setTimeout(() => { if (!done) onErr(); }, 1500);
-      });
-      // Fire-and-forget; do not block startup
-      tryNext().catch(()=>{});
-    } catch {}
-  updateLoading(0.94, 'Finalizing...');
-    Logger.info('[main.ts] Game assets loaded');
+    // GPU warm-up to minimize first draw hitch
+  GPUPrewarm.prewarm(canvas);
+  if (/[?&]gpu=1/.test(location.search)) showGPUOverlay();
+    Logger.info('[main.ts] Preload complete');
   } catch (fatal) {
   updateLoading(1, 'Loading error');
     Logger.error('[main.ts] Fatální chyba během načítání', fatal);

@@ -48,17 +48,17 @@ canvas { display:block; position:absolute; top:0; left:0; z-index:0; }
   When added, reintroduce a <link rel="preload" as="font"> in index.html referencing it. */
 @font-face {
   font-family: 'Orbitron';
-  /* Use a single stable public path to avoid noisy 404s */
   src: local('Orbitron Variable'), local('Orbitron'),
-       url('/assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf') format('truetype');
+       url('/cybersurvivor/assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf') format('truetype'),
+       url('./fonts/Orbitron/Orbitron-VariableFont_wght.ttf') format('truetype');
   font-weight: 100 900;
   font-display: swap;
   font-style: normal;
 }
-@font-face { font-family: 'Orbitron'; src: local('Orbitron SemiBold'), url('/assets/fonts/Orbitron/static/Orbitron-SemiBold.ttf') format('truetype'); font-weight: 600; font-style: normal; font-display: swap; }
-@font-face { font-family: 'Orbitron'; src: local('Orbitron Bold'), url('/assets/fonts/Orbitron/static/Orbitron-Bold.ttf') format('truetype'); font-weight: 700; font-style: normal; font-display: swap; }
-@font-face { font-family: 'Orbitron'; src: local('Orbitron ExtraBold'), url('/assets/fonts/Orbitron/static/Orbitron-ExtraBold.ttf') format('truetype'); font-weight: 800; font-style: normal; font-display: swap; }
-@font-face { font-family: 'Orbitron'; src: local('Orbitron Black'), url('/assets/fonts/Orbitron/static/Orbitron-Black.ttf') format('truetype'); font-weight: 900; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron SemiBold'), url('/cybersurvivor/assets/fonts/Orbitron/static/Orbitron-SemiBold.ttf') format('truetype'), url('./fonts/Orbitron/static/Orbitron-SemiBold.ttf') format('truetype'); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron Bold'), url('/cybersurvivor/assets/fonts/Orbitron/static/Orbitron-Bold.ttf') format('truetype'), url('./fonts/Orbitron/static/Orbitron-Bold.ttf') format('truetype'); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron ExtraBold'), url('/cybersurvivor/assets/fonts/Orbitron/static/Orbitron-ExtraBold.ttf') format('truetype'), url('./fonts/Orbitron/static/Orbitron-ExtraBold.ttf') format('truetype'); font-weight: 800; font-style: normal; font-display: swap; }
+@font-face { font-family: 'Orbitron'; src: local('Orbitron Black'), url('/cybersurvivor/assets/fonts/Orbitron/static/Orbitron-Black.ttf') format('truetype'), url('./fonts/Orbitron/static/Orbitron-Black.ttf') format('truetype'); font-weight: 900; font-style: normal; font-display: swap; }
 html, body { font-family: 'Orbitron', sans-serif; }
 .character-desc { color: rgba(255,255,255,0.8); margin-top:12px; width:100%; text-align:left; }
 .character-special { width:100%; text-align:left; }

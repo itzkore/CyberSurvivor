@@ -1,0 +1,11 @@
+{"t":0,"type":"start","data":{"id":"tech_warrior","name":"Tech Warrior","seed":1,"durationSec":10,"difficulty":1}}
+{"t":1.0000020000000007,"type":"tick","data":{"level":1,"hp":125,"enemies":2,"kills":0}}
+{"t":2.666672000000004,"type":"tick","data":{"kills":1,"delta":1,"level":1,"enemies":11}}
+{"t":3.000006000000005,"type":"tick","data":{"level":1,"hp":125,"enemies":10,"kills":1}}
+{"t":5.0000100000000085,"type":"tick","data":{"level":1,"hp":125,"enemies":16,"kills":1}}
+{"t":5.91667850000001,"type":"tick","data":{"kills":2,"delta":1,"level":1,"enemies":16}}
+{"t":7.000014000000013,"type":"tick","data":{"level":1,"hp":125,"enemies":18,"kills":2}}
+{"t":8.500017000000016,"type":"tick","data":{"kills":3,"delta":1,"level":1,"enemies":22}}
+{"t":9.000018000000017,"type":"tick","data":{"level":1,"hp":125,"enemies":23,"kills":3}}
+{"t":9.316685300000017,"type":"tick","data":{"kills":4,"delta":1,"level":1,"enemies":23}}
+{"t":10.000020000000019,"type":"end","data":{"kills":4,"level":1,"damageTaken":0,"xpOrbsCollected":0,"peakEnemies":24}}

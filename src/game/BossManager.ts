@@ -23,7 +23,7 @@ export class BossManager {
   private bossWalkFlipTimerMs: number = 0;
   private readonly bossWalkIntervalMs: number = 1000;
   // Spells state
-  private spellCooldownMs: number = 9000; // slower, more impactful cadence
+  private spellCooldownMs: number = 7000; // tighter cadence to reduce idle windows
   private nextSpellAtMs: number = 0;
   private spellState: 'IDLE'
     | 'NOVA_CHARGE' | 'NOVA_RELEASE'
@@ -217,8 +217,10 @@ export class BossManager {
     // Cache-aware loader
   if (Object.prototype.hasOwnProperty.call(this.bossImageCache, id)) { this.bossImage = this.bossImageCache[id]; return; }
     const def = this.bossDefs.find(b => b.id === id) || this.bossDefs[0];
-    const file = def.img;
-    const path = (location.protocol === 'file:' ? `./assets/boss/${file}` : `/assets/boss/${file}`);
+  const file = def.img;
+  // Normalize path via AssetLoader to support subfolder hosting
+  const raw = `/assets/boss/${file}`;
+  const path = AssetLoader.normalizePath(raw);
     const img = new Image();
     img.onload = () => { this.bossImageCache[id] = img; this.bossImage = img; };
     img.onerror = () => { this.bossImageCache[id] = null; this.bossImage = null; };
@@ -410,7 +412,7 @@ export class BossManager {
           if (dist > 0) {
             const nx = dx / dist;
             const ny = dy / dist;
-            const playerKb = 64; // stronger push to emphasize hit
+            const playerKb = 64 * (this.player.getKnockbackMultiplier ? this.player.getKnockbackMultiplier() : 1); // respect player KB resistance
             const bossKb = 24;
             if (!(window as any).__reviveCinematicActive) { this.player.x -= nx * playerKb; this.player.y -= ny * playerKb; }
             this.boss.x += nx * bossKb;
@@ -506,7 +508,7 @@ export class BossManager {
       window.dispatchEvent(new CustomEvent('bossSpawn', { detail: { x: bx, y: by, cinematic, id: def.id } }));
       if (cinematic) window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 200, intensity: 8 } }));
     }
-  const bossHp = 4000; // Stronger base boss HP
+  const bossHp = 12000; // Tripled base boss HP per request
     let spawnX = bx, spawnY = by;
     const rm = (window as any).__roomManager;
     if (rm && typeof rm.clampToWalkable === 'function') {
@@ -544,8 +546,8 @@ export class BossManager {
   // Mark identity for codex and future multi-boss support
   try { (this.boss as any).id = def.id; } catch {}
   (this.boss as any)._phase = 1;
-  // Prime spells after brief delay to let player orient
-  this.nextSpellAtMs = performance.now() + 2000;
+  // Prime spells after brief delay to let player orient (shorter idle)
+  this.nextSpellAtMs = performance.now() + 1200;
   this.spellState = 'IDLE';
   this.spellTimerMs = 0;
   this.novaHitApplied = false;
@@ -1292,7 +1294,7 @@ export class BossManager {
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
           this.damagePlayer(Math.round(72 * specialScale));
           // Strong knockback
-          if (!(window as any).__reviveCinematicActive) { if (d > 0) { const nx = (this.player.x - this.boss.x)/d, ny=(this.player.y - this.boss.y)/d; this.player.x += nx*120; this.player.y += ny*120; } }
+          if (!(window as any).__reviveCinematicActive) { if (d > 0) { const nx = (this.player.x - this.boss.x)/d, ny=(this.player.y - this.boss.y)/d; const mul = (this.player.getKnockbackMultiplier ? this.player.getKnockbackMultiplier() : 1); this.player.x += nx*120*mul; this.player.y += ny*120*mul; } }
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 320, intensity: 9 } }));
         }
         this.lastSuperNovaR = r;
@@ -1401,7 +1403,7 @@ export class BossManager {
           if (d > 0) {
             const nx = (this.player.x - this.boss.x) / d;
             const ny = (this.player.y - this.boss.y) / d;
-            if (!(window as any).__reviveCinematicActive) { this.player.x += nx * 72; this.player.y += ny * 72; }
+            if (!(window as any).__reviveCinematicActive) { const mul = (this.player.getKnockbackMultiplier ? this.player.getKnockbackMultiplier() : 1); this.player.x += nx * 72 * mul; this.player.y += ny * 72 * mul; }
           }
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 5 } }));
         }
@@ -1447,7 +1449,7 @@ export class BossManager {
             if (da <= this.coneArcRad) {
               const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
               this.damagePlayer(Math.round(55 * specialScale));
-              if (!(window as any).__reviveCinematicActive) { const kb = 90; this.player.x += Math.cos(a) * kb; this.player.y += Math.sin(a) * kb; }
+              if (!(window as any).__reviveCinematicActive) { const mul = (this.player.getKnockbackMultiplier ? this.player.getKnockbackMultiplier() : 1); const kb = 90 * mul; this.player.x += Math.cos(a) * kb; this.player.y += Math.sin(a) * kb; }
               window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 220, intensity: 7 } }));
             }
           }
@@ -1513,18 +1515,44 @@ export class BossManager {
       const hz = this.hazards[i];
       hz.elapsedMs += dtMs;
       if (hz.kind === 'proj') {
-        // Move
+        // Move with swept collision check to prevent tunneling
         const vx = hz.vx || 0, vy = hz.vy || 0;
-        hz.x += vx * dtMs / 1000;
-        hz.y += vy * dtMs / 1000;
-        // Collision with player
-        const dx = this.player.x - hz.x; const dy = this.player.y - hz.y;
-        const rr = (hz.radius || 10) + this.player.radius;
-        if (dx*dx + dy*dy <= rr*rr) {
+        const prevX = hz.x, prevY = hz.y;
+        const nx = hz.x + vx * dtMs / 1000;
+        const ny = hz.y + vy * dtMs / 1000;
+        // Swept segment vs circle (player)
+        const cx = this.player.x, cy = this.player.y;
+        const pr = (hz.radius || 10) + this.player.radius;
+        let hit = false; let hitX = nx; let hitY = ny;
+        {
+          const sx = prevX, sy = prevY; const ex = nx, ey = ny;
+          const dx = ex - sx, dy = ey - sy;
+          const fx = sx - cx, fy = sy - cy;
+          const a = dx*dx + dy*dy;
+          const b = 2 * (fx*dx + fy*dy);
+          const c = (fx*fx + fy*fy) - pr*pr;
+          let t = 1;
+          if (a > 0) {
+            const disc = b*b - 4*a*c;
+            if (disc >= 0) {
+              const sqrt = Math.sqrt(disc);
+              const t0 = (-b - sqrt) / (2*a);
+              const t1 = (-b + sqrt) / (2*a);
+              const tt = (t0 >= 0 && t0 <= 1) ? t0 : ((t1 >= 0 && t1 <= 1) ? t1 : null);
+              if (tt != null) { t = tt; hit = true; }
+            }
+          } else {
+            // Degenerate segment; fallback to point-in-circle at end
+            const ddx = cx - ex, ddy = cy - ey; hit = (ddx*ddx + ddy*ddy) <= pr*pr;
+          }
+          if (hit) { hitX = sx + dx * t; hitY = sy + dy * t; }
+        }
+        hz.x = nx; hz.y = ny;
+        if (hit) {
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
           this.damagePlayer(Math.round((hz.damage || 18) * specialScale));
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 3 } }));
-          try { window.dispatchEvent(new CustomEvent('mortarExplosion', { detail: { x: hz.x, y: hz.y, radius: 80, damage: 0, color: '#FFDD66' } })); } catch {}
+          try { window.dispatchEvent(new CustomEvent('mortarExplosion', { detail: { x: hitX, y: hitY, radius: 80, damage: 0, color: '#FFDD66' } })); } catch {}
           this.hazards.splice(i, 1);
           continue;
         }

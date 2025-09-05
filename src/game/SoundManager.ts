@@ -18,6 +18,22 @@ export class SoundManager {
   // Global music volume (0..1)
   private static musicVolume = 0.5;
 
+  /** Build robust source candidates honoring subfolder hosting. */
+  private static buildSources(src: string, forceReload: boolean = false): string[] {
+    const AL: any = (window as any).AssetLoader;
+    // Normalize to absolute (e.g., '/cybersurvivor/assets/music/track.mp3') when possible
+    let canonical = AL && AL.normalizePath ? AL.normalizePath(src) : src;
+    if (forceReload) canonical += (canonical.includes('?') ? '&' : '?') + 'v=' + Date.now();
+    const out: string[] = [];
+    const push = (s: string) => { if (s && out.indexOf(s) === -1) out.push(s); };
+    push(canonical);
+    // Also provide a plain relative 'assets/...' fallback that works with <base href="/cybersurvivor/">
+    const i = canonical.indexOf('/assets/');
+    if (i >= 0) push(canonical.slice(i + 1)); // drops the leading '/'
+    else if (canonical.startsWith('assets/')) push(canonical);
+    return out;
+  }
+
   /**
    * Loads and starts background music. Only plays if not already playing.
    * @param src Path to music file (e.g., 'assets/music/bg-music.mp3')
@@ -27,14 +43,12 @@ export class SoundManager {
    */
   public static preloadMusic(src: string) {
     if (SoundManager.bgMusic) return;
-    const relSrc = src.startsWith('/') ? src.slice(1) : src;
-    SoundManager.currentSrc = relSrc;
-    // Provide both root-absolute and relative variants to survive differing base paths
-    const sources = [relSrc.startsWith('assets/') ? '/' + relSrc : relSrc, relSrc];
+    const sources = SoundManager.buildSources(src);
+    SoundManager.currentSrc = sources[0] || src;
     SoundManager.bgMusic = new Howl({
       src: sources,
       loop: true,
-  volume: SoundManager.musicVolume,
+      volume: SoundManager.musicVolume,
       html5: true,
       preload: true,
       onloaderror: (id, err) => {
@@ -50,18 +64,17 @@ export class SoundManager {
    * @param forceReload set true to force Howl unload + recreate (e.g., replaced file with same name).
    */
   public static playMusic(src: string, forceReload: boolean = false) {
-    const relSrc = src.startsWith('/') ? src.slice(1) : src;
-    if (!SoundManager.bgMusic || forceReload || (SoundManager.currentSrc && SoundManager.currentSrc !== relSrc)) {
+    const sources = SoundManager.buildSources(src, forceReload);
+    const key = sources[0] || src;
+    if (!SoundManager.bgMusic || forceReload || (SoundManager.currentSrc && SoundManager.currentSrc !== key)) {
       if (SoundManager.bgMusic) {
         try { SoundManager.bgMusic.unload(); } catch { /* ignore */ }
       }
-      SoundManager.currentSrc = relSrc;
-      const versioned = relSrc + (forceReload ? ('?v=' + Date.now()) : '');
-      const sources = [versioned.startsWith('assets/') ? '/' + versioned : versioned, versioned];
+      SoundManager.currentSrc = key;
       SoundManager.bgMusic = new Howl({
         src: sources,
         loop: true,
-  volume: SoundManager.musicVolume,
+        volume: SoundManager.musicVolume,
         html5: true,
         onplay: () => Logger.debug('[SoundManager] Background music playing src=', sources),
         onplayerror: (id, err) => {
@@ -78,24 +91,22 @@ export class SoundManager {
         onend: () => { try { SoundManager.onEndCb?.(); } catch {/* ignore */} },
         onloaderror: (id, err) => Logger.error('[SoundManager] Music load error: ' + err)
       });
-      Logger.debug('[SoundManager] playMusic sources=', sources, 'forceReload=', forceReload);
+  Logger.debug('[SoundManager] playMusic sources=', sources, 'forceReload=', forceReload);
     }
     try { if (SoundManager.bgMusic && !SoundManager.bgMusic.playing()) SoundManager.bgMusic.play(); } catch { /* ignore */ }
   }
 
   /** Play an arbitrary track with optional loop/volume and end callback (used by RadioService). */
   public static playTrack(src: string, opts?: { loop?: boolean; volume?: number; forceReload?: boolean; onend?: ()=>void }) {
-    const relSrc = src.startsWith('/') ? src.slice(1) : src;
+    const sources = SoundManager.buildSources(src, !!opts?.forceReload);
+    const key = sources[0] || src;
   const loop = opts?.loop ?? true;
   const volume = Math.max(0, Math.min(1, opts?.volume ?? SoundManager.musicVolume));
-    const forceReload = !!opts?.forceReload;
     SoundManager.onEndCb = opts?.onend || null;
-    if (!SoundManager.bgMusic || forceReload || (SoundManager.currentSrc && SoundManager.currentSrc !== relSrc) || (SoundManager.bgMusic && SoundManager.bgMusic.loop() !== loop)) {
+    if (!SoundManager.bgMusic || opts?.forceReload || (SoundManager.currentSrc && SoundManager.currentSrc !== key) || (SoundManager.bgMusic && SoundManager.bgMusic.loop() !== loop)) {
       if (SoundManager.bgMusic) { try { SoundManager.bgMusic.unload(); } catch { /* ignore */ } }
-      SoundManager.currentSrc = relSrc;
-      const versioned = relSrc + (forceReload ? ('?v=' + Date.now()) : '');
-      const sources = [versioned.startsWith('assets/') ? '/' + versioned : versioned, versioned];
-  SoundManager.bgMusic = new Howl({
+      SoundManager.currentSrc = key;
+      SoundManager.bgMusic = new Howl({
         src: sources,
         loop,
         volume,

@@ -1,0 +1,261 @@
+{
+  "generatedAt": "2025-09-01T13:27:50.083Z",
+  "windowSec": 60,
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "mode": "NORMAL",
+  "autoUpgrade": true,
+  "snapshots": {
+    "15min": {
+      "wasteland_scavenger": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 137,
+        "meanLevel": 3.3333333333333335
+      },
+      "tech_warrior": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 1183.6666666666667,
+        "meanLevel": 6.333333333333333
+      },
+      "heavy_gunner": {
+        "meanSurvival": 56.955669466667736,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "cyber_runner": {
+        "meanSurvival": 49.111209333333555,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "bio_engineer": {
+        "meanSurvival": 43.70008739999963,
+        "meanKills": 4046.6666666666665,
+        "meanLevel": 2.6666666666666665
+      },
+      "data_sorcerer": {
+        "meanSurvival": 44.66675599999974,
+        "meanKills": 1.3333333333333333,
+        "meanLevel": 1
+      },
+      "ghost_operative": {
+        "meanSurvival": 42.494529433332836,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "neural_nomad": {
+        "meanSurvival": 48.46676360000015,
+        "meanKills": 2167.6666666666665,
+        "meanLevel": 7
+      },
+      "psionic_weaver": {
+        "meanSurvival": 53.683440700000716,
+        "meanKills": 16,
+        "meanLevel": 1.6666666666666667
+      },
+      "rogue_hacker": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 147,
+        "meanLevel": 1.6666666666666667
+      },
+      "shadow_operative": {
+        "meanSurvival": 47.51120613333338,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "titan_mech": {
+        "meanSurvival": 59.31122973333466,
+        "meanKills": 1.3333333333333333,
+        "meanLevel": 1
+      }
+    },
+    "20min": {
+      "wasteland_scavenger": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 209,
+        "meanLevel": 5
+      },
+      "tech_warrior": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 1286.6666666666667,
+        "meanLevel": 8
+      },
+      "heavy_gunner": {
+        "meanSurvival": 47.94454033333343,
+        "meanKills": 0.3333333333333333,
+        "meanLevel": 1
+      },
+      "cyber_runner": {
+        "meanSurvival": 41.60563876666607,
+        "meanKills": 0.3333333333333333,
+        "meanLevel": 1
+      },
+      "bio_engineer": {
+        "meanSurvival": 40.738970366665974,
+        "meanKills": 5980.333333333333,
+        "meanLevel": 4
+      },
+      "data_sorcerer": {
+        "meanSurvival": 40.51119213333262,
+        "meanKills": 0.6666666666666666,
+        "meanLevel": 1
+      },
+      "ghost_operative": {
+        "meanSurvival": 38.11118733333236,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "neural_nomad": {
+        "meanSurvival": 41.82230586666609,
+        "meanKills": 1963.3333333333333,
+        "meanLevel": 6.666666666666667
+      },
+      "psionic_weaver": {
+        "meanSurvival": 45.42231306666648,
+        "meanKills": 8.666666666666666,
+        "meanLevel": 1
+      },
+      "rogue_hacker": {
+        "meanSurvival": 56.78900246666772,
+        "meanKills": 178.66666666666666,
+        "meanLevel": 2
+      },
+      "shadow_operative": {
+        "meanSurvival": 42.577862933332845,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "titan_mech": {
+        "meanSurvival": 53.950107900000745,
+        "meanKills": 3,
+        "meanLevel": 1
+      }
+    },
+    "25min": {
+      "wasteland_scavenger": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 291,
+        "meanLevel": 4.666666666666667
+      },
+      "tech_warrior": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 1747,
+        "meanLevel": 7.333333333333333
+      },
+      "heavy_gunner": {
+        "meanSurvival": 44.07786593333301,
+        "meanKills": 0.6666666666666666,
+        "meanLevel": 1
+      },
+      "cyber_runner": {
+        "meanSurvival": 37.35563026666561,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "bio_engineer": {
+        "meanSurvival": 37.244518933332266,
+        "meanKills": 7362.333333333333,
+        "meanLevel": 3.6666666666666665
+      },
+      "data_sorcerer": {
+        "meanSurvival": 37.750075499998985,
+        "meanKills": 1.3333333333333333,
+        "meanLevel": 1
+      },
+      "ghost_operative": {
+        "meanSurvival": 34.5222912666653,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "neural_nomad": {
+        "meanSurvival": 39.1556338666658,
+        "meanKills": 2808.6666666666665,
+        "meanLevel": 6.333333333333333
+      },
+      "psionic_weaver": {
+        "meanSurvival": 40.03341339999923,
+        "meanKills": 8.333333333333334,
+        "meanLevel": 1
+      },
+      "rogue_hacker": {
+        "meanSurvival": 54.51122013333414,
+        "meanKills": 841.3333333333334,
+        "meanLevel": 5.666666666666667
+      },
+      "shadow_operative": {
+        "meanSurvival": 38.566743799999074,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "titan_mech": {
+        "meanSurvival": 47.333428000000026,
+        "meanKills": 1.6666666666666667,
+        "meanLevel": 1
+      }
+    },
+    "30min": {
+      "wasteland_scavenger": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 413.6666666666667,
+        "meanLevel": 5
+      },
+      "tech_warrior": {
+        "meanSurvival": 60.0001200000014,
+        "meanKills": 2068.6666666666665,
+        "meanLevel": 8.666666666666666
+      },
+      "heavy_gunner": {
+        "meanSurvival": 39.58896806666585,
+        "meanKills": 0.3333333333333333,
+        "meanLevel": 1
+      },
+      "cyber_runner": {
+        "meanSurvival": 34.89451423333201,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "bio_engineer": {
+        "meanSurvival": 36.972296166665565,
+        "meanKills": 9684,
+        "meanLevel": 4.333333333333333
+      },
+      "data_sorcerer": {
+        "meanSurvival": 33.188955266665154,
+        "meanKills": 0.3333333333333333,
+        "meanLevel": 1
+      },
+      "ghost_operative": {
+        "meanSurvival": 32.06673079999839,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "neural_nomad": {
+        "meanSurvival": 37.36674139999894,
+        "meanKills": 2474,
+        "meanLevel": 6.333333333333333
+      },
+      "psionic_weaver": {
+        "meanSurvival": 39.583412499999184,
+        "meanKills": 6.333333333333333,
+        "meanLevel": 1.3333333333333333
+      },
+      "rogue_hacker": {
+        "meanSurvival": 54.866776400000845,
+        "meanKills": 1131,
+        "meanLevel": 4.333333333333333
+      },
+      "shadow_operative": {
+        "meanSurvival": 35.15562586666537,
+        "meanKills": 0,
+        "meanLevel": 1
+      },
+      "titan_mech": {
+        "meanSurvival": 43.15564186666624,
+        "meanKills": 2,
+        "meanLevel": 1
+      }
+    }
+  }
+}

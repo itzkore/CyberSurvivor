@@ -109,11 +109,11 @@ export class Codex {
       tips: ['Build Crit and Attack Speed to ramp stacks', 'Keep pressure—stacks thrive on hit frequency']
     },
     titan_mech: {
-      title: 'Armor Plating',
-      summary: 'Reduced damage from all sources; becomes a walking fortress.',
-      effects: ['Flat or percent damage reduction (contextual)', 'Pairs well with explosive zoning and taunt‑like play'],
-      scaling: ['Duration (if timed)', 'Cooldown (if timed)'],
-      tips: ['Anchor lanes and let mortars clean packs', 'Invest in Area/Cooldown for bigger/steadier clears']
+      title: 'Fortress Stance',
+      summary: '4s siege mode: huge fire‑rate/range/damage boost, movement slowed, +25% size, dark‑red visuals.',
+  effects: ['Emits an epic stomp shockwave every second (300px, heavy damage, strong knockback, screen shake)', 'Guarantees close‑range shell hits (no arming distance)', 'Synergizes with Siege Howitzer evolution for ultimate‑grade blasts'],
+      scaling: ['Damage', 'Area', 'Cooldown'],
+      tips: ['Anchor and pull packs into mortar lanes', 'Area/Cooldown amplify Fortress stomp coverage and uptime', 'Evolve Mech Mortar → Siege Howitzer for massive thermobaric bursts']
     }
   };
 
@@ -1038,7 +1038,7 @@ export class Codex {
         });
       } catch {
         // Ultimate fallback if even constructing loader fails
-        this.bossItems = [{ key: 'phase1', name: 'phase1', file: AssetLoader.normalizePath('/assets/boss/boss_phase1.png') }];
+  this.bossItems = [{ key: 'phase1', name: 'phase1', file: AssetLoader.normalizePath('/assets/boss/boss_phase1.png') }];
         this.bossLoading = false;
         this.render();
       }

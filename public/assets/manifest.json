@@ -85,7 +85,8 @@
   "bullet_laserblaster": { "file": "assets/projectiles/bullet_laserblaster.png", "w": 16, "h": 16, "frames": 1 },
   "bullet_drone": { "file": "assets/projectiles/bullet_drone.png", "w": 48, "h": 48, "frames": 1 },
   "bullet_saw": { "file": "assets/projectiles/bullet_sawblade.png", "w": 32, "h": 32, "frames": 1 },
-  "bullet_grinder": { "file": "assets/projectiles/bullet_sawblade.png", "w": 40, "h": 40, "frames": 1 }
+  "bullet_grinder": { "file": "assets/projectiles/bullet_sawblade.png", "w": 40, "h": 40, "frames": 1 },
+  "bullet_mortar": { "file": "assets/projectiles/bullet_mortar.png", "w": 16, "h": 16, "frames": 1 }
   },
   "ui": {
     "hp_bar_bg": {
@@ -109,7 +110,21 @@
         "file": "assets/ui/icons/upgrade_speed.png",
         "w": 64,
         "h": 64
-      }
+      },
+      "passive_speed":   { "file": "assets/ui/icons/passive_speed.svg",   "w": 64, "h": 64, "format": "svg" },
+      "passive_hp":      { "file": "assets/ui/icons/passive_hp.svg",      "w": 64, "h": 64, "format": "svg" },
+      "passive_damage":  { "file": "assets/ui/icons/passive_damage.svg",  "w": 64, "h": 64, "format": "svg" },
+      "passive_fire":    { "file": "assets/ui/icons/passive_fire.svg",    "w": 64, "h": 64, "format": "svg" },
+      "passive_aoe":     { "file": "assets/ui/icons/passive_aoe.svg",     "w": 64, "h": 64, "format": "svg" },
+      "passive_magnet":  { "file": "assets/ui/icons/passive_magnet.svg",  "w": 64, "h": 64, "format": "svg" },
+      "passive_shield":  { "file": "assets/ui/icons/passive_shield.svg",  "w": 64, "h": 64, "format": "svg" },
+      "passive_crit":    { "file": "assets/ui/icons/passive_crit.svg",    "w": 64, "h": 64, "format": "svg" },
+      "passive_pierce":  { "file": "assets/ui/icons/passive_pierce.svg",  "w": 64, "h": 64, "format": "svg" },
+      "passive_regen":   { "file": "assets/ui/icons/passive_regen.svg",   "w": 64, "h": 64, "format": "svg" },
+      "passive_area":    { "file": "assets/ui/icons/passive_area.svg",    "w": 64, "h": 64, "format": "svg" },
+      "passive_revive":  { "file": "assets/ui/icons/passive_revive.svg",  "w": 64, "h": 64, "format": "svg" },
+      "passive_slow":    { "file": "assets/ui/icons/passive_slow.svg",    "w": 64, "h": 64, "format": "svg" },
+      "passive_lifesteal": { "file": "assets/ui/icons/passive_lifesteal.svg", "w": 64, "h": 64, "format": "svg" }
     }
   }
 }

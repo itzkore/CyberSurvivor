@@ -2,6 +2,7 @@ import { WeaponType } from '../game/WeaponType';
 import { Logger } from '../core/Logger';
 import { CHARACTERS } from '../data/characters';
 import { WEAPON_SPECS } from '../game/WeaponConfig';
+import { AssetLoader } from '../game/AssetLoader';
 // Speed scale no longer shown in Basic tab; keep gameplay usage elsewhere
 import { matrixBackground } from './MatrixBackground';
 
@@ -55,7 +56,12 @@ export class CharacterSelectPanel {
   }
 
   private initializeCharacters(): void {
-    this.characters = CHARACTERS.map(char => ({ ...char }));
+    // Normalize icon paths for hosting under a subfolder
+    this.characters = CHARACTERS.map(char => {
+      const ic = (char.icon || '').toString();
+      const norm = ic ? AssetLoader.normalizePath(ic) : ic;
+      return { ...char, icon: norm } as any;
+    });
     // Ensure Cyber Runner appears first by default (selection only, keeps original array order for data integrity)
     const runnerIndex = this.characters.findIndex(c => c.id === 'cyber_runner');
     if (runnerIndex >= 0) {
@@ -139,9 +145,9 @@ export class CharacterSelectPanel {
     // Create thumbnails
     thumbnailContainer.innerHTML = '';
     this.characters.forEach((character, index) => {
-      const thumbnail = document.createElement('div');
+  const thumbnail = document.createElement('div');
       thumbnail.className = `thumbnail ${index === this.selectedCharacterIndex ? 'active' : ''}`;
-      thumbnail.innerHTML = `<img src="${character.icon}" alt="${character.name}">`;
+  thumbnail.innerHTML = `<img src="${AssetLoader.normalizePath(character.icon)}" alt="${character.name}">`;
       thumbnail.addEventListener('click', () => {
         this.selectedCharacterIndex = index;
         this.updateDisplay();

@@ -42,6 +42,20 @@ export class MainMenu {
     // Use fixed release dates per version to avoid showing the same date for all entries
     return [
       {
+        version: '0.4.1',
+        date: '2025-08-31',
+        entries: [
+          { tag: 'NEW', text: 'Titan Mech — Fortress Stance: 4s active / 14s cooldown. Massive fire‑rate, range, and damage boost; movement slowed; +25% size with dark‑red theming.' },
+          { tag: 'NEW', text: 'Fortress Stomp: while Fortress is active, emit a 300px shockwave every second that deals heavy damage, applies strong knockback, and shakes the screen.' },
+          { tag: 'NEW', text: 'Siege Howitzer: Mech Mortar evolution with ultimate‑grade blast radius, visuals, and full projectile lifecycle parity.' },
+          { tag: 'BAL', text: 'Mech Mortar capped at level 7. Close‑range hits guaranteed — removed arming distance and improved continuous collision.' },
+          { tag: 'BAL', text: 'Bosses tougher: ~3× base HP and tighter spell cadence; enemy pressure ramp steepened over 15 minutes.' },
+          { tag: 'UI',  text: 'Passive icons restyled: Speed (>>>), Slow (<<<), and Magnet (upright, hollow) in gritty cyan‑on‑dark.' },
+          { tag: 'PERF', text: 'Centralized Explosion/Shockwave manager with pooling; Siege Howitzer parity; fewer allocations in hot paths.' },
+          { tag: 'FIX', text: 'Fortress visuals: character scales visibly during Fortress; evolved shells emit from center and detonate reliably.' }
+        ]
+      },
+      {
         version: '0.4.0',
         date: '2025-08-30',
         entries: [
@@ -293,7 +307,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.4.0 — PATCH NOTES</div>
+            <div class="version-tag">v0.4.1 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
@@ -347,7 +361,7 @@ export class MainMenu {
                 <div class="portrait-row">
                   <button class="op-arrow left" id="prev-op-btn" aria-label="Previous operative" title="Previous">◄</button>
                   <div class="preview-portrait small" id="preview-portrait">
-                    <img src="${(window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : (location.protocol==='file:'?'./assets/player/wasteland_scavenger.png':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/player/wasteland_scavenger.png':'/assets/player/wasteland_scavenger.png'))}" alt="Character" />
+                    <img src="${(window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/player/wasteland_scavenger.png') : '/assets/player/wasteland_scavenger.png'}" alt="Character" />
                   </div>
                   <button class="op-arrow right" id="next-op-btn" aria-label="Next operative" title="Next">►</button>
                 </div>
