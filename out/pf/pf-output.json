@@ -1,0 +1,402 @@
+{
+  "generatedAt": "2025-09-05T20:11:58.407Z",
+  "level": 7,
+  "timeMinutes": 15,
+  "config": {
+    "level": 7,
+    "timeMinutes": 15,
+    "weights": {
+      "BOSS": 0.35,
+      "ELITE": 0.25,
+      "HORDE": 0.4
+    },
+    "reliability": {
+      "pHit": {
+        "BOSS": 0.95,
+        "ELITE": 0.92,
+        "HORDE": 0.9
+      },
+      "pChain": {
+        "BOSS": 0.2,
+        "ELITE": 0.6,
+        "HORDE": 0.9
+      },
+      "overlapEff": {
+        "BOSS": 1,
+        "ELITE": 0.9,
+        "HORDE": 0.8
+      },
+      "uptime": {
+        "BOSS": 0.9,
+        "ELITE": 0.9,
+        "HORDE": 0.85
+      }
+    },
+    "density": {
+      "rho": {
+        "BOSS": 0,
+        "ELITE": 0.000025,
+        "HORDE": 0.000066
+      },
+      "enemyRadiusPx": 20
+    },
+    "survivability": {
+      "kSurv": 0.5,
+      "kSustain": 0.5,
+      "ehpRef": 110,
+      "hpmRef": 20,
+      "clampMin": 0.9,
+      "clampMax": 1.1
+    }
+  },
+  "results": [
+    {
+      "operativeId": "cyber_runner",
+      "operativeName": "Cyber Runner",
+      "defaultWeapon": 9,
+      "scenarios": {
+        "BOSS": {
+          "ST": 1396.36035,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 1256.724315
+        },
+        "ELITE": {
+          "ST": 1149.425046,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 1034.4825414000002
+        },
+        "HORDE": {
+          "ST": 624.687525,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 562.2187725000001
+        }
+      },
+      "totalPF": 923.3616546
+    },
+    {
+      "operativeId": "heavy_gunner",
+      "operativeName": "Heavy Gunner",
+      "defaultWeapon": 13,
+      "scenarios": {
+        "BOSS": {
+          "ST": 1034.208,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 930.7872000000001
+        },
+        "ELITE": {
+          "ST": 851.3164800000001,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 766.184832
+        },
+        "HORDE": {
+          "ST": 462.672,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 416.4048
+        }
+      },
+      "totalPF": 683.883648
+    },
+    {
+      "operativeId": "bio_engineer",
+      "operativeName": "Bio Engineer",
+      "defaultWeapon": 11,
+      "scenarios": {
+        "BOSS": {
+          "ST": 246.98419199999998,
+          "AOE": 0,
+          "Control": 3.7047628799999996,
+          "SurviveScale": 0.9,
+          "PF": 225.620059392
+        },
+        "ELITE": {
+          "ST": 0,
+          "AOE": 592.4947754618478,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 533.2452979156631
+        },
+        "HORDE": {
+          "ST": 0,
+          "AOE": 1284.5973682477165,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 1156.1376314229449
+        }
+      },
+      "totalPF": 674.7333978352938
+    },
+    {
+      "operativeId": "neural_nomad",
+      "operativeName": "Neural Nomad",
+      "defaultWeapon": 15,
+      "scenarios": {
+        "BOSS": {
+          "ST": 176.300145,
+          "AOE": 634.6805219999999,
+          "Control": 31.734026099999994,
+          "SurviveScale": 0.9,
+          "PF": 758.4432237899998
+        },
+        "ELITE": {
+          "ST": 145.12285619999997,
+          "AOE": 553.1741812800001,
+          "Control": 27.658709064000007,
+          "SurviveScale": 0.9,
+          "PF": 653.3601718896001
+        },
+        "HORDE": {
+          "ST": 78.87111749999998,
+          "AOE": 518.117368817664,
+          "Control": 25.9058684408832,
+          "SurviveScale": 0.9,
+          "PF": 560.6049192826924
+        }
+      },
+      "totalPF": 653.0371390119769
+    },
+    {
+      "operativeId": "data_sorcerer",
+      "operativeName": "Data Sorcerer",
+      "defaultWeapon": 31,
+      "scenarios": {
+        "BOSS": {
+          "ST": 732.2562,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 659.0305800000001
+        },
+        "ELITE": {
+          "ST": 709.13232,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 638.219088
+        },
+        "HORDE": {
+          "ST": 655.1766,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 589.65894
+        }
+      },
+      "totalPF": 626.079051
+    },
+    {
+      "operativeId": "ghost_operative",
+      "operativeName": "Ghost Operative",
+      "defaultWeapon": 16,
+      "scenarios": {
+        "BOSS": {
+          "ST": 941.0415000000002,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 846.9373500000002
+        },
+        "ELITE": {
+          "ST": 774.6257400000002,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 697.1631660000002
+        },
+        "HORDE": {
+          "ST": 420.99225000000007,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 378.8930250000001
+        }
+      },
+      "totalPF": 622.2760740000001
+    },
+    {
+      "operativeId": "shadow_operative",
+      "operativeName": "Shadow Operative",
+      "defaultWeapon": 19,
+      "scenarios": {
+        "BOSS": {
+          "ST": 919.0585,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 827.15265
+        },
+        "ELITE": {
+          "ST": 756.53026,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 680.877234
+        },
+        "HORDE": {
+          "ST": 411.15775,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 370.04197500000004
+        }
+      },
+      "totalPF": 607.7395260000001
+    },
+    {
+      "operativeId": "tech_warrior",
+      "operativeName": "Tech Warrior",
+      "defaultWeapon": 22,
+      "scenarios": {
+        "BOSS": {
+          "ST": 870.732,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 783.6588
+        },
+        "ELITE": {
+          "ST": 716.7499200000001,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 645.0749280000001
+        },
+        "HORDE": {
+          "ST": 389.53800000000007,
+          "AOE": 60.08234112000007,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 404.6583070080001
+        }
+      },
+      "totalPF": 597.4126348032
+    },
+    {
+      "operativeId": "titan_mech",
+      "operativeName": "Titan Mech",
+      "defaultWeapon": 17,
+      "scenarios": {
+        "BOSS": {
+          "ST": 790.221096,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9981818181818182,
+          "PF": 788.7843303709091
+        },
+        "ELITE": {
+          "ST": 650.47673376,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9981818181818182,
+          "PF": 649.2940487895273
+        },
+        "HORDE": {
+          "ST": 353.519964,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9981818181818182,
+          "PF": 352.8772004290909
+        }
+      },
+      "totalPF": 579.5489079988364
+    },
+    {
+      "operativeId": "wasteland_scavenger",
+      "operativeName": "Wasteland Scavenger",
+      "defaultWeapon": 25,
+      "scenarios": {
+        "BOSS": {
+          "ST": 352.42416,
+          "AOE": 0,
+          "Control": 32.503679999999996,
+          "SurviveScale": 0.9,
+          "PF": 346.435056
+        },
+        "ELITE": {
+          "ST": 290.1007296,
+          "AOE": 105.35630489065858,
+          "Control": 17.837107200000002,
+          "SurviveScale": 1.1,
+          "PF": 454.6235558597245
+        },
+        "HORDE": {
+          "ST": 157.66343999999998,
+          "AOE": 603.0411663584963,
+          "Control": 5.654879999999999,
+          "SurviveScale": 1.1,
+          "PF": 842.9954349943459
+        }
+      },
+      "totalPF": 572.1063325626695
+    },
+    {
+      "operativeId": "rogue_hacker",
+      "operativeName": "Rogue Hacker",
+      "defaultWeapon": 12,
+      "scenarios": {
+        "BOSS": {
+          "ST": 857.6928,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 771.92352
+        },
+        "ELITE": {
+          "ST": 706.0165995789474,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 635.4149396210527
+        },
+        "HORDE": {
+          "ST": 383.70467368421055,
+          "AOE": 0,
+          "Control": 0,
+          "SurviveScale": 0.9,
+          "PF": 345.3342063157895
+        }
+      },
+      "totalPF": 567.160649431579
+    },
+    {
+      "operativeId": "psionic_weaver",
+      "operativeName": "Psionic Weaver",
+      "defaultWeapon": 14,
+      "scenarios": {
+        "BOSS": {
+          "ST": 632.6022857142857,
+          "AOE": 0,
+          "Control": 30.364909714285712,
+          "SurviveScale": 0.9,
+          "PF": 596.6704758857143
+        },
+        "ELITE": {
+          "ST": 612.6253714285715,
+          "AOE": 0,
+          "Control": 29.406017828571432,
+          "SurviveScale": 0.9,
+          "PF": 577.8282503314286
+        },
+        "HORDE": {
+          "ST": 566.0125714285714,
+          "AOE": 0,
+          "Control": 27.168603428571426,
+          "SurviveScale": 0.9,
+          "PF": 533.8630573714285
+        }
+      },
+      "totalPF": 566.8369520914285
+    }
+  ]
+}

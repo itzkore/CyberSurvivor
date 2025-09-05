@@ -78,7 +78,7 @@ export class Player {
   public globalDamageMultiplier: number = 1;
   /** Global multiplicative area bonus from passives (1 = base). Used for AoE radii when applicable. */
   public globalAreaMultiplier: number = 1;
-  public magnetRadius: number = 50; // Radius for gem collection
+  public magnetRadius: number = 60; // QoL: +20% base gem pickup radius for smoother flow
   public attackSpeed: number = 1; // Attack speed multiplier (1 = base)
   // Plasma weapon heat (0..1)
   public plasmaHeat: number = 0;

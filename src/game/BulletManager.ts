@@ -1744,14 +1744,14 @@ export class BulletManager {
             if ((b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE)) {
               try {
                 const lvl = (b as any).level || 1;
-                const baseR = 28, baseMs = 2600;
+                const baseR = 34, baseMs = 3000;
                 let radius: number = (b as any).puddleRadius;
                 let lifeMs: number = (b as any).puddleLifeMs;
                 if (radius == null) {
                   radius = baseR + (lvl - 1) * 3;
                   try { const mul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1); radius *= (mul || 1); } catch { /* ignore */ }
                 }
-                if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 200;
+                  if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 240;
                 const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
                 const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
                 this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs, isSludge ? { isSludge: true, potency } : undefined);
@@ -2205,7 +2205,7 @@ export class BulletManager {
         if (b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE) {
                 try {
                   const lvl = (b as any).level || 1;
-                  const baseR = 28, baseMs = 2600;
+                  const baseR = 34, baseMs = 3000;
                   // Prefer precomputed puddle params, else derive now
                   let radius: number = (b as any).puddleRadius;
                   let lifeMs: number = (b as any).puddleLifeMs;
@@ -2218,7 +2218,7 @@ export class BulletManager {
                     } catch { /* ignore */ }
                   }
                   if (lifeMs == null) {
-                    lifeMs = baseMs + (lvl - 1) * 200;
+                    lifeMs = baseMs + (lvl - 1) * 240;
                   }
           const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
           const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
@@ -2669,7 +2669,7 @@ export class BulletManager {
           if (dxB*dxB + dyB*dyB <= rsB*rsB) {
             // Spawn puddle using precomputed params if available
             const lvl = (b as any).level || 1;
-            const baseR = 28, baseMs = 2600;
+            const baseR = 34, baseMs = 3000;
             let radius: number = (b as any).puddleRadius;
             let lifeMs: number = (b as any).puddleLifeMs;
             if (radius == null) {
@@ -2680,7 +2680,7 @@ export class BulletManager {
               } catch { /* ignore */ }
             }
             if (lifeMs == null) {
-              lifeMs = baseMs + (lvl - 1) * 200;
+              lifeMs = baseMs + (lvl - 1) * 240;
             }
             const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
             const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
@@ -2746,15 +2746,15 @@ export class BulletManager {
   // For BIO_TOXIN, spawn a poison puddle on expiry (ms-based)
     if ((b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE) && b.lifeMs !== undefined && b.lifeMs <= 0) {
         try {
-          const lvl = (b as any).level || 1;
-          const baseR = 28, baseMs = 2600;
+            const lvl = (b as any).level || 1;
+            const baseR = 34, baseMs = 3000;
           let radius: number = (b as any).puddleRadius;
           let lifeMs: number = (b as any).puddleLifeMs;
           if (radius == null) {
             radius = baseR + (lvl - 1) * 3;
             try { const mul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1); radius *= (mul || 1); } catch { /* ignore */ }
           }
-          if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 200;
+      if (lifeMs == null) lifeMs = baseMs + (lvl - 1) * 240;
       const isSludge = (b.weaponType === WeaponType.LIVING_SLUDGE);
       const potency = isSludge ? Math.max(0, Math.round((lvl - 1) * 0.6)) : 0;
       this.enemyManager.spawnPoisonPuddle(b.x, b.y, radius, lifeMs, isSludge ? { isSludge: true, potency } : undefined);

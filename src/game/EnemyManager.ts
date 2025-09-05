@@ -261,7 +261,7 @@ export class EnemyManager {
   // Poison puddle system
     private poisonPuddles: { x: number, y: number, radius: number, life: number, maxLife: number, active: boolean, vx?: number, vy?: number, isSludge?: boolean, potency?: number }[] = [];
   /** Maximum radius cap for merged sludge puddles (absolute, world units). */
-  private readonly maxSludgeRadiusCap: number = 800;
+  private readonly maxSludgeRadiusCap: number = 1100;
   // Bio Engineer Outbreak! state
   private bioOutbreakUntil: number = 0;
   private bioOutbreakRadius: number = 0;
@@ -1776,16 +1776,18 @@ export class EnemyManager {
     } catch { /* ignore */ }
   }
 
-  /** Apply or refresh poison on boss (reduced slow cap same as enemies). */
+  /** Apply or refresh poison on boss (unlimited stacking on boss). */
   private applyBossPoison(boss: any, stacks: number = 1) {
-    const now = performance.now();
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     const b: any = boss as any;
     if (!b._poisonStacks) {
       b._poisonStacks = 0;
       b._poisonNextTick = now + this.poisonTickIntervalMs;
       b._poisonExpire = now + this.poisonDurationMs;
     }
-  b._poisonStacks = Math.min(this.getPoisonMaxStacks(), (b._poisonStacks || 0) + stacks);
+    // Unlimited stacking for boss: do not clamp by getPoisonMaxStacks()
+    const add = Math.max(0, (stacks as number) | 0);
+    b._poisonStacks = ((b._poisonStacks as number) | 0) + add;
     b._poisonExpire = now + this.poisonDurationMs;
   }
 
@@ -1879,7 +1881,6 @@ export class EnemyManager {
     bAny._neuralDebuffUntil = now + 2000;
     bAny._neuralDot = { next: now + 500, left: 3, dmg: perTick };
   }
-
   /** Apply or refresh poison on an enemy, increasing stacks up to cap and refreshing expiration. */
   private applyPoison(enemy: Enemy, stacks: number = 1) {
     if (!enemy.active || enemy.hp <= 0 || stacks <= 0) return;
@@ -2162,7 +2163,7 @@ export class EnemyManager {
     }
   // Merge pass: allow more merges under good performance for exciting chain reactions
   // Make growth easier: raise merge budget across perf tiers
-  let mergesLeft = (this.avgFrameMs > 40) ? 6 : (this.avgFrameMs > 28) ? 10 : (this.avgFrameMs > 18) ? 16 : 24;
+  let mergesLeft = (this.avgFrameMs > 40) ? 8 : (this.avgFrameMs > 28) ? 14 : (this.avgFrameMs > 18) ? 20 : 28;
     for (let i = 0; i < this.poisonPuddles.length && mergesLeft > 0; i++) {
       const a = this.poisonPuddles[i]; if (!a.active || !a.isSludge) continue;
       for (let j = i + 1; j < this.poisonPuddles.length && mergesLeft > 0; j++) {
@@ -2181,8 +2182,8 @@ export class EnemyManager {
           // Base absorb fraction increased (0.25), potency boosts more, and near-cap damping is less punitive
           const baseFrac = 0.25;
           const potBoost = Math.min(0.14, 0.012 * potSum);
-          const nearDampen = Math.max(0.35, 1 - near * 0.6); // retain growth near cap for more satisfying merges
-          const absorbFrac = Math.max(0.10, Math.min(0.45, (baseFrac + potBoost) * nearDampen));
+          const nearDampen = Math.max(0.50, 1 - near * 0.45); // less punitive near cap
+          const absorbFrac = Math.max(0.12, Math.min(0.55, (baseFrac + potBoost) * nearDampen));
           const gained = areaB * absorbFrac;
           const newArea = Math.min(capArea, areaA + gained);
           const newR = Math.sqrt(newArea);
