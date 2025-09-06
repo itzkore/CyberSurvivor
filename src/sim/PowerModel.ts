@@ -49,8 +49,6 @@ export interface PowerConfig {
   density: DensityModel;
   survivability: SurvivabilityKnobs;
   timeMinutes?: number; // for heal efficiency shaping (0..)
-  // When true, evaluate the evolved form of each operative's default weapon if available
-  evaluateEvolved?: boolean;
 }
 
 export interface Breakdown {
@@ -74,9 +72,9 @@ export interface PFResult {
 function getHealEfficiency(gameTimeSec: number): number {
   const minutes = gameTimeSec / 60;
   if (minutes <= 15) return 1.0;
-  if (minutes >= 30) return 0.1;
+  if (minutes >= 30) return 0.01;
   const t = (minutes - 15) / 15; // 0..1 across 15->30m
-  return 1.0 - 0.9 * t; // 1.0 -> 0.1
+  return 1.0 - 0.99 * t; // 1.0 -> 0.01
 }
 
 function computeEHP(hp: number, defense: number): number {
@@ -106,23 +104,21 @@ function expectedUniqueHitsLine(rho: number, pathLen: number, corridorWidth: num
 }
 
 // Extract per-level damage/cooldown/speed/range from WEAPON_SPECS
-function getWeaponLevelStats(weapon: WeaponType, level: number): { damage: number; cooldown: number; speed?: number; range?: number; projectileSize?: number; salvo?: number } & Record<string, any> {
+function getWeaponLevelStats(weapon: WeaponType, level: number): { damage: number; cooldown: number; speed?: number; range?: number; projectileSize?: number; salvo?: number } {
   const spec: any = (WEAPON_SPECS as any)[weapon];
-  if (!spec) return { damage: 0, cooldown: 60 } as any;
+  if (!spec) return { damage: 0, cooldown: 60 };
   if (typeof spec.getLevelStats === 'function') {
-    const s: any = spec.getLevelStats(level) as any;
-    // Preserve any custom/evolved fields from getLevelStats while normalizing core ones
+    const s = spec.getLevelStats(level);
     return {
-      ...(s || {}),
-      damage: (s && s.damage !== undefined) ? s.damage : (spec.damage ?? 0),
-      cooldown: (s && s.cooldown !== undefined) ? s.cooldown : (spec.cooldown ?? 60),
-      speed: (s && s.speed !== undefined) ? s.speed : spec.speed,
-      range: (s && s.range !== undefined) ? s.range : spec.range,
-      projectileSize: s?.projectileSize,
-      salvo: (s && s.salvo !== undefined) ? s.salvo : spec.salvo
+      damage: s.damage ?? spec.damage ?? 0,
+      cooldown: s.cooldown ?? spec.cooldown ?? 60,
+      speed: s.speed ?? spec.speed,
+      range: s.range ?? spec.range,
+    projectileSize: s.projectileSize,
+    salvo: s.salvo ?? spec.salvo
     };
   }
-  return { damage: spec.damage ?? 0, cooldown: spec.cooldown ?? 60, speed: spec.speed, range: spec.range, projectileSize: undefined, salvo: spec.salvo } as any;
+  return { damage: spec.damage ?? 0, cooldown: spec.cooldown ?? 60, speed: spec.speed, range: spec.range, projectileSize: undefined, salvo: spec.salvo };
 }
 
 // Generic ST component (per-target contact cap optional)
@@ -172,17 +168,7 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
   const char = CHARACTERS.find(c => c.id === operativeId);
   if (!char) throw new Error(`Unknown operative: ${operativeId}`);
   const level = clamp(Math.round(cfg.level), 1, 7);
-  // Optionally swap to evolved weapon if available
-  let defWeapon = char.defaultWeapon;
-  try {
-    if (cfg.evaluateEvolved) {
-      const spec: any = (WEAPON_SPECS as any)[defWeapon];
-      const evo = spec && spec.evolution;
-      if (evo && typeof evo.evolvedWeaponType === 'number') {
-        defWeapon = evo.evolvedWeaponType;
-      }
-    }
-  } catch { /* ignore */ }
+  const defWeapon = char.defaultWeapon;
   const wStats = getWeaponLevelStats(defWeapon, level);
 
   const scenarios: Record<ScenarioKey, Breakdown> = { BOSS: null as any, ELITE: null as any, HORDE: null as any };
@@ -236,7 +222,7 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
     }
 
     // Tachyon Spear: treat as a piercing dash-lance; model expected unique hits along lane
-    if (defWeapon === WeaponType.TACHYON_SPEAR || defWeapon === WeaponType.SINGULARITY_SPEAR) {
+    if (defWeapon === WeaponType.TACHYON_SPEAR) {
   const shotsPerSec = (60 / Math.max(1, wStats.cooldown)) * ((wStats as any).salvo || 1);
       const spearWidth = 24; // approximate spear hit corridor
       const hits = Math.max(1, expectedUniqueHitsLine(rho, range || 680, spearWidth));
@@ -244,15 +230,6 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
       // Single-target portion stays in ST; extra hits contribute to AoE pressure
       const extraHits = Math.max(0, hits - 1);
       AOE += baseDps * extraHits;
-      // Evolved Singularity Spear adds an implosion pulse around the last target
-      if (defWeapon === WeaponType.SINGULARITY_SPEAR) {
-        const implosionFrac = 0.4;
-        const eventsPerSec = shotsPerSec;
-        const radius = 140;
-        const E = expectedTargetsInRadius(rho, radius);
-        const perEvent = wStats.damage * implosionFrac * E;
-        AOE += perEvent * eventsPerSec * critMult * overlapEff * uptime * pHit;
-      }
     }
 
     // Psionic Wave: beam that sweeps a lane with pierce and thickness
@@ -288,25 +265,7 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
       AOE += Math.max(0, dps - singleDps);
     }
 
-    // Oracle Array (evolved Glyph): multi-lane predictive lances with innate crit amp
-    if (defWeapon === WeaponType.ORACLE_ARRAY) {
-      const lanes = (wStats as any).lanes ?? 3;
-      const pierce = (wStats as any).pierce ?? 4;
-      const shotsPerSec = (60 / Math.max(1, wStats.cooldown));
-      const laneWidth = 20; // similar to Glyph Compiler
-      const hitsRaw = expectedUniqueHitsLine(rho, range || 900, laneWidth);
-      const hitsPerLane = Math.max(1, Math.min(pierce, hitsRaw));
-      const totalHits = hitsPerLane * Math.max(1, lanes);
-      const perShot = wStats.damage * totalHits;
-      const dps = perShot * shotsPerSec * critMult * overlapEff * uptime * pHit;
-      const singleDps = wStats.damage * shotsPerSec * critMult * uptime * pHit;
-      ST = Math.max(ST, singleDps);
-      AOE += Math.max(0, dps - singleDps);
-      // Paralysis/crit amp -> small control credit
-      Control += singleDps * 0.06 * 0.6;
-    }
-
-  // Neural Threader (Nomad): threads anchor targets and pulse; model pulses as AoE over time
+    // Neural Threader (Nomad): threads anchor targets and pulse; model pulses as AoE over time
     if (defWeapon === WeaponType.NOMAD_NEURAL) {
   const shotsPerSec = (60 / Math.max(1, wStats.cooldown)) * ((wStats as any).salvo || 1);
       const anchors = (wStats as any).anchors ?? 2;
@@ -321,172 +280,7 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
       Control += dps * 0.05;
     }
 
-    // Neural Nexus (evolved): larger mesh, faster pulses, expiry detonation
-    if (defWeapon === WeaponType.NEURAL_NEXUS) {
-      const shotsPerSec = 60 / Math.max(1, wStats.cooldown);
-      const anchors = (wStats as any).anchors ?? 10;
-      const threadLifeSec = Math.max(0.5, ((wStats as any).threadLifeMs ?? 5200) / 1000);
-      const pulseIntervalSec = Math.max(0.12, ((wStats as any).pulseIntervalMs ?? 380) / 1000);
-      const pulsePct = Math.max(0, (wStats as any).pulsePct ?? 1.2);
-      const detonateFrac = Math.max(0, (wStats as any).detonateFrac ?? 3.0);
-      const expectedAnchors = Math.min(anchors, Math.max(1, expectedUniqueHitsLine(rho, range || 820, 26)));
-      const pulsesPerSec = shotsPerSec * (threadLifeSec / pulseIntervalSec);
-      const pulseDps = (wStats.damage * pulsePct) * expectedAnchors * pulsesPerSec * critMult * overlapEff * uptime * pHit;
-      const detonateDps = (wStats.damage * detonateFrac) * shotsPerSec * Math.max(1, expectedAnchors * 0.5) * critMult * overlapEff * uptime * pHit;
-      AOE += pulseDps + detonateDps;
-      Control += (pulseDps + detonateDps) * 0.05;
-    }
-
-    // Living Sludge (Bio evolution): model like Bio Toxin but with stronger stacking, larger/longer puddles, and heavy slow
-    if (defWeapon === WeaponType.LIVING_SLUDGE) {
-      const poisonDpsPerStack = 6.4; // baseline per EnemyManager
-      if (scen === 'BOSS') {
-        const tickHz = 2;
-        const stacksPerTick = 3; // evolved applies more frequent/stronger stacking
-        const durationSec = 6;   // longer stack memory from evolved pools
-        const contactUptime = clamp(0.65 + 0.07 * (level - 1), 0.6, 0.98);
-        const stackAddRatePerSec = stacksPerTick * tickHz * contactUptime;
-        const avgBossStacks = stackAddRatePerSec * durationSec;
-        const baseLevelMul = 1 + Math.max(0, (level - 1)) * 0.40; // steeper curve when evolved
-        const evolvedMul = 1.35; // evolved sludge potency amp
-        const inSludgeAmp = 1.15; // extra corrosive amp while boss stands in mega pools
-        const bossDps = poisonDpsPerStack * avgBossStacks * baseLevelMul * evolvedMul * inSludgeAmp;
-        ST += bossDps * uptime * pHit;
-      } else {
-        const shotsPerSec = (60 / Math.max(1, wStats.cooldown)) * ((wStats as any).salvo || 1);
-        // Evolved geometry: larger and longer-lived puddles; more active via merging/flowing
-        const baseRadius = 54 + (level - 1) * 6; // noticeably larger
-        const lifeSec = (5000 + (level - 1) * 400) / 1000;
-        const puddlesActive = shotsPerSec * lifeSec * 1.6; // more overlaps/mergers
-        const expectedTargets = expectedTargetsInRadius(rho, baseRadius);
-        const avgStacks = Math.min(40, 12 + (level - 1) * 3.2); // higher cap and faster ramp
-        const dpsPerEnemy = poisonDpsPerStack * avgStacks * 1.1; // slight extra potency
-        const dpsPerPuddle = dpsPerEnemy * expectedTargets;
-        const aoeDps = dpsPerPuddle * puddlesActive * overlapEff * uptime * pHit;
-        AOE += aoeDps;
-      }
-      // Control: evolved slow is heavy; value a bit higher than base
-      const controlUptime = 0.75;
-      Control += (ST + AOE) * 0.08 * controlUptime * 0.25;
-    }
-
-    // Runic Engine: dense pulses with chaining inside a large sigil radius
-    if (defWeapon === WeaponType.RUNIC_ENGINE) {
-      const pulseCount = Math.max(1, (wStats as any).pulseCount ?? 8);
-      const pulseDmg = Math.max(1, (wStats as any).pulseDamage ?? Math.floor(Math.max(1, wStats.damage) / Math.max(1, pulseCount)));
-      const eventsPerSec = 60 / Math.max(1, wStats.cooldown);
-      const perEvent = pulseCount * pulseDmg;
-      AOE += perEvent * eventsPerSec * critMult * overlapEff * uptime * pHit;
-      Control += AOE * 0.04;
-    }
-
-    // Arcane Conflux: orbit slow field that lashes beams
-    if (defWeapon === WeaponType.ARCANE_CONFLUX) {
-      const beams = Math.max(1, (wStats as any).beams ?? 4);
-      const pulseDmg = Math.max(1, (wStats as any).pulseDamage ?? Math.max(1, wStats.damage));
-      const orbitRadius = Math.max(60, (wStats as any).orbitRadius ?? 120);
-      const eventsPerSec = 60 / Math.max(1, wStats.cooldown);
-      const E = Math.max(1, Math.min(beams, expectedTargetsInRadius(rho, orbitRadius)));
-      const dps = beams * pulseDmg * eventsPerSec * critMult * overlapEff * uptime * pHit * (E / beams);
-      AOE += dps;
-      Control += dps * 0.08; // heavy slow
-    }
-
-    // Resonant Web: orbiting strands that pulse and amplify marks
-    if (defWeapon === WeaponType.RESONANT_WEB) {
-      const strands = Math.max(2, (wStats as any).strands ?? 4);
-      const pulseIntervalMs = Math.max(120, (wStats as any).pulseIntervalMs ?? 400);
-      const pulseHz = 1000 / pulseIntervalMs;
-      const pulseDmg = Math.max(1, (wStats as any).pulseDamage ?? Math.max(1, wStats.damage));
-      const orbitRadius = Math.max(80, (wStats as any).orbitRadius ?? 150);
-      const E = expectedTargetsInRadius(rho, orbitRadius);
-      const dps = pulseDmg * strands * pulseHz * critMult * overlapEff * uptime * pHit * Math.max(1, E);
-      AOE += dps;
-      Control += dps * 0.06;
-    }
-
-    // Spectral Executioner: beam + execution pulse that can chain
-    if (defWeapon === WeaponType.SPECTRAL_EXECUTIONER) {
-      const shotsPerSec = 60 / Math.max(1, wStats.cooldown);
-      const execMult = Math.max(0, (wStats as any).execMult ?? 2.0);
-      const chainCount = Math.max(0, (wStats as any).chainCount ?? 2);
-      const chainMult = Math.max(0, (wStats as any).chainMult ?? 0.5);
-      const stBeam = wStats.damage * shotsPerSec * critMult * uptime * pHit;
-      ST = Math.max(ST, stBeam);
-      const expectedChains = chainCount * chainMult * (scen === 'HORDE' ? 1.0 : (scen === 'ELITE' ? 0.6 : 0.2));
-      const pulsesPerShot = 1 + expectedChains;
-      const aoePerShot = wStats.damage * execMult * pulsesPerShot;
-      AOE += aoePerShot * shotsPerSec * critMult * overlapEff * uptime * pHit;
-    }
-
-    // Black Sun: seed DoT within pull radius and collapse shockwave
-    if (defWeapon === WeaponType.BLACK_SUN) {
-      const shotsPerSec = 60 / Math.max(1, wStats.cooldown);
-      const seedTicks = Math.max(0, (wStats as any).seedTicks ?? 6);
-      const seedTickFrac = Math.max(0, (wStats as any).seedTickFrac ?? 0.5);
-      const pullRadius = Math.max(80, (wStats as any).pullRadius ?? 180);
-      const collapseRadius = Math.max(120, (wStats as any).collapseRadius ?? 180);
-      const collapseMult = Math.max(0, (wStats as any).collapseMult ?? 4.0);
-      const Epull = expectedTargetsInRadius(rho, pullRadius);
-      const Ecollapse = expectedTargetsInRadius(rho, collapseRadius);
-      const seedPerShot = wStats.damage * seedTickFrac * seedTicks * Math.max(1, Epull);
-      const collapsePerShot = wStats.damage * collapseMult * Math.max(1, Ecollapse);
-      const perShot = seedPerShot + collapsePerShot;
-      const dps = perShot * shotsPerSec * critMult * overlapEff * uptime * pHit;
-      const stPart = wStats.damage * shotsPerSec * critMult * uptime * pHit;
-      ST = Math.max(ST, stPart * 0.5);
-      AOE += Math.max(0, dps - stPart * 0.5);
-      Control += dps * 0.05;
-    }
-
-    // Siege Howitzer: massive explosion AoE
-    if (defWeapon === WeaponType.SIEGE_HOWITZER) {
-      const shotsPerSec = 60 / Math.max(1, wStats.cooldown);
-      const radius = (wStats as any).explosionRadius ?? 240;
-      const E = expectedTargetsInRadius(rho, radius);
-      const perShot = wStats.damage * Math.max(1, E);
-      const dps = perShot * shotsPerSec * critMult * overlapEff * uptime * pHit;
-      const stPart = wStats.damage * shotsPerSec * critMult * uptime * pHit;
-      ST = Math.max(ST, stPart);
-      AOE += Math.max(0, dps - stPart);
-    }
-
-    // Lava Minigun: short micro-beam that hits many in a lane
-    if (defWeapon === WeaponType.GUNNER_LAVA_MINIGUN) {
-      const length = (wStats as any).length ?? 220;
-      const thickness = (wStats as any).thickness ?? 8;
-      const hits = Math.max(1, expectedUniqueHitsLine(rho, length, Math.max(8, thickness)));
-      const shotsPerSec = 60 / Math.max(1, wStats.cooldown);
-      const dps = wStats.damage * hits * shotsPerSec * critMult * overlapEff * uptime * pHit;
-      const stPart = wStats.damage * shotsPerSec * critMult * uptime * pHit;
-      ST = Math.max(ST, stPart);
-      AOE += Math.max(0, dps - stPart);
-    }
-
-    // Hacker Backdoor: zone DPS and vulnerability control
-    if (defWeapon === WeaponType.HACKER_BACKDOOR) {
-      const zoneRadius = Math.max(80, (wStats as any).zoneRadius ?? 180);
-      const sustainDps = Math.max(0, (wStats as any).sustainDps ?? 0);
-      const E = expectedTargetsInRadius(rho, zoneRadius);
-      const zoneDps = sustainDps * Math.max(1, E) * overlapEff * uptime * pHit;
-      AOE += zoneDps;
-      const vulnFrac = Math.max(0, (wStats as any).vulnFrac ?? 0.25);
-      const vulnUptime = 0.7;
-      Control += (ST + AOE) * vulnFrac * 0.15 * vulnUptime;
-    }
-
-    // Industrial Grinder: orbiting sustained damage
-    if (defWeapon === WeaponType.INDUSTRIAL_GRINDER) {
-      const orbitRadius = Math.max(80, (wStats as any).orbitRadius ?? 140);
-      const durationMs = Math.max(200, (wStats as any).durationMs ?? 1200);
-      const cooldownMs = Math.max(200, (wStats as any).cooldownMs ?? ((wStats.cooldown || 160) * (1000/60)));
-      const uptimeFrac = Math.min(1, durationMs / cooldownMs);
-      const E = expectedTargetsInRadius(rho, orbitRadius);
-      const dps = wStats.damage * uptimeFrac * Math.max(1, E) * critMult * overlapEff * uptime * pHit;
-      AOE += dps;
-      Control += dps * 0.04;
-    }
-    // Bio Toxin: model boss DoT as ST; mobs via puddle AoE proportional to area and density
+  // Bio Toxin: model boss DoT as ST; mobs via puddle AoE proportional to area and density
     if (defWeapon === WeaponType.BIO_TOXIN) {
       // Use EnemyManager poison model rough constants
       const poisonDpsPerStack = 6.4; // synced with EnemyManager after buff
@@ -569,7 +363,6 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
 export interface RunOptions {
   level?: number;
   timeMinutes?: number;
-  evaluateEvolved?: boolean;
 }
 
 export interface PowerRunResult {
@@ -597,8 +390,7 @@ export function runPowerFactor(opts: RunOptions = {}): PowerRunResult {
       rho: { BOSS: 0.0, ELITE: 2.5e-5, HORDE: 6.6e-5 },
       enemyRadiusPx: AVG_ENEMY_RADIUS
     },
-  survivability: { kSurv: 0.5, kSustain: 0.5, ehpRef: 110, hpmRef: 20, clampMin: 0.9, clampMax: 1.1 },
-  evaluateEvolved: !!opts.evaluateEvolved
+    survivability: { kSurv: 0.5, kSustain: 0.5, ehpRef: 110, hpmRef: 20, clampMin: 0.9, clampMax: 1.1 }
   };
 
   const results: PFResult[] = [];

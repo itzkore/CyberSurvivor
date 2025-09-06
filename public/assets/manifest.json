@@ -13,6 +13,27 @@
       "h": 64,
       "frames": 1
     },
+    "elite_dasher": {
+      "file": "assets/enemies/elite/elite_dasher.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "optional": true
+    },
+    "elite_gunner": {
+      "file": "assets/enemies/elite/elite_gunner.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "optional": true
+    },
+    "elite_suppresor": {
+      "file": "assets/enemies/elite/elite_suppresor.png",
+      "w": 64,
+      "h": 64,
+      "frames": 1,
+      "optional": true
+    },
     "eye": {
       "file": "assets/enemies/enemy_eye.png",
       "w": 64,
@@ -86,7 +107,16 @@
   "bullet_drone": { "file": "assets/projectiles/bullet_drone.png", "w": 48, "h": 48, "frames": 1 },
   "bullet_saw": { "file": "assets/projectiles/bullet_sawblade.png", "w": 32, "h": 32, "frames": 1 },
   "bullet_grinder": { "file": "assets/projectiles/bullet_sawblade.png", "w": 40, "h": 40, "frames": 1 },
-  "bullet_mortar": { "file": "assets/projectiles/bullet_mortar.png", "w": 16, "h": 16, "frames": 1 }
+  "bullet_mortar": { "file": "assets/projectiles/bullet_mortar.png", "w": 16, "h": 16, "frames": 1 },
+  "elite_gunner_bolt": { "file": "assets/projectiles/elite/elite_gunner_bolt.png", "w": 24, "h": 24, "frames": 1, "optional": true },
+  "elite_bomber_core": { "file": "assets/projectiles/elite/elite_bomber_core.png", "w": 32, "h": 32, "frames": 1, "optional": true },
+  "elite_mine": { "file": "assets/projectiles/elite/elite_mine.png", "w": 32, "h": 32, "frames": 1, "optional": true }
+  },
+  "vfx": {
+    "elite_charger_streak": { "file": "assets/vfx/elite_charger_streak.png", "w": 32, "h": 32, "frames": 1, "optional": true },
+    "elite_suppressor_shield": { "file": "assets/vfx/elite_suppressor_shield.png", "w": 64, "h": 64, "frames": 1, "optional": true },
+    "meteor_streak": { "file": "assets/vfx/meteor_streak.png", "w": 32, "h": 32, "frames": 1, "optional": true },
+    "ground_telegraph": { "file": "assets/vfx/ground_telegraph.png", "w": 32, "h": 32, "frames": 1, "optional": true }
   },
   "ui": {
     "hp_bar_bg": {

@@ -6,7 +6,7 @@ import { PASSIVE_SPECS } from '../game/PassiveConfig';
 import { Logger } from '../core/Logger';
 
 export interface UpgradeOption {
-  type: 'weapon' | 'passive' | 'skip';
+  type: 'weapon' | 'passive' | 'skip' | 'buff';
   id: number | WeaponType;
   name: string;
   description: string;
@@ -256,7 +256,20 @@ export class UpgradePanel {
             <path d='M30.9 7.2 10.4 30.1c-1.6 1.8-1.6 4.6.1 6.3 1.7 1.7 4.4 1.7 6.1 0l9.9-10.6v29.5c0 2.4 2 4.3 4.4 4.3s4.4-1.9 4.4-4.3V25.8l9.9 10.6c1.7 1.7 4.4 1.7 6.1 0 1.7-1.7 1.7-4.5.1-6.3L31.9 7.2a1.4 1.4 0 0 0-1-.4c-.4 0-.8.1-1 .4Z' fill='url(#gradPassive)' stroke='#00ff99' stroke-width='2' stroke-linejoin='round' stroke-linecap='round' />
           </svg>`;
   }
-      }
+  } else if (opt.type === 'buff') {
+        const label = opt.name || 'Buff';
+        iconHtml = `
+          <svg viewBox="0 0 64 64" width="52" height="52" role="img" aria-label="${label}">
+            <defs>
+              <linearGradient id="gradBuff" x1="0" y1="1" x2="0" y2="0">
+                <stop offset="0%" stop-color="#66ffcc"/>
+                <stop offset="100%" stop-color="#22aaff"/>
+              </linearGradient>
+            </defs>
+            <circle cx="32" cy="32" r="18" fill="none" stroke="url(#gradBuff)" stroke-width="3" />
+            <path d="M32 15 L36 27 L50 27 L39 35 L43 49 L32 41 L21 49 L25 35 L14 27 L28 27 Z" fill="url(#gradBuff)" opacity="0.75"/>
+          </svg>`;
+  }
 
       // Build supplemental info rows: unlock/evolution/deltas
       let infoHtml = '';
@@ -378,7 +391,12 @@ export class UpgradePanel {
               <span class="upgrade-title">${opt.name}</span>
               ${isClassWeapon && (opt.currentLevel||0) === 0 ? '<span class="badge badge-class" title="Class Weapon">C</span>' : ''}
             </div>
-            <div class="upgrade-type-line">${opt.type === 'weapon' ? '<span class="badge badge-weapon">Weapon</span>' : opt.type === 'passive' ? '<span class="badge badge-passive">Passive</span>' : '<span class="badge badge-skip">Skip</span>'}</div>
+            <div class="upgrade-type-line">${
+              opt.type === 'weapon' ? '<span class="badge badge-weapon">Weapon</span>' :
+              opt.type === 'passive' ? '<span class="badge badge-passive">Passive</span>' :
+              opt.type === 'buff' ? '<span class="badge" style="background:#2dbd8b;color:#012;">Buff</span>' :
+              '<span class="badge badge-skip">Skip</span>'
+            }</div>
           </div>
           <div class="upgrade-desc">${opt.description}</div>
           ${infoHtml}
@@ -406,11 +424,7 @@ export class UpgradePanel {
       container.appendChild(card);
     }
 
-    // Apply progress widths (CSP-safe)
-    container.querySelectorAll('.upgrade-progress-bar[data-progress]').forEach(el => {
-      const pct = (el as HTMLElement).getAttribute('data-progress');
-      if (pct) (el as HTMLElement).style.width = pct + '%';
-    });
+  // Progress widths are set via CSS using the data-progress attribute; no JS needed here.
   }
 
   /** Update reroll hint and button state */
@@ -442,6 +456,22 @@ export class UpgradePanel {
     } else if (chosen.type === 'passive') {
       const passiveSpec = PASSIVE_SPECS.find(ps => ps.id === chosen.id);
       if (passiveSpec) this.player.addPassive(passiveSpec.name);
+    } else if (chosen.type === 'buff') {
+      // Apply lightweight permanent buffs when all upgrades are exhausted
+      switch (chosen.id) {
+        case -1001: // Damage +10%
+          (this.player as any).globalDamageMultiplier = Math.max(0, ((this.player as any).globalDamageMultiplier || 1) * 1.10);
+          break;
+        case -1002: // Attack Speed +10%
+          this.player.attackSpeed = Math.max(0.05, (this.player.attackSpeed || 1) * 1.10);
+          break;
+        case -1003: // Max HP +10 (and heal +10, capped)
+          this.player.maxHp = Math.max(1, Math.round((this.player.maxHp || 0) + 10));
+          this.player.hp = Math.min(this.player.maxHp, Math.round((this.player.hp || 0) + 10));
+          break;
+        default:
+          break;
+      }
     }
 
     try { window.dispatchEvent(new CustomEvent('playerUpgraded')); } catch {}
@@ -503,8 +533,8 @@ export class UpgradePanel {
     const haveWeapons = this.player.activeWeapons.size;
     const havePassives = this.player.activePassives.length;
 
-    // Build weapon pool with capacity constraints: when at cap, only upgrades to owned weapons
-    // and immediately-available evolutions (which replace base) are allowed.
+  // Build weapon pool with capacity constraints: when at cap, only upgrades to owned weapons
+  // and immediately-available evolutions (which replace base) are allowed.
     let weaponPool: WeaponType[] = allowedWeaponTypes.slice();
     if (haveWeapons >= MAX_WEAPONS) {
       const evolvedTargets = this.getEvolvedTargetSet();
@@ -531,6 +561,16 @@ export class UpgradePanel {
         })
         .map(p => p.id)
     );
+
+    // If no weapons/passives/evolutions are available, return Buff choices instead of Skip
+    const noUpgrades = (weaponPool.length === 0) && (passivePool.length === 0) && (availableEvolutions.length === 0);
+    if (noUpgrades) {
+      return [
+        { type: 'buff', id: -1001, name: 'Damage +10%', description: 'Permanent +10% global damage', icon: '' },
+        { type: 'buff', id: -1002, name: 'Attack Speed +10%', description: 'Permanent +10% attack speed', icon: '' },
+        { type: 'buff', id: -1003, name: 'Max HP +10', description: 'Increase max HP by 10 and heal for 10', icon: '' }
+      ];
+    }
 
     // Ensure options are unique by (type:id)
     const used = new Set<string>();

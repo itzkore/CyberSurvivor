@@ -1682,7 +1682,7 @@ body .character-select-panel .matrix-bg-overlay { z-index: 0; }
 .upgrade-options-grid {
   display:grid;
   grid-template-columns: repeat(3, 400px); /* even larger cards for more readable info */
-  gap: 30px;
+  gap: 34px; /* a bit more vertical breathing room between larger cards */
   justify-content:center;
   justify-items:center;
 }
@@ -1699,35 +1699,35 @@ body .character-select-panel .matrix-bg-overlay { z-index: 0; }
 }
 @media (max-width: 780px) {
   .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,280px)!important; }
-  .upgrade-options-grid.fixed-three .upgrade-card { width:280px; height:200px; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:280px; height:240px; }
 }
 @media (max-width: 680px) {
   .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,260px)!important; }
-  .upgrade-options-grid.fixed-three .upgrade-card { width:260px; height:185px; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:260px; height:220px; }
 }
 @media (max-width: 600px) {
   .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,240px)!important; }
-  .upgrade-options-grid.fixed-three .upgrade-card { width:240px; height:175px; padding:10px 10px 30px; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:240px; height:210px; padding:12px 12px 34px; }
 }
 @media (max-width: 540px) {
   .upgrade-options-grid.fixed-three { grid-template-columns:repeat(3,220px)!important; }
-  .upgrade-options-grid.fixed-three .upgrade-card { width:220px; height:165px; padding:8px 8px 26px; }
+  .upgrade-options-grid.fixed-three .upgrade-card { width:220px; height:200px; padding:10px 10px 30px; }
   .upgrade-options-grid.fixed-three .upgrade-icon { width:42px; height:42px; }
   .upgrade-options-grid.fixed-three .upgrade-icon img { width:40px; height:40px; }
   .upgrade-options-grid.fixed-three .upgrade-title { font-size:.8rem; }
-  .upgrade-options-grid.fixed-three .upgrade-desc { font-size:.55rem; -webkit-line-clamp:3; line-clamp:3; }
+  .upgrade-options-grid.fixed-three .upgrade-desc { font-size:.58rem; -webkit-line-clamp:5; line-clamp:5; }
 }
 
 /* Responsive scaling tiers for upgrade panel/cards */
 @media (max-width: 1280px) {
   .upgrade-panel.ui-panel { width:min(100%, 1280px); }
   .upgrade-options-grid { grid-template-columns: repeat(3, 360px); gap:26px; }
-  .upgrade-card { width:360px; height:210px; padding:16px 16px 44px 16px; }
+  .upgrade-card { width:360px; height:270px; padding:18px 18px 50px 18px; }
   .upgrade-progress-wrapper { left:12px; right:12px; bottom:8px; }
   .upgrade-icon { width:64px; height:64px; }
   .upgrade-icon img { width:60px; height:60px; }
   .upgrade-title { font-size:1.12rem; }
-  .upgrade-desc { -webkit-line-clamp:3; line-clamp:3; }
+  .upgrade-desc { -webkit-line-clamp:6; line-clamp:6; }
 }
 @media (max-width: 980px) {
   .upgrade-panel.ui-panel { width:min(100%, 1100px); }
@@ -1785,8 +1785,8 @@ body .character-select-panel .matrix-bg-overlay { z-index: 0; }
   display:flex;
   flex-direction:column;
   width:400px;
-  height:240px;
-  padding:18px 18px 48px 18px;
+  height:320px; /* taller cards for comfortable text */
+  padding:20px 20px 56px 20px; /* more breathing room and a taller footer area */
   background: linear-gradient(145deg, rgba(0,25,28,0.42) 0%, rgba(0,18,24,0.58) 60%, rgba(0,14,20,0.78) 100%);
   border:1px solid var(--border-color);
   border-radius:14px;
@@ -1858,15 +1858,15 @@ body .character-select-panel .matrix-bg-overlay { z-index: 0; }
 .upgrade-card.is-passive .upgrade-icon.top-right { top:8px; right:10px; }
 .upgrade-card.is-passive .upgrade-icon.top-right .passive-arrow { width:52px; height:52px; }
 /* When icon is top-right, push text body below it */
-.upgrade-icon.top-right + .upgrade-body { margin-top:64px; }
+.upgrade-icon.top-right + .upgrade-body { margin-top:72px; }
 @media (max-width: 780px) { .upgrade-icon.top-right + .upgrade-body { margin-top:46px; } }
 @media (max-width: 600px) { .upgrade-icon.top-right + .upgrade-body { margin-top:42px; } }
-.upgrade-body { flex:1; display:flex; flex-direction:column; gap:4px; overflow:hidden; }
+.upgrade-body { flex:1; display:flex; flex-direction:column; gap:6px; overflow:hidden; }
 .upgrade-row { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
 .upgrade-title-line { display:flex; gap:8px; align-items:center; flex-wrap:nowrap; }
-.upgrade-title { font-size:1.2rem; letter-spacing:.5px; font-weight:600; color:#e6fffb; text-shadow:0 0 6px rgba(0,255,240,0.55); line-height:1.08; }
+.upgrade-title { font-size:1.22rem; letter-spacing:.5px; font-weight:600; color:#e6fffb; text-shadow:0 0 6px rgba(0,255,240,0.55); line-height:1.12; }
 .upgrade-type-line { font-size:.6rem; opacity:.75; letter-spacing:.15em; text-transform:uppercase; font-weight:500; }
-.upgrade-desc { font-size:.85rem; line-height:1.3; opacity:.88; font-weight:400; flex:1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:4; line-clamp:4; -webkit-box-orient:vertical; }
+.upgrade-desc { font-size:.88rem; line-height:1.35; opacity:.9; font-weight:400; flex:1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:8; line-clamp:8; -webkit-box-orient:vertical; }
 
 /* Adaptive text scaling inside fixed box */
  .upgrade-card .upgrade-title, .upgrade-card .upgrade-desc { transition: font-size .15s ease; }
@@ -1881,8 +1881,8 @@ body .character-select-panel .matrix-bg-overlay { z-index: 0; }
 .badge-class { color:#26ffe9; background:linear-gradient(140deg,#023a41,#04535c); }
 .badge-skip { color:#8aa1b1; background:linear-gradient(140deg,#202a32,#2e3a44); }
 
-.upgrade-progress-wrapper { position:absolute; left:14px; right:14px; bottom:10px; display:flex; justify-content:center; }
-.upgrade-progress { position:relative; width:100%; max-width:260px; height:12px; background:rgba(0,255,255,0.08); border:1px solid rgba(0,255,255,0.28); border-radius:6px; overflow:hidden; }
+.upgrade-progress-wrapper { position:absolute; left:16px; right:16px; bottom:12px; display:flex; justify-content:center; }
+.upgrade-progress { position:relative; width:100%; max-width:300px; height:12px; background:rgba(0,255,255,0.08); border:1px solid rgba(0,255,255,0.28); border-radius:6px; overflow:hidden; }
 .upgrade-progress-bar { position:absolute; top:0; left:0; bottom:0; width:var(--progress,0%); background:linear-gradient(90deg,#00ffe5,#00b3ff 85%); box-shadow:0 0 10px #00ffe5; }
 .upgrade-progress-bar[data-progress] { transition:width .25s ease; }
 .upgrade-progress-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:.6rem; font-weight:600; letter-spacing:.08em; color:#fff; text-shadow:0 0 6px #000; mix-blend-mode:screen; }

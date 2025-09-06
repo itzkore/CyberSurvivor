@@ -26,6 +26,15 @@ import { WEAPON_SPECS } from './WeaponConfig';
 import { BlackSunZoneManager } from './BlackSunZone';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
 import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS, getHealEfficiency } from './Balance';
+// Elite behaviors
+import { updateEliteDasher } from './elites/EliteDasher';
+import { updateEliteGunner } from './elites/EliteGunner';
+import { updateEliteSuppressor } from './elites/EliteSuppressor';
+import { updateEliteBomber } from './elites/EliteBomber';
+import { updateEliteBlinker } from './elites/EliteBlinker';
+import { updateEliteBlocker } from './elites/EliteBlocker';
+import { updateEliteSiphon } from './elites/EliteSiphon';
+import type { EliteRuntime, EliteKind } from './elites/types';
 
 interface Wave {
   startTime: number; // in seconds
@@ -108,6 +117,43 @@ export class EnemyManager {
   private blackSunZones: BlackSunZoneManager;
   // Shadow Surge window (for synergy buffs)
   private shadowSurgeUntilMs: number = 0;
+  // Elites: unlocked after first boss defeat
+  private elitesUnlocked: boolean = false;
+  // Timestamp (sec) when elites were unlocked; used to pace early-elite spawn rate
+  private elitesUnlockedAtSec: number = 0;
+  // Elite spawn cooldowns: global next-allowed time and per-kind cooldowns to prevent immediate re-spawns
+  private nextEliteSpawnAllowedAtSec: number = 0;
+  private eliteKindCooldownUntil: Partial<Record<EliteKind, number>> = {};
+  // Elite rate scheduler state (spawns per desired cadence independent of budget)
+  private eliteRateAccumulator: number = 0;
+  private eliteRateLastSec: number = 0;
+  // Deterministic elite schedule (miniboss timers)
+  private eliteSpawnSchedule: number[] = [];
+  private eliteScheduleHorizonSec: number = 120; // schedule 2 minutes ahead
+  private lastEliteScheduledAtSec: number = 0;
+  private useEliteSchedule: boolean = true;
+  private lastEliteKindSpawned: EliteKind | null = null;
+  // Cap elite density to keep fair/dodgeable
+  private maxEliteByKind: Record<EliteKind, number> = { DASHER: 18, GUNNER: 10, SUPPRESSOR: 12, BOMBER: 8, BLINKER: 10, BLOCKER: 8, SIPHON: 8 } as any;
+  // Lightweight enemy projectile system (for Elite Gunner, Bomber, etc.)
+  private enemyProjectiles: Array<{ x:number; y:number; vx:number; vy:number; radius:number; damage:number; expireAt:number; spriteKey?: string; color?: string; explodeRadius?: number; explodeDamage?: number; explodeColor?: string; active:boolean }>
+    = [];
+  private enemyProjectilePool: Array<{ x:number; y:number; vx:number; vy:number; radius:number; damage:number; expireAt:number; spriteKey?: string; color?: string; explodeRadius?: number; explodeDamage?: number; explodeColor?: string; active:boolean }>
+    = [];
+  private enemyProjectileImageCache: Map<string, HTMLImageElement> = new Map();
+  // Pre-rendered elite sprites (per kind), matching structure of enemySprites for easy draw
+  private eliteSprites: Partial<Record<EliteKind, {
+    normal: HTMLCanvasElement;
+    flash: HTMLCanvasElement;
+    normalFlipped?: HTMLCanvasElement;
+    flashFlipped?: HTMLCanvasElement;
+    redGhost?: HTMLCanvasElement;
+    greenGhost?: HTMLCanvasElement;
+    blueGhost?: HTMLCanvasElement;
+    redGhostFlipped?: HTMLCanvasElement;
+    greenGhostFlipped?: HTMLCanvasElement;
+    blueGhostFlipped?: HTMLCanvasElement;
+  }>> = {};
 
   // Rogue Hacker paralysis/DoT zones (spawned under enemies on virus impact)
   // pulseUntil: draw a stronger spawn pulse/line for first ~220ms to improve visibility
@@ -255,6 +301,175 @@ export class EnemyManager {
   private hackerZoneStampCounter: number = 1;
   // Evolved Hacker: deferred chain spawns schedule
   private pendingHackerZoneSpawns: { x:number; y:number; radius:number; lifeMs:number; at:number }[] = [];
+
+  // --- Blocker barrier helpers: expose active wall segments and intersection tests ---
+  /** Return currently active Blocker wall segments for absorption checks. */
+  public getActiveBlockerWalls(): Array<{ x0:number; y0:number; x1:number; y1:number; until:number; w:number }>{
+    const out: Array<{ x0:number; y0:number; x1:number; y1:number; until:number; w:number }> = [];
+    try {
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const eAny: any = this.activeEnemies[i]; if (!eAny || !eAny.active) continue;
+        const w = eAny._blockerWall; if (!w) continue;
+        if (now < (w.until || 0)) out.push({ x0: w.x0, y0: w.y0, x1: w.x1, y1: w.y1, until: w.until, w: Math.max(2, w.w || 4) });
+      }
+    } catch { /* ignore */ }
+    return out;
+  }
+  /** Distance from a point to a segment. */
+  private static distPointToSegment(px:number, py:number, x0:number, y0:number, x1:number, y1:number): number {
+    const vx = x1 - x0, vy = y1 - y0; const wx = px - x0, wy = py - y0;
+    const vv = vx*vx + vy*vy; if (vv <= 1e-6) return Math.hypot(px - x0, py - y0);
+    let t = (wx*vx + wy*vy) / vv; if (t < 0) t = 0; else if (t > 1) t = 1;
+    const cx = x0 + vx * t; const cy = y0 + vy * t;
+    return Math.hypot(px - cx, py - cy);
+  }
+  /** Check if a circle at (x,y) with radius r intersects any active blocker wall. */
+  public pointBlockedByBlocker(x:number, y:number, r:number = 0): boolean {
+    const walls = this.getActiveBlockerWalls(); if (walls.length === 0) return false;
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i];
+      const d = EnemyManager.distPointToSegment(x, y, w.x0, w.y0, w.x1, w.y1);
+      if (d <= (r + Math.max(3, w.w || 4))) return true;
+    }
+    return false;
+  }
+  /**
+   * Return the first hit distance along a ray if it intersects any blocker wall within thickness padding.
+   * Returns null if no hit. Inputs: origin (ox,oy), ray angle, max distance, and thickness padding.
+   */
+  public firstBlockerHitDistance(ox:number, oy:number, angle:number, maxDist:number, thickness:number = 6): number | null {
+    const walls = this.getActiveBlockerWalls(); if (walls.length === 0) return null;
+    const dx = Math.cos(angle), dy = Math.sin(angle);
+    // Represent ray as segment [O, O + D*maxDist]; compute min distance to each wall segment and track param along ray
+    const rx1 = ox + dx * maxDist, ry1 = oy + dy * maxDist;
+    let bestT: number | null = null;
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i];
+      // Quick AABB rejection on expanded wall box
+      const minX = Math.min(w.x0, w.x1) - thickness, maxX = Math.max(w.x0, w.x1) + thickness;
+      const minY = Math.min(w.y0, w.y1) - thickness, maxY = Math.max(w.y0, w.y1) + thickness;
+      if ((ox < minX && rx1 < minX) || (ox > maxX && rx1 > maxX) || (oy < minY && ry1 < minY) || (oy > maxY && ry1 > maxY)) continue;
+      // Compute closest approach between segments [O,R] and [A,B]
+      const ax = w.x0, ay = w.y0, bx = w.x1, by = w.y1;
+      const ux = rx1 - ox, uy = ry1 - oy; // ray segment direction
+      const vx = bx - ax, vy = by - ay;    // wall segment direction
+      const wx0 = ox - ax, wy0 = oy - ay;
+      const a = ux*ux + uy*uy;
+      const b = ux*vx + uy*vy;
+      const c = vx*vx + vy*vy;
+      const d = ux*wx0 + uy*wy0;
+      const e = vx*wx0 + vy*wy0;
+      const denom = a*c - b*b;
+      let sc = 0, tc = 0;
+      if (denom > 1e-6) {
+        sc = (b*e - c*d) / denom; tc = (a*e - b*d) / denom;
+      } else {
+        // Nearly parallel; fall back to projecting endpoints
+        sc = 0; tc = (e / c);
+      }
+      // Clamp to segments
+      if (sc < 0) sc = 0; else if (sc > 1) sc = 1;
+      if (tc < 0) tc = 0; else if (tc > 1) tc = 1;
+      const cxR = ox + ux * sc; const cyR = oy + uy * sc;
+      const cxW = ax + vx * tc; const cyW = ay + vy * tc;
+      const dist = Math.hypot(cxR - cxW, cyR - cyW);
+      const tol = Math.max(thickness, (w.w || 4) * 0.6);
+      if (dist <= tol) {
+        const tAlong = sc * maxDist; // distance from origin along ray
+        if (tAlong >= 0 && tAlong <= maxDist) {
+          if (bestT == null || tAlong < bestT) bestT = tAlong;
+        }
+      }
+    }
+    return bestT;
+  }
+
+  /** Build/extend deterministic elite schedule up to a horizon (class scope). */
+  private ensureEliteSchedule(gameTime: number) {
+    if (!this.elitesUnlocked) return;
+    const start = Math.max(this.elitesUnlockedAtSec || 30, gameTime);
+    const horizon = start + this.eliteScheduleHorizonSec;
+    const sinceUnlockMin = Math.max(0, (start - (this.elitesUnlockedAtSec || 0)) / 60);
+    const intervalAtStart = 30;
+    const intervalAt20 = 6;
+    const t = Math.max(0, Math.min(1, sinceUnlockMin / 20));
+    let targetInterval = intervalAtStart + (intervalAt20 - intervalAtStart) * t;
+    if (sinceUnlockMin > 20) targetInterval = Math.max(2.5, targetInterval - (sinceUnlockMin - 20) * 0.12);
+    try {
+      const avg = (window as any).__avgFrameMs || 16;
+      if (avg > 40) targetInterval *= 1.7; else if (avg > 28) targetInterval *= 1.25;
+    } catch {}
+    if (this.eliteSpawnSchedule.length === 0) {
+      const first = (this.elitesUnlockedAtSec || 30) + 15;
+      this.eliteSpawnSchedule.push(first);
+      this.lastEliteScheduledAtSec = first;
+    }
+    while ((this.eliteSpawnSchedule[this.eliteSpawnSchedule.length - 1] || 0) < horizon) {
+      const prev = this.eliteSpawnSchedule[this.eliteSpawnSchedule.length - 1] || start;
+      const next = prev + targetInterval;
+      this.eliteSpawnSchedule.push(next);
+      this.lastEliteScheduledAtSec = next;
+    }
+    while (this.eliteSpawnSchedule.length > 0 && this.eliteSpawnSchedule[0] < gameTime - 5) {
+      this.eliteSpawnSchedule.shift();
+    }
+  }
+
+  /**
+   * If the ray from (sx,sy) to (tx,ty) intersects any active Blocker's riot shield plate,
+   * reduce damage by 75% (return 25% of input). Plate pose mirrors the draw routine.
+   */
+  private applyBlockerShieldReduction(sx:number, sy:number, tx:number, ty:number, amount:number): number {
+    try {
+      if (amount <= 0) return amount;
+      const enemies = this.enemies as any[];
+      if (!enemies || enemies.length === 0) return amount;
+      const dx = tx - sx, dy = ty - sy;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-3) return amount;
+      const dirx = dx / len, diry = dy / len;
+      for (let i = 0; i < enemies.length; i++) {
+        const e: any = enemies[i]; if (!e || !e.active) continue;
+        const elite = e._elite; if (!elite || elite.kind !== 'BLOCKER') continue;
+        // Shield center and orientation (facing player)
+        const ang = Math.atan2(this.player.y - e.y, this.player.x - e.x);
+  const visR = this.getEliteBaseRadius('BLOCKER') || (e.radius || 34);
+  const fwd = visR * 1.10;
+        const cx = e.x + Math.cos(ang) * fwd;
+        const cy = e.y + Math.sin(ang) * fwd;
+  const plateW = Math.max(28, Math.floor(visR * 0.72));
+  const plateH = Math.max(68, Math.floor(visR * 1.55));
+        const hx = plateW * 0.5, hy = plateH * 0.5;
+        const ux = Math.cos(ang), uy = Math.sin(ang);
+        const vx = -Math.sin(ang), vy = Math.cos(ang);
+        // Transform ray into shield local space
+        const osx = sx - cx, osy = sy - cy;
+        const rlx = osx * ux + osy * uy;
+        const rly = osx * vx + osy * vy;
+        const rdx = dirx * ux + diry * uy;
+        const rdy = dirx * vx + diry * vy;
+        // AABB slab intersection in local space
+        const EPS = 1e-5;
+        const invx = Math.abs(rdx) > EPS ? 1/rdx : Infinity;
+        const invy = Math.abs(rdy) > EPS ? 1/rdy : Infinity;
+        let tmin = -Infinity, tmax = Infinity;
+        const tx1 = (-hx - rlx) * invx, tx2 = (hx - rlx) * invx;
+        tmin = Math.max(tmin, Math.min(tx1, tx2));
+        tmax = Math.min(tmax, Math.max(tx1, tx2));
+        const ty1 = (-hy - rly) * invy, ty2 = (hy - rly) * invy;
+        tmin = Math.max(tmin, Math.min(ty1, ty2));
+        tmax = Math.min(tmax, Math.max(ty1, ty2));
+        if (tmax >= tmin && tmax >= 0) {
+          const tHit = tmin > 0 ? tmin : tmax; // entry distance in local units along ray
+          if (tHit >= 0 && tHit <= len + 1e-3) {
+            return amount * 0.25;
+          }
+        }
+      }
+      return amount;
+    } catch { return amount; }
+  }
   // Spawn freeze window (e.g., on boss spawn). When now < spawnFreezeUntilMs, dynamic spawner is paused.
   private spawnFreezeUntilMs: number = 0;
 
@@ -503,6 +718,16 @@ export class EnemyManager {
     });
     window.addEventListener('bossDefeated', () => { // trigger new timed vacuum logic
       this.startTimedVacuum();
+      // Unlock elite spawns after the first boss defeat
+      if (!this.elitesUnlocked) {
+        this.elitesUnlocked = true;
+        // Record unlock time for pacing
+        try {
+          const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+          this.elitesUnlockedAtSec = (typeof timeSec === 'number' && isFinite(timeSec)) ? Math.max(0, timeSec) : 0;
+        } catch { this.elitesUnlockedAtSec = 0; }
+        Logger.info('[EnemyManager] Elites unlocked. Spawner will begin allocating pressure to elites.');
+      }
     });
     // Revive cinematic: freeze all enemies and spawns for 5s, then detonate on-screen at the end
     window.addEventListener('playerRevived', (e: Event) => {
@@ -716,6 +941,21 @@ export class EnemyManager {
       this.spawnEnemyAt(px, py - dist, { type: 'small' });
       this.spawnEnemyAt(px + dist, py, { type: 'medium' });
       this.spawnEnemyAt(px, py + dist, { type: 'large' });
+    });
+    // Spawn a specific Elite near the player (Sandbox)
+    window.addEventListener('sandboxSpawnElite', (e: Event) => {
+      try {
+        const d = (e as CustomEvent).detail || {};
+        const kind = d.kind as EliteKind | undefined;
+        if (!kind) return;
+        const px = this.player.x, py = this.player.y;
+        const dist = Number.isFinite(d.dist) ? Math.max(120, Math.min(1200, d.dist|0)) : 380;
+        const ang = Number.isFinite(d.angle) ? d.angle : Math.PI; // default left of player
+        const x = Number.isFinite(d.x) ? d.x : px + Math.cos(ang) * dist;
+        const y = Number.isFinite(d.y) ? d.y : py + Math.sin(ang) * dist;
+        const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+        this.spawnElite(kind, x, y, timeSec);
+      } catch { /* ignore sandbox elite spawn errors */ }
     });
     // Clear enemies within the current viewport
     window.addEventListener('sandboxClearViewEnemies', () => {
@@ -1094,7 +1334,7 @@ export class EnemyManager {
           redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any; // overwrite circle fallback
       }
       this.sharedEnemyImageLoaded = true;
-      // Try to override the 'small' type with enemy_spider.png if present
+  // Try to override the 'small' type with enemy_spider.png if present
       try {
         const spiderPath = AssetLoader.normalizePath('/assets/enemies/enemy_spider.png');
         const simg = new Image();
@@ -1137,7 +1377,7 @@ export class EnemyManager {
         simg.onerror = () => { /* keep default 'small' */ };
         simg.src = spiderPath;
       } catch { /* ignore */ }
-    // Try to override the 'large' type with enemy_eye.png if present
+  // Try to override the 'large' type with enemy_eye.png if present
       try {
         const eyePath = AssetLoader.normalizePath('/assets/enemies/enemy_eye.png');
         const eimg = new Image();
@@ -1196,8 +1436,98 @@ export class EnemyManager {
         eimg.onerror = () => { /* keep default 'large' */ };
         eimg.src = eyePath;
       } catch { /* ignore */ }
+  // Remove elite overrides to avoid opaque backgrounds; keep base sprites
     };
     img.onerror = () => { /* fallback circles already exist */ };
+    img.src = path;
+  }
+
+  /** Map elite kind to canonical public asset path. */
+  private getEliteAssetPath(kind: EliteKind): string {
+    const base = '/assets/enemies/elite/';
+    switch (kind) {
+      case 'DASHER': return AssetLoader.normalizePath(base + 'elite_dasher.png');
+      case 'GUNNER': return AssetLoader.normalizePath(base + 'elite_gunner.png');
+      case 'SUPPRESSOR': return AssetLoader.normalizePath(base + 'elite_suppresor.png'); // filename uses single 'o'
+      case 'BOMBER': return AssetLoader.normalizePath(base + 'elite_bomber.png');
+      case 'BLINKER': return AssetLoader.normalizePath(base + 'elite_blinker.png');
+      case 'BLOCKER': return AssetLoader.normalizePath(base + 'elite_blocker.png');
+      case 'SIPHON': return AssetLoader.normalizePath(base + 'elite_siphon.png');
+    }
+  }
+
+  /** Base radius to scale the elite image onto (match spawn radii for consistency). */
+  private getEliteBaseRadius(kind: EliteKind): number {
+    switch (kind) {
+  // Double visual scale (100% bigger) for elites
+  case 'DASHER': return 60;
+  case 'GUNNER': return 68;
+  case 'SUPPRESSOR': return 72;
+  case 'BOMBER': return 68;
+  case 'BLINKER': return 60;
+  case 'BLOCKER': return 72;
+  case 'SIPHON': return 68;
+    }
+  }
+
+  /** Ensure elite sprite bundle is built (normal/flash/flipped + RGB ghosts). */
+  private ensureEliteSprite(kind: EliteKind) {
+    if (this.eliteSprites[kind]) return;
+    const path = this.getEliteAssetPath(kind);
+    const img = new Image();
+    img.onload = () => {
+      const r = this.getEliteBaseRadius(kind);
+      const size = r * 2;
+      // Draw normal
+      const normal = document.createElement('canvas');
+      normal.width = size; normal.height = size;
+      const nctx = normal.getContext('2d')!;
+      nctx.imageSmoothingEnabled = true;
+      nctx.drawImage(img, 0, 0, size, size);
+      // Flash = additive warm tint overlay
+      const flash = document.createElement('canvas');
+      flash.width = size; flash.height = size;
+      const fctx = flash.getContext('2d')!;
+      fctx.drawImage(img, 0, 0, size, size);
+      fctx.globalCompositeOperation = 'lighter';
+      fctx.fillStyle = 'rgba(255,128,128,0.6)';
+      fctx.fillRect(0,0,size,size);
+      fctx.globalCompositeOperation = 'source-over';
+      // Flipped variants
+      const normalFlipped = document.createElement('canvas');
+      normalFlipped.width = size; normalFlipped.height = size;
+      const fnctx = normalFlipped.getContext('2d')!;
+      fnctx.translate(size,0); fnctx.scale(-1,1); fnctx.drawImage(normal,0,0);
+      const flashFlipped = document.createElement('canvas');
+      flashFlipped.width = size; flashFlipped.height = size;
+      const ffctx = flashFlipped.getContext('2d')!;
+      ffctx.translate(size,0); ffctx.scale(-1,1); ffctx.drawImage(flash,0,0);
+      // Ghost tint helper
+      const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
+        const cv = document.createElement('canvas');
+        cv.width = base.width; cv.height = base.height;
+        const cctx = cv.getContext('2d')!;
+        cctx.drawImage(base, 0, 0);
+        cctx.globalCompositeOperation = 'multiply';
+        cctx.fillStyle = tint === 'red' ? 'rgba(255,0,0,0.85)'
+                         : tint === 'green' ? 'rgba(0,255,0,0.85)'
+                         : 'rgba(0,128,255,0.85)';
+        cctx.fillRect(0,0,cv.width,cv.height);
+        cctx.globalCompositeOperation = 'destination-in';
+        cctx.drawImage(base, 0, 0);
+        cctx.globalCompositeOperation = 'source-over';
+        return cv;
+      };
+      const redGhost = makeGhost(normal, 'red');
+      const greenGhost = makeGhost(normal, 'green');
+      const blueGhost = makeGhost(normal, 'blue');
+      const redGhostFlipped = makeGhost(normalFlipped, 'red');
+      const greenGhostFlipped = makeGhost(normalFlipped, 'green');
+      const blueGhostFlipped = makeGhost(normalFlipped, 'blue');
+      this.eliteSprites[kind] = { normal, flash, normalFlipped, flashFlipped,
+        redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any;
+    };
+    img.onerror = () => { /* keep using base sprites for this kind */ };
     img.src = path;
   }
 
@@ -1384,6 +1714,14 @@ export class EnemyManager {
   ): void {
     if (!ignoreActiveCheck && (!enemy.active || enemy.hp <= 0)) return; // Only damage active, alive enemies unless ignored
 
+    // Blocker riot shield mitigation: if a shot ray from source passes through the shield plate, reduce damage by 75%.
+    try {
+      if (typeof sourceX === 'number' && typeof sourceY === 'number' && amount > 0.5) {
+        const reduced = this.applyBlockerShieldReduction(sourceX, sourceY, enemy.x, enemy.y, amount);
+        if (reduced < amount) amount = reduced;
+      }
+    } catch { /* ignore shield reduction errors */ }
+
     // Armor shred debuff reduces incoming damage slightly when active
     const anyE: any = enemy as any;
     if (anyE._armorShredExpire && performance.now() < anyE._armorShredExpire) {
@@ -1536,6 +1874,13 @@ export class EnemyManager {
     isIndirect?: boolean // AoE/DoT contributions scaled for lifesteal
   ): void {
     if (!boss || boss.hp <= 0 || boss.state !== 'ACTIVE') return;
+    // Blocker riot shield mitigation for boss as well (shots traveling through a shield toward boss)
+    try {
+      if (typeof sourceX === 'number' && typeof sourceY === 'number' && amount > 0.5) {
+        const reduced = this.applyBlockerShieldReduction(sourceX, sourceY, boss.x, boss.y, amount);
+        if (reduced < amount) amount = reduced;
+      }
+    } catch {}
     // Armor shred increases damage taken while active (mirror enemy logic)
     const bAny: any = boss as any;
     if (bAny._armorShredExpire && performance.now() < bAny._armorShredExpire) {
@@ -2057,13 +2402,21 @@ export class EnemyManager {
     for (const puddle of this.poisonPuddles) {
       if (!puddle.active) continue;
       if (puddle.isSludge) {
+        // Find a nearby target using spatial grid with progressive radius to avoid scanning all enemies.
         let tx: number | null = null, ty: number | null = null;
         let bestD2 = Infinity;
-        for (let i = 0; i < this.activeEnemies.length; i++) {
-          const e = this.activeEnemies[i]; if (!e.active || e.hp <= 0) continue;
-          const dx = e.x - puddle.x; const dy = e.y - puddle.y; const d2 = dx*dx + dy*dy;
-          if (d2 < bestD2) { bestD2 = d2; tx = e.x; ty = e.y; }
+        let searchR = Math.max(160, puddle.radius + 40);
+        const maxSearchR = 1200;
+        for (let attempt = 0; attempt < 3 && searchR <= maxSearchR; attempt++, searchR *= 2) {
+          const cand = this.enemySpatialGrid ? this.enemySpatialGrid.query(puddle.x, puddle.y, searchR) : this.activeEnemies;
+          for (let i = 0; i < cand.length; i++) {
+            const e = cand[i]; if (!e.active || e.hp <= 0) continue;
+            const dx = e.x - puddle.x; const dy = e.y - puddle.y; const d2 = dx*dx + dy*dy;
+            if (d2 < bestD2) { bestD2 = d2; tx = e.x; ty = e.y; }
+          }
+          if (tx != null) break; // found at least one
         }
+        // Consider boss as target as well if closer
         try {
           const bm: any = (window as any).__bossManager;
           const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
@@ -2095,19 +2448,28 @@ export class EnemyManager {
         continue;
       }
     let didDamage = false;
-      for (const enemy of this.enemies) {
-        if (!enemy.active || enemy.hp <= 0) continue;
-        const dx = enemy.x - puddle.x;
-        const dy = enemy.y - puddle.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist < puddle.radius + enemy.radius) {
-          // Seed poison if not present; otherwise, refresh duration while standing in the puddle
-          const eAny: any = enemy as any;
-          const stacksToApply = puddle.isSludge ? 2 : 1;
-          if (!eAny._poisonStacks || eAny._poisonStacks <= 0) this.applyPoison(enemy, stacksToApply);
-          else { eAny._poisonExpire = now + this.poisonDurationMs; if (puddle.isSludge) this.applyPoison(enemy, 1); }
-          if (puddle.isSludge) eAny._inSludgeUntil = Math.max(eAny._inSludgeUntil || 0, now + 220);
-          didDamage = true; // Still track if damage was dealt for visual feedback
+      {
+        // OPTIMIZATION: Query only nearby enemies via spatial grid and use squared-distance checks.
+        const rP = puddle.radius;
+        const queryR = rP + 50; // safety margin to catch overlaps
+        const nearby = this.enemySpatialGrid ? this.enemySpatialGrid.query(puddle.x, puddle.y, queryR) : this.activeEnemies;
+        // Under heavy load, step-sample candidates to reduce work without losing overlap correctness.
+        const frameMs = this.avgFrameMs || 16;
+        const step = frameMs > 40 ? 2 : 1;
+        const rP2 = rP * rP;
+        for (let i = 0; i < nearby.length; i += step) {
+          const enemy = nearby[i]; if (!enemy || !enemy.active || enemy.hp <= 0) continue;
+          const dx = enemy.x - puddle.x; const dy = enemy.y - puddle.y;
+          const rr = rP + (enemy.radius || 0);
+          if (dx*dx + dy*dy <= rr * rr) {
+            // Seed poison if not present; otherwise, refresh duration while standing in the puddle
+            const eAny: any = enemy as any;
+            const stacksToApply = puddle.isSludge ? 2 : 1;
+            if (!eAny._poisonStacks || eAny._poisonStacks <= 0) this.applyPoison(enemy, stacksToApply);
+            else { eAny._poisonExpire = now + this.poisonDurationMs; if (puddle.isSludge) this.applyPoison(enemy, 1); }
+            if (puddle.isSludge) eAny._inSludgeUntil = Math.max(eAny._inSludgeUntil || 0, now + 220);
+            didDamage = true; // Still track if damage was dealt for visual feedback
+          }
         }
       }
       // Boss can also be affected by puddles
@@ -2428,6 +2790,233 @@ export class EnemyManager {
   } catch { /* ignore */ }
   // Draw Black Sun zones via dedicated manager (replaces legacy seed draw)
   try { this.blackSunZones.draw(ctx); } catch {}
+  // Draw enemy projectiles (below enemies)
+  try {
+    const w = (ctx.canvas as HTMLCanvasElement).width, h = (ctx.canvas as HTMLCanvasElement).height;
+    const minX2 = camX - 64, maxX2 = camX + w + 64, minY2 = camY - 64, maxY2 = camY + h + 64;
+    for (let i=0;i<this.enemyProjectiles.length;i++){
+      const b = this.enemyProjectiles[i]; if (!b || !b.active) continue;
+      if (b.x < minX2 || b.x > maxX2 || b.y < minY2 || b.y > maxY2) continue;
+      ctx.save();
+  const assetKey = b.spriteKey ? this.assetLoader?.getAsset(b.spriteKey) : undefined;
+      if (assetKey) {
+        let img = this.enemyProjectileImageCache.get(assetKey);
+        if (!img && this.assetLoader) {
+          try {
+            // Note: loadImage returns a Promise<HTMLImageElement>; preloading ideally elsewhere.
+            // For now, draw a fallback and kick off a preload side-effect the first time.
+            (async () => {
+              try { const im = await this.assetLoader!.loadImage(assetKey); this.enemyProjectileImageCache.set(assetKey, im); } catch {}
+            })();
+          } catch {}
+        }
+        if (img) {
+          const s = b.radius * 2;
+          ctx.drawImage(img, b.x - s/2, b.y - s/2, s, s);
+        } else {
+          // Fallback: draw a bright additive circle with optional tint
+          const col = b.color || '#FFB347';
+          ctx.globalCompositeOperation = 'screen';
+          ctx.globalAlpha = 0.9;
+          ctx.fillStyle = col;
+          ctx.shadowColor = col; ctx.shadowBlur = 10;
+          ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI*2); ctx.fill();
+          ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+        }
+        // Faint velocity-aligned trail (elite gunner: golden)
+        try {
+          const spd = Math.hypot(b.vx, b.vy);
+          if (spd > 0.1) {
+            const nx = -b.vx / spd, ny = -b.vy / spd;
+            const len = Math.max(10, Math.min(28, spd * 0.08));
+            const x1 = b.x, y1 = b.y;
+            const x0 = b.x + nx * len, y0 = b.y + ny * len;
+            // Choose color: prefer projectile color; special-case Elite Gunner bolt by key
+            let tcol = b.color || '#FFB347';
+            const key = (b.spriteKey || '') + '';
+            if (key.indexOf('elite_gunner_bolt') >= 0) tcol = '#FFCC66';
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.22;
+            ctx.strokeStyle = tcol; ctx.lineWidth = Math.max(1.5, b.radius * 0.6);
+            ctx.shadowColor = tcol; ctx.shadowBlur = 6;
+            ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+            ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+          }
+        } catch {}
+      } else {
+        const col = b.color || '#FFB347';
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = col;
+        ctx.shadowColor = col; ctx.shadowBlur = 10;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+        // Faint velocity-aligned trail for non-sprite bullets as well
+        try {
+          const spd = Math.hypot(b.vx, b.vy);
+          if (spd > 0.1) {
+            const nx = -b.vx / spd, ny = -b.vy / spd;
+            const len = Math.max(8, Math.min(22, spd * 0.07));
+            const x1 = b.x, y1 = b.y;
+            const x0 = b.x + nx * len, y0 = b.y + ny * len;
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.18;
+            ctx.strokeStyle = col; ctx.lineWidth = Math.max(1.2, b.radius * 0.5);
+            ctx.shadowColor = col; ctx.shadowBlur = 5;
+            ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+            ctx.shadowBlur = 0; ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+          }
+        } catch {}
+      }
+      ctx.restore();
+    }
+  } catch { /* ignore projectile draw */ }
+  // Draw Siphon windup aim telegraph (necro green), beneath enemies — much fainter and locked to initial target
+  try {
+    const nowA = performance.now();
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const eAny: any = this.activeEnemies[i] as any; if (!eAny || !eAny.active) continue;
+      const until = eAny._siphonAimUntil || 0; if (until <= nowA) continue;
+      const x0 = eAny.x, y0 = eAny.y; if (x0 < minX-900 || x0 > maxX+900 || y0 < minY-900 || y0 > maxY+900) continue;
+      // If target snapshot is present, recompute angle from it to avoid tracking during windup
+      const tx = eAny._siphonAimTargetX ?? (x0 + Math.cos(eAny._siphonAimAngle || 0));
+      const ty = eAny._siphonAimTargetY ?? (y0 + Math.sin(eAny._siphonAimAngle || 0));
+      const ang = Math.atan2(ty - y0, tx - x0);
+      const bw = Math.max(3, Math.min(12, eAny._siphonAimWidth || 8));
+  // Draw only up to the initial player snapshot point (do not extend beyond)
+  const x1 = tx; const y1 = ty;
+      const start = eAny._siphonAimStart || (until - 900);
+      const tIn = Math.max(0, Math.min(1, (nowA - start) / 200));
+      const tOut = Math.max(0, Math.min(1, (until - nowA) / 200));
+      // Way fainter telegraph; almost invisible, just a hint
+      const a = 0.02 + 0.06 * Math.min(tIn, tOut);
+      ctx.save();
+  // Keep additive light minimal
+  ctx.globalCompositeOperation = 'screen';
+  // Single faint core line, almost no glow
+  ctx.globalAlpha = a; ctx.strokeStyle = '#66FFA0'; ctx.lineWidth = bw * 0.55; ctx.shadowColor = '#66FFA0'; ctx.shadowBlur = 2;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.restore();
+    }
+  } catch { /* ignore aim telegraph draw */ }
+  // Draw elite beam overlays (e.g., Siphon) beneath enemies for clarity
+  try {
+    const nowB = performance.now();
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const eAny: any = this.activeEnemies[i] as any; if (!eAny || !eAny.active) continue;
+      const until = eAny._beamUntil || 0; if (until <= nowB) continue;
+      const x0 = eAny.x, y0 = eAny.y; if (x0 < minX-900 || x0 > maxX+900 || y0 < minY-900 || y0 > maxY+900) continue;
+      const ang = eAny._beamAngle || 0; const bw = Math.max(8, Math.min(28, eAny._beamWidth || 16));
+      const len = 900;
+      const x1 = x0 + Math.cos(ang) * len; const y1 = y0 + Math.sin(ang) * len;
+      const tLeft = Math.max(0, Math.min(1, (until - nowB) / 260));
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      // Outer glow stroke (necro green)
+      ctx.globalAlpha = 0.20 + 0.30 * tLeft; ctx.strokeStyle = '#B6FFC7'; ctx.lineWidth = bw * 1.8; ctx.shadowColor = '#B6FFC7'; ctx.shadowBlur = 20;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  // Core beam (more transparent)
+  ctx.globalAlpha = 0.68; ctx.strokeStyle = '#66FFA0'; ctx.lineWidth = bw * 0.9; ctx.shadowBlur = 10;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      // End-cap pulse
+      const capR = Math.max(8, bw * 0.8);
+      ctx.globalAlpha = 0.40; ctx.fillStyle = '#DAFFEA'; ctx.shadowBlur = 16;
+      ctx.beginPath(); ctx.arc(x1, y1, capR, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  } catch { /* ignore beam draw */ }
+  // Draw Blocker temporary wall overlay lines beneath enemies
+  try {
+    const nowW = performance.now();
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const eAny: any = this.activeEnemies[i] as any; if (!eAny || !eAny.active) continue;
+      const w = eAny._blockerWall; if (!w || nowW >= (w.until || 0)) continue;
+      const { x0, y0, x1, y1 } = w;
+      if (x0 < minX-50 && x1 < minX-50) continue; if (x0 > maxX+50 && x1 > maxX+50) continue;
+      if (y0 < minY-50 && y1 < minY-50) continue; if (y0 > maxY+50 && y1 > maxY+50) continue;
+      const t = Math.max(0, Math.min(1, ((w.until as number) - nowW) / 300));
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+  // Outer glow (thinner)
+  const coreW = (w as any).w || 4;
+  ctx.globalAlpha = 0.28 + 0.22 * t; ctx.strokeStyle = '#88EEAA'; ctx.lineWidth = coreW * 3; ctx.shadowColor = '#88EEAA'; ctx.shadowBlur = 18;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  // Core line (thin)
+  ctx.globalAlpha = 0.85; ctx.strokeStyle = '#AAFFD0'; ctx.lineWidth = coreW; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      // End caps
+      const r = 8; ctx.globalAlpha = 0.6; ctx.fillStyle = '#CCFFE0'; ctx.shadowBlur = 12;
+      ctx.beginPath(); ctx.arc(x0, y0, r, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x1, y1, r, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  } catch { /* ignore blocker wall draw */ }
+  // Draw elite suppression pulses (visible slow fields) as glowing rings beneath enemies
+  try {
+    const nowS = performance.now();
+    const avgMs = (window as any).__avgFrameMs || 16;
+    const vfxLow = (avgMs > 45) || !!(window as any).__vfxLowMode;
+    // Build or reuse a small cache of prerendered ring sprites keyed by color and radius bucket
+    const cacheHost: any = (this as any);
+    cacheHost._supCache = cacheHost._supCache || new Map<string, HTMLCanvasElement>();
+    const getRingSprite = (radius:number, color:string): HTMLCanvasElement | null => {
+      const rBucket = Math.round(radius / 20) * 20; // bucket radii by 20px increments
+      const key = `${color}|${rBucket}`;
+      const cached = cacheHost._supCache.get(key);
+      if (cached) return cached;
+      // Prerender: a thin bright ring + soft halo and a faint inner fill baked in
+      const pad = 16;
+      const size = Math.max(16, Math.ceil(rBucket + pad) * 2);
+      const off = document.createElement('canvas');
+      off.width = size; off.height = size;
+      const offCtx = off.getContext('2d');
+      if (!offCtx) return null;
+      const cx = size / 2, cy = size / 2;
+      offCtx.save();
+      offCtx.globalCompositeOperation = 'lighter';
+      // Halo
+      offCtx.globalAlpha = 0.65; offCtx.strokeStyle = color; offCtx.lineWidth = 14; offCtx.shadowColor = color; offCtx.shadowBlur = 20;
+      offCtx.beginPath(); offCtx.arc(cx, cy, rBucket, 0, Math.PI*2); offCtx.stroke();
+      // Bright ring
+      offCtx.globalAlpha = 1.0; offCtx.lineWidth = 6; offCtx.shadowBlur = 8;
+      offCtx.beginPath(); offCtx.arc(cx, cy, rBucket * 0.985, 0, Math.PI*2); offCtx.stroke();
+      // Inner fill (very faint)
+      offCtx.globalAlpha = 0.18; offCtx.fillStyle = color; offCtx.beginPath(); offCtx.arc(cx, cy, rBucket * 0.96, 0, Math.PI*2); offCtx.fill();
+      offCtx.restore();
+      cacheHost._supCache.set(key, off);
+      return off;
+    };
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const eAny: any = this.activeEnemies[i] as any; if (!eAny || !eAny.active) continue;
+      const pu = eAny._supPulseUntil || 0; if (pu <= nowS) continue;
+      const px = eAny.x, py = eAny.y; if (px < minX-200 || px > maxX+200 || py < minY-200 || py > maxY+200) continue;
+      const ps = eAny._supPulseStart || (pu - 900);
+      const pr = Math.max(30, Math.min(720, eAny._supPulseRadius || (eAny.radius||34) + 140));
+      const col = eAny._supPulseColor || '#66F9FF';
+      // Fade in and out subtly
+      const t = Math.max(0, Math.min(1, (nowS - ps) / 160)); // ease-in over 160ms
+      const tEnd = Math.max(0, Math.min(1, (pu - nowS) / 160)); // ease-out last 160ms
+      const a = 0.22 + 0.38 * Math.min(t, tEnd);
+      if (!vfxLow) {
+        // Use cached sprite for cheap draw
+        const spr = getRingSprite(pr, col);
+        if (spr) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.globalAlpha = a;
+          ctx.drawImage(spr, Math.round(px - spr.width / 2), Math.round(py - spr.height / 2));
+          ctx.restore();
+          continue;
+        }
+      }
+      // Low-FX or cache-miss fallback: single-pass minimal ring
+      ctx.save();
+      ctx.globalCompositeOperation = 'screen';
+      ctx.globalAlpha = a * 0.9; ctx.strokeStyle = col; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(px, py, pr, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+    }
+  } catch { /* ignore suppressor ring draw */ }
   // Draw Data Sigils below enemies (divine golden laser-tech look)
   for (let i=0;i<this.dataSigils.length;i++){
     const s = this.dataSigils[i]; if (!s.active) continue;
@@ -2776,7 +3365,36 @@ export class EnemyManager {
           shakeX = Math.sin(t) * amp;
           shakeY = Math.cos(t * 1.3) * (amp * 0.6);
         }
-    const bundle = this.enemySprites[enemy.type];
+    // Choose sprite bundle: elite-specific if available, else base by size type
+    let bundle = this.enemySprites[enemy.type];
+    const eliteKind: EliteKind | undefined = (eAny._elite && (eAny._elite.kind as EliteKind)) || undefined;
+    if (eliteKind) {
+      // Kick off async build once; render will fallback until ready
+      this.ensureEliteSprite(eliteKind);
+      // Draw colored foot ring under elite (positioned near feet)
+      try {
+        const col = eliteKind === 'DASHER' ? '#FF6688'
+          : eliteKind === 'GUNNER' ? '#FFCC66'
+          : eliteKind === 'SUPPRESSOR' ? '#66F9FF'
+          : eliteKind === 'BOMBER' ? '#FF7744'
+          : eliteKind === 'BLINKER' ? '#CC99FF'
+          : eliteKind === 'BLOCKER' ? '#88EEAA'
+          : /* SIPHON */ '#66FFA0';
+        // Use elite visual base radius so placement matches doubled sprites
+        const visR = this.getEliteBaseRadius(eliteKind) || (enemy.radius || 34);
+        // Radius slightly smaller than body to sit under the feet; y-offset pushes it toward the bottom of sprite
+        const rr = Math.max(16, visR * 0.75);
+        const yOff = visR * 0.62; // move ring down toward feet
+  // Always draw the low-cost ring: one stroke with small shadow (cheap)
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = 0.22; ctx.strokeStyle = col; ctx.lineWidth = 3.5; ctx.shadowColor = col; ctx.shadowBlur = 6;
+  ctx.beginPath(); ctx.arc(enemy.x + shakeX, enemy.y + shakeY + yOff, rr, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+      } catch { /* ignore ring */ }
+      const eb = this.eliteSprites[eliteKind];
+      if (eb) bundle = eb as any;
+    }
     if (!bundle) continue;
   // Movement-based facing + walk-cycle flip: compose both for visible stepping
   const faceLeft = (eAny._facingX ?? ((this.player.x < enemy.x) ? -1 : 1)) < 0;
@@ -2785,11 +3403,50 @@ export class EnemyManager {
   const baseImg = flipLeft ? (bundle.normalFlipped || bundle.normal) : bundle.normal;
   const size = baseImg.width;
   // Tiny per-phase offsets make walking visible even for symmetric sprites
-  const stepOffsetX = (walkFlip ? -1 : 1) * Math.min(1.5, enemy.radius * 0.06);
-  const stepOffsetY = (walkFlip ? -0.5 : 0.5);
+  // Smaller bob for elites to reduce perceived walk speed and overdraw
+  const isElite = !!eliteKind;
+  const stepAmp = isElite ? Math.min(0.8, enemy.radius * 0.03) : Math.min(1.5, enemy.radius * 0.06);
+  const stepOffsetX = (walkFlip ? -1 : 1) * stepAmp;
+  const stepOffsetY = (walkFlip ? -0.3 : 0.3);
   const drawX = enemy.x + shakeX + stepOffsetX - size/2;
   const drawY = enemy.y + shakeY + stepOffsetY - size/2;
   ctx.drawImage(baseImg, drawX, drawY, size, size);
+        // Blocker: draw a front-facing riot shield plate held ahead of the body
+        if (eliteKind === 'BLOCKER') {
+          try {
+            // Direction toward player defines shield facing
+            const dxP = this.player.x - enemy.x;
+            const dyP = this.player.y - enemy.y;
+            const ang = Math.atan2(dyP, dxP);
+            const visR = this.getEliteBaseRadius('BLOCKER') || (enemy.radius || 34);
+            const fwd = visR * 1.10; // push shield further forward for clearer blocking
+            const sx = enemy.x + shakeX + Math.cos(ang) * fwd;
+            const sy = enemy.y + shakeY + Math.sin(ang) * fwd;
+            // Plate dimensions: larger and a bit wider
+            const plateW = Math.max(28, Math.floor(visR * 0.72));
+            const plateH = Math.max(68, Math.floor(visR * 1.55));
+            ctx.save();
+            ctx.translate(sx, sy);
+            ctx.rotate(ang);
+            ctx.globalCompositeOperation = 'screen';
+            // Fill
+            ctx.globalAlpha = 0.18;
+            ctx.fillStyle = 'rgba(120,200,255,0.6)';
+            ctx.fillRect(-plateW/2, -plateH/2, plateW, plateH);
+            // Border
+            ctx.globalAlpha = 0.35;
+            ctx.strokeStyle = 'rgba(120,220,255,0.9)';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(-plateW/2, -plateH/2, plateW, plateH);
+            // Small view slot
+            ctx.globalAlpha = 0.45;
+            ctx.fillStyle = 'rgba(20,40,60,0.7)';
+            const slotW = Math.max(8, Math.floor(plateW * 0.55));
+            const slotH = Math.max(4, Math.floor(plateH * 0.10));
+            ctx.fillRect(-slotW/2, -plateH*0.15 - slotH/2, slotW, slotH);
+            ctx.restore();
+          } catch { /* ignore shield draw */ }
+        }
         // Paralyzed indicator (Rogue Hacker): small "X" above enemy while paralysis is active
         {
           const anyE: any = enemy as any;
@@ -3259,7 +3916,7 @@ export class EnemyManager {
       if (isHacker) {
         const cooldownReady = nowFrame >= this.hackerAutoCooldownUntil;
         const anyActive = this.hasActiveHackerZone();
-        if (cooldownReady && !anyActive) {
+  if (cooldownReady && !anyActive) {
           // OPTIMIZATION: Use activeEnemies list instead of all enemies, and limit search distance
           let tx = this.player.x, ty = this.player.y;
           let bestD2 = Number.POSITIVE_INFINITY;
@@ -3282,8 +3939,26 @@ export class EnemyManager {
             }
           }
 
-          // Only spawn zone if we found a valid target within range
-          if (bestD2 <= maxRangeSq) {
+          // If no valid minion target found, consider the active boss (fix: Rogue Hacker not attacking bosses)
+          if (!Number.isFinite(bestD2) || bestD2 === Number.POSITIVE_INFINITY) {
+            try {
+              const bm: any = (window as any).__bossManager;
+              const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
+              if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+                const dxB = boss.x - this.player.x; const dyB = boss.y - this.player.y;
+                const d2B = dxB*dxB + dyB*dyB;
+                // Allow boss radius to extend effective range a bit
+                const rBoss = (boss.radius || 160);
+                const maxBossRangeSq = (maxRange + Math.min(rBoss, 200)) ** 2;
+                if (d2B <= maxBossRangeSq) {
+                  tx = boss.x; ty = boss.y; bestD2 = d2B;
+                }
+              }
+            } catch { /* ignore boss lookup errors */ }
+          }
+
+          // Only spawn zone if we found a valid target within range (boss-inclusive check above may extend slightly)
+          if (Number.isFinite(bestD2) && bestD2 <= (maxRangeSq * 1.21)) {
             // Pull evolved spec, if present, to widen zone and extend life
             let r = 120, life = 2000, cdMs = 1500;
             try {
@@ -3431,7 +4106,7 @@ export class EnemyManager {
       const dist = distSq > 0 ? Math.sqrt(distSq) : 0;
   // Note: Psionic slow marks are now applied only by direct PSIONIC_WAVE impacts (and their AoE)
   // to avoid perceived "random" slow auras on nearby enemies during lattice.
-      // LOD: if far, skip some frames but accumulate skipped time so motion stays consistent
+  // LOD: if far, skip some frames but accumulate skipped time so motion stays consistent
       let effectiveDelta = deltaTime;
       if (distSq > this.lodFarDistSq) {
         if (this.lodToggle) {
@@ -3446,6 +4121,29 @@ export class EnemyManager {
           effectiveDelta += enemy._lodCarryMs; enemy._lodCarryMs = 0;
         }
       }
+      // Elite AI: if this enemy carries elite state, update its behavior
+      try {
+        const elite: EliteRuntime | undefined = (enemy as any)._elite;
+        if (elite && enemy.hp > 0) {
+          const now = performance.now();
+          if (elite.kind === 'DASHER') {
+            updateEliteDasher(enemy as any, playerX, playerY, now);
+          } else if (elite.kind === 'GUNNER') {
+            const dmgScale = 1; // could scale with time if desired
+            updateEliteGunner(enemy as any, playerX, playerY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts), dmgScale);
+          } else if (elite.kind === 'SUPPRESSOR') {
+            updateEliteSuppressor(enemy as any, playerX, playerY, now);
+          } else if (elite.kind === 'BOMBER') {
+            updateEliteBomber(enemy as any, playerX, playerY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts));
+          } else if (elite.kind === 'BLINKER') {
+            updateEliteBlinker(enemy as any, playerX, playerY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts));
+          } else if (elite.kind === 'BLOCKER') {
+            updateEliteBlocker(enemy as any, playerX, playerY, now);
+          } else if (elite.kind === 'SIPHON') {
+            updateEliteSiphon(enemy as any, playerX, playerY, now);
+          }
+        }
+      } catch { /* ignore elite errors */ }
   // Hacker zones contact handled in a dedicated pass below for better cache behavior
       // Apply knockback velocity if active
   // If enemy is under Black Sun pull, suppress any knockback so pull dominates
@@ -3461,16 +4159,25 @@ export class EnemyManager {
   // Additionally, if Black Sun slow is active, suppress movement knockback
   let suppressBySlow = false;
   try { const now = performance.now(); const eAny3: any = enemy as any; if (eAny3._blackSunSlowUntil && now < eAny3._blackSunSlowUntil) suppressBySlow = true; } catch {}
-  if (enemy.knockbackTimer && enemy.knockbackTimer > 0 && !suppressKbByBlackSun && !suppressWindow && !suppressBySpawnRing && !suppressBySlow) {
+  // Allow elite dash movement even through some suppression conditions
+  const isEliteDash = !!((enemy as any)._elite && (enemy as any).knockbackTimer && (enemy as any)._kbSuppressUntil && (performance.now() < (enemy as any)._kbSuppressUntil));
+  if (enemy.knockbackTimer && enemy.knockbackTimer > 0 && (!suppressKbByBlackSun || isEliteDash) && (!suppressWindow || isEliteDash) && (!suppressBySpawnRing || isEliteDash) && (!suppressBySlow || isEliteDash)) {
         const dtSec = effectiveDelta / 1000;
-        // Recompute outward direction each frame so knockback always moves enemy further from hero
-        let kdx = enemy.x - playerX;
-        let kdy = enemy.y - playerY;
-        let kdist = Math.hypot(kdx, kdy);
-        if (kdist < 0.0001) { kdx = 1; kdy = 0; kdist = 1; }
-        const knx = kdx / kdist;
-        const kny = kdy / kdist;
-        const speed = Math.hypot(enemy.knockbackVx ?? 0, enemy.knockbackVy ?? 0);
+        // Direction: use velocity for elite dashes; otherwise push outward from player for normal knockback
+        let knx: number, kny: number;
+        let speed = Math.hypot(enemy.knockbackVx ?? 0, enemy.knockbackVy ?? 0);
+        if (isEliteDash && speed > 0.0001) {
+          knx = (enemy.knockbackVx as number) / speed;
+          kny = (enemy.knockbackVy as number) / speed;
+        } else {
+          // Recompute outward direction each frame so normal knockback always moves enemy further from hero
+          let kdx = enemy.x - playerX;
+          let kdy = enemy.y - playerY;
+          let kdist = Math.hypot(kdx, kdy);
+          if (kdist < 0.0001) { kdx = 1; kdy = 0; kdist = 1; }
+          knx = kdx / kdist;
+          kny = kdy / kdist;
+        }
         const stepX = knx * speed * dtSec;
         const stepY = kny * speed * dtSec;
         enemy.x += stepX;
@@ -3481,15 +4188,21 @@ export class EnemyManager {
         // Walk cycle: toggle at interval while moving
         const mvMag = Math.hypot(stepX, stepY);
         if (mvMag > 0.01) {
-          if (eAny._walkFlipIntervalMs == null) eAny._walkFlipIntervalMs = this.getWalkInterval(enemy.speed);
+          if (eAny._walkFlipIntervalMs == null) {
+            // Elites: fixed 1s walk flip for consistent slow cadence
+            if ((enemy as any)._elite) eAny._walkFlipIntervalMs = 1000;
+            else eAny._walkFlipIntervalMs = this.getWalkInterval(enemy.speed);
+          }
           eAny._walkFlipTimerMs = (eAny._walkFlipTimerMs || 0) + effectiveDelta;
           while (eAny._walkFlipTimerMs >= eAny._walkFlipIntervalMs) {
             eAny._walkFlip = !eAny._walkFlip;
             eAny._walkFlipTimerMs -= eAny._walkFlipIntervalMs;
           }
         }
-        // Decay speed
-        let lin = 1 - (effectiveDelta / this.knockbackDecayTauMs);
+  // Decay speed — keep elite dash snappy by reducing friction during dash window
+  let tau = this.knockbackDecayTauMs;
+  if (isEliteDash) tau *= 1.8; // longer decay for dash momentum
+  let lin = 1 - (effectiveDelta / tau);
         if (lin < 0) lin = 0;
         const newSpeed = speed * lin;
         enemy.knockbackVx = knx * newSpeed;
@@ -3523,7 +4236,11 @@ export class EnemyManager {
           // Walk cycle: toggle based on speed-derived interval while moving
           const mvMag2 = Math.hypot(mvx, mvy);
           if (mvMag2 > 0.01) {
-            if (eAny2._walkFlipIntervalMs == null) eAny2._walkFlipIntervalMs = this.getWalkInterval(enemy.speed);
+            if (eAny2._walkFlipIntervalMs == null) {
+              // Elites: fixed 1s walk flip for consistent slow cadence
+              if ((enemy as any)._elite) eAny2._walkFlipIntervalMs = 1000;
+              else eAny2._walkFlipIntervalMs = this.getWalkInterval(enemy.speed);
+            }
             eAny2._walkFlipTimerMs = (eAny2._walkFlipTimerMs || 0) + effectiveDelta;
             while (eAny2._walkFlipTimerMs >= eAny2._walkFlipIntervalMs) {
               eAny2._walkFlip = !eAny2._walkFlip;
@@ -3582,6 +4299,29 @@ export class EnemyManager {
   // Bullet collisions handled centrally in BulletManager.update now (removed duplicate per-enemy pass)
       // Death handling
       if (enemy.hp <= 0 && enemy.active) {
+        // Elite post-death hold: if an elite died, pause elite spawns briefly and drain rate accumulator
+        try {
+          const eliteDead: EliteRuntime | undefined = (enemy as any)?._elite;
+          if (eliteDead && eliteDead.kind) {
+            const tSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+            // Set a harder global cooldown so the same frame or next couple seconds don’t refill the slot instantly
+            const hold = 2.4; // seconds
+            if (!this.nextEliteSpawnAllowedAtSec || this.nextEliteSpawnAllowedAtSec < tSec + hold) {
+              this.nextEliteSpawnAllowedAtSec = tSec + hold;
+            }
+            // Drain accumulated rate so we don’t immediately spend multiple queued elites
+            this.eliteRateAccumulator = Math.max(0, this.eliteRateAccumulator - 1);
+            // Also set a per-kind cooldown bump to avoid same-type popping right back
+            const kind = eliteDead.kind as EliteKind;
+            const baseCd = 6; // seconds after kill
+            const jitter = (Math.random() * 2) - 1; // -1..1
+            {
+              const newUntil = tSec + baseCd + jitter * 1.0;
+              const cur = (this.eliteKindCooldownUntil as any)[kind] || 0;
+              (this.eliteKindCooldownUntil as any)[kind] = Math.max(cur, newUntil);
+            }
+          }
+        } catch { /* ignore */ }
         // Spectral Executioner: if the dying enemy is marked, trigger death execution + chain before pooling
         try {
           const eAny: any = enemy as any;
@@ -3683,6 +4423,14 @@ export class EnemyManager {
             }
           }
         }
+        // Before recycling, ensure elite flags/state are cleared to avoid pool leakage
+        try {
+          const rAny: any = enemy as any;
+          if (rAny._elite) rAny._elite = undefined;
+          rAny._blockerWall = undefined; rAny._suppressorState = undefined; rAny._dasherState = undefined; rAny._blinkerState = undefined; rAny._bomberState = undefined; rAny._gunnerState = undefined; rAny._siphonState = undefined;
+          // Reset walk cadence override used by elites
+          rAny._walkFlipIntervalMs = undefined;
+        } catch { /* ignore */ }
         this.enemyPool.push(enemy);
       }
     }
@@ -4215,6 +4963,8 @@ export class EnemyManager {
   this.updateDataSigils(deltaTime);
   // Update Black Sun zones (pull/slow/tick/collapse)
   try { this.blackSunZones.update(deltaTime); } catch {}
+  // Update enemy projectiles (elites)
+  this.updateEnemyProjectiles(deltaTime);
 }
   /** Clear all currently active enemies immediately (used on boss spawn). */
   private clearAllEnemies() {
@@ -4256,6 +5006,13 @@ export class EnemyManager {
     if (!enemy) {
       enemy = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '', _lastHitByWeapon: undefined };
     }
+  // IMPORTANT: This is a normal enemy spawn. Ensure no elite flags/state leak from pooled objects.
+  const pooledAny: any = enemy as any;
+  if (pooledAny._elite) pooledAny._elite = undefined;
+  // Clear any elite-only AI/state remnants to avoid behavior leaks
+  pooledAny._blockerWall = undefined; pooledAny._suppressorState = undefined; pooledAny._dasherState = undefined; pooledAny._blinkerState = undefined; pooledAny._bomberState = undefined; pooledAny._gunnerState = undefined; pooledAny._siphonState = undefined;
+  // Also clear visual timers that differ for elites
+  pooledAny._walkFlipIntervalMs = undefined;
     enemy.active = true;
     enemy.type = type;
     enemy.id = `enemy-${Date.now()}-${Math.random().toFixed(4)}`; // Assign unique ID
@@ -4665,6 +5422,11 @@ export class EnemyManager {
   // Dynamic spawner: allocate enemy budget based on elapsed time and performance constraints
   private runDynamicSpawner(gameTime: number) {
     const minutes = gameTime / 60;
+    // Auto-unlock elites 30s into the run (no boss gate required)
+    if (!this.elitesUnlocked && gameTime >= 30) {
+      this.elitesUnlocked = true;
+      if (!this.elitesUnlockedAtSec || this.elitesUnlockedAtSec === 0) this.elitesUnlockedAtSec = 30;
+    }
     // Increase baseline over time (soft exponential flavor)
   this.pressureBaseline = ENEMY_PRESSURE_BASE + minutes * ENEMY_PRESSURE_LINEAR + minutes * minutes * ENEMY_PRESSURE_QUADRATIC;
     // Performance guard: if too many enemies active, reduce baseline
@@ -4677,6 +5439,76 @@ export class EnemyManager {
 
     // Guarantee some baseline pressure: if nothing active, seed a bit of budget
     if (activeEnemies === 0 && this.spawnBudgetCarry < 1) this.spawnBudgetCarry = 1; // ensure at least one spawn soon after reset
+
+    // Deterministic elite schedule: miniboss spawns at set times; no immediate replacement on kill
+    if (this.elitesUnlocked && this.useEliteSchedule) {
+      this.ensureEliteSchedule(gameTime);
+      // Consume due spawn times one-by-one (at most one per tick)
+      const due = this.eliteSpawnSchedule.length > 0 ? this.eliteSpawnSchedule[0] : Infinity;
+      if (gameTime >= due && gameTime >= (this.nextEliteSpawnAllowedAtSec || 0)) {
+        if (this.trySpawnEliteNearPerimeter(gameTime)) {
+          this.eliteSpawnSchedule.shift();
+          // Smooth spacing between scheduled elites
+          this.nextEliteSpawnAllowedAtSec = gameTime + 1.6;
+          // Optionally deduct nominal budget to integrate with pressure system
+          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - 10);
+        }
+      }
+    }
+
+    // Legacy rate-based elite spawner (kept for fallback, disabled when schedule is on)
+    if (this.elitesUnlocked && !this.useEliteSchedule) {
+      const sinceUnlockMin = Math.max(0, (gameTime - (this.elitesUnlockedAtSec || 0)) / 60);
+      // Compute desired rate (elites per second)
+      const rateAtUnlock = 1 / 30;     // 0.0333 elites/sec
+      const rateAt20min  = 5 / 30;     // 0.1667 elites/sec
+      const t = Math.max(0, Math.min(1, sinceUnlockMin / 20));
+      let desiredRate = rateAtUnlock + (rateAt20min - rateAtUnlock) * t; // linear to 20m
+      if (sinceUnlockMin > 20) {
+        // Continue scaling: +0.003 elites/sec per minute beyond 20m (~+0.09 per 30s per minute)
+        desiredRate += (sinceUnlockMin - 20) * 0.003;
+      }
+      // Performance-aware reduction
+      try {
+        const avg = (window as any).__avgFrameMs || 16;
+        if (avg > 40) desiredRate *= 0.55; else if (avg > 28) desiredRate *= 0.8;
+      } catch {}
+      // Update accumulator from last time
+      if (!this.eliteRateLastSec) this.eliteRateLastSec = gameTime;
+      const dt = Math.max(0, gameTime - this.eliteRateLastSec);
+      this.eliteRateLastSec = gameTime;
+      this.eliteRateAccumulator += desiredRate * dt;
+      // Spawn as many whole elites as accumulated allows (respect cooldowns/caps); avoid infinite loops
+      let guard = 3; // limit burst per call
+      while (this.eliteRateAccumulator >= 1 && guard-- > 0) {
+        // Respect global cooldown to prevent instant back-to-back spawns
+        if (gameTime < (this.nextEliteSpawnAllowedAtSec || 0)) break;
+        if (this.trySpawnEliteNearPerimeter(gameTime)) {
+          this.eliteRateAccumulator -= 1;
+          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - 10); // pay nominal cost
+          // Global cooldown ~1.6s for smoother distribution at high rates
+          this.nextEliteSpawnAllowedAtSec = gameTime + 1.6;
+        } else {
+          // If caps prevent spawn, stop trying this tick
+          break;
+        }
+      }
+    }
+
+  // Force a first elite shortly after unlock if none spawned yet (only for legacy mode)
+  if (this.elitesUnlocked && !this.useEliteSchedule) {
+      const sinceUnlockSec = Math.max(0, gameTime - (this.elitesUnlockedAtSec || 0));
+      const totalElitesNow = this.activeEnemies.reduce((n,e)=> n + ((((e as any)?._elite)?.kind)?1:0), 0);
+      if (totalElitesNow === 0 && sinceUnlockSec >= 15) {
+        // Respect global cooldown/holds (e.g., after recent elite death)
+        if (gameTime >= (this.nextEliteSpawnAllowedAtSec || 0) && this.trySpawnEliteNearPerimeter(gameTime)) {
+          // Pay cost from budget; clamp at 0 to avoid runaway debt
+          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - 10);
+          // Apply a short global cooldown to avoid double spawns in the same frame
+          this.nextEliteSpawnAllowedAtSec = gameTime + 1.6;
+        }
+      }
+    }
 
     // Spend accumulated budget spawning enemies by cost weight
     let safety = 20; // safety cap per tick to avoid infinite loops
@@ -4693,8 +5525,47 @@ export class EnemyManager {
         else if (roll > 0.55 + minutes * 0.01) type = 'medium';
       }
 
-  // Increase cost for large enemies to throttle spawn count; medium are mid-cost
-  const cost = type === 'small' ? 1 : type === 'medium' ? 4 : 8;
+  // Allocate a portion of pressure to elites; start gently at 30s and ramp smoothly; throttle under load.
+  let eliteCost = 10;
+  let eliteShare = 0;
+  if (this.elitesUnlocked) {
+    const sinceUnlockMin = Math.max(0, (gameTime - (this.elitesUnlockedAtSec || 0)) / 60);
+    // Smoother early ramp: 5% base +2%/min up to 50%; earlier than 5m keep it very light
+    eliteShare = Math.min(0.50, 0.05 + sinceUnlockMin * 0.02);
+    if (sinceUnlockMin < 3) eliteCost = 13; else if (sinceUnlockMin < 7) eliteCost = 12; else if (sinceUnlockMin < 12) eliteCost = 11;
+    // Performance-aware throttling
+    try {
+      const avg = (window as any).__avgFrameMs || 16;
+      if (avg > 40) { eliteShare *= 0.30; eliteCost += 2; }
+      else if (avg > 28) { eliteShare *= 0.60; eliteCost += 1; }
+    } catch { /* ignore */ }
+    // Global early concurrency cap to avoid spikes
+    const totalElites = this.activeEnemies.reduce((n,e)=> n + ((((e as any)?._elite)?.kind)?1:0), 0);
+    const earlyCap = Math.max(1, Math.floor(2 + sinceUnlockMin * 0.4)); // 2 @ unlock, ~6 @ 10m, etc.
+    if (totalElites >= earlyCap) eliteShare = 0; // defer elites until some die
+  }
+
+  
+
+  
+  // Disable random-share elite allocation when using schedule or elites unlocked
+  if (eliteShare > 0 && !this.elitesUnlocked && !this.useEliteSchedule && Math.random() < eliteShare) {
+        // Respect global/per-kind cooldowns to avoid rapid re-spawns
+        const nowSec = gameTime;
+        if (nowSec >= (this.nextEliteSpawnAllowedAtSec || 0)) {
+          if (this.trySpawnEliteNearPerimeter(gameTime)) {
+            // Apply a short global cooldown between elite spawns (1.8s)
+            this.nextEliteSpawnAllowedAtSec = nowSec + 1.8;
+          // Allow borrowing against budget; clamp to 0
+          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - eliteCost);
+          continue;
+          }
+        }
+        // fall-through to normal spawn if elite limits reached
+      }
+
+      // Increase cost for large enemies to throttle spawn count; medium are mid-cost
+      const cost = type === 'small' ? 1 : type === 'medium' ? 4 : 8;
       if (cost > this.spawnBudgetCarry) break; // wait for more budget next tick
       this.spawnBudgetCarry -= cost;
       this.spawnEnemy(type, gameTime, this.pickPattern(gameTime));
@@ -4704,6 +5575,214 @@ export class EnemyManager {
   private pickPattern(gameTime: number): Wave['spawnPattern'] {
     const cycle = Math.floor(gameTime / 15) % 4;
     return cycle === 0 ? 'normal' : cycle === 1 ? 'surge' : cycle === 2 ? 'ring' : 'cone';
+  }
+
+  /** Attempt to spawn one elite on the perimeter with a soft cap for each kind.
+   *  Returns true if spawned; sets per-kind cooldown.
+   */
+  private trySpawnEliteNearPerimeter(gameTime: number): boolean {
+    // Count current elites by kind
+    let dashers = 0, gunners = 0, suppressors = 0;
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const a: any = this.activeEnemies[i];
+      const k: EliteKind | undefined = a?._elite?.kind;
+      if (!k) continue;
+      if (k === 'DASHER') dashers++; else if (k === 'GUNNER') gunners++; else if (k === 'SUPPRESSOR') suppressors++;
+    }
+  const canDash = dashers < this.maxEliteByKind.DASHER;
+  const canGun = gunners < this.maxEliteByKind.GUNNER;
+  const canSup = suppressors < this.maxEliteByKind.SUPPRESSOR;
+  const counts: Record<string, number> = { DASHER: dashers, GUNNER: gunners, SUPPRESSOR: suppressors };
+  const moreKinds: Array<EliteKind> = ['BOMBER','BLINKER','BLOCKER','SIPHON'];
+  for (let i=0;i<moreKinds.length;i++){ const k=moreKinds[i]; (counts as any)[k] = this.enemies.reduce((n,a)=>n+((a as any)?._elite?.kind===k?1:0),0); }
+    // Early minutes after unlock: tighten soft caps drastically; then ease toward global caps
+    let earlyCapMul = 1;
+    if (this.elitesUnlocked) {
+      const sinceUnlockMin = Math.max(0, (gameTime - (this.elitesUnlockedAtSec || 0)) / 60);
+      if (sinceUnlockMin < 3) earlyCapMul = 0.15; // ~15% of global caps for first 3 minutes
+      else if (sinceUnlockMin < 7) earlyCapMul = 0.35;
+      else if (sinceUnlockMin < 12) earlyCapMul = 0.6;
+      else earlyCapMul = 1;
+    }
+    const earlyCaps = {
+      DASHER: Math.max(2, Math.floor((this.maxEliteByKind as any).DASHER * earlyCapMul)),
+      GUNNER: Math.max(1, Math.floor((this.maxEliteByKind as any).GUNNER * earlyCapMul)),
+      SUPPRESSOR: Math.max(1, Math.floor((this.maxEliteByKind as any).SUPPRESSOR * earlyCapMul)),
+      BOMBER: Math.max(1, Math.floor((this.maxEliteByKind as any).BOMBER * earlyCapMul)),
+      BLINKER: Math.max(1, Math.floor((this.maxEliteByKind as any).BLINKER * earlyCapMul)),
+      BLOCKER: Math.max(1, Math.floor((this.maxEliteByKind as any).BLOCKER * earlyCapMul)),
+      SIPHON: Math.max(1, Math.floor((this.maxEliteByKind as any).SIPHON * earlyCapMul)),
+    } as any;
+    const can: Record<EliteKind, boolean> = {
+      DASHER: counts.DASHER < earlyCaps.DASHER,
+      GUNNER: counts.GUNNER < earlyCaps.GUNNER,
+      SUPPRESSOR: counts.SUPPRESSOR < earlyCaps.SUPPRESSOR,
+      BOMBER: (counts as any).BOMBER < earlyCaps.BOMBER,
+      BLINKER: (counts as any).BLINKER < earlyCaps.BLINKER,
+      BLOCKER: (counts as any).BLOCKER < earlyCaps.BLOCKER,
+      SIPHON: (counts as any).SIPHON < earlyCaps.SIPHON
+    } as any;
+    if (!Object.values(can).some(Boolean)) return false;
+
+    // Pick kind uniformly from all allowed kinds at all times (no early/late weighting), honoring per-kind cooldown
+  const picks: EliteKind[] = [];
+  const nowSec = gameTime;
+  const cd = this.eliteKindCooldownUntil || {};
+  if (can.DASHER && !(cd.DASHER && nowSec < cd.DASHER)) picks.push('DASHER');
+  if (can.SUPPRESSOR && !(cd.SUPPRESSOR && nowSec < cd.SUPPRESSOR)) picks.push('SUPPRESSOR');
+  if (can.GUNNER && !(cd.GUNNER && nowSec < cd.GUNNER)) picks.push('GUNNER');
+  if (can.BOMBER && !(cd.BOMBER && nowSec < cd.BOMBER)) picks.push('BOMBER');
+  if (can.BLINKER && !(cd.BLINKER && nowSec < cd.BLINKER)) picks.push('BLINKER');
+  if (can.BLOCKER && !(cd.BLOCKER && nowSec < cd.BLOCKER)) picks.push('BLOCKER');
+  if (can.SIPHON && !(cd.SIPHON && nowSec < cd.SIPHON)) picks.push('SIPHON');
+    if (picks.length === 0) return false;
+    // Avoid immediate repeat of the last spawned kind if alternatives exist
+    if (this.lastEliteKindSpawned && picks.length > 1) {
+      const filtered = picks.filter(k => k !== this.lastEliteKindSpawned);
+      if (filtered.length > 0) {
+        picks.length = 0; for (let i=0;i<filtered.length;i++) picks.push(filtered[i]);
+      }
+    }
+    const kind = picks[Math.floor(Math.random() * picks.length)];
+    // Spawn position: ring around player beyond safe distance; avoid clumping by trying a few candidates
+    const px = this.player.x, py = this.player.y;
+    const minR = 560, maxR = 760;
+    let x = px, y = py;
+    let bestScore = -Infinity;
+    for (let t = 0; t < 4; t++) {
+      const ang = Math.random() * Math.PI * 2;
+      const r = minR + Math.random() * (maxR - minR);
+      const cx = px + Math.cos(ang) * r;
+      const cy = py + Math.sin(ang) * r;
+      // Score by distance to nearest elite to reduce clumping
+      let nearest = Infinity;
+      for (let i = 0; i < this.activeEnemies.length; i++) {
+        const e: any = this.activeEnemies[i];
+        if (!e || !e.active || !(e._elite && e._elite.kind)) continue;
+        const dx = e.x - cx, dy = e.y - cy;
+        const d2 = dx*dx + dy*dy; if (d2 < nearest) nearest = d2;
+      }
+      const score = -Math.abs((r - (minR+maxR)/2)) + Math.sqrt(Math.max(0, nearest));
+      if (score > bestScore) { bestScore = score; x = cx; y = cy; }
+    }
+  this.spawnElite(kind, x, y, gameTime);
+  // Set per-kind respawn cooldown so the same type doesn't pop back instantly
+  const baseCd = 9; // seconds
+  const jitter = (Math.random() * 2) - 1; // -1..1
+  {
+    const newUntil = nowSec + baseCd + jitter * 1.5;
+    const cur = (this.eliteKindCooldownUntil as any)[kind] || 0;
+    (this.eliteKindCooldownUntil as any)[kind] = Math.max(cur, newUntil);
+  }
+    return true;
+  }
+
+  /** Spawn a specific elite kind with tuned base stats. */
+  private spawnElite(kind: EliteKind, x: number, y: number, gameTime: number) {
+    let e = this.enemyPool.pop() as Enemy | undefined;
+    if (!e) e = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'large', damage: 0, id: '' } as Enemy;
+    const en = e as Enemy;
+    en.active = true; en.type = 'large'; // treat as large for contact damage budget
+    const minutes = Math.max(0, gameTime / 60);
+    // Base stat template per kind
+  let baseHp = 800, baseSpeed = 0.28 * this.enemySpeedScale, baseDmg = 10, radius = 34;
+    if (kind === 'DASHER') { baseHp = 700; baseSpeed = 0.36 * this.enemySpeedScale; baseDmg = 9; radius = 30; }
+  else if (kind === 'GUNNER') { baseHp = 900; baseSpeed = 0.22 * this.enemySpeedScale; baseDmg = 8; radius = 34; }
+  else if (kind === 'SUPPRESSOR') { baseHp = 1000; baseSpeed = 0.20 * this.enemySpeedScale; baseDmg = 7; radius = 36; }
+  else if (kind === 'BOMBER') { baseHp = 950; baseSpeed = 0.20 * this.enemySpeedScale; baseDmg = 9; radius = 34; }
+  else if (kind === 'BLINKER') { baseHp = 700; baseSpeed = 0.28 * this.enemySpeedScale; baseDmg = 9; radius = 30; }
+  else if (kind === 'BLOCKER') { baseHp = 1100; baseSpeed = 0.18 * this.enemySpeedScale; baseDmg = 7; radius = 36; }
+  else if (kind === 'SIPHON') { baseHp = 900; baseSpeed = 0.20 * this.enemySpeedScale; baseDmg = 8; radius = 34; }
+  // Elite strength tuning: base buff and time scaling stronger than normals
+  const baseHpBuff = 1.20; // +20% base HP across the board
+  const baseDmgBuff = 1.15; // +15% base damage
+  const hpMul = baseHpBuff * (1 + 0.30 * minutes + 0.05 * minutes * minutes);
+  const dmgMul = baseDmgBuff * (1 + 0.07 * minutes + 0.012 * minutes * minutes);
+  en.hp = Math.max(1, Math.round(baseHp * hpMul));
+  en.maxHp = en.hp;
+  en.damage = Math.max(1, Math.round(baseDmg * dmgMul));
+  // Add scalable knockback resistance to elites so fewer-but-tougher feel impactful
+  (en as any)._kbResist = Math.min(0.85, 0.25 + 0.04 * minutes + 0.006 * minutes * minutes);
+  en.radius = radius; en.speed = baseSpeed * (1 + Math.min(0.10, 0.008 * minutes));
+  // Hard cap elite walk speed so they never feel "fast"; respects global speed scale
+  en.speed = Math.min(en.speed, 0.42 * this.enemySpeedScale);
+    en.x = x; en.y = y; en.id = `elite-${kind}-${Date.now()}-${Math.floor(Math.random()*1e6)}`;
+  (en as any)._elite = { kind } as EliteRuntime;
+  this.lastEliteKindSpawned = kind;
+    // Clear statuses that might leak from pool
+    const anyE: any = en as any;
+  anyE._poisonStacks = 0; anyE._burnStacks = 0; anyE._poisonExpire = 0; anyE._burnExpire = 0; anyE._burnTickDamage = 0;
+  anyE.knockbackVx = 0; anyE.knockbackVy = 0; anyE.knockbackTimer = 0;
+  anyE._kbSuppressUntil = 0; anyE._lastPlayerHitTime = 0;
+  anyE._walkFlip = false; anyE._walkFlipTimerMs = 0; anyE._walkFlipIntervalMs = 1000;
+  anyE._blockerWall = undefined; anyE._suppressorState = undefined; anyE._dasherState = undefined; anyE._blinkerState = undefined; anyE._bomberState = undefined; anyE._gunnerState = undefined; anyE._siphonState = undefined;
+  // Also clear all debuffs/marks/vulnerability and visual timers that could make new elites feel "weaker"
+  anyE._armorShredExpire = 0;
+  anyE._hackerVulnUntil = 0; anyE._hackerVulnLingerMs = 0; anyE._hackerVulnFrac = 0;
+  anyE._inSludgeUntil = 0; anyE._paralyzedUntil = 0;
+  anyE._rgbGlitchUntil = 0; anyE._rgbGlitchPhase = 0;
+  anyE._specterMarkUntil = 0; anyE._specterMarkFrom = undefined;
+  anyE._poisonFlashUntil = 0;
+    this.enemies.push(en);
+  }
+
+  /** Spawn an enemy-owned projectile (for elite gunners, bombers, etc.). */
+  private spawnEnemyProjectile(x:number,y:number,vx:number,vy:number,opts:{radius?:number;damage?:number;ttlMs?:number;spriteKey?:string;color?:string;explodeRadius?:number;explodeDamage?:number;explodeColor?:string}){
+    let p = this.enemyProjectilePool.pop();
+    if (!p) p = { x:0,y:0,vx:0,vy:0,radius:10,damage:6,expireAt:0,spriteKey:undefined,color:undefined,explodeRadius:undefined,explodeDamage:undefined,explodeColor:undefined,active:false };
+    p.x = x; p.y = y; p.vx = vx; p.vy = vy;
+    p.radius = Math.max(4, Math.min(42, opts.radius ?? 10));
+    p.damage = Math.max(1, Math.round(opts.damage ?? 6));
+    p.expireAt = (typeof performance!=='undefined'?performance.now():Date.now()) + (opts.ttlMs ?? 4000);
+    p.spriteKey = opts.spriteKey; p.color = opts.color; p.explodeRadius = opts.explodeRadius; p.explodeDamage = opts.explodeDamage; p.explodeColor = opts.explodeColor; p.active = true;
+    this.enemyProjectiles.push(p);
+  }
+
+  /** Update enemy-owned projectiles and resolve collisions with the player. */
+  private updateEnemyProjectiles(deltaTime:number){
+    if (this.enemyProjectiles.length === 0) return;
+    const dt = Math.max(0, deltaTime|0) / 1000;
+    const px = this.player.x, py = this.player.y;
+    const pr = this.player.radius || 18;
+    const now = (typeof performance!=='undefined'?performance.now():Date.now());
+    let w = 0;
+    for (let i=0;i<this.enemyProjectiles.length;i++){
+      const b = this.enemyProjectiles[i];
+      if (!b.active) continue;
+      // Integrate motion
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      // Expire
+      if (now >= b.expireAt) {
+        // Trigger explosion on timeout if configured
+        if ((b.explodeRadius || 0) > 0) {
+          try {
+            const game: any = (window as any).__gameInstance || (window as any).__game;
+            const ex = game && game.explosionManager;
+            if (ex && typeof ex.triggerShockwave === 'function') {
+              ex.triggerShockwave(b.x, b.y, Math.max(0, b.explodeDamage || 0), Math.round(b.explodeRadius as number), b.explodeColor || '#FFAA33');
+            }
+          } catch {}
+        }
+        b.active = false; this.enemyProjectilePool.push(b); continue; }
+      // Collision with player (simple circle)
+      const dx = b.x - px, dy = b.y - py;
+      if (dx*dx + dy*dy <= (b.radius + pr)*(b.radius + pr)){
+        // Apply damage once then despawn (with optional explosion)
+        try { this.player.takeDamage(b.damage); } catch {}
+        if ((b.explodeRadius || 0) > 0) {
+          try {
+            const game: any = (window as any).__gameInstance || (window as any).__game;
+            const ex = game && game.explosionManager;
+            if (ex && typeof ex.triggerShockwave === 'function') {
+              ex.triggerShockwave(b.x, b.y, Math.max(0, b.explodeDamage || 0), Math.round(b.explodeRadius as number), b.explodeColor || '#FFAA33');
+            }
+          } catch {}
+        }
+        b.active = false; this.enemyProjectilePool.push(b); continue;
+      }
+      this.enemyProjectiles[w++] = b;
+    }
+    this.enemyProjectiles.length = w;
   }
 
   // Event: absorb all active gems (boss kill QoL)

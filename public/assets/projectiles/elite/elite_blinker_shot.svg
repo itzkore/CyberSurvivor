@@ -1,0 +1,19 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'>
+  <defs>
+    <radialGradient id='g' cx='50%' cy='50%' r='50%'>
+      <stop offset='0%' stop-color='#F3E6FF' stop-opacity='1'/>
+      <stop offset='65%' stop-color='#D9B3FF' stop-opacity='0.9'/>
+      <stop offset='100%' stop-color='#B380FF' stop-opacity='0'/>
+    </radialGradient>
+    <filter id='glow' x='-50%' y='-50%' width='200%' height='200%'>
+      <feGaussianBlur stdDeviation='1.6' result='blur'/>
+      <feMerge>
+        <feMergeNode in='blur'/>
+        <feMergeNode in='SourceGraphic'/>
+      </feMerge>
+    </filter>
+  </defs>
+  <circle cx='12' cy='12' r='7' fill='url(#g)' filter='url(#glow)'/>
+  <circle cx='12' cy='12' r='3.5' fill='#F0D9FF'/>
+  <path d='M5 12 L19 12' stroke='#E0C2FF' stroke-width='2' stroke-linecap='round' opacity='0.7'/>
+</svg>

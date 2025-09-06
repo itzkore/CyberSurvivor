@@ -134,6 +134,20 @@ export class SandboxOverlay {
       </div>
 
       <div class="section">
+        <div class="hdr">Elites</div>
+        <div class="row" style="flex-wrap:wrap;gap:6px;justify-content:space-between">
+          <button id="sb-elite-dasher" class="btn">Spawn Dasher (← 380px)</button>
+          <button id="sb-elite-gunner" class="btn">Spawn Gunner (← 380px)</button>
+          <button id="sb-elite-suppressor" class="btn">Spawn Suppressor (← 380px)</button>
+          <button id="sb-elite-bomber" class="btn">Spawn Bomber (← 380px)</button>
+          <button id="sb-elite-blinker" class="btn">Spawn Blinker (← 380px)</button>
+          <button id="sb-elite-blocker" class="btn">Spawn Blocker (← 380px)</button>
+          <button id="sb-elite-siphon" class="btn">Spawn Siphon (← 380px)</button>
+        </div>
+        <div class="mini" style="margin-top:4px;opacity:0.8">Spawns near the operative; use Clear Enemies (View) to remove.</div>
+      </div>
+
+      <div class="section">
         <div class="hdr">Weapons</div>
         <div id="sb-weapons" class="grid"></div>
         <div class="row" style="justify-content:flex-end;margin-top:6px">
@@ -247,6 +261,23 @@ export class SandboxOverlay {
     panel.querySelector('#sb-boss-2')?.addEventListener('click', () => spawnSpecific('beta'));
     panel.querySelector('#sb-boss-3')?.addEventListener('click', () => spawnSpecific('gamma'));
     panel.querySelector('#sb-boss-4')?.addEventListener('click', () => spawnSpecific('omega'));
+
+    // Elite spawns (Sandbox)
+  const spawnElite = (kind: 'DASHER'|'GUNNER'|'SUPPRESSOR'|'BOMBER'|'BLINKER'|'BLOCKER'|'SIPHON') => {
+      try {
+        const px = this.game?.player?.x ?? 0;
+        const py = this.game?.player?.y ?? 0;
+        // Default angle: left of player (pi radians), distance ~380px
+        window.dispatchEvent(new CustomEvent('sandboxSpawnElite', { detail: { kind, x: px - 380, y: py, angle: Math.PI, dist: 380 } }));
+      } catch {}
+    };
+    panel.querySelector('#sb-elite-dasher')?.addEventListener('click', () => spawnElite('DASHER'));
+    panel.querySelector('#sb-elite-gunner')?.addEventListener('click', () => spawnElite('GUNNER'));
+    panel.querySelector('#sb-elite-suppressor')?.addEventListener('click', () => spawnElite('SUPPRESSOR'));
+  panel.querySelector('#sb-elite-bomber')?.addEventListener('click', () => spawnElite('BOMBER'));
+  panel.querySelector('#sb-elite-blinker')?.addEventListener('click', () => spawnElite('BLINKER'));
+  panel.querySelector('#sb-elite-blocker')?.addEventListener('click', () => spawnElite('BLOCKER'));
+  panel.querySelector('#sb-elite-siphon')?.addEventListener('click', () => spawnElite('SIPHON'));
 
     return panel;
   }

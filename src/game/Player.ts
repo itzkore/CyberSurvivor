@@ -91,6 +91,19 @@ export class Player {
     return Math.max(0, Math.min(1, 1 - r));
   }
 
+  /**
+   * Apply a small global buff to non-class weapons to keep parity with class weapon power.
+   * Class weapons remain unchanged. Returns the adjusted damage value.
+   */
+  private applyNonClassWeaponBuff(spec: any, damage: number): number {
+    try {
+      const isClass = !!(spec && spec.isClassWeapon === true);
+      if (isClass) return damage;
+      const mul = 1.15; // +15% damage for non-class weapons
+      return damage * mul;
+    } catch { return damage; }
+  }
+
   private gameContext: any; // Holds references to managers like bulletManager, assetLoader
 
   // Ability system (AAA-like): temporary speed boost
@@ -104,6 +117,9 @@ export class Player {
   private currentFrame: number = 0;
   private frameTimer: number = 0;
   private animationSpeed: number = 8; // frames per second
+  // Temporary movement slow (e.g., Elite Suppressor pulse)
+  public movementSlowUntil?: number;
+  public movementSlowFrac?: number; // 0..1 fraction of speed retained (e.g., 0.75 keeps 75%)
   private animationFrames: number = 4; // total frames in animation
   /** Last non-zero horizontal input direction (-1 left, +1 right). Drives sprite horizontal flip when moving. */
   private lastDirX: number = 1;
@@ -473,6 +489,16 @@ export class Player {
   let moveMul = speedMul;
   // Fortress stance: reduce movement while braced to emphasize anchoring
   if (this.characterData?.id === 'titan_mech' && (this as any).fortressActive) moveMul *= 0.55;
+  // Elite Suppressor pulse: brief slow if tagged
+  try {
+    const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if ((this.movementSlowUntil || 0) > nowMs) {
+      const frac = Math.max(0.2, Math.min(1, this.movementSlowFrac || 0.75));
+      moveMul *= frac;
+    } else {
+      this.movementSlowUntil = 0; this.movementSlowFrac = 0;
+    }
+  } catch { /* ignore */ }
   this.vx = inputLocked ? 0 : ax * this.speed * moveMul;
   this.vy = inputLocked ? 0 : ay * this.speed * moveMul;
     this.x += this.vx * moveScale;
@@ -1276,6 +1302,11 @@ export class Player {
               }
               const effectiveRange = spec.range * rangeMul;
               canFire = dist <= effectiveRange;
+              // Railgun: require a nearby enemy to even begin charging to avoid firing into empty space
+              if (canFire && weaponType === WeaponType.RAILGUN) {
+                const minProximity = 480; // px
+                if (dist > minProximity) canFire = false;
+              }
             }
           // Determine final target for this weapon.
           // For other weapons: fire only if a valid target is available and in range.
@@ -1871,13 +1902,15 @@ export class Player {
         const weaponLevel = this.activeWeapons.get(weaponType) ?? 1;
         let toShoot = spec.salvo;
         let spread = spec.spread;
-        let bulletDamage = spec.damage;
+    let bulletDamage = spec.damage;
         if (spec.getLevelStats) {
           const scaled = spec.getLevelStats(weaponLevel);
             if (scaled.salvo != null) toShoot = scaled.salvo;
             if (scaled.spread != null) spread = scaled.spread;
-            if (scaled.damage != null) bulletDamage = scaled.damage;
+      if (scaled.damage != null) bulletDamage = scaled.damage;
         }
+    // Buff non-class weapons slightly to match class weapon power levels
+    bulletDamage = this.applyNonClassWeaponBuff(spec, bulletDamage);
         // Heavy Gunner: apply damage/spread boost pre-fire
         const isGunner = this.characterData?.id === 'heavy_gunner';
         if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
@@ -2549,7 +2582,7 @@ export class Player {
   // Start a stronger ground glow for the entire charge duration for visibility
   try { ex?.triggerChargeGlow(originX, originY + 8, 34, '#00FFE6', chargeTimeMs); } catch {}
 
-    const chargeStep = () => {
+  const chargeStep = () => {
       const now = performance.now();
       const elapsed = now - startTime;
   // No mid-charge visuals; keep it minimal
@@ -2572,8 +2605,10 @@ export class Player {
       const range = Math.max(100, (lvlStats?.length ?? spec.range ?? 900));
       const thickness = Math.max(6, (lvlStats?.thickness ?? (spec.beamVisual?.thickness ?? 12)));
   const gdmRG = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-  // Triple the base damage for an epic impact, respecting global damage multiplier
-  const beamDamageTotal = ((spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 3.0) * gdmRG;
+  // Triple base damage with a parity buff for non-class weapons, respecting global damage multiplier
+  const baseDmgRG = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage);
+  const buffedBaseRG = this.applyNonClassWeaponBuff(spec, baseDmgRG);
+  const beamDamageTotal = (buffedBaseRG * 3.0) * gdmRG;
       const dps = beamDamageTotal / (beamDurationMs / 1000);
       // Register beam effect object on game context for rendering & ticking
       const game: any = this.gameContext;
@@ -2594,12 +2629,26 @@ export class Player {
           const cosA = Math.cos(beamAngle);
           const sinA = Math.sin(beamAngle);
           const thickness = beamObj.thickness || 12; // collision core
+          // Check for Blocker walls and shorten effective range to first hit
+          try {
+            const emAny: any = game.enemyManager;
+            if (emAny && typeof emAny.firstBlockerHitDistance === 'function') {
+              const hit = emAny.firstBlockerHitDistance(originX, originY, beamAngle, range, thickness);
+              if (typeof hit === 'number' && hit >= 0 && hit < range) {
+                // Temporarily reduce range for collision checks in this tick
+                (beamObj as any)._effectiveRange = hit;
+              } else {
+                (beamObj as any)._effectiveRange = undefined;
+              }
+            }
+          } catch { /* ignore blocker clamp */ }
+          const effRange = (beamObj as any)._effectiveRange ?? range;
           for (const e of enemies) {
             if (!e.active || e.hp <= 0) continue;
             const relX = e.x - originX;
             const relY = e.y - originY;
             const proj = relX * cosA + relY * sinA; // distance along beam
-            if (proj < 0 || proj > range) continue;
+            if (proj < 0 || proj > effRange) continue;
             const ortho = Math.abs(-sinA * relX + cosA * relY);
             if (ortho <= thickness + e.radius) {
               // Apply tick damage once per frame segment
@@ -2616,7 +2665,7 @@ export class Player {
               const relX = boss.x - originX;
               const relY = boss.y - originY;
               const proj = relX * cosA + relY * sinA;
-              if (proj >= 0 && proj <= range) {
+              if (proj >= 0 && proj <= effRange) {
                 const ortho = Math.abs(-sinA * relX + cosA * relY);
                 if (ortho <= (thickness + (boss.radius || 160))) {
                   const deltaSec = (now - beamObj.lastTick)/1000;
@@ -2673,6 +2722,8 @@ export class Player {
         }
       } catch { /* ignore headless tick wiring errors */ }
     }
+    // Kick off the charge loop so the beam actually fires after charging
+    requestAnimationFrame(chargeStep);
   }
 
   /** Ghost Sniper and Spectral Executioner: charge, then fire a piercing beam. */
@@ -2879,6 +2930,17 @@ export class Player {
   let remaining = baseDamage * heavyMult * gdmSN;
   const falloff = 1.0; // No falloff: full damage to every pierced target
       const thickness = 6;  // tight precision line
+      // Spectral Executioner is an evolved sniper exception: it goes through everything; no blocker clamp
+      let effRange = range;
+      if (!this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
+        try {
+          const emAny: any = game.enemyManager;
+          if (emAny && typeof emAny.firstBlockerHitDistance === 'function') {
+            const hit = emAny.firstBlockerHitDistance(originX, originY, beamAngle, range, thickness);
+            if (typeof hit === 'number' && hit >= 0 && hit < range) effRange = hit;
+          }
+        } catch { /* ignore blocker clamp */ }
+      }
 
   // Damage enemies along the line instantly
       const enemies = game.enemyManager?.getEnemies() || [];
@@ -2892,7 +2954,7 @@ export class Player {
         const relX = e.x - originX;
         const relY = e.y - originY;
         const proj = relX * cosA + relY * sinA;
-        if (proj < 0 || proj > range) continue;
+  if (proj < 0 || proj > effRange) continue;
         const ortho = Math.abs(-sinA * relX + cosA * relY);
         if (ortho <= thickness + e.radius) {
           candidates.push({ e, proj, ortho });
@@ -2939,7 +3001,7 @@ export class Player {
           for (let ti = 0; ti < treasures.length; ti++) {
             const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
             const relX = t.x - originX; const relY = t.y - originY;
-            const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
+            const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > effRange) continue;
             const ortho = Math.abs(-sinA * relX + cosA * relY);
             if (ortho <= (thickness + t.radius) && typeof emAny.damageTreasure === 'function') {
               emAny.damageTreasure(t, dmgVal);
@@ -2957,7 +3019,7 @@ export class Player {
           const relY = boss.y - originY;
           const proj = relX * cosA + relY * sinA;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
-          if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius||160))) {
+          if (proj >= 0 && proj <= effRange && ortho <= (thickness + (boss.radius||160))) {
             const bossDmg = (baseDamage * heavyMult * gdmSN) * 0.7; // include global damage passive
             try {
               const wType = (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? WeaponType.SPECTRAL_EXECUTIONER : WeaponType.GHOST_SNIPER);
@@ -3000,7 +3062,7 @@ export class Player {
         x: originX,
         y: originY,
         angle: beamAngle,
-        range,
+        range: effRange,
         start: performance.now(),
         duration: 1500, // 1.5s fade-out
         lastTick: performance.now(),
@@ -3081,7 +3143,7 @@ export class Player {
         this.shootCooldowns.set(weaponKind, effCd);
       }
       const game: any = this.gameContext; if (!game) return;
-      const beamAngle = Math.atan2(target.y - originY, target.x - originX);
+    const beamAngle = Math.atan2(target.y - originY, target.x - originX);
   const range = spec.range || 1200;
   const ghostSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
   const baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
@@ -3090,6 +3152,17 @@ export class Player {
   const ticks = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).ticks : 3) || 3;
   const tickIntervalMs = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).tickIntervalMs : 1000) || 1000;
       const thickness = 6;
+  // Clamp range to first Blocker wall hit if present — EXCEPT for Black Sun (goes through everything)
+  let effRange = range;
+  if (weaponKind !== WeaponType.BLACK_SUN) {
+    try {
+      const emAny: any = game.enemyManager;
+      if (emAny && typeof emAny.firstBlockerHitDistance === 'function') {
+        const hit = emAny.firstBlockerHitDistance(originX, originY, beamAngle, range, thickness);
+        if (typeof hit === 'number' && hit >= 0 && hit < range) effRange = hit;
+      }
+    } catch { /* ignore */ }
+  }
   const enemies = game.enemyManager?.getEnemies() || [];
       const cosA = Math.cos(beamAngle);
       const sinA = Math.sin(beamAngle);
@@ -3098,7 +3171,7 @@ export class Player {
         const e = enemies[i];
         if (!e.active || e.hp <= 0) continue;
         const relX = e.x - originX; const relY = e.y - originY;
-        const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
+  const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > effRange) continue;
         const ortho = Math.abs(-sinA * relX + cosA * relY);
         if (ortho <= thickness + e.radius) candidates.push({ e, proj });
       }
@@ -3178,7 +3251,7 @@ export class Player {
           for (let ti = 0; ti < treasures.length; ti++) {
             const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
             const relX = t.x - originX; const relY = t.y - originY;
-            const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
+            const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > effRange) continue;
             const ortho = Math.abs(-sinA * relX + cosA * relY);
             if (ortho <= (thickness + t.radius) && typeof emAny.damageTreasure === 'function') {
               emAny.damageTreasure(t, Math.max(1, Math.round(perTick)));
@@ -3195,7 +3268,7 @@ export class Player {
           const relX = boss.x - originX; const relY = boss.y - originY;
           const proj = relX * cosA + relY * sinA;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
-  if (proj >= 0 && proj <= range && ortho <= (thickness + (boss.radius || 160))) {
+  if (proj >= 0 && proj <= effRange && ortho <= (thickness + (boss.radius || 160))) {
             const bAny: any = boss as any;
             if (evolvedToBlackSun) {
               try {
@@ -3239,7 +3312,7 @@ export class Player {
       // Recoil & visuals
       this.x -= Math.cos(beamAngle) * 8; this.y -= Math.sin(beamAngle) * 8;
       if (!game._activeBeams) game._activeBeams = [];
-  const beamObj = { type: 'voidsniper', x: originX, y: originY, angle: beamAngle, range, start: performance.now(), duration: 1500, lastTick: performance.now(), weaponLevel, thickness: 10 };
+  const beamObj = { type: 'voidsniper', x: originX, y: originY, angle: beamAngle, range: effRange, start: performance.now(), duration: 1500, lastTick: performance.now(), weaponLevel, thickness: 10 };
       game._activeBeams.push(beamObj);
       window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
     };
@@ -3349,6 +3422,8 @@ export class Player {
         // Damage application: single instantaneous hit to the target (no pierce), then apply Void Sniper-style DoT
         try {
           const em: any = game.enemyManager;
+          // Black Sun visuals ignore blocker walls completely
+          let visDist = Math.hypot(t.x - originX, t.y - originY);
           if (t === (boss as any)) {
             em.takeBossDamage?.(t, beamDamage, false, WeaponType.BLACK_SUN, originX, originY);
             // Apply DoT on boss
@@ -3388,8 +3463,9 @@ export class Player {
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 80, intensity: 2 } }));
         } catch {}
 
-        // Visual beam registration (short-lived)
-        const dx = t.x - originX, dy = t.y - originY; const dist = Math.hypot(dx, dy);
+  // Visual beam registration (short-lived). Black Sun beams are exceptions: they go through everything, so no clamp.
+  const dx = t.x - originX, dy = t.y - originY; let dist = Math.hypot(dx, dy);
+  // Intentionally do not clamp Black Sun visuals on Blocker walls.
         game._activeBeams.push({ type: visualsOnly.type, x: originX, y: originY, angle: ang, range: dist, start: now, duration: 160, lastTick: now, weaponLevel, thickness: visualsOnly.thickness });
       }
     };
@@ -4005,7 +4081,7 @@ export class Player {
         ctx.arc(0, 0, drawSize/2, 0, Math.PI*2);
         ctx.fill();
       }
-      // Blade Cyclone visual: two tachyon-like swords orbiting while active (scaled to match hit radius)
+      // Blade Cyclone visual: two swords orbiting while active (scaled to match hit radius)
       if (this.characterData?.id === 'cyber_runner' && this.bladeCycloneActive) {
   const now = performance.now();
   // Use the same accumulated spin to keep swords synced with the sprite spin
@@ -4019,12 +4095,17 @@ export class Player {
   // Cyan afterimage trails for swords (values finalized after vfxLow is known)
   let trailCount = 0;   // number of ghost blades behind current
   let trailFade = 0.0;  // opacity falloff factor for ghosts
+        // Theme: red when Runner Overdrive is owned, cyan otherwise
+        const hasOverdrive = !!((this as any).activeWeapons && (this as any).activeWeapons.has(WeaponType.RUNNER_OVERDRIVE));
+        const theme = hasOverdrive ? 'red' : 'cyan';
         // Pre-render a single sword into an offscreen canvas to cut per-frame draw cost
         const selfAny: any = this as any;
         let swordCanvas: HTMLCanvasElement | null = selfAny._cycloneSwordCanvas || null;
         let swordCanvasLen: number = selfAny._cycloneSwordCanvasLen || 0;
         let swordCanvasPivotY: number = selfAny._cycloneSwordCanvasPivotY || 0;
-        if (!swordCanvas || swordCanvasLen !== bladeLen) {
+        let swordCanvasTheme: string = selfAny._cycloneSwordCanvasTheme || 'cyan';
+        // Rebuild cache when blade length or theme changes
+        if (!swordCanvas || swordCanvasLen !== bladeLen || swordCanvasTheme !== theme) {
           const off = document.createElement('canvas');
           const offCtx = off.getContext('2d');
           if (offCtx) {
@@ -4037,15 +4118,20 @@ export class Player {
             offCtx.save();
             offCtx.translate(pivotX, pivotY);
             // Modest glow baked into prerender
-            offCtx.shadowColor = 'rgba(0,255,255,0.35)';
+            offCtx.shadowColor = (theme === 'red') ? 'rgba(178,34,34,0.45)' : 'rgba(0,255,255,0.35)';
             offCtx.shadowBlur = 3;
             // Core (slightly shorter than blade for depth)
             offCtx.fillStyle = 'rgba(255,255,255,0.9)';
             offCtx.fillRect(-bladeW*0.22, -bladeLen*0.9, bladeW*0.44, bladeLen*0.8);
-            // Cyan blade gradient
+            // Blade gradient by theme
             const grad = offCtx.createLinearGradient(0, -bladeLen*0.5, 0, bladeLen*0.5);
-            grad.addColorStop(0, 'rgba(200,255,255,0.85)');
-            grad.addColorStop(1, 'rgba(0,255,255,0.55)');
+            if (theme === 'red') {
+              grad.addColorStop(0, 'rgba(255,200,200,0.85)');
+              grad.addColorStop(1, 'rgba(178,34,34,0.70)');
+            } else {
+              grad.addColorStop(0, 'rgba(200,255,255,0.85)');
+              grad.addColorStop(1, 'rgba(0,255,255,0.55)');
+            }
             offCtx.fillStyle = grad as any;
             offCtx.fillRect(-bladeW/2, -bladeLen, bladeW, bladeLen);
             // Hilt
@@ -4057,9 +4143,11 @@ export class Player {
             selfAny._cycloneSwordCanvas = off;
             selfAny._cycloneSwordCanvasLen = bladeLen;
             selfAny._cycloneSwordCanvasPivotY = pivotY;
+            selfAny._cycloneSwordCanvasTheme = theme;
             swordCanvas = off;
             swordCanvasLen = bladeLen;
             swordCanvasPivotY = pivotY;
+            swordCanvasTheme = theme;
           }
         }
         // Use additive blending once for swords / ring
@@ -4086,9 +4174,9 @@ export class Player {
             if (!vfxLow) {
               ctx.save();
               ctx.globalCompositeOperation = 'lighter';
-              ctx.shadowColor = 'rgba(0,255,255,0.45)';
+              ctx.shadowColor = (theme === 'red') ? 'rgba(178,34,34,0.55)' : 'rgba(0,255,255,0.45)';
               ctx.shadowBlur = 12;
-              ctx.fillStyle = 'rgba(0,255,255,0.12)';
+              ctx.fillStyle = (theme === 'red') ? 'rgba(178,34,34,0.18)' : 'rgba(0,255,255,0.12)';
               ctx.beginPath();
               ctx.ellipse(0, -bladeLen * 0.8, 10, 16, 0, 0, Math.PI * 2);
               ctx.fill();
@@ -4098,9 +4186,9 @@ export class Player {
           }
           ctx.restore();
         };
-        // Edge indicator ring at exact damage radius (subtle cyan glow)
+  // Edge indicator ring at exact damage radius (subtle glow; red when Overdrive owned)
         ctx.save();
-        ctx.strokeStyle = 'rgba(0,255,255,0.18)';
+  ctx.strokeStyle = (theme === 'red') ? 'rgba(178,34,34,0.40)' : 'rgba(0,255,255,0.18)';
         ctx.lineWidth = 1.2;
         ctx.beginPath();
   ctx.arc(0, 0, cycloneRadiusVisual, 0, Math.PI * 2);
@@ -4120,7 +4208,7 @@ export class Player {
         if (!vfxLow) {
           ctx.save();
           ctx.globalCompositeOperation = 'lighter';
-          ctx.strokeStyle = 'rgba(0,255,255,0.18)';
+          ctx.strokeStyle = (theme === 'red') ? 'rgba(178,34,34,0.35)' : 'rgba(0,255,255,0.18)';
           ctx.lineWidth = 2;
           const arcSpan = 0.55; // radians per sweep
           for (let k = -1; k <= 1; k += 2) {
@@ -4405,8 +4493,8 @@ Player.prototype.activateAbility = function(this: Player & any) {
   const lvl = Math.max(1, Math.round(this.level || 1));
   const gdm = this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier ?? 1);
 
-  // Scale cyclone tick damage from class weapon DPS (cap at evolved weapon)
-  // Anchor: Runner Gun at its current level. If evolved (Runner Overdrive) is owned, cap by its L1 DPS.
+  // Scale cyclone tick damage from class weapon DPS
+  // Baseline: Runner Gun at current level. If Overdrive is owned, set anchor to exactly 2× Runner Gun L7 DPS per request.
   const aw: Map<number, number> | undefined = (this as any).activeWeapons;
   const hasOverdrive = !!(aw && aw.has(WeaponType.RUNNER_OVERDRIVE));
   const rgSpec: any = (WEAPON_SPECS as any)[WeaponType.RUNNER_GUN];
@@ -4414,9 +4502,13 @@ Player.prototype.activateAbility = function(this: Player & any) {
   const rgLvl = (() => { try { return (aw?.get(WeaponType.RUNNER_GUN) ?? 1); } catch { return 1; } })();
   const rgStats = rgSpec?.getLevelStats ? rgSpec.getLevelStats(Math.max(1, Math.min(7, rgLvl))) : { damage: rgSpec?.damage ?? 6, cooldown: rgSpec?.cooldown ?? 6, salvo: rgSpec?.salvo ?? 1 };
   const rgDps = ((rgStats.damage || 0) * (rgStats.salvo || 1) * 60) / Math.max(1, (rgStats.cooldown || 6));
-  const roStats = hasOverdrive && (roSpec?.getLevelStats ? roSpec.getLevelStats(1) : { damage: roSpec?.damage ?? 6, cooldown: roSpec?.cooldown ?? 4, salvo: roSpec?.salvo ?? 2 });
-  const roDps = hasOverdrive ? (((roStats.damage || 0) * (roStats.salvo || 1) * 60) / Math.max(1, (roStats.cooldown || 4))) : undefined;
-  const anchorDps = hasOverdrive ? Math.min(rgDps, roDps || rgDps) : rgDps;
+  // Compute 2× L7 baseline when Overdrive is owned
+  let anchorDps = rgDps;
+  if (hasOverdrive) {
+    const rgL7 = rgSpec?.getLevelStats ? rgSpec.getLevelStats(7) : rgStats;
+    const rgL7Dps = ((rgL7.damage || 0) * (rgL7.salvo || 1) * 60) / Math.max(1, (rgL7.cooldown || 6));
+    anchorDps = rgL7Dps * 2; // 2× stronger than class lvl 7
+  }
   // Cyclone emits 4 ticks at 150ms each (0.6s total). Convert a fraction of weapon DPS into each tick.
   const cycloneDpsFraction = 1.0; // average ~10% of class weapon DPS over the 6s cooldown
   const perTickSec = 0.150;
@@ -4450,7 +4542,10 @@ Player.prototype.activateAbility = function(this: Player & any) {
     // Cheap hit spark (throttled): only for the first few hits to curb overdraw
     if (hits < 6) {
       const pm = this.gameContext?.particleManager;
-      if (pm) pm.spawn(e.x, e.y, 1, '#00FFFF', { sizeMin: 0.9, sizeMax: 1.6, life: 22, speedMin: 0.9, speedMax: 1.8 });
+      if (pm) {
+        const color = hasOverdrive ? 'rgba(178,34,34,0.95)' : '#00FFFF';
+        pm.spawn(e.x, e.y, 1, color, { sizeMin: 0.9, sizeMax: 1.6, life: 22, speedMin: 0.9, speedMax: 1.8 });
+      }
     }
     hits++;
   }
@@ -4537,11 +4632,13 @@ Player.prototype.activateAbility = function(this: Player & any) {
   // Initial particle burst
   const pm = this.gameContext?.particleManager;
   if (pm) {
+    const hasOverdrive = !!((this as any).activeWeapons && (this as any).activeWeapons.has(WeaponType.RUNNER_OVERDRIVE));
+    const burstColor = hasOverdrive ? 'rgba(178,34,34,0.85)' : '#FFAA33';
     const burst = 14;
     for (let i = 0; i < burst; i++) {
       const a = (i / burst) * Math.PI * 2;
       const r = 18 + Math.random() * 20;
-      pm.spawn(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r, 1, '#FFAA33', { sizeMin: 1.4, sizeMax: 2.8, life: 48, speedMin: 1.2, speedMax: 2.6 });
+      pm.spawn(this.x + Math.cos(a) * r, this.y + Math.sin(a) * r, 1, burstColor, { sizeMin: 1.4, sizeMax: 2.8, life: 48, speedMin: 1.2, speedMax: 2.6 });
     }
   }
 };

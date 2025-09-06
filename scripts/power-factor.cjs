@@ -31,7 +31,6 @@ async function main() {
   const level = args.level ? parseInt(args.level, 10) : 7;
   const timeMinutes = args.timeMin ? parseFloat(args.timeMin) : 15;
   const outFile = args.out || 'pf-output.json';
-  const evaluateEvolved = args.evolved === 'true' || args.evolved === '1' || args.evolved === 'yes';
 
   // Register ts-node for on-the-fly TS transpilation if available, else proceed with native loader for ESM TS (Node 20+ may still fail).
   try {
@@ -65,8 +64,8 @@ async function main() {
     throw new Error('[pf] Missing exports from PowerModel.ts (runPowerFactor/sortResults)');
   }
 
-  console.log('[pf] invoking runPowerFactor with', { level, timeMinutes, evaluateEvolved });
-  const { results, config } = runPowerFactor({ level, timeMinutes, evaluateEvolved });
+  console.log('[pf] invoking runPowerFactor with', { level, timeMinutes });
+  const { results, config } = runPowerFactor({ level, timeMinutes });
   const sorted = sortResults(results);
 
   const payload = { generatedAt: new Date().toISOString(), level, timeMinutes, config, results: sorted };

@@ -2885,27 +2885,69 @@ export class BulletManager {
 
   // Trail accumulation for weapons with trail visuals (added LASER for subtle trace)
   if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
+        // Lightweight distance-based sampling to avoid oversampling at high bullet speed.
+        // This reduces allocations and draw segment count significantly for Runner weapons.
         if (!b.trail) b.trail = [];
-        b.trail.push({ x: b.x, y: b.y });
+        const tr = b.trail as { x: number; y: number }[];
+        const last = tr.length > 0 ? tr[tr.length - 1] : undefined;
+        const avg = (window as any).__avgFrameMs || 16;
+        const isRunner = (b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE);
+        // Default minimal spacing between samples (pixels); Runner weapons use larger spacing under load.
+        let minDist = 2.5;
+        if (isRunner) {
+          // More aggressive spacing under load to limit sample count for twin streams
+          if (avg > 40) minDist = 22;
+          else if (avg > 32) minDist = 16;
+          else if (avg > 26) minDist = 12;
+          else if (avg > 20) minDist = 8;
+          else minDist = 5;
+        } else if (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) {
+          // Heavy shells move slower; keep a modest spacing
+          minDist = 4;
+        }
+        // For Runner under severe load, only sample every other frame to further cut segment count
+        let shouldSample = true;
+        if (isRunner && avg > 24) {
+          const flip = !(b as any)._trailFlip;
+          (b as any)._trailFlip = flip;
+          if (!flip) shouldSample = false;
+        }
+        if (last) {
+          const dx = b.x - last.x; const dy = b.y - last.y;
+          shouldSample = (dx * dx + dy * dy) >= (minDist * minDist);
+        }
+        if (shouldSample) tr.push({ x: b.x, y: b.y });
         const baseMax = (b.projectileVisual as any).trailLength || 10;
         // Dynamically cap trail length for Runner weapons to prevent overdraw spikes while firing
         let maxTrail: number;
-        if (b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE) {
-          const avg = (window as any).__avgFrameMs || 16;
-          if (avg > 28) maxTrail = Math.min(6, baseMax);
-          else if (avg > 20) maxTrail = Math.min(8, baseMax);
-          else maxTrail = Math.min(10, baseMax);
+        if (isRunner) {
+          if (avg > 40) maxTrail = Math.min(2, baseMax);
+          else if (avg > 32) maxTrail = Math.min(3, baseMax);
+          else if (avg > 26) maxTrail = Math.min(4, baseMax);
+          else if (avg > 20) maxTrail = Math.min(6, baseMax);
+          else maxTrail = Math.min(8, baseMax);
         } else {
           // heavy shells keep longer plume; others stay modest
           maxTrail = (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER)
             ? Math.min(48, baseMax)
             : Math.min(14, baseMax);
         }
-        if (b.trail.length > maxTrail) b.trail.splice(0, b.trail.length - maxTrail);
+        const overflow = tr.length - maxTrail;
+        if (overflow > 0) tr.splice(0, overflow);
       }
 
       // If bullet is still active and within extended frustum, keep it
       if (b.active) {
+        // Blocker wall absorption: if projectile intersects an active wall, destroy it (fully absorbed)
+        try {
+          const em: any = this.enemyManager as any;
+          if (em && typeof em.pointBlockedByBlocker === 'function') {
+            const r = Math.max(1, b.radius || 2);
+            if (em.pointBlockedByBlocker(b.x, b.y, r)) {
+              b.active = false; this.bulletPool.push(b); continue;
+            }
+          }
+        } catch { /* ignore blocker checks */ }
         if (b.x < minX || b.x > maxX || b.y < minY || b.y > maxY) {
           // If BIO_TOXIN/LIVING_SLUDGE leave bounds, still drop a puddle at last position
           if ((b.weaponType === WeaponType.BIO_TOXIN || b.weaponType === WeaponType.LIVING_SLUDGE)) {
@@ -2988,6 +3030,16 @@ export class BulletManager {
   for (const b of this.bullets) {
       if (!b.active) continue;
       if (b.x < minX || b.x > maxX || b.y < minY || b.y > maxY) continue;
+      // Redundant safety: if a projectile happens to be overlapping a Blocker wall this frame, skip drawing
+      try {
+        const em: any = this.enemyManager as any;
+        if (em && typeof em.pointBlockedByBlocker === 'function') {
+          const r = Math.max(1, b.radius || 2);
+          if (em.pointBlockedByBlocker(b.x, b.y, r)) {
+            continue;
+          }
+        }
+      } catch { /* ignore blocker checks */ }
       ctx.save();
   // Draw trail first (behind projectile) – add neon variant for Runner Gun
   if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
@@ -2995,10 +3047,12 @@ export class BulletManager {
         ctx.save();
   // Thicker, softer trail for mortar; lightweight base pass for all bullets
   const isRunner = (b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE);
-  ctx.lineWidth = ((b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? 3.2 : 1.4);
+  ctx.lineWidth = ((b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? 3.2 : (isRunner ? ((avgMs > 26) ? 1.0 : 1.15) : 1.4));
   const col = visual.trailColor as string;
   // Runner: keep heavy compositing off in the base pass, add a tiny glow only on tip below
   const doNeonGlow = !vfxLow && isRunner;
+  // Under high load, skip the base trail pass entirely for Runner to cut overdraw; rely on tip-only effect.
+  const skipBaseTrail = isRunner && (avgMs > 26);
   const prevComp = ctx.globalCompositeOperation;
         // Efficient alpha fade: parse color once, then modulate globalAlpha per segment
         const rgba = BulletManager.parseColor(col);
@@ -3014,27 +3068,31 @@ export class BulletManager {
           if (avgMs > 30) step = 3; else if (avgMs > 22) step = 2; // keep at most ~1/2 to 1/3 of segments
         }
         const baseAlpha = rgba ? rgba.a : 1;
-        for (let i = 1; i < total; i += step) {
-          const p0 = b.trail[i - 1];
-          const p1 = b.trail[i];
-          const t = i / total;
-          const fadeT = (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? Math.sqrt(t) : t;
-          // Slightly reduce base pass alpha for Runner to compensate for glow tip
-          const alphaMul = isRunner ? 0.8 : 1;
-          ctx.globalAlpha = Math.max(0, Math.min(1, (baseAlpha * fadeT * alphaMul)));
-          ctx.beginPath();
-          ctx.moveTo(p0.x, p0.y);
-          ctx.lineTo(p1.x, p1.y);
-          ctx.stroke();
+        if (!skipBaseTrail) {
+          for (let i = 1; i < total; i += step) {
+            const p0 = b.trail[i - 1];
+            const p1 = b.trail[i];
+            const t = i / total;
+            const fadeT = (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? Math.sqrt(t) : t;
+            // Slightly reduce base pass alpha for Runner to compensate for glow tip
+            const alphaMul = isRunner ? 0.8 : 1;
+            ctx.globalAlpha = Math.max(0, Math.min(1, (baseAlpha * fadeT * alphaMul)));
+            ctx.beginPath();
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.stroke();
+          }
         }
         ctx.globalAlpha = 1;
         // Tiny additive glow on the last few segments only (keeps the signature look without heavy overdraw)
         if (doNeonGlow) {
           ctx.globalCompositeOperation = 'lighter';
           ctx.shadowColor = (visual.glowColor as string) || '#66F2FF';
-          ctx.shadowBlur = Math.max((visual.glowRadius || 8) * 0.5, 3);
+          // Slightly reduce blur to keep cost low
+          ctx.shadowBlur = Math.max((visual.glowRadius || 8) * 0.45, 2.5);
           ctx.lineWidth = 2.2;
-          const tip = Math.max(2, Math.min(4, Math.floor(total * 0.25)));
+          // Fewer tip segments at higher load
+          const tip = (avgMs > 28) ? 1 : ((avgMs > 24) ? 2 : Math.max(2, Math.min(4, Math.floor(total * 0.25))));
           const start = Math.max(1, total - tip);
           const a = Math.min(0.7, (baseAlpha || 0.5) * 0.9);
           ctx.globalAlpha = a;

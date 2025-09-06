@@ -18,6 +18,8 @@ export class ExplosionManager {
   private chargeGlows: { x: number; y: number; radius: number; color: string; start: number; duration: number }[] = [];
   // Scheduled ion field pulses (plasma overcharged path)
   private ionFieldSchedules: { x: number; y: number; radius: number; damage: number; interval: number; next: number; remaining: number; color: string }[] = [];
+  // Soft budget for simultaneous shockwaves; tuned by perf each frame
+  private shockwaveBudget = 48;
 
   constructor(particleManager: ParticleManager, enemyManager: EnemyManager, player: Player, bulletManager?: BulletManager, onShake?: (duration: number, intensity: number) => void) {
     this.particleManager = particleManager;
@@ -29,7 +31,7 @@ export class ExplosionManager {
 
   public triggerExplosion(x: number, y: number, damage: number, hitEnemy?: any, radius: number = 100, color: string = '#FFA07A') {
   const avgMs = (window as any).__avgFrameMs || 16;
-  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+  const vfxLow = (avgMs > 28) || !!(window as any).__vfxLowMode;
     // Rebalanced enemy death explosion: slightly larger area, full damage, lower visual intensity (no lingering zone).
     const scaledRadius = Math.max(30, radius * 0.55); // mild area increase
     const scaledDamage = damage; // full damage
@@ -41,7 +43,7 @@ export class ExplosionManager {
         const enemy = enemies[i];
         if (!enemy.active || enemy.hp <= 0) continue;
         const dx = enemy.x - x; const dy = enemy.y - y;
-        if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(enemy, scaledDamage);
+  if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(enemy, scaledDamage, false, false, undefined, x, y, undefined, true);
       }
     }
     // Also damage boss within blast radius
@@ -52,7 +54,7 @@ export class ExplosionManager {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (scaledRadius + rB) * (scaledRadius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y, undefined, true);
         }
       }
     } catch { /* ignore boss explosion errors */ }
@@ -72,7 +74,7 @@ export class ExplosionManager {
       }
     } catch { /* ignore treasure explosion errors */ }
     // Single faint ring (alpha scaled down) with pooling
-    if (!vfxLow || this.shockwaves.length < 24) {
+  if (!vfxLow || this.shockwaves.length < Math.min(24, this.shockwaveBudget)) {
       const sw = this.shockwavePool.pop() || { x:0, y:0, startR:0, endR:0, life:0, maxLife:0, color:'#fff' };
       sw.x = x; sw.y = y; sw.startR = Math.max(4, scaledRadius * 0.55);
       sw.endR = scaledRadius * 1.05; // slightly shorter for perf
@@ -88,7 +90,7 @@ export class ExplosionManager {
    */
   public triggerTitanMortarExplosion(x: number, y: number, damage: number, radius: number = 220, color: string = '#FFD700') {
   const avgMs = (window as any).__avgFrameMs || 16;
-  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+  const vfxLow = (avgMs > 28) || !!(window as any).__vfxLowMode;
     // Balance: mortar explosions were dealing ~5x intended damage. Apply a corrective scaler here
     // so both Mech Mortar and Siege Howitzer explosions align with per-level targets.
     const DAMAGE_SCALE = 0.20; // reduce to 20% of incoming (≈5x reduction)
@@ -101,7 +103,7 @@ export class ExplosionManager {
         const e = enemies[i];
         if (!e.active || e.hp <= 0) continue;
         const dx = e.x - x; const dy = e.y - y;
-        if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, scaledDamage);
+  if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, scaledDamage, false, false, undefined, x, y, undefined, true);
       }
     }
     // Also damage boss in the blast
@@ -112,7 +114,7 @@ export class ExplosionManager {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (radius + rB) * (radius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, scaledDamage, false, undefined, x, y);
+          (this.enemyManager as any).takeBossDamage?.(boss, scaledDamage, false, undefined, x, y, undefined, true);
         }
       }
     } catch { /* ignore boss explosion errors */ }
@@ -133,11 +135,11 @@ export class ExplosionManager {
     } catch { /* ignore treasure explosion errors */ }
     // Add a short-lived residual AoE zone (15% of scaled damage over 0.6s) with transparent fill
   const burnDamage = scaledDamage * 0.15;
-    this.aoeZones.push(new AoEZone(x, y, radius * 0.55, burnDamage, 600, 'rgba(0,0,0,0)', this.enemyManager, this.player));
+  this.aoeZones.push(new AoEZone(x, y, radius * 0.55, burnDamage, 600, 'rgba(0,0,0,0)', this.enemyManager, this.player));
 
     // Multi-phase shockwaves (primary + thermal + dust) – adapt count for perf
     const addShock = (sx:number, sy:number, sr:number, er:number, life:number, col:string, alpha?:number) => {
-      if (vfxLow && this.shockwaves.length >= 24) return;
+      if (vfxLow && this.shockwaves.length >= Math.min(24, this.shockwaveBudget)) return;
       const sw = this.shockwavePool.pop() || { x:0, y:0, startR:0, endR:0, life:0, maxLife:0, color:'#fff' };
       sw.x = sx; sw.y = sy; sw.startR = sr; sw.endR = er; const lf = vfxLow ? Math.max(160, Math.round(life*0.7)) : life; sw.life = lf; sw.maxLife = lf; sw.color = col; sw.alphaScale = alpha;
       this.shockwaves.push(sw);
@@ -197,12 +199,12 @@ export class ExplosionManager {
         const e = enemies[i];
         if (!e.active || e.hp <= 0) continue;
         const dx = e.x - x, dy = e.y - y;
-        if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, finalDamage);
+  if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, finalDamage, false, false, undefined, x, y, undefined, true);
       }
     }
     // Light lingering ionized zone (15% of finalDamage over 0.5s) – transparent for no filled disk
     const residualDmg = finalDamage * 0.15;
-    this.aoeZones.push(new AoEZone(x, y, finalRadius * 0.55, residualDmg, 500, 'rgba(0,0,0,0)', this.enemyManager, this.player));
+  this.aoeZones.push(new AoEZone(x, y, finalRadius * 0.55, residualDmg, 500, 'rgba(0,0,0,0)', this.enemyManager, this.player));
 
     // Shockwave rings: core flash, main wave, dissipating halo
     this.shockwaves.push({ x, y, startR: Math.max(10, finalRadius * 0.25), endR: finalRadius * 1.05, life: 240, maxLife: 240, color });
@@ -224,7 +226,7 @@ export class ExplosionManager {
    */
   public triggerShockwave(x: number, y: number, damage: number, radius: number = 100, color: string = '#FFA07A', bossDamageFrac?: number) {
   const avgMs = (window as any).__avgFrameMs || 16;
-  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+  const vfxLow = (avgMs > 28) || !!(window as any).__vfxLowMode;
     // Apply global area multiplier to radius
     const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
     const finalRadius = radius * (areaMul || 1);
@@ -234,7 +236,7 @@ export class ExplosionManager {
       for (let i=0;i<enemies.length;i++) {
         const e = enemies[i];
         const dx = e.x - x; const dy = e.y - y;
-        if (dx*dx + dy*dy <= finalRadius*finalRadius) this.enemyManager.takeDamage(e, damage);
+  if (dx*dx + dy*dy <= finalRadius*finalRadius) this.enemyManager.takeDamage(e, damage, false, false, undefined, x, y, undefined, true);
       }
     }
     // Also damage boss in shockwave radius
@@ -246,7 +248,7 @@ export class ExplosionManager {
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (finalRadius + rB) * (finalRadius + rB)) {
       const bossDmg = (typeof bossDamageFrac === 'number' ? Math.max(0, bossDamageFrac) : 1) * damage;
-      (this.enemyManager as any).takeBossDamage?.(boss, bossDmg, false, undefined, x, y, undefined, true);
+  (this.enemyManager as any).takeBossDamage?.(boss, bossDmg, false, undefined, x, y, undefined, true);
         }
       }
     } catch { /* ignore boss shockwave errors */ }
@@ -266,7 +268,7 @@ export class ExplosionManager {
       }
     } catch { /* ignore treasure shockwave errors */ }
     // Shockwave visuals (reuse logic path by manually pushing similar rings)
-    if (!vfxLow || this.shockwaves.length < 24) {
+  if (!vfxLow || this.shockwaves.length < Math.min(24, this.shockwaveBudget)) {
       const sw = this.shockwavePool.pop() || { x:0, y:0, startR:0, endR:0, life:0, maxLife:0, color:'#fff' };
       sw.x = x; sw.y = y; sw.startR = Math.max(6, finalRadius*0.22); sw.endR = finalRadius*1.02;
       const life = vfxLow ? 150 : 200; sw.life = life; sw.maxLife = life; sw.color = color; sw.alphaScale = vfxLow ? 0.6 : 1;
@@ -277,7 +279,9 @@ export class ExplosionManager {
 
   public update(deltaMs: number = 16.6667): void {
   const avgMs = (window as any).__avgFrameMs || 16;
-  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+  const vfxLow = (avgMs > 28) || !!(window as any).__vfxLowMode;
+    // Tune shockwaveBudget dynamically each frame
+    this.shockwaveBudget = avgMs > 40 ? 28 : avgMs > 32 ? 36 : 48;
     // Update all active AoE zones
     for (let i = 0; i < this.aoeZones.length; i++) {
       const zone = this.aoeZones[i];
@@ -328,7 +332,14 @@ export class ExplosionManager {
 
   public draw(ctx: CanvasRenderingContext2D): void {
   const avgMs = (window as any).__avgFrameMs || 16;
-  const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+  const vfxLow = (avgMs > 28) || !!(window as any).__vfxLowMode;
+    // Viewport for offscreen culling of shockwaves
+    const dW = (window as any).__designWidth || ctx.canvas.width;
+    const dH = (window as any).__designHeight || ctx.canvas.height;
+    const camX = (window as any).__camX || 0;
+    const camY = (window as any).__camY || 0;
+    const minX = camX - 64, maxX = camX + dW + 64;
+    const minY = camY - 64, maxY = camY + dH + 64;
     // Draw all active AoE zones
     for (let i = 0; i < this.aoeZones.length; i++) {
       const zone = this.aoeZones[i];
@@ -363,14 +374,21 @@ export class ExplosionManager {
     }
 
     // Draw shockwaves after zones and glows (so rings appear atop)
-    for (let i = 0; i < this.shockwaves.length; i++) {
+    // Stride in low mode to reduce draw calls
+    const step = vfxLow ? 2 : 1;
+    for (let i = 0; i < this.shockwaves.length; i += step) {
       const sw = this.shockwaves[i];
+      // Offscreen cull by bounding box of current radius
+      const tCull = 1 - sw.life / sw.maxLife;
+      const rCull = sw.startR + (sw.endR - sw.startR) * tCull;
+      if (sw.x + rCull < minX || sw.x - rCull > maxX || sw.y + rCull < minY || sw.y - rCull > maxY) continue;
       const t = 1 - sw.life / sw.maxLife; // 0..1
       const radius = sw.startR + (sw.endR - sw.startR) * t;
       const alphaBase = (1 - t) * (vfxLow ? 0.25 : 0.35);
       const alpha = alphaBase * (sw.alphaScale != null ? sw.alphaScale : 1);
       ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
+      // Avoid additive blending in low mode to cut fill-rate cost
+      if (!vfxLow) ctx.globalCompositeOperation = 'lighter';
       ctx.lineWidth = Math.max(1, (vfxLow ? 2 : 3) * (1 - t));
       ctx.beginPath();
       ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
@@ -412,7 +430,7 @@ export class ExplosionManager {
       const r2 = finalRadius * finalRadius;
       for (let i=0;i<enemies.length;i++) {
         const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
-        const dx = e.x - x; const dy = e.y - y; if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage);
+  const dx = e.x - x; const dy = e.y - y; if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage, false, false, undefined, x, y, undefined, true);
       }
     }
     // Boss in plasma detonation radius
@@ -423,7 +441,7 @@ export class ExplosionManager {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (finalRadius + rB) * (finalRadius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y);
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y, undefined, true);
         }
       }
     } catch { /* ignore boss plasma errors */ }

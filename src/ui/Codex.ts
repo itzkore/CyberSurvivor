@@ -818,7 +818,7 @@ export class Codex {
       { id: 'large', name: 'Large', hpEarly: 480, hpLate: 900, radius: 38, damage: 10, speedNote: 'Slow, heavy hitter' }
     ];
     const list = archetypes.filter(a => !q || a.name.toLowerCase().includes(q) || a.id.includes(q));
-    const parts: string[] = ['<div class="cdx-grid">'];
+  const parts: string[] = ['<div class="cdx-grid">'];
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
       // Select image per archetype (distinct silhouettes; no filter tweaks)
@@ -841,6 +841,32 @@ export class Codex {
             </div>
             <div class="cdx-note">${this.escape(a.speedNote)}</div>
             <div class="cdx-note">Spawns scale dynamically over time; late-game budgets bias toward medium/large enemies.</div>
+          </div>
+        </div>`);
+    }
+    parts.push('</div>');
+    // Elites section
+    parts.push('<div class="cdx-section"><h4>Elites</h4></div>');
+    const elites = [
+      { id:'elite_dasher', name:'Elite Dasher', desc:'Telegraphed burst dash toward the player. Forces lateral dodges; deals contact damage.', tips:['Watch the windup shake; sidestep the dash path','Keeps slight recovery after dashing—counter‑window'], img: AssetLoader.normalizePath('/assets/enemies/elite/elite_dasher.png') },
+      { id:'elite_gunner', name:'Elite Gunner', desc:'Fires slow, dodgeable bolts on a long cooldown. Projectiles punish standing still.', tips:['Walk between shots; don’t face-tank lanes','Bolts are slow—circle strafe to bait angles'], img: AssetLoader.normalizePath('/assets/enemies/elite/elite_gunner.png') },
+      { id:'elite_suppressor', name:'Elite Suppressor', desc:'Emits suppression pulses that briefly slow the player in range.', tips:['Step out of the pulse radius to avoid the slow','Use dashes when pulsed to maintain mobility'], img: AssetLoader.normalizePath('/assets/enemies/elite/elite_suppresor.png') },
+      { id:'elite_bomber', name:'Elite Bomber', desc:'Lobs slow arcing bombs that detonate with a large, readable ring.', tips:['Move laterally as the bomb flies; don’t get greedy near the blast circle','Use dashes after the telegraphed toss'], img: AssetLoader.normalizePath('/assets/enemies/elite/elite_bomber.png') },
+      { id:'elite_blinker', name:'Elite Blinker', desc:'Teleports near you after a glow, then performs a short slash dash.', tips:['Track the glow; when it blinks, sidestep and punish during recovery','Avoid tunneling on the elite—watch your flanks'], img: AssetLoader.normalizePath('/assets/enemies/elite/elite_blinker.png') },
+      { id:'elite_blocker', name:'Elite Blocker', desc:'Spawns temporary barriers between you and the elite; reshapes lanes.', tips:['Rotate around the barrier ends; don’t get boxed in','Ranged builds can bait spawns to control space'], img: AssetLoader.normalizePath('/assets/enemies/elite/elite_blocker.png') },
+      { id:'elite_siphon', name:'Elite Siphon', desc:'Charges, then fires a short cyan beam that drains in a straight line.', tips:['Cross the beam orthogonally; keep moving to avoid ticks','The charge glow is your cue—reposition early'], img: AssetLoader.normalizePath('/assets/enemies/elite/elite_siphon.png') }
+    ];
+    const elist = elites.filter(e=>!q || e.name.toLowerCase().includes(q) || e.id.includes(q));
+    parts.push('<div class="cdx-grid">');
+    for (let i=0;i<elist.length;i++){
+      const e = elist[i];
+      parts.push(`
+        <div class="cdx-card">
+          <div class="icon"><img class="enemy-icon" src="${e.img}" alt="${this.escape(e.name)}"/></div>
+          <div class="meta">
+            <div class="name">${this.escape(e.name)} <span style="opacity:.6;font-weight:400">— Elite</span></div>
+            <div class="desc">${this.escape(e.desc)}</div>
+            ${e.tips && e.tips.length ? `<div class="cdx-section"><h4>Tips</h4><ul class="cdx-list">${e.tips.map(t=>`<li>${this.escape(t)}</li>`).join('')}</ul></div>` : ''}
           </div>
         </div>`);
     }

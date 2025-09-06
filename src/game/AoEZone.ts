@@ -63,7 +63,7 @@ export class AoEZone {
 
          if (dist <= this.radius) {
            if (enemy.id === (this.player as any).id) continue; // Skip player by ID (cast to any to resolve type error)
-           this.enemyManager.takeDamage(enemy, this.damage, false, true); // Apply damage, ignoring active check
+           this.enemyManager.takeDamage(enemy, this.damage, false, true, undefined, this.x, this.y, undefined, true); // Apply damage as indirect
          }
        }
      }
@@ -75,7 +75,7 @@ export class AoEZone {
         const dxB = (boss.x ?? 0) - this.x; const dyB = (boss.y ?? 0) - this.y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (this.radius + rB) * (this.radius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, this.damage, false, undefined, this.x, this.y);
+          (this.enemyManager as any).takeBossDamage?.(boss, this.damage, false, undefined, this.x, this.y, undefined, true);
         }
       }
     } catch { /* ignore boss AoE errors */ }

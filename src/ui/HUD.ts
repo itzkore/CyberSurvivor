@@ -218,7 +218,7 @@ export class HUD {
         }
         // Steel/ice theme for Ghost (cool cyan/ice)
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#c9ecff', '#13212b', '#e0f7ff', label);
-  // Second bar: Phase Cloak cooldown/active state (dynamic CD/duration)
+  // Second bar: Phase Cloak cooldown/active state (15s CD, 5s duration)
         if ((this.player as any).getGhostCloakMeter) {
           const cm: any = (this.player as any).getGhostCloakMeter();
           const ratio2 = cm.max > 0 ? cm.value / cm.max : 0;
@@ -420,8 +420,8 @@ export class HUD {
 
   // Healing Efficiency bar (aligned under right-side upgrades panel). Shows global healing multiplier as percentage.
     try {
-      // Compute efficiency in [0.1,1.0] from gameplay time in seconds
-      const eff = Math.max(0.1, Math.min(1, getHealEfficiency(gameTime)));
+  // Compute efficiency in [0.01,1.0] from gameplay time in seconds
+  const eff = Math.max(0.01, Math.min(1, getHealEfficiency(gameTime)));
       const pct = Math.round(eff * 100);
       // Dynamic theme: teal (>=75%), amber (50-74%), red (<50%)
       let fg = '#26ffe9', bg = '#07333a', accent = '#00b3a3';
@@ -494,8 +494,8 @@ export class HUD {
   const logicalH = ctx.canvas.height / backingToLogical; // (not currently used but kept for consistency)
   const minimapX = logicalW - minimapSize - 20;
   const minimapY = 20;
-    // View window radius around player (world units). Tighter for clarity than whole world.
-    const viewHalf = 900; // shows 1800x1800 area; tweak for zoom feel
+  // View window radius around player (world units). Extended vision for better awareness.
+  const viewHalf = 1200; // shows 2400x2400 area; increased from 1800x1800
     const viewLeft = playerX - viewHalf;
     const viewTop = playerY - viewHalf;
     const viewSize = viewHalf * 2;
@@ -552,7 +552,7 @@ export class HUD {
     ctx.arc(minimapX + minimapSize/2, minimapY + minimapSize/2, 3.2, 0, Math.PI*2);
     ctx.fill();
 
-    // Enemies (relative positions); fade those near edge — draw first so XP orbs appear above
+  // Enemies (relative positions); fade those near edge — draw first so XP orbs and elite/boss markers appear above
     const enemyBaseAlpha = 0.95;
     for (let i=0;i<enemies.length;i++) {
       const e = enemies[i];
@@ -609,6 +609,99 @@ export class HUD {
         ctx.restore();
       }
     } catch { /* ignore */ }
+
+    // Elites and Boss: distinct markers + out-of-bounds arrows
+    try {
+      // Helper to draw an edge arrow pointing toward a world-space target (tx,ty)
+      const drawEdgeArrow = (tx: number, ty: number, color: string, size: number = 7) => {
+        const centerX = minimapX + viewHalf * mapScale;
+        const centerY = minimapY + viewHalf * mapScale;
+        const dirX = (tx - (viewLeft + viewHalf));
+        const dirY = (ty - (viewTop + viewHalf));
+        const ang = Math.atan2(dirY, dirX);
+        const radius = (viewHalf - 6) * mapScale;
+        const ax = centerX + Math.cos(ang) * radius;
+        const ay = centerY + Math.sin(ang) * radius;
+        ctx.save();
+        ctx.translate(ax, ay);
+        ctx.rotate(ang);
+        ctx.fillStyle = color;
+        ctx.shadowColor = color; ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.moveTo(size, 0);
+        ctx.lineTo(-size * 0.65, size * 0.65);
+        ctx.lineTo(-size * 0.65, -size * 0.65);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      };
+
+      // Elite color by kind (mirror foot-ring palette)
+      const eliteColor = (kind: string): string => (
+        kind === 'DASHER' ? '#FF6688'
+        : kind === 'GUNNER' ? '#FFCC66'
+        : kind === 'SUPPRESSOR' ? '#66F9FF'
+        : kind === 'BOMBER' ? '#FF7744'
+        : kind === 'BLINKER' ? '#CC99FF'
+        : kind === 'BLOCKER' ? '#88EEAA'
+        : /* SIPHON or default */ '#66FFA0'
+      );
+
+      // Pass 1: in-view elites as outlined triangles; Pass 2: out-of-view elite arrows
+      for (let i = 0; i < enemies.length; i++) {
+        const eAny: any = enemies[i] as any;
+        if (!eAny || !eAny.active) continue;
+        const elite = eAny._elite; const kind: string | undefined = elite && elite.kind;
+        if (!kind) continue;
+        const dx = eAny.x - viewLeft; const dy = eAny.y - viewTop;
+        const inView = !(dx < 0 || dx > viewSize || dy < 0 || dy > viewSize);
+        const col = eliteColor(kind);
+        if (inView) {
+          const sx = minimapX + dx * mapScale; const sy = minimapY + dy * mapScale;
+          const s = 4.2; // triangle half-size
+          ctx.save();
+          ctx.globalAlpha = 0.98;
+          ctx.fillStyle = col;
+          ctx.shadowColor = col; ctx.shadowBlur = 6;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy - s);
+          ctx.lineTo(sx + s * 0.85, sy + s * 0.85);
+          ctx.lineTo(sx - s * 0.85, sy + s * 0.85);
+          ctx.closePath(); ctx.fill();
+          ctx.restore();
+        } else {
+          drawEdgeArrow(eAny.x, eAny.y, col, 7);
+        }
+      }
+
+      // Boss marker
+      try {
+        const bm: any = (window as any).__bossManager;
+        const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+        if (boss && boss.active && boss.hp > 0) {
+          const dx = boss.x - viewLeft; const dy = boss.y - viewTop;
+          const inView = !(dx < 0 || dx > viewSize || dy < 0 || dy > viewSize);
+          const color = '#FF66FF'; // magenta
+          if (inView) {
+            const sx = minimapX + dx * mapScale; const sy = minimapY + dy * mapScale;
+            const s = 5.5; // bigger diamond
+            ctx.save();
+            ctx.globalAlpha = 0.98;
+            ctx.fillStyle = color;
+            ctx.shadowColor = color; ctx.shadowBlur = 9;
+            ctx.beginPath();
+            ctx.moveTo(sx, sy - s);
+            ctx.lineTo(sx + s, sy);
+            ctx.lineTo(sx, sy + s);
+            ctx.lineTo(sx - s, sy);
+            ctx.closePath(); ctx.fill();
+            ctx.restore();
+          } else {
+            drawEdgeArrow(boss.x, boss.y, color, 8);
+          }
+        }
+      } catch { /* ignore boss */ }
+    } catch { /* ignore elites/boss */ }
 
     // Special item markers (Heal/Magnet/Nuke) and Treasures
     try {
