@@ -229,6 +229,19 @@ export class Player {
   private techDashEndX: number = 0;
   private techDashEndY: number = 0;
   private techDashEmitAccum: number = 0;
+  /** Cached per-glide impact damage (scaled from Tachyon Spear and capped at Singularity Spear). */
+  private techDashImpactDamage: number = 0;
+  /** Cached per-glide hit radius (px), scaled by Area. */
+  private techDashHitRadius: number = 0;
+  /** Per-glide set of enemy ids already hit to prevent multi-hits within one glide. */
+  private techDashHitIds: Set<string> = new Set();
+  /** Boss hit gate for the current glide. */
+  private techDashBossHit: boolean = false;
+  /** Forward unit vector for the current glide (used for cone/front checks). */
+  private techDashDirX: number = 0;
+  private techDashDirY: number = 0;
+  /** Cached Tachyon Spear level for knockback scaling during this glide. */
+  private techDashWeaponLevel: number = 1;
 
   // Rogue Hacker: Ghost Protocol (Shift) — intangibility + aura; separate from System Hack (Space)
   private ghostProtocol?: GhostProtocolAbility;
@@ -264,14 +277,16 @@ export class Player {
     return { value: this.overmindActive ? this.overmindActiveMs : (this.overmindCdMaxMs - this.overmindCdMs), max: this.overmindActive ? 5000 : this.overmindCdMaxMs, ready: this.overmindCdMs <= 0 && !this.overmindActive, active: this.overmindActive };
   }
 
-  // Psionic Weaver: Lattice Weave (Spacebar) — 12s cooldown, 4s duration
+  // Psionic Weaver: Lattice Weave (Spacebar) — cooldown/duration scale with PSIONIC_WAVE and cap at RESONANT_WEB
   private latticeCdMaxMs: number = 12000;
   private latticeCdMs: number = 0;
   private latticeActiveMs: number = 0;
+  private latticeActiveMsMax: number = 4000; // dynamic (4–6000ms)
   private latticeActive: boolean = false;
   private latticePrevKey: boolean = false;
   public getWeaverLatticeMeter() {
-    return { value: this.latticeActive ? this.latticeActiveMs : (this.latticeCdMaxMs - this.latticeCdMs), max: this.latticeActive ? 4000 : this.latticeCdMaxMs, ready: this.latticeCdMs <= 0 && !this.latticeActive, active: this.latticeActive };
+    const maxActive = this.latticeActiveMsMax || 4000;
+    return { value: this.latticeActive ? this.latticeActiveMs : (this.latticeCdMaxMs - this.latticeCdMs), max: this.latticeActive ? maxActive : this.latticeCdMaxMs, ready: this.latticeCdMs <= 0 && !this.latticeActive, active: this.latticeActive };
   }
   // Titan Mech: Fortress Stance (Shift) — 14s cooldown, 4s duration
   public getFortressMeter() {
@@ -285,16 +300,18 @@ export class Player {
     return { value, max, ready, active };
   }
 
-  // Ghost Operative: Phase Cloak (Spacebar) — 15s cooldown, 5s duration, speed boost
-  private cloakCdMaxMs: number = 15000;
+  // Ghost Operative: Phase Cloak (Spacebar) — scales with GHOST_SNIPER and caps at SPECTRAL_EXECUTIONER
+  private cloakCdMaxMs: number = 15000; // dynamic (11–16s band)
   private cloakCdMs: number = 0;
   private cloakActiveMs: number = 0;
+  private cloakActiveMsMax: number = 5000; // dynamic (5–6500ms)
   private cloakActive: boolean = false;
   private cloakPrevSpeed?: number;
   // Shadow Operative: restore speed after Umbral Surge
   private shadowPrevSpeed?: number;
   public getGhostCloakMeter() {
-    return { value: this.cloakActive ? this.cloakActiveMs : (this.cloakCdMaxMs - this.cloakCdMs), max: this.cloakActive ? 5000 : this.cloakCdMaxMs, ready: this.cloakCdMs <= 0 && !this.cloakActive, active: this.cloakActive };
+  const activeMax = this.cloakActiveMsMax || 5000;
+  return { value: this.cloakActive ? this.cloakActiveMs : (this.cloakCdMaxMs - this.cloakCdMs), max: this.cloakActive ? activeMax : this.cloakCdMaxMs, ready: this.cloakCdMs <= 0 && !this.cloakActive, active: this.cloakActive };
   }
 
   // Rogue Hacker: System Hack (Spacebar) — 20s cooldown, instant burst
@@ -526,6 +543,52 @@ export class Player {
           const lifeMs = 280;
           this.runnerAfterimages.push({ x: this.x, y: this.y, rotation: this.rotation - Math.PI/2, flip: flipNow, ageMs: 0, lifeMs, alpha });
           if (this.runnerAfterimages.length > 64) this.runnerAfterimages.splice(0, this.runnerAfterimages.length - 64);
+          // During each emission step, also perform a cheap collision sweep for glide impact
+          try {
+            const em: any = (this.gameContext as any)?.enemyManager;
+            if (em && typeof em.queryEnemies === 'function') {
+              const r = this.techDashHitRadius || 0;
+              if (r > 0 && (this.techDashImpactDamage || 0) > 0) {
+                const cand = em.queryEnemies(this.x, this.y, r + 16) as any[];
+                if (cand && cand.length) {
+                  const dirX = this.techDashDirX || 0, dirY = this.techDashDirY || 0;
+                  const idSet = this.techDashHitIds;
+                  const dmg = this.techDashImpactDamage | 0;
+                  const wLvl = this.techDashWeaponLevel | 0;
+                  for (let i = 0; i < cand.length; i++) {
+                    const e = cand[i];
+                    if (!e || !e.active || e.hp <= 0) continue;
+                    const eid = e.id || '' + (e._uid || i);
+                    if (idSet.has(eid)) continue;
+                    const dx = e.x - this.x, dy = e.y - this.y;
+                    const d2 = dx*dx + dy*dy; if (d2 > (r*r)) continue;
+                    // Only hit enemies generally in front of the glide direction to reduce side swipes
+                    const dist = Math.sqrt(d2) || 1; const nx = dx / dist, ny = dy / dist;
+                    if (dirX*nx + dirY*ny < -0.45) continue; // allow wider cone in front (hit more on glide)
+                    // Apply damage via EnemyManager to unify knockback behavior; source at current player pos
+                    const isCrit = false;
+                    em.takeDamage(e, dmg, isCrit, false, WeaponType.TACHYON_SPEAR, this.x, this.y, wLvl, true);
+                    idSet.add(eid);
+                    // Small spark
+                    this.gameContext?.particleManager?.spawn(e.x, e.y, 1, '#66E6FF', { sizeMin: 0.9, sizeMax: 1.8, lifeMs: 180, speedMin: 0.8, speedMax: 1.6 });
+                  }
+                }
+              }
+              // Boss parity: if active boss intersects the glide radius, apply reduced damage once per glide
+              try {
+                const bm: any = (window as any).__bossManager; const boss = bm?.getActiveBoss?.() || bm?.getBoss?.();
+                if (!this.techDashBossHit && boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+                  const r = (this.techDashHitRadius || 0) + (boss.radius || 120);
+                  const dxB = boss.x - this.x, dyB = boss.y - this.y;
+                  if (dxB*dxB + dyB*dyB <= r*r) {
+                    const dmgB = Math.max(1, Math.round((this.techDashImpactDamage || 0) * 0.6));
+                    (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dmgB, false, WeaponType.TACHYON_SPEAR, this.x, this.y, this.techDashWeaponLevel, true);
+                    this.techDashBossHit = true;
+                  }
+                }
+              } catch { /* ignore boss parity errors */ }
+            }
+          } catch { /* no enemy manager or grid yet */ }
         }
         if (this.techDashTimeMs >= this.techDashDurationMs) {
           this.techDashActive = false;
@@ -689,10 +752,10 @@ export class Player {
     } else if (this.overmindCdMs > 0) {
       this.overmindCdMs = Math.max(0, this.overmindCdMs - dt);
     }
-    // Psionic Weaver (4s active window, 12s cooldown)
+    // Psionic Weaver (active window and cooldown can be dynamically scaled)
     if (this.latticeActive) {
       this.latticeActiveMs += dt;
-      if (this.latticeActiveMs >= 4000) {
+      if (this.latticeActiveMs >= (this.latticeActiveMsMax || 4000)) {
         this.latticeActive = false;
         this.latticeActiveMs = 0;
         this.latticeCdMs = this.latticeCdMaxMs; // start cooldown when effect ends
@@ -700,11 +763,11 @@ export class Player {
     } else if (this.latticeCdMs > 0) {
       this.latticeCdMs = Math.max(0, this.latticeCdMs - dt);
     }
-    // Ghost Operative: cloak timers (5s active, 30s cooldown)
+    // Ghost Operative: cloak timers (active window/cooldown can be dynamically scaled)
     if (this.characterData?.id === 'ghost_operative') {
       if (this.cloakActive) {
         this.cloakActiveMs += dt;
-        if (this.cloakActiveMs >= 5000) {
+        if (this.cloakActiveMs >= (this.cloakActiveMsMax || 5000)) {
           this.cloakActive = false;
           this.cloakActiveMs = 0;
           this.cloakCdMs = this.cloakCdMaxMs; // start cooldown when effect ends
@@ -837,11 +900,21 @@ export class Player {
         this.bioOutbreakActive = true;
         this.bioOutbreakActiveMs = 0;
         const areaMul = this.getGlobalAreaMultiplier?.() ?? (this.globalAreaMultiplier ?? 1);
-        const radius = 300 * (areaMul || 1);
+        // Scale Outbreak radius and potency from class weapon levels; cap by evolved
+        const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+        const btLvl = (() => { try { return aw?.get(WeaponType.BIO_TOXIN) ?? 1; } catch { return 1; } })();
+        const hasSludge = !!(aw && aw.has(WeaponType.LIVING_SLUDGE));
+        const btSpec: any = (WEAPON_SPECS as any)[WeaponType.BIO_TOXIN];
+        const btStats = btSpec?.getLevelStats ? btSpec.getLevelStats(Math.max(1, Math.min(7, btLvl))) : { cooldown: 88 };
+        // Base 300 radius at L1; +12 per BT level (up to L7), multiplied by global area
+        const radiusBase = 300 + (Math.max(1, Math.min(7, btLvl)) - 1) * 12;
+        const radius = radiusBase * (areaMul || 1);
+        // Potency: stacks per tick start at 1; when evolved to Living Sludge, increase to 2 for harder virality
+        const stacksPerTick = hasSludge ? 2 : 1;
         const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
         try {
           (window as any).__bioOutbreakActiveUntil = nowMs + 5000;
-          window.dispatchEvent(new CustomEvent('bioOutbreakStart', { detail: { x: this.x, y: this.y, radius, durationMs: 5000 } }));
+          window.dispatchEvent(new CustomEvent('bioOutbreakStart', { detail: { x: this.x, y: this.y, radius, durationMs: 5000, stacksPerTick } }));
         } catch {}
       }
       this.bioOutbreakPrevKey = spaceNow;
@@ -2003,28 +2076,56 @@ export class Player {
           } else {
             // Tech Warrior: handle charged volley on the main fire path
             if ((weaponType === WeaponType.TACHYON_SPEAR || weaponType === WeaponType.SINGULARITY_SPEAR) && (this as any).techCharged) {
-              const spreadAng = 12 * Math.PI / 180;
               const base = finalAngle;
-              const lvl = weaponLevel;
-              // Supercharge damage should scale with the Tachyon Spear's level-based damage, not flat player damage.
-              const tachSpec: any = (WEAPON_SPECS as any)[WeaponType.TACHYON_SPEAR];
-              const scaled = tachSpec?.getLevelStats ? tachSpec.getLevelStats(lvl) : { damage: bulletDamage };
-              const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
-              const volleyMul = 2.0; // keep current x2 burst feel
-              const dmgBase = Math.round(baseDmgLeveled * volleyMul * (this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier || 1)));
-              const angles = [base - spreadAng, base, base + spreadAng];
-              for (let ai=0; ai<angles.length; ai++) {
-                const a = angles[ai];
-                const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
-                if (b) {
-                  (b as any)._isVolley = true;
-                  (b as any)._lifestealFrac = 0.01; // 1% lifesteal on charged volley
-                  b.damage = dmgBase;
-                  // Speed boost so volley uses the faster spear speed
-                  const boost = 1.35; // ~35% faster than base Tachyon
-                  b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
-                  // Apply special dark-red visuals here (BulletManager can't see _isVolley at spawn time)
-                  if (b.projectileVisual) {
+              const hasSingularity = (this.activeWeapons.get(WeaponType.SINGULARITY_SPEAR) || 0) > 0;
+              if (hasSingularity) {
+                // Supercharged evolved volley: 5x Singularity spears, red and massive
+                const sgSpec: any = (WEAPON_SPECS as any)[WeaponType.SINGULARITY_SPEAR];
+                const sgLvl = Math.max(1, Math.min(7, (this.activeWeapons.get(WeaponType.SINGULARITY_SPEAR) ?? weaponLevel)));
+                const scaled = sgSpec?.getLevelStats ? sgSpec.getLevelStats(sgLvl) : { damage: bulletDamage };
+                const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+                const gdm = this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier || 1);
+                // Punchy but bounded: 1.6x per spear ×5 = ~8x burst
+                const dmgBase = Math.round(baseDmgLeveled * 1.6 * gdm);
+                const deg = Math.PI / 180;
+                const angles = [base - 12*deg, base - 6*deg, base, base + 6*deg, base + 12*deg];
+                for (let ai = 0; ai < angles.length; ai++) {
+                  const a = angles[ai];
+                  const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.SINGULARITY_SPEAR, dmgBase, sgLvl);
+                  if (b) {
+                    (b as any)._isVolley = true;
+                    (b as any)._lifestealFrac = 0.01;
+                    b.damage = dmgBase;
+                    const boost = 1.35; b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
+                    const vis: any = { ...(b.projectileVisual as any) };
+                    vis.color = '#8B0000';
+                    vis.glowColor = '#FF3344';
+                    vis.glowRadius = Math.max(vis.glowRadius || 20, 26);
+                    vis.trailColor = 'rgba(255,64,64,0.55)';
+                    vis.trailLength = Math.max(vis.trailLength || 30, 40);
+                    vis.thickness = Math.max(vis.thickness || 5, 8);
+                    vis.length = Math.max(vis.length || 28, 40);
+                    b.projectileVisual = vis;
+                    b.radius = Math.max(b.radius || 6, 10);
+                  }
+                }
+              } else {
+                // Base volley: 3x Tachyon spears
+                const spreadAng = 12 * Math.PI / 180;
+                const lvl = weaponLevel;
+                const tachSpec: any = (WEAPON_SPECS as any)[WeaponType.TACHYON_SPEAR];
+                const scaled = tachSpec?.getLevelStats ? tachSpec.getLevelStats(lvl) : { damage: bulletDamage };
+                const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+                const dmgBase = Math.round(baseDmgLeveled * 2.0 * (this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier || 1)));
+                const angles = [base - spreadAng, base, base + spreadAng];
+                for (let ai=0; ai<angles.length; ai++) {
+                  const a = angles[ai];
+                  const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
+                  if (b) {
+                    (b as any)._isVolley = true;
+                    (b as any)._lifestealFrac = 0.01; // 1% lifesteal on charged volley
+                    b.damage = dmgBase;
+                    const boost = 1.35; b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
                     const vis: any = { ...(b.projectileVisual as any) };
                     vis.color = '#8B0000';
                     vis.glowColor = '#B22222';
@@ -2034,12 +2135,12 @@ export class Player {
                     vis.thickness = Math.max(vis.thickness || 4, 6);
                     vis.length = Math.max(vis.length || 26, 34);
                     b.projectileVisual = vis;
+                    b.radius = Math.max(b.radius || 6, 8);
                   }
-                  b.radius = Math.max(b.radius || 6, 8);
                 }
               }
               (this as any).techCharged = false;
-              window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+              window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 3.2 } }));
             } else {
               // Oracle Array: evolved multi-lane predictive burst (mirror lanes around base)
               if (weaponType === WeaponType.ORACLE_ARRAY) {
@@ -2250,38 +2351,63 @@ export class Player {
       return;
     }
 
-    // Tech Warrior: if charged and firing a spear, emit a triple-spear volley instead, then consume charge
+    // Tech Warrior: if charged and firing a spear, emit 5x Singularity volley when evolved, else 3x Tachyon; then consume charge
     if ((weaponType === WeaponType.TACHYON_SPEAR || weaponType === WeaponType.SINGULARITY_SPEAR) && (this as any).techCharged) {
-      const spreadAng = 12 * Math.PI / 180;
       const base = finalAngle;
-      const lvl = weaponLevel;
-  const dmgBase = Math.max(1, Math.round(((this.bulletDamage || bulletDamage) * 2.0)));
-      const angles = [base - spreadAng, base, base + spreadAng];
-      for (let ai = 0; ai < angles.length; ai++) {
-        const a = angles[ai];
-        const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
-        if (b) {
-          (b as any)._isVolley = true;
-          (b as any)._lifestealFrac = 0.01; // 1% lifesteal on charged volley
-          b.damage = dmgBase;
-          const boost = 1.35;
-          b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
-          if (b.projectileVisual) {
+      const hasSingularity = (this.activeWeapons.get(WeaponType.SINGULARITY_SPEAR) || 0) > 0;
+      if (hasSingularity) {
+        const sgSpec: any = (WEAPON_SPECS as any)[WeaponType.SINGULARITY_SPEAR];
+        const sgLvl = Math.max(1, Math.min(7, (this.activeWeapons.get(WeaponType.SINGULARITY_SPEAR) ?? weaponLevel)));
+        const scaled = sgSpec?.getLevelStats ? sgSpec.getLevelStats(sgLvl) : { damage: bulletDamage };
+        const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+        const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+        const dmgBase = Math.max(1, Math.round(baseDmgLeveled * 1.6 * gdm));
+        const deg = Math.PI / 180;
+        const angles = [base - 12*deg, base - 6*deg, base, base + 6*deg, base + 12*deg];
+        for (let ai = 0; ai < angles.length; ai++) {
+          const a = angles[ai];
+          const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.SINGULARITY_SPEAR, dmgBase, sgLvl);
+          if (b) {
+            (b as any)._isVolley = true;
+            (b as any)._lifestealFrac = 0.01;
+            b.damage = dmgBase;
+            const boost = 1.35; b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
             const vis: any = { ...(b.projectileVisual as any) };
-            vis.color = '#8B0000';
-            vis.glowColor = '#B22222';
-            vis.glowRadius = Math.max(vis.glowRadius || 18, 22);
-            vis.trailColor = 'rgba(139,0,0,0.50)';
-            vis.trailLength = Math.max(vis.trailLength || 26, 34);
-            vis.thickness = Math.max(vis.thickness || 4, 6);
-            vis.length = Math.max(vis.length || 26, 34);
+            vis.color = '#8B0000'; vis.glowColor = '#FF3344';
+            vis.glowRadius = Math.max(vis.glowRadius || 20, 26);
+            vis.trailColor = 'rgba(255,64,64,0.55)';
+            vis.trailLength = Math.max(vis.trailLength || 30, 40);
+            vis.thickness = Math.max(vis.thickness || 5, 8);
+            vis.length = Math.max(vis.length || 28, 40);
             b.projectileVisual = vis;
+            b.radius = Math.max(b.radius || 6, 10);
           }
-          b.radius = Math.max(b.radius || 6, 8);
+        }
+      } else {
+        const spreadAng = 12 * Math.PI / 180;
+        const lvl = weaponLevel;
+        const tachSpec: any = (WEAPON_SPECS as any)[WeaponType.TACHYON_SPEAR];
+        const scaled = tachSpec?.getLevelStats ? tachSpec.getLevelStats(lvl) : { damage: bulletDamage };
+        const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+        const dmgBase = Math.max(1, Math.round(baseDmgLeveled * 2.0 * ((this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1))));
+        const angles = [base - spreadAng, base, base + spreadAng];
+        for (let ai = 0; ai < angles.length; ai++) {
+          const a = angles[ai];
+          const b = bm.spawnBullet(originX, originY, originX + Math.cos(a) * 100, originY + Math.sin(a) * 100, WeaponType.TACHYON_SPEAR, dmgBase, lvl);
+          if (b) {
+            (b as any)._isVolley = true; (b as any)._lifestealFrac = 0.01; b.damage = dmgBase;
+            const boost = 1.35; b.vx *= boost; b.vy *= boost; (b as any).volleySpeedBoost = boost;
+            const vis: any = { ...(b.projectileVisual as any) };
+            vis.color = '#8B0000'; vis.glowColor = '#B22222';
+            vis.glowRadius = Math.max(vis.glowRadius || 18, 22);
+            vis.trailColor = 'rgba(139,0,0,0.50)'; vis.trailLength = Math.max(vis.trailLength || 26, 34);
+            vis.thickness = Math.max(vis.thickness || 4, 6); vis.length = Math.max(vis.length || 26, 34);
+            b.projectileVisual = vis; b.radius = Math.max(b.radius || 6, 8);
+          }
         }
       }
       (this as any).techCharged = false;
-      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 140, intensity: 3.2 } }));
       return;
     }
 
@@ -2403,6 +2529,17 @@ export class Player {
     // Use a state flag on player to prevent re-entry during charge
     if ((this as any)._railgunCharging) return;
     (this as any)._railgunCharging = true;
+    // Start weapon cooldown now so the loop doesn't try to refire during charge
+    {
+      const FRAME_MS = 1000 / 60;
+      const specStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
+      let baseCdMs: number | undefined = (specStats && typeof (specStats as any).cooldownMs === 'number') ? (specStats as any).cooldownMs : (typeof (spec as any).cooldownMs === 'number' ? (spec as any).cooldownMs : undefined);
+      let baseCdFrames: number | undefined = baseCdMs == null ? (specStats && typeof (specStats as any).cooldown === 'number' ? (specStats as any).cooldown : (spec?.cooldown ?? 60)) : undefined;
+      const rateSource = (this.getFireRateModifier?.() ?? this.fireRateModifier);
+      const rateMul = Math.max(0.1, (this.attackSpeed || 1) * ((rateSource != null ? rateSource : 1)));
+      const effCd = typeof baseCdMs === 'number' ? (baseCdMs / rateMul) : ((baseCdFrames as number) / rateMul) * FRAME_MS;
+      this.shootCooldowns.set(WeaponType.RAILGUN, effCd);
+    }
   const chargeTimeMs = 2000; // charge for 2s for a heftier rail feel
   let startTime = performance.now();
   let chargedOnce = false;
@@ -2424,10 +2561,16 @@ export class Player {
   // Emit a stronger reverse shockwave as the charge completes
   try { ex?.triggerMortarImplosion(originX, originY + 6, 120, '#00FFE6', 0.38, 220); } catch {}
       (this as any)._railgunCharging = false;
-      const beamAngle = Math.atan2(target.y - originY, target.x - originX);
-  const beamDurationMs = 160; // reverted to original duration
+      // If target is missing (edge cases/headless), use baseAngle
+      const beamAngle = (target && isFinite(target.x) && isFinite(target.y))
+        ? Math.atan2(target.y - originY, target.x - originX)
+        : (isFinite(baseAngle) ? baseAngle : 0);
+  const beamDurationMs = 160; // main impact window
       const beamStart = performance.now();
-      const range = spec.range || 900; // reverted to original range
+      // Prefer spec level stats for length/thickness when available
+      const lvlStats = spec?.getLevelStats ? spec.getLevelStats(weaponLevel) : undefined;
+      const range = Math.max(100, (lvlStats?.length ?? spec.range ?? 900));
+      const thickness = Math.max(6, (lvlStats?.thickness ?? (spec.beamVisual?.thickness ?? 12)));
   const gdmRG = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
   // Triple the base damage for an epic impact, respecting global damage multiplier
   const beamDamageTotal = ((spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) * 3.0) * gdmRG;
@@ -2445,11 +2588,12 @@ export class Player {
         duration: beamDurationMs,
         lastTick: beamStart,
         weaponLevel,
+        thickness,
   dealDamage: (now:number) => {
           const enemies = game.enemyManager?.getEnemies() || [];
           const cosA = Math.cos(beamAngle);
           const sinA = Math.sin(beamAngle);
-          const thickness = 12; // slightly thicker collision core for reliability
+          const thickness = beamObj.thickness || 12; // collision core
           for (const e of enemies) {
             if (!e.active || e.hp <= 0) continue;
             const relX = e.x - originX;
@@ -4089,17 +4233,32 @@ Player.prototype.activateAbility = function(this: Player & any) {
       break;
     }
     case 'ghost_operative': {
-      // Phase Cloak: 5s duration invis + immunity + speed boost; 30s cooldown
+      // Phase Cloak: duration/speed/cooldown scale with GHOST_SNIPER level and cap at SPECTRAL_EXECUTIONER apex
       if (!this.cloakActive && (this.cloakCdMs <= 0)) {
+        const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+        const lvlBase = aw?.get(WeaponType.GHOST_SNIPER) ?? 0;
+        const hasEvo = !!(aw && aw.has(WeaponType.SPECTRAL_EXECUTIONER));
+        const lvl = Math.max(lvlBase, hasEvo ? 7 : 1); // if evolved, treat as apex anchor
+        const t = Math.max(0, Math.min(1, (lvl - 1) / 6));
+        // Duration: 5s -> 6.5s (evolved cap 6.5)
+        const durMsRaw = 5000 + Math.round(1500 * t);
+        this.cloakActiveMsMax = hasEvo ? Math.min(6500, durMsRaw) : durMsRaw;
+        // Speed mult: 1.32x -> 1.55x (cap when evolved)
+        const speedMulRaw = 1.32 + 0.23 * t; // 1.32..1.55
+        const speedMul = hasEvo ? Math.min(1.55, speedMulRaw) : speedMulRaw;
+        // Cooldown: 16s -> 12s (cap 11s when evolved)
+        const cdRaw = 16000 - Math.round(4000 * t);
+        this.cloakCdMaxMs = hasEvo ? Math.max(11000, Math.min(16000, cdRaw - 1000)) : Math.max(12000, Math.min(16000, cdRaw));
+        // Activate
         this.cloakActive = true;
         this.cloakActiveMs = 0;
         // Speed boost (store and restore later)
         this.cloakPrevSpeed = this.speed;
-        this.speed = this.speed * 1.4;
+        this.speed = this.speed * speedMul;
         // Damage immunity window aligns with cloak duration
-        this.invulnerableUntilMs = now + 5000;
+        this.invulnerableUntilMs = now + this.cloakActiveMsMax;
         // Notify systems that cloak started (lock enemies to current player position)
-        try { window.dispatchEvent(new CustomEvent('ghostCloakStart', { detail: { x: this.x, y: this.y, durationMs: 5000 } })); } catch {}
+        try { window.dispatchEvent(new CustomEvent('ghostCloakStart', { detail: { x: this.x, y: this.y, durationMs: this.cloakActiveMsMax } })); } catch {}
         // Small feedback
         try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 70, intensity: 1.6 } })); } catch {}
       }
@@ -4135,12 +4294,27 @@ Player.prototype.activateAbility = function(this: Player & any) {
       break;
     }
     case 'psionic_weaver': {
-      // Activate Lattice Weave: 4s duration slow/aura; 12s cooldown
+      // Activate Lattice Weave: duration/radius/cooldown scale with PSIONIC_WAVE, cap at RESONANT_WEB apex
       if (!this.latticeActive && (this.latticeCdMs <= 0)) {
+        const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+        const lvlBase = aw?.get(WeaponType.PSIONIC_WAVE) ?? 1;
+        const hasEvo = !!(aw && aw.has(WeaponType.RESONANT_WEB));
+        const lvl = Math.max(1, Math.min(7, hasEvo ? 7 : lvlBase));
+        const t = Math.max(0, Math.min(1, (lvl - 1) / 6));
+        // Duration: 4s -> 6s (evo cap 6s)
+        this.latticeActiveMsMax = hasEvo ? 6000 : (4000 + Math.round(2000 * t));
+        // Cooldown: 14s -> 10s (evo cap 9s)
+        const cdRaw = 14000 - Math.round(4000 * t);
+        this.latticeCdMaxMs = hasEvo ? Math.max(9000, Math.min(14000, cdRaw - 1000)) : Math.max(10000, Math.min(14000, cdRaw));
+        // Radius: 300 -> 420 (evo cap 480). Area passive will further multiply in EnemyManager.
+        const radiusRaw = 300 + Math.round(120 * t);
+        const radius = hasEvo ? Math.min(480, radiusRaw + 40) : radiusRaw; // small bump with evo
+        try { (window as any).__weaverLatticeRadius = radius; } catch {}
+        // Activate
         this.latticeActive = true;
         this.latticeActiveMs = 0;
         // Visuals/logic hooks read this global deadline
-        try { (window as any).__weaverLatticeActiveUntil = now + 4000; } catch {}
+        try { (window as any).__weaverLatticeActiveUntil = now + this.latticeActiveMsMax; } catch {}
         // Optional tiny feedback
         try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 2 } })); } catch {}
       }
@@ -4175,12 +4349,21 @@ Player.prototype.activateAbility = function(this: Player & any) {
           const lvl = this.activeWeapons.get(WeaponType.DATA_SIGIL) ?? 1;
           const spec: any = (WEAPON_SPECS as any)[WeaponType.DATA_SIGIL];
           const stats = spec?.getLevelStats ? spec.getLevelStats(lvl) : undefined;
-          // Make ability sigil significantly larger; still affected by level and global area multiplier
-          const radius = ((stats?.sigilRadius ?? 140) * 1.8);
-          // Ability lives longer and connects more: more pulses, slightly faster cadence, quick initial burst
+          // Evolved cap anchor: cap ability within Runic Engine per-cast budget and radius
+          const evolvedSpec: any = (WEAPON_SPECS as any)[WeaponType.RUNIC_ENGINE];
+          const evolved = evolvedSpec?.getLevelStats ? evolvedSpec.getLevelStats(1) : { sigilRadius: 240, pulseCount: 8, pulseDamage: 200 } as any;
+          const baseRadius = (stats?.sigilRadius ?? 140);
+          // Grow with level but never exceed evolved radius
+          const radius = Math.min(evolved.sigilRadius || 240, Math.round(baseRadius * 1.8));
+          // Ability lives longer and connects more; cap pulses at evolved pulseCount
           const basePulses = (stats?.pulseCount ?? 4);
-          const pulseCount = Math.ceil(basePulses * 1.5);
-          const pulseDamage = (stats?.pulseDamage ?? 95);
+          const proposedPulses = Math.max(basePulses, Math.ceil(basePulses * 1.5));
+          const pulseCount = Math.min(proposedPulses, Math.max(1, evolved.pulseCount || 8));
+          // Keep total per-cast damage under evolved budget
+          const basePulseDamage = (stats?.pulseDamage ?? 95);
+          const evolvedBudget = Math.max(1, (evolved.pulseCount || 8) * (evolved.pulseDamage || 200));
+          const proposedBudget = pulseCount * basePulseDamage;
+          const pulseDamage = proposedBudget > evolvedBudget ? Math.max(1, Math.floor(evolvedBudget / pulseCount)) : basePulseDamage;
           const detail = { x: this.x, y: this.y, radius, pulseCount, pulseDamage, follow: true, pulseCadenceMs: 360, pulseDelayMs: 140 };
           window.dispatchEvent(new CustomEvent('plantDataSigil', { detail }));
         } catch {}
@@ -4222,11 +4405,24 @@ Player.prototype.activateAbility = function(this: Player & any) {
   const lvl = Math.max(1, Math.round(this.level || 1));
   const gdm = this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier ?? 1);
 
-  // Damage: high base with modest level scaling
-  const base = 40 + Math.floor((lvl - 1) * 1.2); // 40 @1 -> ~98 @50
-  const damage = Math.round(base * (gdm || 1));
-  // Micro knockback only, outward from hero (no pull)
-  const baseKb = 6 + Math.floor((lvl - 1) * 0.15); // gentle push
+  // Scale cyclone tick damage from class weapon DPS (cap at evolved weapon)
+  // Anchor: Runner Gun at its current level. If evolved (Runner Overdrive) is owned, cap by its L1 DPS.
+  const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+  const hasOverdrive = !!(aw && aw.has(WeaponType.RUNNER_OVERDRIVE));
+  const rgSpec: any = (WEAPON_SPECS as any)[WeaponType.RUNNER_GUN];
+  const roSpec: any = (WEAPON_SPECS as any)[WeaponType.RUNNER_OVERDRIVE];
+  const rgLvl = (() => { try { return (aw?.get(WeaponType.RUNNER_GUN) ?? 1); } catch { return 1; } })();
+  const rgStats = rgSpec?.getLevelStats ? rgSpec.getLevelStats(Math.max(1, Math.min(7, rgLvl))) : { damage: rgSpec?.damage ?? 6, cooldown: rgSpec?.cooldown ?? 6, salvo: rgSpec?.salvo ?? 1 };
+  const rgDps = ((rgStats.damage || 0) * (rgStats.salvo || 1) * 60) / Math.max(1, (rgStats.cooldown || 6));
+  const roStats = hasOverdrive && (roSpec?.getLevelStats ? roSpec.getLevelStats(1) : { damage: roSpec?.damage ?? 6, cooldown: roSpec?.cooldown ?? 4, salvo: roSpec?.salvo ?? 2 });
+  const roDps = hasOverdrive ? (((roStats.damage || 0) * (roStats.salvo || 1) * 60) / Math.max(1, (roStats.cooldown || 4))) : undefined;
+  const anchorDps = hasOverdrive ? Math.min(rgDps, roDps || rgDps) : rgDps;
+  // Cyclone emits 4 ticks at 150ms each (0.6s total). Convert a fraction of weapon DPS into each tick.
+  const cycloneDpsFraction = 1.0; // average ~10% of class weapon DPS over the 6s cooldown
+  const perTickSec = 0.150;
+  const damage = Math.max(1, Math.round((anchorDps * cycloneDpsFraction * perTickSec) * (gdm || 1)));
+  // Micro knockback only, outward from hero (no pull). Keep gentle push; scale very slightly with level.
+  const baseKb = 6 + Math.floor((lvl - 1) * 0.15);
 
   let hits = 0;
   for (let i = 0; i < enemies.length; i++) {
@@ -4238,7 +4434,7 @@ Player.prototype.activateAbility = function(this: Player & any) {
     if (distSq > cycloneRadius * cycloneRadius) continue;
 
     // Deal damage via EnemyManager for consistency
-    if (enemyMgr && typeof enemyMgr.takeDamage === 'function') {
+  if (enemyMgr && typeof enemyMgr.takeDamage === 'function') {
       const isCrit = Math.random() < (((this as any).critBonus || 0) + 0.1);
       enemyMgr.takeDamage(e, damage, isCrit, false, WeaponType.RUNNER_GUN, this.x, this.y, lvl);
     }
@@ -4266,7 +4462,13 @@ Player.prototype.activateAbility = function(this: Player & any) {
 
 // (Removed older duplicate performRunnerDash that teleported instantly and incorrectly hosted cyclone damage definition.)
 
-// Class-private helper: perform Tech Warrior glide dash with easing and brief i-frames
+/**
+ * Tech Warrior Glide
+ * - Triggers a 360ms eased glide in the current move direction with brief i-frames.
+ * - On start, precomputes a per-glide impact payload scaled from Tachyon Spear and capped by Singularity Spear.
+ * - During the glide, sweeps a short radius in front of the player at a fixed cadence, damaging and knocking back each enemy once.
+ * - Includes boss parity: applies reduced damage on boss intersection.
+ */
 (Player as any).prototype.performTechGlide = function(this: Player & any) {
   if (this.characterData?.id !== 'tech_warrior') return;
   if (this.techDashCooldownMs > 0 || this.techDashActive) return;
@@ -4279,12 +4481,37 @@ Player.prototype.activateAbility = function(this: Player & any) {
   if (mvMag < 0.01) return;
   const ang = Math.atan2(this.vy, this.vx);
   const dx = Math.cos(ang), dy = Math.sin(ang);
+  this.techDashDirX = dx; this.techDashDirY = dy;
   this.techDashStartX = this.x; this.techDashStartY = this.y;
   this.techDashEndX = this.x + dx * baseDistance;
   this.techDashEndY = this.y + dy * baseDistance;
   this.techDashTimeMs = 0;
   this.techDashActive = true;
   this.techDashEmitAccum = 0;
+  this.techDashHitIds.clear();
+  this.techDashBossHit = false;
+  // Precompute per-glide impact damage scaled by Tachyon Spear and capped at Singularity Spear
+  try {
+    const aw: Map<number, number> | undefined = (this as any).activeWeapons;
+    const tsLvl = Math.max(1, Math.min(7, (aw?.get(WeaponType.TACHYON_SPEAR) ?? 1)));
+    const tsSpec: any = (WEAPON_SPECS as any)[WeaponType.TACHYON_SPEAR];
+    const sgSpec: any = (WEAPON_SPECS as any)[WeaponType.SINGULARITY_SPEAR];
+    const tsStats = tsSpec?.getLevelStats ? tsSpec.getLevelStats(tsLvl) : { damage: tsSpec?.damage ?? 42, cooldown: tsSpec?.cooldown ?? 38, salvo: 1 };
+    const sgStats = sgSpec?.getLevelStats ? sgSpec.getLevelStats(1) : { damage: sgSpec?.damage ?? 66, cooldown: sgSpec?.cooldown ?? 68, salvo: 1 };
+    const tsDps = ((tsStats.damage || 0) * (tsStats.salvo || 1) * 60) / Math.max(1, (tsStats.cooldown || 38));
+    const sgDps = ((sgStats.damage || 0) * (sgStats.salvo || 1) * 60) / Math.max(1, (sgStats.cooldown || 68));
+    // Convert a fraction of weapon DPS into a single glide-impact payload. Glide lasts ~0.36s; impact is brief.
+  const gdm = this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier ?? 1);
+  // Allocate a larger portion of class weapon DPS to glide impact for a satisfying hit
+  const fraction = 0.65; // was 0.38; higher burst per request
+  const budget = Math.min(tsDps, sgDps) * fraction * (gdm || 1); // cap at evolved apex and apply passives
+    this.techDashImpactDamage = Math.max(1, Math.round(budget));
+  // Radius scales with Area and weapon level; larger footprint for glide sweep
+  const areaMul = this.getGlobalAreaMultiplier?.() ?? (this.globalAreaMultiplier ?? 1);
+  const baseR = Math.max(80, Math.min(160, Math.round(90 + tsLvl * 12))); // 90..174 -> clamped to 160
+  this.techDashHitRadius = Math.max(48, Math.round(baseR * (areaMul || 1)));
+    this.techDashWeaponLevel = tsLvl;
+  } catch { this.techDashImpactDamage = 60; this.techDashHitRadius = 52; this.techDashWeaponLevel = 1; }
   // Brief i-frames (slightly shorter than full duration for counterplay)
   this.invulnerableUntilMs = Math.max(this.invulnerableUntilMs || 0, now + Math.min(durationMs - 40, 300));
   // Gentle feedback

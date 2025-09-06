@@ -265,6 +265,7 @@ export class EnemyManager {
   // Bio Engineer Outbreak! state
   private bioOutbreakUntil: number = 0;
   private bioOutbreakRadius: number = 0;
+  private bioOutbreakStacksPerTick: number = 1;
   private bioOutbreakLastTickMs: number = 0;
   // Poison (Bio Engineer) status: stacking DoT with movement slow and contagion
 
@@ -414,6 +415,7 @@ export class EnemyManager {
       const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
       this.bioOutbreakUntil = nowMs + (d.durationMs || 5000);
       this.bioOutbreakRadius = d.radius || 300;
+  this.bioOutbreakStacksPerTick = Math.max(1, Math.min(4, d.stacksPerTick || 1));
       this.bioOutbreakLastTickMs = 0;
     });
     window.addEventListener('bioOutbreakEnd', () => {
@@ -732,25 +734,28 @@ export class EnemyManager {
   private plantDataSigil(x:number, y:number, radius:number, pulseCount:number, pulseDamage:number, follow:boolean=false, cadenceMs?: number, initialDelayMs?: number){
     let sig = this.dataSigils.find(s => !s.active);
     const now = performance.now();
+    const jitter = Math.random() * 90; // small staggering to avoid synchronized pulses
     if (!sig) {
-      sig = { x, y, radius, pulsesLeft: pulseCount, pulseDamage, nextPulseAt: now + (initialDelayMs ?? 220), active: true, spin: Math.random()*Math.PI*2, created: now, follow, cadenceMs };
+      sig = { x, y, radius, pulsesLeft: pulseCount, pulseDamage, nextPulseAt: now + (initialDelayMs ?? 220) + jitter, active: true, spin: Math.random()*Math.PI*2, created: now, follow, cadenceMs };
       this.dataSigils.push(sig);
     } else {
-      sig.x = x; sig.y = y; sig.radius = radius; sig.pulsesLeft = pulseCount; sig.pulseDamage = pulseDamage; sig.nextPulseAt = now + (initialDelayMs ?? 220); sig.active = true; sig.spin = Math.random()*Math.PI*2; sig.created = now; sig.follow = follow; sig.cadenceMs = cadenceMs;
+      sig.x = x; sig.y = y; sig.radius = radius; sig.pulsesLeft = pulseCount; sig.pulseDamage = pulseDamage; sig.nextPulseAt = now + (initialDelayMs ?? 220) + jitter; sig.active = true; sig.spin = Math.random()*Math.PI*2; sig.created = now; sig.follow = follow; sig.cadenceMs = cadenceMs;
     }
   // Golden spark burst on plant
   try { this.particleManager?.spawn(x, y, 12, '#33E6FF', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.2, speedMax: 3.2 }); } catch {}
   }
 
-  /** Update Data Sigils: emit pulses on cadence and apply AoE damage. */
+  /** Update Data Sigils: emit pulses on cadence and apply AoE damage.
+   *  Perf: use spatial grid or activeEnemies for queries, dedupe treasure pass, and avoid full scans.
+   */
   private updateDataSigils(deltaMs: number): void {
     if (!this.dataSigils.length) return;
     const now = performance.now();
     const p: any = this.player as any;
     const gdm = p?.getGlobalDamageMultiplier?.() ?? (p?.globalDamageMultiplier ?? 1);
     const areaMul = p?.getGlobalAreaMultiplier?.() ?? (p?.globalAreaMultiplier ?? 1);
-    // Precompute spatial query helper
-    const query = (x: number, y: number, r: number) => (this.enemySpatialGrid ? this.enemySpatialGrid.query(x, y, r) : this.enemies);
+    // Precompute spatial query helper (prefer grid, else fall back to activeEnemies for a dense set)
+    const query = (x: number, y: number, r: number) => (this.enemySpatialGrid ? this.enemySpatialGrid.query(x, y, r) : this.activeEnemies);
     for (let i = 0; i < this.dataSigils.length; i++) {
       const s = this.dataSigils[i];
       if (!s.active) continue;
@@ -772,7 +777,7 @@ export class EnemyManager {
         const x = s.x, y = s.y;
         // Prefer spatial grid query for nearby enemies
         const candidates = query(x, y, radius + 32);
-      for (let j = 0; j < candidates.length; j++) {
+        for (let j = 0, jl = candidates.length; j < jl; j++) {
           const e = candidates[j];
           if (!e.active || e.hp <= 0) continue;
           const dx = e.x - x; const dy = e.y - y;
@@ -798,22 +803,7 @@ export class EnemyManager {
           const emAny: any = this as any;
           if (typeof emAny.getTreasures === 'function') {
             const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
-            for (let ti = 0; ti < treasures.length; ti++) {
-              const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
-              const dxT = t.x - x; const dyT = t.y - y;
-              if (dxT > radius || dxT < -radius || dyT > radius || dyT < -radius) continue;
-              if (dxT*dxT + dyT*dyT <= r2 && typeof emAny.damageTreasure === 'function') {
-                emAny.damageTreasure(t, dmg);
-              }
-            }
-          }
-        } catch { /* ignore treasure pulse errors */ }
-        // Treasure parity: apply pulse damage within radius
-        try {
-          const emAny: any = this as any;
-          if (typeof emAny.getTreasures === 'function') {
-            const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
-            for (let ti = 0; ti < treasures.length; ti++) {
+            for (let ti = 0, tl = treasures.length; ti < tl; ti++) {
               const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
               const dxT = t.x - x; const dyT = t.y - y;
               if (dxT > radius || dxT < -radius || dyT > radius || dyT < -radius) continue;
@@ -846,8 +836,9 @@ export class EnemyManager {
           }
           // Apply manual AoE damage with weapon context for enemy knockback
           const r2 = finaleR * finaleR;
-          for (let j = 0; j < this.enemies.length; j++) {
-            const e = this.enemies[j]; if (!e.active) continue;
+          const candidates = query(s.x, s.y, finaleR);
+          for (let j = 0, jl = candidates.length; j < jl; j++) {
+            const e = candidates[j]; if (!e.active) continue;
             const dx = e.x - s.x, dy = e.y - s.y; const d2 = dx*dx + dy*dy;
             if (d2 <= r2) {
               this.takeDamage(e, finaleDmg, false, false, WeaponType.DATA_SIGIL, s.x, s.y, undefined, true);
@@ -951,12 +942,14 @@ export class EnemyManager {
       const pct = Math.max(0, Math.min(0.97, eAny._blackSunSlowPct || 0));
       slow = Math.max(slow, pct);
     }
-    // Weaver Lattice slow: 70% slow to all enemies currently within lattice radius around player
+  // Weaver Lattice slow: 70% slow to all enemies currently within lattice radius around player
     try {
       const until = (window as any).__weaverLatticeActiveUntil || 0;
       if (until > now) {
         const dx = e.x - this.player.x; const dy = e.y - this.player.y;
-  const r = 352; // match draw/update radius (buffed)
+        const baseR = Math.max(120, Math.min(600, (window as any).__weaverLatticeRadius || 352)); // dynamic radius with sane bounds
+        const areaMul = (() => { try { const p:any = this.player as any; const gm = typeof p.getGlobalAreaMultiplier === 'function' ? p.getGlobalAreaMultiplier() : (p.globalAreaMultiplier || 1); return gm || 1; } catch { return 1; } })();
+        const r = Math.max(60, Math.min(900, baseR * areaMul));
         if (dx*dx + dy*dy <= r*r) slow = Math.max(slow, 0.70);
       }
     } catch {}
@@ -1941,18 +1934,19 @@ export class EnemyManager {
         }
       }
     }
-    // Outbreak contagion: once per poison tick interval, grant +1 poison stack to all enemies within radius of player
+  // Outbreak contagion: once per poison tick interval, grant N poison stacks to all enemies within radius of player
     if (this.bioOutbreakUntil > now && this.bioOutbreakRadius > 0) {
       if (now - (this.bioOutbreakLastTickMs || 0) >= this.poisonTickIntervalMs) {
         this.bioOutbreakLastTickMs = now;
         const px = this.player.x, py = this.player.y;
         const r2 = this.bioOutbreakRadius * this.bioOutbreakRadius;
+    const stacksToApply = Math.max(1, this.bioOutbreakStacksPerTick | 0);
         for (let j = 0; j < this.activeEnemies.length; j++) {
           const o = this.activeEnemies[j];
           if (!o.active || o.hp <= 0) continue;
           const dx = o.x - px, dy = o.y - py;
           if (dx*dx + dy*dy <= r2) {
-            this.applyPoison(o, 1);
+      this.applyPoison(o, stacksToApply);
           }
         }
         // Affect boss too if within radius
@@ -1961,7 +1955,7 @@ export class EnemyManager {
           const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
           if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
             const dxB = boss.x - px, dyB = boss.y - py;
-            if (dxB*dxB + dyB*dyB <= r2) this.applyBossPoison(boss, 1);
+      if (dxB*dxB + dyB*dyB <= r2) this.applyBossPoison(boss, stacksToApply);
           }
         } catch { /* ignore */ }
       }
@@ -2276,6 +2270,9 @@ export class EnemyManager {
   // Psionic Weaver Lattice: draw a large pulsing slow zone around the player while active (behind enemies)
   try {
     const until = (window as any).__weaverLatticeActiveUntil || 0;
+  const latticeBase = Math.max(120, Math.min(600, (window as any).__weaverLatticeRadius || 352));
+  const latticeAreaMul = (() => { try { const p:any = this.player as any; const gm = typeof p.getGlobalAreaMultiplier === 'function' ? p.getGlobalAreaMultiplier() : (p.globalAreaMultiplier || 1); return gm || 1; } catch { return 1; } })();
+  const latticeR = Math.max(80, Math.min(950, latticeBase * latticeAreaMul));
   // Bio Boost visual: neon green speed aura + streaks while active (Shift ability for Bio Engineer)
   try {
     const bbUntil = (window as any).__bioBoostActiveUntil || 0;
@@ -2405,7 +2402,7 @@ export class EnemyManager {
       const px = this.player.x, py = this.player.y;
       // Cull if fully off-screen
       if (!(px < minX - 400 || px > maxX + 400 || py < minY - 400 || py > maxY + 400)) {
-        const baseR = 320;
+  const baseR = latticeR;
         const pulse = 1 + Math.sin(now * 0.008) * 0.05; // subtle 5% radius pulse
         const r = baseR * pulse;
         ctx.save();
@@ -2654,6 +2651,94 @@ export class EnemyManager {
       if (t >= 1) { (window as any).__rogueHackFX = undefined; }
     }
   } catch {}
+  // Draw poison puddles (between background/zones and enemies)
+  // Visible above background but under enemies/items.
+  for (let i = 0; i < this.poisonPuddles.length; i++) {
+    const puddle = this.poisonPuddles[i];
+    if (!puddle.active) continue;
+    // Cull if offscreen
+    if (puddle.x < minX - 50 || puddle.x > maxX + 50 || puddle.y < minY - 50 || puddle.y > maxY + 50) continue;
+    const alpha = Math.max(0, Math.min(1, puddle.life / puddle.maxLife));
+    const r = puddle.radius;
+    ctx.save();
+    // Default blending so it sits above background
+    ctx.globalCompositeOperation = 'source-over';
+    if (puddle.isSludge) {
+      // Living Sludge: neon green slimy gradient with wobble and bright rim
+      const wob = 1.0 + Math.sin((performance.now() + i * 120) * 0.004) * 0.06;
+      const rr = r * wob;
+      ctx.globalAlpha = alpha * 0.48;
+      const grad = ctx.createRadialGradient(puddle.x, puddle.y, rr * 0.30, puddle.x, puddle.y, rr);
+      grad.addColorStop(0.0, 'rgba(102,255,106,0.55)');
+      grad.addColorStop(1.0, 'rgba(0,160,0,0.00)');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(puddle.x, puddle.y, rr, 0, Math.PI * 2); ctx.fill();
+      // Rim
+      ctx.globalAlpha = alpha * 0.60;
+      ctx.strokeStyle = 'rgba(90,240,95,0.65)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(puddle.x, puddle.y, rr * 0.98, 0, Math.PI * 2); ctx.stroke();
+      // Boiling overlay: bubbles + ripples (adaptive under load)
+      try {
+        const nowB = performance.now();
+        const frameMs = this.avgFrameMs || 16;
+        const budget = frameMs > 40 ? 0 : (frameMs > 28 ? 1 : 2);
+        // Bubbles
+        const baseCount = Math.min(6, Math.max(2, Math.floor(rr / 28)));
+        const count = Math.max(0, baseCount - (budget === 0 ? 2 : budget === 1 ? 1 : 0));
+        for (let b = 0; b < count; b++) {
+          const seed = (i * 131 + b * 977) >>> 0;
+          const t = (nowB * 0.001 + (seed % 1000) * 0.001) % 1;
+          const ang = ((seed % 628) / 100) + nowB * 0.0007;
+          const rad = rr * (0.15 + 0.65 * ((seed >> 3) % 100) / 100);
+          const bx = puddle.x + Math.cos(ang) * rad * 0.6;
+          const by = puddle.y + (0.45 - t) * rr * 0.9;
+          const br = (2 + ((seed >> 5) % 3)) * (1 + 0.15 * Math.sin(nowB * 0.02 + b));
+          ctx.globalAlpha = 0.25 * alpha; ctx.fillStyle = 'rgba(200,255,200,0.18)';
+          ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 0.32 * alpha; ctx.strokeStyle = 'rgba(190,255,190,0.35)';
+          ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(bx, by, br * (1 + 0.15 * Math.sin(nowB * 0.03 + seed)), 0, Math.PI * 2); ctx.stroke();
+        }
+        // Ripples: one expanding ring every ~700ms
+        const phase = ((nowB + i * 137) % 700) / 700;
+        const rippleR = rr * (0.20 + 0.75 * phase);
+        ctx.globalAlpha = 0.16 * alpha * (1 - phase);
+        ctx.strokeStyle = 'rgba(160,255,160,0.55)';
+        ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(puddle.x, puddle.y + rr * 0.12, rippleR, 0, Math.PI * 2); ctx.stroke();
+      } catch { /* ignore */ }
+    } else {
+      // Normal poison: subtle ground tint using a soft radial gradient + thin rim
+      ctx.globalAlpha = alpha * 0.35;
+      const grad = ctx.createRadialGradient(puddle.x, puddle.y, Math.max(4, r * 0.55), puddle.x, puddle.y, r * 0.98);
+      grad.addColorStop(0.0, 'rgba(0,255,120,0.22)');
+      grad.addColorStop(0.65, 'rgba(0,200,80,0.10)');
+      grad.addColorStop(1.0, 'rgba(0,160,0,0.00)');
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(puddle.x, puddle.y, r * 0.99, 0, Math.PI * 2); ctx.fill();
+      // Thin rim
+      ctx.globalAlpha = alpha * 0.30;
+      ctx.strokeStyle = 'rgba(120,255,120,0.40)';
+      ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(puddle.x, puddle.y, r * 0.96, 0, Math.PI * 2); ctx.stroke();
+      // Light boiling for regular poison (cheaper)
+      try {
+        const nowB = performance.now();
+        const frameMs = this.avgFrameMs || 16;
+        if (frameMs <= 28) {
+          const bubbles = Math.max(1, Math.min(3, Math.floor(r / 36)));
+          for (let b = 0; b < bubbles; b++) {
+            const t = ((nowB * 0.0015) + (i * 0.17) + b * 0.31) % 1;
+            const ang = nowB * 0.0009 + b;
+            const bx = puddle.x + Math.cos(ang) * r * 0.4;
+            const by = puddle.y + (0.5 - t) * r * 0.8;
+            const br = 1.6 + (b % 2);
+            ctx.globalAlpha = 0.18 * alpha; ctx.fillStyle = 'rgba(180,255,180,0.15)';
+            ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    ctx.restore();
+  }
   // Draw enemies (cached sprite images if enabled)
     // Compute heavy FX budget per frame: start at 32 and scale down under load
     const frameMsForBudget = this.avgFrameMs || 16;
@@ -3115,98 +3200,7 @@ export class EnemyManager {
       }
       ctx.restore();
     }
-    // Draw poison puddles
-    for (let i = 0; i < this.poisonPuddles.length; i++) {
-      const puddle = this.poisonPuddles[i];
-      if (!puddle.active) continue;
-      ctx.save();
-      const alpha = Math.max(0, Math.min(1, puddle.life / puddle.maxLife));
-      if (puddle.isSludge) {
-        // Living Sludge: neon green slimy gradient with wobble and bright rim
-        const wob = 1.0 + Math.sin((performance.now() + i * 120) * 0.004) * 0.06;
-        const r = puddle.radius * wob;
-        ctx.globalAlpha = alpha * 0.48;
-        const grad = ctx.createRadialGradient(puddle.x, puddle.y, r * 0.30, puddle.x, puddle.y, r);
-        grad.addColorStop(0.0, 'rgba(102,255,106,0.55)');
-        grad.addColorStop(1.0, 'rgba(0,160,0,0.00)');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(puddle.x, puddle.y, r, 0, Math.PI * 2);
-        ctx.fill();
-        // Rim
-        ctx.globalAlpha = alpha * 0.60;
-        ctx.strokeStyle = 'rgba(90,240,95,0.65)';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.arc(puddle.x, puddle.y, r * 0.98, 0, Math.PI * 2);
-        ctx.stroke();
-        // Boiling overlay: bubbles + ripples (adaptive under load)
-        try {
-          const nowB = performance.now();
-          const frameMs = this.avgFrameMs || 16;
-          const budget = frameMs > 40 ? 0 : (frameMs > 28 ? 1 : 2);
-          // Bubbles
-          const baseCount = Math.min(6, Math.max(2, Math.floor(r / 28)));
-          const count = Math.max(0, baseCount - (budget === 0 ? 2 : budget === 1 ? 1 : 0));
-          ctx.globalCompositeOperation = 'screen';
-          for (let b = 0; b < count; b++) {
-            // Stable pseudo-random per puddle/index using sin hash
-            const seed = (i * 131 + b * 977) >>> 0;
-            const t = (nowB * 0.001 + (seed % 1000) * 0.001) % 1;
-            const ang = ((seed % 628) / 100) + nowB * 0.0007;
-            const rad = r * (0.15 + 0.65 * ((seed >> 3) % 100) / 100);
-            const bx = puddle.x + Math.cos(ang) * rad * 0.6;
-            // Rise from bottom to top
-            const by = puddle.y + (0.45 - t) * r * 0.9;
-            const br = (2 + ((seed >> 5) % 3)) * (1 + 0.15 * Math.sin(nowB * 0.02 + b));
-            ctx.globalAlpha = 0.25 * alpha;
-            ctx.fillStyle = 'rgba(200,255,200,0.18)';
-            ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
-            ctx.globalAlpha = 0.32 * alpha;
-            ctx.strokeStyle = 'rgba(190,255,190,0.35)';
-            ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.arc(bx, by, br * (1 + 0.15 * Math.sin(nowB * 0.03 + seed)), 0, Math.PI * 2); ctx.stroke();
-          }
-          // Ripples: one expanding ring every ~700ms
-          const phase = ((nowB + i * 137) % 700) / 700;
-          const rr = r * (0.20 + 0.75 * phase);
-          ctx.globalAlpha = 0.16 * alpha * (1 - phase);
-          ctx.strokeStyle = 'rgba(160,255,160,0.55)';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath(); ctx.arc(puddle.x, puddle.y + r * 0.12, rr, 0, Math.PI * 2); ctx.stroke();
-          ctx.globalCompositeOperation = 'source-over';
-        } catch { /* ignore */ }
-      } else {
-        ctx.globalAlpha = alpha * 0.60;
-        ctx.beginPath();
-        ctx.arc(puddle.x, puddle.y, puddle.radius, 0, Math.PI * 2);
-        ctx.fillStyle = '#00FF00';
-        ctx.shadowColor = '#00FF00';
-        ctx.shadowBlur = 15;
-        ctx.fill();
-        // Light boiling for regular poison (cheaper)
-        try {
-          const nowB = performance.now();
-          const frameMs = this.avgFrameMs || 16;
-          if (frameMs <= 28) {
-            const r = puddle.radius;
-            const bubbles = Math.max(1, Math.min(3, Math.floor(r / 36)));
-            ctx.globalCompositeOperation = 'screen';
-            for (let b = 0; b < bubbles; b++) {
-              const t = ((nowB * 0.0015) + (i * 0.17) + b * 0.31) % 1;
-              const ang = nowB * 0.0009 + b;
-              const bx = puddle.x + Math.cos(ang) * r * 0.4;
-              const by = puddle.y + (0.5 - t) * r * 0.8;
-              const br = 1.6 + (b % 2);
-              ctx.globalAlpha = 0.18 * alpha; ctx.fillStyle = 'rgba(180,255,180,0.15)';
-              ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
-            }
-            ctx.globalCompositeOperation = 'source-over';
-          }
-        } catch { /* ignore */ }
-      }
-      ctx.restore();
-    }
+  // (puddles now drawn earlier)
     ctx.restore();
   }
 
@@ -3346,7 +3340,13 @@ export class EnemyManager {
   const nowMs = nowFrame;
   const latticeUntil = (window as any).__weaverLatticeActiveUntil || 0;
   const latticeActive = latticeUntil > nowMs;
-  const latticeR = latticeActive ? 352 : 0;
+  // Use dynamic lattice radius written by Player; apply Area multiplier like draw/slow paths
+  let latticeR = 0;
+  if (latticeActive) {
+    const latticeBase = Math.max(120, Math.min(600, (window as any).__weaverLatticeRadius || 352));
+    const latticeAreaMul = (() => { try { const p:any = this.player as any; const gm = typeof p.getGlobalAreaMultiplier === 'function' ? p.getGlobalAreaMultiplier() : (p.globalAreaMultiplier || 1); return gm || 1; } catch { return 1; } })();
+    latticeR = Math.max(80, Math.min(950, latticeBase * latticeAreaMul));
+  }
   const latticeR2 = latticeR * latticeR;
   // Lattice periodic damage: every ~0.5s (adaptive), deal 50% of Psionic Wave damage to enemies inside the zone
   if (latticeActive) {
@@ -3800,13 +3800,21 @@ export class EnemyManager {
         // Sustained DPS tick while inside zone (evolved only)
         if (evolved && sustainDps > 0 && sustainTickMs > 0) {
           const zAny: any = z as any;
-          if (!zAny._nextSustainAt) zAny._nextSustainAt = nowHz + sustainTickMs;
+          // Adaptive cadence and query budget based on frame time
+          const frameMs = this.avgFrameMs || 16;
+          const cadenceScale = frameMs > 40 ? 2.0 : (frameMs > 28 ? 1.5 : 1.0);
+          const tickMsEff = Math.max(60, Math.round(sustainTickMs * cadenceScale));
+          const queryMargin = frameMs > 40 ? 10 : (frameMs > 28 ? 20 : 40);
+          const step = frameMs > 40 ? 3 : (frameMs > 28 ? 2 : 1);
+
+          if (!zAny._nextSustainAt) zAny._nextSustainAt = nowHz + tickMsEff;
           let guard = 5; // prevent spiral on long frames
           while (guard-- > 0 && nowHz >= zAny._nextSustainAt) {
-            zAny._nextSustainAt += sustainTickMs;
-            const perTick = (sustainDps * (sustainTickMs / 1000)) * gdm;
-            const nearby = this.enemySpatialGrid.query(z.x, z.y, rEff + 50);
-            for (let i = 0; i < nearby.length; i++) {
+            zAny._nextSustainAt += tickMsEff;
+            const perTick = (sustainDps * (tickMsEff / 1000)) * gdm;
+            // Only query nearby enemies; tighten margin under load
+            const nearby = this.enemySpatialGrid.query(z.x, z.y, rEff + queryMargin);
+            for (let i = 0; i < nearby.length; i += step) {
               const e = nearby[i]; if (!e.active || e.hp <= 0) continue;
               const dx = e.x - z.x; const dy = e.y - z.y;
               const rr = rEff + (e.radius || 0);
@@ -3814,7 +3822,7 @@ export class EnemyManager {
                 this.takeDamage(e, perTick, false, false, WeaponType.HACKER_VIRUS, z.x, z.y, undefined, true);
               }
             }
-            // Boss sustain tick
+            // Boss sustain tick (always checked; boss count is 0/1)
             try {
               const bm: any = (window as any).__bossManager;
               const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
@@ -3825,12 +3833,12 @@ export class EnemyManager {
                 }
               }
             } catch { /* ignore */ }
-            // Treasure sustain tick
+            // Treasure sustain tick (step-sampled under load)
             try {
               const emAny: any = this as any;
               if (typeof emAny.getTreasures === 'function') {
                 const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
-                for (let ti = 0; ti < treasures.length; ti++) {
+                for (let ti = 0; ti < treasures.length; ti += step) {
                   const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
                   const dxT = t.x - z.x, dyT = t.y - z.y; const rT = (t.radius || 0);
                   if (dxT*dxT + dyT*dyT <= (rEff + rT) * (rEff + rT) && typeof emAny.damageTreasure === 'function') {

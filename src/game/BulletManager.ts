@@ -1387,18 +1387,25 @@ export class BulletManager {
           }
         }
       }
-      // Tachyon/Singularity spear: realistic spear travel physics (ease-in + slight drag; slowdown on pierce)
+  // Tachyon/Singularity spear: realistic spear travel physics (ease-in + slight drag; slowdown on pierce)
       if ((b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR) && b.active) {
         // Cache base speed from spec once
         const spec: any = (WEAPON_SPECS as any)[b.weaponType];
         if ((b as any)._baseSpeed == null) (b as any)._baseSpeed = spec?.speed || Math.hypot(b.vx, b.vy) || 12;
         const base = (b as any)._baseSpeed;
         const cur = Math.hypot(b.vx, b.vy) || 0.0001;
+        // Tachyon synergy: when the tech meter is charged or recently triggered, Singularity gets a slight speed boost
+        const pAny: any = this.player as any;
+        const nowT = performance.now();
+        const tachyonActive = !!(pAny?.techCharged) || (nowT - (pAny?.lastTechTriggerMs || 0) < 2000);
         // Ease-in acceleration toward base speed early in flight
         const tMs = performance.now() - ((b as any)._spawnTime || performance.now());
         const accelPhase = Math.min(1, tMs / 180); // first 180ms
         const accel = 0.18 * (deltaTime / 16.6667) * (0.4 + 0.6 * accelPhase); // ramping accel
         let target = base * (1 + 0.04 * Math.sin(tMs * 0.01)); // tiny jitter for life
+        if (b.weaponType === WeaponType.SINGULARITY_SPEAR && tachyonActive) {
+          target *= 1.08; // modest 8% speed boost under Tachyon empowerment
+        }
         let ns = cur + (target - cur) * accel;
         // Air drag: mild reduction to avoid infinite straight-line with huge speed
         const drag = 0.004 * (deltaTime / 16.6667);
@@ -1407,6 +1414,49 @@ export class BulletManager {
         b.vy = (b.vy / cur) * ns;
         // Record speed for potential hit-based slowdown hook
         (b as any)._lastSpeed = ns;
+
+        // Singularity Spear unique: local gravity well along trajectory — pull nearby enemies toward the spear
+    if (b.weaponType === WeaponType.SINGULARITY_SPEAR) {
+          try {
+            const em: any = this.enemyManager as any;
+            if (em && typeof em.queryEnemies === 'function') {
+              const lvl = (b as any).level || 1;
+              // Suction radius scales with Area and level (wider than hitbox)
+              const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+        const basePullR = Math.max(120, Math.min(260, Math.round((140 + lvl * 14) * (areaMul || 1))));
+        const pullR = tachyonActive ? Math.round(basePullR * 1.15) : basePullR; // Tachyon synergy widens suction
+              const candidates = em.queryEnemies(b.x, b.y, pullR) as any[];
+              if (candidates && candidates.length) {
+                const ids: string[] = (b as any)._singCaptureIds || ((b as any)._singCaptureIds = []);
+                const idSet = (b as any)._singCaptureSet || ((b as any)._singCaptureSet = new Set<string>());
+                // Pull strength decays with distance; clamp per-frame step for stability
+                const dtScale = (deltaTime || 16.6667) / 16.6667;
+                for (let i = 0; i < candidates.length; i++) {
+                  const e = candidates[i];
+                  if (!e || !e.active || e.hp <= 0) continue;
+                  // Ignore special dummy targets and boss here; boss parity handled elsewhere
+                  if ((e as any)._isDummy) continue;
+                  const dx = b.x - e.x; const dy = b.y - e.y;
+                  const dist = Math.hypot(dx, dy) || 1;
+                  if (dist > pullR) continue;
+                  const nx = dx / dist; const ny = dy / dist;
+                  const falloff = 1 - (dist / pullR); // 0..1
+          let pullPerFrame = 16 + 110 * falloff; // px per 60fps frame near center
+          if (tachyonActive) pullPerFrame *= 1.2; // stronger pull under Tachyon
+                  const step = pullPerFrame * dtScale;
+                  // Apply position adjustment toward spear
+                  e.x += nx * step;
+                  e.y += ny * step;
+                  // Tag as captured for end-of-life gather
+                  const eid = e.id || (e as any)._uid || '' + i;
+                  if (eid && !idSet.has(eid)) { idSet.add(eid); ids.push(eid); }
+                  // Light visual feedback
+                  this.particleManager?.spawn(e.x, e.y, 0, '#C9A6FF', { sizeMin: 0.6, sizeMax: 1.2, lifeMs: 120, speedMin: 0.3, speedMax: 0.9 });
+                }
+              }
+            }
+          } catch { /* ignore suction errors */ }
+        }
       }
     // Kamikaze Drone phased logic
   if (b.weaponType === WeaponType.HOMING && b.active) {
@@ -1869,6 +1919,39 @@ export class BulletManager {
                 }
               }
               this.enemyManager.takeDamage(enemy, outDamage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
+              // Singularity Spear: explode on each contact (micro-explosion)
+              if (b.weaponType === WeaponType.SINGULARITY_SPEAR) {
+                try {
+                  const pAny: any = this.player as any;
+                  const nowT = performance.now();
+                  const tachyonActive = !!(pAny?.techCharged) || (nowT - (pAny?.lastTechTriggerMs || 0) < 2000);
+                  // Determine base micro explosion parameters, scaled lightly by level
+                  const lvl = (b as any).level || 1;
+                  const baseRad = 80 + Math.min(60, lvl * 6);
+                  const baseDmg = Math.max(1, Math.round((outDamage || b.damage || 20) * 0.35));
+                  const radius = Math.round(baseRad * (tachyonActive ? 1.2 : 1.0));
+                  const dmg = Math.round(baseDmg * (tachyonActive ? 1.25 : 1.0));
+                  const ex = (this.player as any)?.gameContext?.explosionManager;
+                  if (ex && typeof ex.triggerShockwave === 'function') {
+                    // Treat as indirect AoE for lifesteal; ExplosionManager understands boss scaling
+                    ex.triggerShockwave(enemy.x, enemy.y, dmg, radius, '#C9A6FF', 0.20);
+                  } else {
+                    // Fallback: manual AoE application when manager absent
+                    const em: any = this.enemyManager as any;
+                    const areaMul = (this.player as any)?.getGlobalAreaMultiplier?.() ?? ((this.player as any)?.globalAreaMultiplier ?? 1);
+                    const rEff = radius * (areaMul || 1);
+                    const near = this.queryEnemies(enemy.x, enemy.y, rEff);
+                    for (let ii = 0; ii < near.length; ii++) {
+                      const e2 = near[ii];
+                      if (!e2 || !e2.active || e2.hp <= 0) continue;
+                      const dx2 = e2.x - enemy.x; const dy2 = e2.y - enemy.y; const d2 = dx2*dx2 + dy2*dy2;
+                      if (d2 <= rEff * rEff) {
+                        em.takeDamage(e2, dmg, false, true, WeaponType.SINGULARITY_SPEAR, enemy.x, enemy.y, lvl);
+                      }
+                    }
+                  }
+                } catch { /* ignore micro-explosion errors */ }
+              }
               // Tech Warrior charged volley: per-bullet lifesteal on hit
               try {
                 if ((b as any)._isVolley) {
@@ -2773,13 +2856,29 @@ export class BulletManager {
         } catch {}
         b.active = false; this.bulletPool.push(b); continue;
       }
-      // Singularity Spear: on expiry, trigger a quick implosion then a shockwave explosion
+      // Singularity Spear: on expiry, trigger a quick implosion then a shockwave explosion with final gather
       if (b.lifeMs !== undefined && b.lifeMs <= 0 && b.weaponType === WeaponType.SINGULARITY_SPEAR) {
+        // Final gather: pull all captured enemies sharply toward the spear before implosion
+        try {
+          const ids: string[] = (b as any)._singCaptureIds || [];
+          if (ids.length && (this.enemyManager as any)?.getEnemyById) {
+            const em: any = this.enemyManager as any;
+            for (let i = 0; i < ids.length; i++) {
+              const e = em.getEnemyById(ids[i]);
+              if (!e || !e.active || e.hp <= 0) continue;
+              const dx = b.x - e.x; const dy = b.y - e.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              const nx = dx / dist; const ny = dy / dist;
+              const snap = Math.min(140, Math.max(40, dist * 0.75));
+              e.x += nx * snap; e.y += ny * snap;
+            }
+          }
+        } catch { /* ignore gather errors */ }
         // Visual/audio via centralized Game listeners
         const base = b.damage || 50;
         try {
-          window.dispatchEvent(new CustomEvent('mortarImplosion', { detail: { x: b.x, y: b.y, radius: 90, color: '#DCC6FF', delay: 60 } }));
-          window.dispatchEvent(new CustomEvent('droneExplosion', { detail: { x: b.x, y: b.y, damage: Math.round(base * 1.25), radius: 140 } }));
+          window.dispatchEvent(new CustomEvent('mortarImplosion', { detail: { x: b.x, y: b.y, radius: 120, color: '#DCC6FF', delay: 60 } }));
+          window.dispatchEvent(new CustomEvent('droneExplosion', { detail: { x: b.x, y: b.y, damage: Math.round(base * 1.35), radius: 170 } }));
         } catch {}
         b.active = false; this.bulletPool.push(b); continue;
       }
@@ -2789,7 +2888,19 @@ export class BulletManager {
         if (!b.trail) b.trail = [];
         b.trail.push({ x: b.x, y: b.y });
         const baseMax = (b.projectileVisual as any).trailLength || 10;
-  const maxTrail = (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? Math.min(48, baseMax) : Math.min(14, baseMax); // heavy shells keep longer plume
+        // Dynamically cap trail length for Runner weapons to prevent overdraw spikes while firing
+        let maxTrail: number;
+        if (b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE) {
+          const avg = (window as any).__avgFrameMs || 16;
+          if (avg > 28) maxTrail = Math.min(6, baseMax);
+          else if (avg > 20) maxTrail = Math.min(8, baseMax);
+          else maxTrail = Math.min(10, baseMax);
+        } else {
+          // heavy shells keep longer plume; others stay modest
+          maxTrail = (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER)
+            ? Math.min(48, baseMax)
+            : Math.min(14, baseMax);
+        }
         if (b.trail.length > maxTrail) b.trail.splice(0, b.trail.length - maxTrail);
       }
 
@@ -2882,17 +2993,13 @@ export class BulletManager {
   if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
         const visual = b.projectileVisual as any;
         ctx.save();
-  // Thicker, softer trail for mortar; subtle neon for Runner Gun
-  ctx.lineWidth = ((b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? 3.2 : 1.5);
+  // Thicker, softer trail for mortar; lightweight base pass for all bullets
+  const isRunner = (b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE);
+  ctx.lineWidth = ((b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? 3.2 : 1.4);
   const col = visual.trailColor as string;
-  const neonTrail = !vfxLow && (b.weaponType === WeaponType.RUNNER_GUN);
+  // Runner: keep heavy compositing off in the base pass, add a tiny glow only on tip below
+  const doNeonGlow = !vfxLow && isRunner;
   const prevComp = ctx.globalCompositeOperation;
-  if (neonTrail) {
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.shadowColor = (visual.glowColor as string) || '#66F2FF';
-    ctx.shadowBlur = Math.max(visual.glowRadius || 0, 6);
-    ctx.lineWidth = 1.8;
-  }
         // Efficient alpha fade: parse color once, then modulate globalAlpha per segment
         const rgba = BulletManager.parseColor(col);
         if (rgba) {
@@ -2901,21 +3008,47 @@ export class BulletManager {
           ctx.strokeStyle = col;
         }
         const total = b.trail.length;
-        const step = vfxLow ? 2 : 1; // stride under load
+        // More aggressive stride for Runner weapons to reduce segment count under load
+        let step = (vfxLow ? 2 : 1);
+        if (isRunner) {
+          if (avgMs > 30) step = 3; else if (avgMs > 22) step = 2; // keep at most ~1/2 to 1/3 of segments
+        }
         const baseAlpha = rgba ? rgba.a : 1;
         for (let i = 1; i < total; i += step) {
           const p0 = b.trail[i - 1];
           const p1 = b.trail[i];
           const t = i / total;
           const fadeT = (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) ? Math.sqrt(t) : t;
-          ctx.globalAlpha = Math.max(0, Math.min(1, (baseAlpha * fadeT)));
+          // Slightly reduce base pass alpha for Runner to compensate for glow tip
+          const alphaMul = isRunner ? 0.8 : 1;
+          ctx.globalAlpha = Math.max(0, Math.min(1, (baseAlpha * fadeT * alphaMul)));
           ctx.beginPath();
           ctx.moveTo(p0.x, p0.y);
           ctx.lineTo(p1.x, p1.y);
           ctx.stroke();
         }
         ctx.globalAlpha = 1;
-        if (neonTrail) { ctx.globalCompositeOperation = prevComp; }
+        // Tiny additive glow on the last few segments only (keeps the signature look without heavy overdraw)
+        if (doNeonGlow) {
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.shadowColor = (visual.glowColor as string) || '#66F2FF';
+          ctx.shadowBlur = Math.max((visual.glowRadius || 8) * 0.5, 3);
+          ctx.lineWidth = 2.2;
+          const tip = Math.max(2, Math.min(4, Math.floor(total * 0.25)));
+          const start = Math.max(1, total - tip);
+          const a = Math.min(0.7, (baseAlpha || 0.5) * 0.9);
+          ctx.globalAlpha = a;
+          for (let i = start; i < total; i++) {
+            const p0 = b.trail[i - 1];
+            const p1 = b.trail[i];
+            ctx.beginPath();
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.stroke();
+          }
+          ctx.globalAlpha = 1;
+          ctx.globalCompositeOperation = prevComp;
+        }
   if (!vfxLow && (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER)) {
           // Add faint expanding smoke puffs along path (simple circles)
           const every = 6; // fewer puffs

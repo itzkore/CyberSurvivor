@@ -218,7 +218,7 @@ export class HUD {
         }
         // Steel/ice theme for Ghost (cool cyan/ice)
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#c9ecff', '#13212b', '#e0f7ff', label);
-  // Second bar: Phase Cloak cooldown/active state (15s CD, 5s duration)
+  // Second bar: Phase Cloak cooldown/active state (dynamic CD/duration)
         if ((this.player as any).getGhostCloakMeter) {
           const cm: any = (this.player as any).getGhostCloakMeter();
           const ratio2 = cm.max > 0 ? cm.value / cm.max : 0;
