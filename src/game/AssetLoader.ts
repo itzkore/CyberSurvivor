@@ -15,21 +15,25 @@ export class AssetLoader {
    */
   public static basePrefix: string = (() => {
     if (typeof location === 'undefined') return '';
-    if (location.protocol === 'file:') return '.'; // relative root
-    // Meta override (authoritative if present)
-    const meta = document.querySelector('meta[name="asset-base"]') as HTMLMetaElement | null;
-    if (meta?.content) return meta.content.replace(/\/$/, '');
-    // HTML <base href> if present (fallback)
+    if (location.protocol === 'file:') return '.'; // relative root for file protocol
+    // Prefer HTML <base href> when present (Vite sets it based on base config)
     try {
       const baseEl = document.querySelector('base[href]') as HTMLBaseElement | null;
       if (baseEl && baseEl.href) {
         const u = new URL(baseEl.href);
         let p = (u.pathname || '');
-        // Strip trailing "/index.html" if present
         p = p.replace(/\/index\.html?$/i, '');
-        return p.replace(/\/$/, '');
+        p = p.replace(/\/$/, '');
+        if (p) return p;
       }
     } catch {}
+    // Meta hint (used in some builds); treat '.' as root under http(s)
+    const meta = document.querySelector('meta[name="asset-base"]') as HTMLMetaElement | null;
+    if (meta?.content) {
+      const c = meta.content.replace(/\/$/, '');
+      if (c === '.' || c === './') return '';
+      return c;
+    }
     // Derive from pathname segments (allow multi-segment, e.g., /games/cs)
     const parts = location.pathname.split('/').filter(Boolean);
     if (parts.length > 0) {
@@ -142,10 +146,12 @@ export class AssetLoader {
     else {
       if (location.protocol === 'file:') attempts.push('./assets/manifest.json');
       else {
-        // Primary attempt using detected basePrefix ('' or '/cs')
+        // Always try absolute root assets first in dev
+        attempts.push('/assets/manifest.json');
+        // Detected basePrefix ('' or '/subfolder')
         attempts.push(AssetLoader.basePrefix + '/assets/manifest.json');
-  // If basePrefix empty, enqueue known fallback subfolder
-  if (!AssetLoader.basePrefix) attempts.push('/cybersurvivor/assets/manifest.json');
+        // If basePrefix empty, enqueue known fallback subfolder
+        if (!AssetLoader.basePrefix) attempts.push('/cybersurvivor/assets/manifest.json');
       }
     }
     for (const attempt of attempts) {

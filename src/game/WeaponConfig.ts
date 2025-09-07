@@ -1089,7 +1089,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       return { cooldown, damage, anchors, threadLifeMs, pulseIntervalMs, pulsePct, detonateFrac } as any;
     }
   },
-  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 92, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 102, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], evolution: { evolvedWeaponType: WeaponType.SPECTRAL_EXECUTIONER, requiredPassive: 'Crit' }, usageTips: [
+  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 92, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 102, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], evolution: { evolvedWeaponType: WeaponType.SPECTRAL_EXECUTIONER, requiredPassive: 'Vision' }, usageTips: [
     'Take longer lines of sight—shots pierce and reward straight lanes.',
     'Weave between shots; high alpha damage favors deliberate pacing.',
     'Prioritize elites and bosses—armor pierce makes headway through tanks.'
@@ -1138,7 +1138,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Dark tick visuals confirm stacks; keep targets inside beam length.',
     'Pair with slows or knockback to keep afflicted mobs in range.'
   ], isClassWeapon: true,
-  evolution: { evolvedWeaponType: WeaponType.BLACK_SUN, requiredPassive: 'Area Up' } as any,
+  evolution: { evolvedWeaponType: WeaponType.BLACK_SUN, requiredPassive: 'Vision' } as any,
   getLevelStats(level:number){ const baseDamage=106, baseCooldown=90, mult=8.4; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.40/6)); // ticks: 3 over 3000ms
       return {damage:dmg, cooldown:cd, ticks:3, tickIntervalMs:1000}; } },
   /** Black Sun — Evolution of Void Sniper: Seeds void orbs that slow and tick; they collapse after a short fuse with a pull and a pulse. */

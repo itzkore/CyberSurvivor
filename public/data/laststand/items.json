@@ -1,0 +1,9 @@
+{
+  "items": [
+    { "id":"w_railgun", "kind":"weapon", "price":120, "data": { "weaponType": 7 }, "weight": 1 },
+    { "id":"w_mortar",  "kind":"weapon", "price":120, "data": { "weaponType": 17 }, "weight": 1 },
+    { "id":"p_vision",  "kind":"passive", "price":80,  "data": { "passiveName": "Vision" }, "weight": 1 },
+    { "id":"perk_hp",   "kind":"perk",    "price":60,  "data": { "hp": 40 }, "weight": 1 },
+    { "id":"turret_gun","kind":"turret",  "price":100, "data": { "specId": "turret_gun" }, "weight": 1 }
+  ]
+}

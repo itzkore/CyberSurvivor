@@ -1,0 +1,5 @@
+{
+  "turret_gun": { "name": "Gun Turret", "range": 520, "dps": [30, 48, 72, 110], "price": [80, 120, 180, 260] },
+  "turret_freeze": { "name": "Freeze Node", "range": 440, "dps": [8, 12, 18, 26], "price": [70, 100, 150, 220] },
+  "turret_mortar": { "name": "Mini Mortar", "range": 680, "dps": [36, 54, 80, 120], "price": [100, 160, 220, 300] }
+}

@@ -7,8 +7,8 @@
   <!-- Added https://*.upstash.io to connect-src for leaderboard REST calls -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://accounts.google.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com https://accounts.google.com/gsi/ https://accounts.google.com/gsi/style; style-src-elem 'self' 'unsafe-inline' https://accounts.google.com https://accounts.google.com/gsi/ https://accounts.google.com/gsi/style; font-src 'self'; img-src 'self' data: https://lh3.googleusercontent.com; media-src 'self'; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://*.upstash.io; frame-src 'self' https://accounts.google.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <!-- Authoritative base for subfolder hosting -->
-  <base href="/cybersurvivor/">
+  <!-- Base path (Vite replaces %BASE_URL%: '/' in dev, configured base in build) -->
+  <base href="%BASE_URL%">
   <!-- Fallback injection of Google Client ID (dev index). Needed so dev server has same meta as production root index -->
   <meta name="google-client-id" content="156752381672-vidmkis66cs201c39ps9vac3230bv6rl.apps.googleusercontent.com">
   <!-- Optional runtime Upstash config (fallback if env not bundled). Remove in production if not needed. -->
@@ -18,8 +18,8 @@
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <!-- Optional backend API base (was only in root index) -->
   <meta name="backend-api-base" content="https://itzkore.cz/">
-  <!-- Asset base: authoritative prefix for subfolder hosting -->
-  <meta name="asset-base" content="/cybersurvivor">
+  <!-- Asset base: follow Vite base so runtime loaders can prepend correctly -->
+  <meta name="asset-base" content="%BASE_URL%">
   <!-- Preload self-hosted Orbitron fonts to prevent FOUT on initial loading text (match CSS relative URLs). Place before stylesheet so the browser uses them. -->
   <!-- Preload fonts with both relative and absolute subfolder paths so the browser matches CSS under /cybersurvivor as well -->
   <link rel="preload" href="./assets/fonts/Orbitron/Orbitron-VariableFont_wght.ttf" as="font" type="font/ttf" crossorigin>

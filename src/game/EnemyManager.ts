@@ -22,6 +22,7 @@ import { GEM_TIERS, getGemTierSpec } from './Gem';
 import { WeaponType } from './WeaponType';
 import { AssetLoader } from './AssetLoader';
 import { Logger } from '../core/Logger';
+import { eventBus } from '../core/EventBus';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { BlackSunZoneManager } from './BlackSunZone';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
@@ -35,16 +36,9 @@ import { updateEliteBlinker } from './elites/EliteBlinker';
 import { updateEliteBlocker } from './elites/EliteBlocker';
 import { updateEliteSiphon } from './elites/EliteSiphon';
 import type { EliteRuntime, EliteKind } from './elites/types';
+import { ELITE_BASE_RADIUS, ELITE_SOFT_CAP, ELITE_SCHEDULE } from '../config/elites';
 
-interface Wave {
-  startTime: number; // in seconds
-  enemyType: 'small' | 'medium' | 'large';
-  count: number;
-  spawnInterval: number; // in frames
-  spawned: number;
-  lastSpawnTime: number;
-  spawnPattern?: 'normal' | 'ring' | 'cone' | 'surge'; // New property for spawn pattern
-}
+type SpawnPattern = 'normal' | 'ring' | 'cone' | 'surge';
 
 export class EnemyManager {
   private player: Player;
@@ -68,7 +62,7 @@ export class EnemyManager {
   private treasures: SpecialTreasure[] = []; // Destructible treasures that drop a random special item
   private treasurePool: SpecialTreasure[] = []; // Pool for treasures
   private assetLoader: AssetLoader | null = null;
-  private waves: Wave[]; // legacy static waves (will phase out)
+  // legacy waves removed
   private dynamicWaveAccumulator: number = 0; // ms accumulator for dynamic spawner
   private pressureBaseline: number = 100; // grows over time
   private adaptiveGemBonus: number = 0; // multiplicative bonus for higher tier chance
@@ -134,7 +128,7 @@ export class EnemyManager {
   private useEliteSchedule: boolean = true;
   private lastEliteKindSpawned: EliteKind | null = null;
   // Cap elite density to keep fair/dodgeable
-  private maxEliteByKind: Record<EliteKind, number> = { DASHER: 18, GUNNER: 10, SUPPRESSOR: 12, BOMBER: 8, BLINKER: 10, BLOCKER: 8, SIPHON: 8 } as any;
+  private maxEliteByKind: Record<EliteKind, number> = ELITE_SOFT_CAP as any;
   // Lightweight enemy projectile system (for Elite Gunner, Bomber, etc.)
   private enemyProjectiles: Array<{ x:number; y:number; vx:number; vy:number; radius:number; damage:number; expireAt:number; spriteKey?: string; color?: string; explodeRadius?: number; explodeDamage?: number; explodeColor?: string; active:boolean }>
     = [];
@@ -391,17 +385,17 @@ export class EnemyManager {
     const start = Math.max(this.elitesUnlockedAtSec || 30, gameTime);
     const horizon = start + this.eliteScheduleHorizonSec;
     const sinceUnlockMin = Math.max(0, (start - (this.elitesUnlockedAtSec || 0)) / 60);
-    const intervalAtStart = 30;
-    const intervalAt20 = 6;
+  const intervalAtStart = ELITE_SCHEDULE.startIntervalSec;
+  const intervalAt20 = ELITE_SCHEDULE.intervalAt20MinSec;
     const t = Math.max(0, Math.min(1, sinceUnlockMin / 20));
     let targetInterval = intervalAtStart + (intervalAt20 - intervalAtStart) * t;
-    if (sinceUnlockMin > 20) targetInterval = Math.max(2.5, targetInterval - (sinceUnlockMin - 20) * 0.12);
+  if (sinceUnlockMin > 20) targetInterval = Math.max(ELITE_SCHEDULE.minIntervalLateSec, targetInterval - (sinceUnlockMin - 20) * 0.12);
     try {
       const avg = (window as any).__avgFrameMs || 16;
       if (avg > 40) targetInterval *= 1.7; else if (avg > 28) targetInterval *= 1.25;
     } catch {}
     if (this.eliteSpawnSchedule.length === 0) {
-      const first = (this.elitesUnlockedAtSec || 30) + 15;
+  const first = (this.elitesUnlockedAtSec || 30) + (ELITE_SCHEDULE.firstOffsetSec || 15);
       this.eliteSpawnSchedule.push(first);
       this.lastEliteScheduledAtSec = first;
     }
@@ -586,7 +580,7 @@ export class EnemyManager {
   this.preallocateChests();
   this.preallocateSpecialItems();
   this.preallocateTreasures();
-  this.waves = []; // legacy disabled; dynamic system takes over
+  // legacy waves removed; dynamic system takes over
     // Initialize Black Sun dedicated zone manager
     this.blackSunZones = new BlackSunZoneManager(this, this.player);
     // Freeze spawns and clear enemies on boss spawn (15s calm before the storm)
@@ -1457,18 +1451,7 @@ export class EnemyManager {
   }
 
   /** Base radius to scale the elite image onto (match spawn radii for consistency). */
-  private getEliteBaseRadius(kind: EliteKind): number {
-    switch (kind) {
-  // Double visual scale (100% bigger) for elites
-  case 'DASHER': return 60;
-  case 'GUNNER': return 68;
-  case 'SUPPRESSOR': return 72;
-  case 'BOMBER': return 68;
-  case 'BLINKER': return 60;
-  case 'BLOCKER': return 72;
-  case 'SIPHON': return 68;
-    }
-  }
+  private getEliteBaseRadius(kind: EliteKind): number { return (ELITE_BASE_RADIUS as any)[kind] ?? 60; }
 
   /** Ensure elite sprite bundle is built (normal/flash/flipped + RGB ghosts). */
   private ensureEliteSprite(kind: EliteKind) {
@@ -1743,6 +1726,11 @@ export class EnemyManager {
       }
     } catch { /* ignore */ }
     enemy.hp -= amount;
+    // Emit lightweight hit event for diagnostics/telemetry
+    try {
+      const w = sourceWeaponType as any;
+      eventBus.emit('enemyHit', { enemyId: enemy.id, amount, isCritical, weapon: w, x: enemy.x, y: enemy.y });
+    } catch { /* ignore */ }
   // Global lifesteal passive: heal player for a fraction of damage dealt
     try {
       const p: any = this.player as any;
@@ -4298,7 +4286,7 @@ export class EnemyManager {
       }
   // Bullet collisions handled centrally in BulletManager.update now (removed duplicate per-enemy pass)
       // Death handling
-      if (enemy.hp <= 0 && enemy.active) {
+  if (enemy.hp <= 0 && enemy.active) {
         // Elite post-death hold: if an elite died, pause elite spawns briefly and drain rate accumulator
         try {
           const eliteDead: EliteRuntime | undefined = (enemy as any)?._elite;
@@ -4430,6 +4418,10 @@ export class EnemyManager {
           rAny._blockerWall = undefined; rAny._suppressorState = undefined; rAny._dasherState = undefined; rAny._blinkerState = undefined; rAny._bomberState = undefined; rAny._gunnerState = undefined; rAny._siphonState = undefined;
           // Reset walk cadence override used by elites
           rAny._walkFlipIntervalMs = undefined;
+        } catch { /* ignore */ }
+        try {
+          const eliteDead: EliteRuntime | undefined = (enemy as any)?._elite;
+          eventBus.emit('enemyDead', { id: enemy.id, elite: !!eliteDead, kind: eliteDead?.kind, x: enemy.x, y: enemy.y, time: (window as any)?.__gameInstance?.getGameTime?.() ?? 0 });
         } catch { /* ignore */ }
         this.enemyPool.push(enemy);
       }
@@ -5564,7 +5556,7 @@ export class EnemyManager {
         // fall-through to normal spawn if elite limits reached
       }
 
-      // Increase cost for large enemies to throttle spawn count; medium are mid-cost
+  // Increase cost for large enemies to throttle spawn count; medium are mid-cost
       const cost = type === 'small' ? 1 : type === 'medium' ? 4 : 8;
       if (cost > this.spawnBudgetCarry) break; // wait for more budget next tick
       this.spawnBudgetCarry -= cost;
@@ -5572,7 +5564,7 @@ export class EnemyManager {
     }
   }
 
-  private pickPattern(gameTime: number): Wave['spawnPattern'] {
+  private pickPattern(gameTime: number): SpawnPattern {
     const cycle = Math.floor(gameTime / 15) % 4;
     return cycle === 0 ? 'normal' : cycle === 1 ? 'surge' : cycle === 2 ? 'ring' : 'cone';
   }
@@ -5724,6 +5716,7 @@ export class EnemyManager {
   anyE._specterMarkUntil = 0; anyE._specterMarkFrom = undefined;
   anyE._poisonFlashUntil = 0;
     this.enemies.push(en);
+  try { eventBus.emit('eliteSpawned', { kind, x, y, time: gameTime }); } catch { /* ignore */ }
   }
 
   /** Spawn an enemy-owned projectile (for elite gunners, bombers, etc.). */

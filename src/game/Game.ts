@@ -20,6 +20,9 @@ import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
 import { EnvironmentManager } from './EnvironmentManager';
 import { RoomManager } from './RoomManager';
 import { VideoOverlay } from '../ui/VideoOverlay';
+import { DebugOverlay } from '../ui/DebugOverlay';
+import { FogOfWarSystem } from '../systems/FogOfWarSystem';
+import { LastStandGameMode } from './modes/last-stand';
 
 export class Game {
   /**
@@ -130,12 +133,22 @@ export class Game {
   private environment: EnvironmentManager; // biome + ambient background
   private roomManager: RoomManager; // random rooms structure
   private showRoomDebug: boolean = false;
-  public gameMode: 'SHOWDOWN' | 'DUNGEON' | 'SANDBOX' = 'SHOWDOWN'; // game mode selection
+  public gameMode: 'SHOWDOWN' | 'DUNGEON' | 'SANDBOX' | 'LAST_STAND' = 'SHOWDOWN'; // game mode selection
+  private lastStand?: LastStandGameMode;
   // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
   private autoPaused: boolean = false; // track alt-tab auto pause
   private initialUpgradeOffered: boolean = false; // one free upgrade flag
+  private debugOverlay: DebugOverlay = new DebugOverlay();
+  // Fog of War
+  /** Fog of War system and settings */
+  private fog?: FogOfWarSystem;
+  private fowEnabled: boolean = true;
+  private fowRadiusBase: number = 4; // tiles (slightly larger default)
+  private readonly fowTileSize: number = 160;
+  private lastFowTileX: number = Number.NaN;
+  private lastFowTileY: number = Number.NaN;
 
   // DPS Tracking
   private totalDamageDealt: number = 0;
@@ -176,6 +189,20 @@ export class Game {
     if (delayMs > 0) setTimeout(exec, delayMs); else exec();
   }
 
+  /** Compute effective Fog-of-War radius in tiles, including class and Vision passive multipliers. */
+  private getEffectiveFowRadiusTiles(): number {
+    try {
+      const base = Math.max(1, Math.floor(this.fowRadiusBase));
+      const cid: string | undefined = (this.player as any)?.characterData?.id;
+      let classMul = 1.0;
+      if (cid === 'ghost_operative' || cid === 'shadow_operative') classMul = 1.2; // snipers see farther
+      else if (cid === 'titan_mech') classMul = 0.9; // huge body, slightly tighter FOV
+      else if (cid === 'cyber_runner' || cid === 'data_sorcerer') classMul = 1.05; // mild +5%
+      const passiveMul = Math.max(0.5, Math.min(2.5, (this.player as any)?.visionMultiplier || 1));
+      return base * classMul * passiveMul;
+    } catch { return Math.max(1, Math.floor(this.fowRadiusBase)); }
+  }
+
   constructor(canvas: HTMLCanvasElement) {
   // No external background image; procedural map will be drawn each frame (cached layer)
   this.canvas = canvas;
@@ -209,6 +236,7 @@ export class Game {
     this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1);
   this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager, this.player);
   this.bossManager = new BossManager(this.player, this.particleManager, 1, this.assetLoader);
+  try { (window as any).__bossManager = this.bossManager; } catch {}
     this.cinematic = new Cinematic();
     
     if (!this.explosionManager) {
@@ -236,12 +264,33 @@ export class Game {
   });
   this.environment = new EnvironmentManager();
   this.roomManager = new RoomManager(this.worldW, this.worldH);
+  // Fog of War init (sparse grid; tile ~ 160 logical px matches background grid)
+  try {
+    this.fog = new FogOfWarSystem();
+    this.fog.setGrid(undefined as any, undefined as any, this.fowTileSize);
+  const itx = Math.floor(this.player.x / this.fowTileSize);
+  const ity = Math.floor(this.player.y / this.fowTileSize);
+  this.fog.compute(itx, ity, Math.max(1, Math.floor(this.getEffectiveFowRadiusTiles())));
+  this.lastFowTileX = itx; this.lastFowTileY = ity;
+  } catch { /* ignore */ }
   // Generate structure only for Dungeon mode (default Showdown/Sandbox = open field)
+  // Mode override via URL (e.g., ?mode=laststand or #mode=ls)
+  try {
+    const mode = this.parseModeFromUrl();
+    if (mode) this.gameMode = mode;
+  } catch {}
   if (this.gameMode === 'DUNGEON') {
     this.roomManager.generate(60);
     (this.roomManager as any).setOpenWorld(false);
   }
   else { (this.roomManager as any).setOpenWorld(true); }
+  // Initialize Last Stand orchestration when selected
+  if (this.gameMode === 'LAST_STAND') {
+    this.lastStand = new LastStandGameMode(this as any);
+    // Start directly (skip cinematic)
+    this.setState('GAME');
+    this.lastStand.init?.();
+  }
   // Expose globally for managers lacking direct reference (lightweight)
   try { (window as any).__roomManager = this.roomManager; } catch {}
   // Listen for revive to start a 5s cinematic overlay and schedule detonation
@@ -456,6 +505,8 @@ export class Game {
   public getEnemyManager(){ return this.enemyManager; }
   /** Accessor for BulletManager */
   public getBulletManager(){ return this.bulletManager; }
+  /** Accessor for HUD (optional) */
+  public getHUD(){ return this.hud; }
 
   /**
   * Resize logical & display dimensions. Supports bigger than FHD.
@@ -537,6 +588,11 @@ export class Game {
         (this as any).aimMode = next; (window as any).__aimMode = next;
         try { localStorage.setItem('cs-aimMode', next); } catch {}
         window.dispatchEvent(new CustomEvent('aimModeChanged', { detail: { mode: next } }));
+      } else if (this.state === 'GAME' && (e.key === 'F10')) {
+        // Toggle debug overlay
+        const v = !(this as any).__dbgVisible;
+        (this as any).__dbgVisible = v; (window as any).__debugOverlay = v;
+        this.debugOverlay.toggle(v);
       }
     });
 
@@ -669,6 +725,8 @@ export class Game {
   }
   // Reset environment visual state to avoid oversaturated gradients on second run
   try { this.environment?.reset?.(); } catch {}
+  // Reset Fog of War state for new run
+  try { this.fog?.clear(); this.lastFowTileX = Number.NaN; this.lastFowTileY = Number.NaN; } catch {}
   }
 
   public setMainMenu(mainMenu: MainMenu) {
@@ -804,6 +862,22 @@ export class Game {
 
   drawGameOver() { /* replaced by GameOverOverlay DOM */ }
 
+  /** Parse mode from URL (?mode=laststand or #mode=ls). Returns null if none. */
+  private parseModeFromUrl(): 'SHOWDOWN'|'DUNGEON'|'SANDBOX'|'LAST_STAND'|null {
+    try {
+      const url = new URL(location.href);
+      const q = (url.searchParams.get('mode') || '').toLowerCase();
+      const h = (url.hash || '').toLowerCase();
+      if (q === 'laststand' || q === 'ls') return 'LAST_STAND';
+      if (q === 'sandbox') return 'SANDBOX';
+      if (q === 'dungeon') return 'DUNGEON';
+      if (h.includes('mode=laststand') || h.includes('mode=ls')) return 'LAST_STAND';
+      if (h.includes('mode=sandbox')) return 'SANDBOX';
+      if (h.includes('mode=dungeon')) return 'DUNGEON';
+    } catch {}
+    return null;
+  }
+
   /**
    * The main update method for the game logic.
    * @param deltaTime The time elapsed since the last update, in milliseconds.
@@ -858,6 +932,8 @@ export class Game {
   }
   this.explosionManager?.update(deltaTime);
   this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets);
+  // Let mode orchestrator run (turrets, timers)
+  if (this.lastStand) this.lastStand.update(deltaTime);
   // Enforce enemy collision with rooms / corridors (simple clamp against previous pos) to stop leaking through walls.
   const rmAny: any = this.roomManager;
   if (rmAny && typeof rmAny.constrainPosition === 'function') {
@@ -889,6 +965,16 @@ export class Game {
   // Update environment (biome cycle)
   this.environment.update(this.gameTime);
   this.damageTextManager.update();
+  // Fog of War dirty recompute when player crosses tile
+  if (this.fowEnabled && this.fog) {
+    const ts = this.fowTileSize; // keep in sync with setGrid tile size
+    const tx = Math.floor(this.player.x / ts);
+    const ty = Math.floor(this.player.y / ts);
+    if (tx !== this.lastFowTileX || ty !== this.lastFowTileY) {
+  this.fog.compute(tx, ty, Math.max(1, Math.floor(this.getEffectiveFowRadiusTiles())));
+      this.lastFowTileX = tx; this.lastFowTileY = ty;
+    }
+  }
   // (handled at top) revive cinematic timing and detonation
 
     // Clear and re-populate spatial grids
@@ -1373,6 +1459,19 @@ export class Game {
   // Prefer 'screen' blending with an even lower base alpha to keep visibility clear.
   overlay.draw(this.ctx, this.designWidth, this.designHeight, 'screen', 0.6);
   }
+  // Fog of War screen-space mask after world rendering, before HUD
+  if (this.fowEnabled && this.fog) {
+    const cam = { x: this.camX, y: this.camY, width: this.designWidth, height: this.designHeight };
+    // Compute a smooth pixel radius tied to tile radius (slightly larger to reduce grid feel)
+  const radiusPx = Math.floor(this.getEffectiveFowRadiusTiles() * this.fowTileSize * 0.95);
+    this.fog.render(this.ctx, cam, {
+      enable: true,
+      visibleCenterX: this.player.x,
+      visibleCenterY: this.player.y,
+      visibleRadiusPx: radiusPx,
+      exploredAlpha: 0.34,
+    });
+  }
   // Draw boss screen-space FX (e.g., Supernova darken) before HUD so UI stays readable on top
   this.bossManager.drawScreenFX(this.ctx, this.designWidth, this.designHeight);
   // Removed full-screen additive overlay to prevent global flash; enemy hit feedback now strictly per-entity.
@@ -1383,6 +1482,8 @@ export class Game {
     if (this.reviveCinematicActive) {
       this.drawReviveCinematicOverlay(this.ctx, this.designWidth, this.designHeight);
     }
+  // Lightweight debug overlay (opt-in)
+  this.debugOverlay.draw(this.ctx, this);
 
         if (this.state === 'PAUSE') {
           // Pause overlay handled via DOM; no canvas rendering

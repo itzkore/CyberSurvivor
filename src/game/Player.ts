@@ -1723,6 +1723,31 @@ export class Player {
     const maxRangeSq = Number.isFinite(maxRange) ? (maxRange * maxRange) : Infinity;
 
     const em: any = (this.gameContext as any)?.enemyManager;
+    // FOW visibility gating: only consider candidates inside current visible circle when enabled
+  const isVisible = (x: number, y: number): boolean => {
+      try {
+        const g: any = this.gameContext as any;
+        if (!g || !g.fowEnabled || !g.fog) return true; // no FOW, all visible
+        const ts: number = (g.fowTileSize || 160);
+        // Effective radius in pixels (match Game.render computation)
+        let baseTiles: number = Math.max(1, Math.floor(g.fowRadiusBase || 3));
+        // Apply per-operative vision baseline tweaks and passive multiplier if present
+        const anyP: any = this as any;
+        // Class tweaks: snipers see a bit farther; titan a bit less; runner/sorcerer neutral
+        const cid = anyP?.characterData?.id as string | undefined;
+        let classMul = 1.0;
+        if (cid === 'ghost_operative' || cid === 'shadow_operative') classMul = 1.2; // +20% vision
+        else if (cid === 'titan_mech') classMul = 0.9; // slightly tighter FOV
+        else if (cid === 'cyber_runner' || cid === 'data_sorcerer') classMul = 1.05; // tiny boost
+        const passiveMul = Math.max(0.5, Math.min(2.5, anyP?.visionMultiplier || 1));
+    // Aim pad: allow a small margin beyond the visual circle for targeting; also clamp a safety minimum
+    const aimPad = (g?.__fowAimPad || 1.15);
+    const safetyMin = 220; // px
+    const radiusPx = Math.max(safetyMin, Math.floor(baseTiles * ts * 0.95 * classMul * passiveMul * aimPad));
+        const dx = (x - this.x); const dy = (y - this.y);
+        return (dx * dx + dy * dy) <= (radiusPx * radiusPx);
+      } catch { return true; }
+    };
     const enemies: Enemy[] = this.enemyProvider ? [...this.enemyProvider()] : [];
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -1741,7 +1766,7 @@ export class Player {
     };
 
     // Early boss pick in toughest mode if within range (keeps old behavior)
-    if (mode === 'toughest' && bossValid) {
+  if (mode === 'toughest' && bossValid && isVisible(boss.x, boss.y)) {
       const dxB = (boss.x ?? 0) - (this.x ?? 0);
       const dyB = (boss.y ?? 0) - (this.y ?? 0);
       const d2B = dxB * dxB + dyB * dyB;
@@ -1761,7 +1786,7 @@ export class Player {
       let pick: Enemy | null = null;
       let bestHp = -1;
       for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i]; if (!enemyOk(e)) continue;
+  const e = enemies[i]; if (!enemyOk(e)) continue; if (!isVisible(e.x, e.y)) continue;
         const dx = (e.x ?? 0) - (this.x ?? 0);
         const dy = (e.y ?? 0) - (this.y ?? 0);
         const d2 = dx*dx + dy*dy; if (d2 > maxRangeSq) continue;
@@ -1769,7 +1794,7 @@ export class Player {
       }
       if (includeTreasures) {
         for (let i = 0; i < treasures.length; i++) {
-          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue; if (!isVisible(t.x, t.y)) continue;
           const dx = (t.x ?? 0) - (this.x ?? 0);
           const dy = (t.y ?? 0) - (this.y ?? 0);
           const d2 = dx*dx + dy*dy; if (d2 > maxRangeSq) continue;
@@ -1778,7 +1803,7 @@ export class Player {
       }
       if (includeChests) {
         for (let i = 0; i < chests.length; i++) {
-          const c = chests[i]; if (!c || !c.active) continue;
+          const c = chests[i]; if (!c || !c.active) continue; if (!isVisible(c.x, c.y)) continue;
           const dx = (c.x ?? 0) - (this.x ?? 0);
           const dy = (c.y ?? 0) - (this.y ?? 0);
           const d2 = dx*dx + dy*dy; if (d2 > maxRangeSq) continue;
@@ -1790,14 +1815,14 @@ export class Player {
       // 2) Closest within range
       let bestD2 = Number.POSITIVE_INFINITY; pick = null;
       for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i]; if (!enemyOk(e)) continue;
+  const e = enemies[i]; if (!enemyOk(e)) continue; if (!isVisible(e.x, e.y)) continue;
         const dx = (e.x ?? 0) - (this.x ?? 0);
         const dy = (e.y ?? 0) - (this.y ?? 0);
         const d2 = dx*dx + dy*dy; if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = e; }
       }
       if (includeTreasures) {
         for (let i = 0; i < treasures.length; i++) {
-          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue; if (!isVisible(t.x, t.y)) continue;
           const dx = (t.x ?? 0) - (this.x ?? 0);
           const dy = (t.y ?? 0) - (this.y ?? 0);
           const d2 = dx*dx + dy*dy; if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
@@ -1805,7 +1830,7 @@ export class Player {
       }
       if (includeChests) {
         for (let i = 0; i < chests.length; i++) {
-          const c = chests[i]; if (!c || !c.active) continue;
+          const c = chests[i]; if (!c || !c.active) continue; if (!isVisible(c.x, c.y)) continue;
           const dx = (c.x ?? 0) - (this.x ?? 0);
           const dy = (c.y ?? 0) - (this.y ?? 0);
           const d2 = dx*dx + dy*dy; if (d2 <= maxRangeSq && d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
@@ -1816,14 +1841,14 @@ export class Player {
       // 3) Closest overall
       bestD2 = Number.POSITIVE_INFINITY; pick = null;
       for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i]; if (!enemyOk(e)) continue;
+  const e = enemies[i]; if (!enemyOk(e)) continue; if (!isVisible(e.x, e.y)) continue;
         const dx = (e.x ?? 0) - (this.x ?? 0);
         const dy = (e.y ?? 0) - (this.y ?? 0);
         const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = e; }
       }
       if (includeTreasures) {
         for (let i = 0; i < treasures.length; i++) {
-          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+          const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue; if (!isVisible(t.x, t.y)) continue;
           const dx = (t.x ?? 0) - (this.x ?? 0);
           const dy = (t.y ?? 0) - (this.y ?? 0);
           const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
@@ -1831,7 +1856,7 @@ export class Player {
       }
       if (includeChests) {
         for (let i = 0; i < chests.length; i++) {
-          const c = chests[i]; if (!c || !c.active) continue;
+          const c = chests[i]; if (!c || !c.active) continue; if (!isVisible(c.x, c.y)) continue;
           const dx = (c.x ?? 0) - (this.x ?? 0);
           const dy = (c.y ?? 0) - (this.y ?? 0);
           const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
@@ -1842,7 +1867,7 @@ export class Player {
 
     // mode === 'closest'
     let bestD2 = Number.POSITIVE_INFINITY; let pick: Enemy | null = null;
-    if (bossValid) {
+  if (bossValid && isVisible(boss.x, boss.y)) {
       const dxB = (boss.x ?? 0) - (this.x ?? 0);
       const dyB = (boss.y ?? 0) - (this.y ?? 0);
       const d2B = dxB*dxB + dyB*dyB; bestD2 = d2B; pick = boss as any;

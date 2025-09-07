@@ -28,7 +28,9 @@ export const PASSIVE_SPECS: PassiveSpec[] = [
   { id: 13, name: 'Slow Aura', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_slow.svg'), description: 'Slow nearby enemies in an aura around you.', maxLevel: 3 },
   { id: 14, name: 'Overclock', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_overclock.svg'), description: 'Below 50% HP: increased attack speed and damage. Scales with level.', maxLevel: 3 },
   // New: Lifesteal — heal for a small fraction of damage dealt (applies to all sources)
-  { id: 15, name: 'Lifesteal', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_lifesteal.svg'), description: 'Heal a small % of all damage dealt. 0.1% at L1 up to 0.5% at L5.', maxLevel: 5 }
+  { id: 15, name: 'Lifesteal', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_lifesteal.svg'), description: 'Heal a small % of all damage dealt. 0.1% at L1 up to 0.5% at L5.', maxLevel: 5 },
+  // New: Vision — increases Fog-of-War visibility radius; also used as a prerequisite for sniper evolutions
+  { id: 16, name: 'Vision', icon: AssetLoader.normalizePath('/assets/ui/icons/passive_eye.svg'), description: 'Expand your field of view. Each level increases visibility radius.', maxLevel: 5 }
 ];
 
 // Normalize asset paths for file:// protocol (Electron packaged)
@@ -168,6 +170,16 @@ export function applyPassive(player: Player, passiveId: number, level: number) {
         const table = [0, 0.001, 0.002, 0.003, 0.004, 0.005];
         const lvl = Math.max(0, Math.min(5, level | 0));
         (player as any).lifestealFrac = table[lvl];
+      }
+      break;
+    case 16: // Vision
+      {
+        // Increase FOW visibility radius. Treat as +10% radius per level.
+        const lvl = Math.max(0, Math.min(5, level | 0));
+        // Expose as a multiplier for Game to consume when drawing FOW
+        (player as any).visionMultiplier = 1 + lvl * 0.10; // L5 => +50%
+        // Keep last known level for UI/debug if needed
+        (player as any).visionLevel = lvl;
       }
       break;
   }

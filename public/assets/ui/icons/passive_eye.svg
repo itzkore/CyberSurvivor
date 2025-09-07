@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Vision">
+	<defs>
+		<radialGradient id="gGlow" cx="50%" cy="50%" r="50%">
+			<stop offset="0%" stop-color="#BFF8FF" stop-opacity="0.9" />
+			<stop offset="65%" stop-color="#64EAF6" stop-opacity="0.35" />
+			<stop offset="100%" stop-color="#64EAF6" stop-opacity="0" />
+		</radialGradient>
+		<linearGradient id="gIris" x1="0" y1="1" x2="0" y2="0">
+			<stop offset="0%" stop-color="#22AACC"/>
+			<stop offset="100%" stop-color="#8AF1FF"/>
+		</linearGradient>
+	</defs>
+	<!-- Soft ambient glow -->
+	<circle cx="32" cy="32" r="20" fill="url(#gGlow)" />
+	<!-- Eye outline (almond shape) -->
+	<path d="M6 32c6-10 16-16 26-16s20 6 26 16c-6 10-16 16-26 16S12 42 6 32Z"
+				fill="none" stroke="#A8F7FF" stroke-width="2.5" />
+	<!-- Subtle inner ring -->
+	<path d="M10 32c5.2-8.5 13.8-13.6 22-13.6S48.8 23.5 54 32c-5.2 8.5-13.8 13.6-22 13.6S15.2 40.5 10 32Z"
+				fill="none" stroke="#5FE8F5" stroke-opacity="0.65" stroke-width="1.6" />
+	<!-- Iris -->
+	<circle cx="32" cy="32" r="8.5" fill="url(#gIris)" stroke="#CFFBFF" stroke-width="1.2"/>
+	<!-- Pupil -->
+	<circle cx="32" cy="32" r="3.5" fill="#022A33" />
+	<!-- Highlight -->
+	<circle cx="29.5" cy="29.5" r="2" fill="#FFFFFF" fill-opacity="0.85" />
+</svg>

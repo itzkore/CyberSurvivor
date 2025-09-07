@@ -1,0 +1,9 @@
+{
+  "waves": [
+    { "id": 1, "spawns": [{"type":"small","count":12},{"type":"medium","count":4}] },
+    { "id": 2, "spawns": [{"type":"small","count":18},{"type":"medium","count":6}] },
+    { "id": 3, "spawns": [{"type":"small","count":24},{"type":"medium","count":8}] },
+    { "id": 4, "spawns": [{"type":"small","count":30},{"type":"medium","count":10}] },
+    { "id": 5, "spawns": [{"type":"small","count":20},{"type":"medium","count":10},{"type":"large","count":4}], "boss": true }
+  ]
+}
