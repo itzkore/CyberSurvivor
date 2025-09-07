@@ -235,10 +235,18 @@ export class BossManager {
   if (gm === 'SANDBOX' && !this.boss) return;
     } catch {}
     if (!this.boss) {
-      // Spawn boss on paced interval (default 180s) to stretch run length
-      if (gameTime - this.lastBossSpawnTime >= BOSS_SPAWN_INTERVAL_SEC) {
-        this.spawnBoss();
-        this.lastBossSpawnTime = gameTime;
+      // In Last Stand, boss spawns are coordinated by the LS controller at milestone waves.
+      // In other modes, spawn on paced interval (default 180s) to stretch run length.
+      let shouldAutoSpawn = true;
+      try {
+        const gm = (window as any).__gameInstance?.gameMode;
+        if (gm === 'LAST_STAND') shouldAutoSpawn = false;
+      } catch {}
+      if (shouldAutoSpawn) {
+        if (gameTime - this.lastBossSpawnTime >= BOSS_SPAWN_INTERVAL_SEC) {
+          this.spawnBoss();
+          this.lastBossSpawnTime = gameTime;
+        }
       }
     } else if (this.boss.state === 'TELEGRAPH') {
       // Telegraph counts down in ms

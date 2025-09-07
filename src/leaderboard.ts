@@ -1,5 +1,5 @@
 // src/leaderboard.ts
-export type LeaderEntry = { rank: number; playerId: string; name: string; timeSec: number; kills?: number; level?: number; maxDps?: number; characterId?: string };
+export type LeaderEntry = { rank: number; playerId: string; name: string; timeSec: number; kills?: number; level?: number; maxDps?: number; characterId?: string; waves?: number };
 
 // Allow optional late injection via window.__UPSTASH__ (useful in Electron preload or tests)
 declare global { interface Window { __UPSTASH__?: { url?: string; token?: string }; } }
@@ -271,19 +271,28 @@ export async function submitScore(opts: {
   maxDps: number;
   ttlSeconds?: number;
   characterId?: string;
+  /** When provided, use this numeric value as the primary ZSET score (e.g., waves for Last Stand). */
+  scoreOverride?: number;
+  /** Optional waves meta for Last Stand boards. */
+  waves?: number;
+  /** Optional mode tag to store in per-board meta for stricter filtering (e.g., DUNGEON). */
+  mode?: 'SHOWDOWN'|'DUNGEON'|'LAST_STAND'|'SANDBOX';
 }) {
   if (!isLeaderboardConfigured()) return; // silent no-op when not configured
   // Validate required fields to avoid backend 400s
   if (!opts.playerId || !opts.name) return;
-  lbLog('submitScore:start', { board: opts.board||'global', timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps });
+  lbLog('submitScore:start', { board: opts.board||'global', timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps, waves: opts.waves, scoreOverride: opts.scoreOverride });
   const board = opts.board ?? 'global';
   const key = boardKey(board);
   const metaKey = `${key}:meta`;
   const pid = opts.playerId;
   const name = sanitizeName(opts.name);
   const timeSec = Math.max(0, Math.floor(opts.timeSec));
+  const scoreVal = (typeof opts.scoreOverride === 'number' && isFinite(opts.scoreOverride)) ? Math.max(0, Math.floor(opts.scoreOverride)) : timeSec;
   const meta: any = { kills: opts.kills|0, level: opts.level|0, maxDps: Math.round(opts.maxDps), timeSec };
+  if (typeof opts.waves === 'number') meta.waves = Math.max(0, Math.floor(opts.waves));
   if (opts.characterId) meta.char = opts.characterId;
+  if (opts.mode) meta.mode = opts.mode;
 
   // Zjistit současné nejlepší skóre a aktualizovat meta pouze při zlepšení
   let currentBest = 0;
@@ -293,22 +302,24 @@ export async function submitScore(opts: {
   } catch {/* ignore */}
 
   // Pokud je toto skóre lepší než dosavadní NA TOMTO BOARDU, aktualizujeme per‑board meta
-  if (timeSec > currentBest) {
+  if (scoreVal > currentBest) {
     try {
-      // Always keep latest nickname globally
+      // Always keep latest nickname globally and in aggregated map for batch reads
       await redis(['HSET', `name:${pid}`, 'name', name]);
+      await redis(['HSET', 'lb:names', pid, name]).catch(()=>{});
       // Per‑board meta: field=pid, value=JSON(meta), so each board locks metadata to its best run
-      await redis(['HSET', metaKey, pid, JSON.stringify(meta)]);
+  await redis(['HSET', metaKey, pid, JSON.stringify(meta)]);
   // Cleanup: remove legacy global meta field if present to avoid stale reads by older clients
   await redis(['HDEL', `name:${pid}`, 'meta']).catch(()=>{});
     } catch {/* ignore meta persist errors */}
   } else {
-    // Always keep nickname fresh even when not improving score
-    try { await redis(['HSET', `name:${pid}`, 'name', name]); } catch {/* ignore */}
+  // Always keep nickname fresh even when not improving score
+  try { await redis(['HSET', `name:${pid}`, 'name', name]); } catch {/* ignore */}
+  try { await redis(['HSET', 'lb:names', pid, name]); } catch {/* ignore */}
   }
 
   // Zapsat survival time jen když je vyšší než aktuální (GT) => delší přežití
-  await redis(['ZADD', key, 'GT', String(timeSec), pid]);
+  await redis(['ZADD', key, 'GT', String(scoreVal), pid]);
 
   if (opts.ttlSeconds && opts.ttlSeconds > 0) {
     await redis(['EXPIRE', key, String(opts.ttlSeconds)]);
@@ -332,10 +343,16 @@ export async function submitScoreAllPeriods(opts: {
   maxDps: number;
   /** Optional: when provided, also submit to per‑operative boards (e.g., global:op:shadow_operative) */
   characterId?: string;
+  /** Optional game mode dimension; when set, boards become e.g. global:mode:LAST_STAND */
+  mode?: 'SHOWDOWN'|'DUNGEON'|'LAST_STAND'|'SANDBOX';
+  /** Primary metric: 'time' (default) or 'waves' for Last Stand. */
+  primaryMetric?: 'time'|'waves';
+  /** Waves completed (for Last Stand meta + score). */
+  waves?: number;
 }) {
   if (!isLeaderboardConfigured()) return;
   if (!opts.playerId || !opts.name) return;
-  const base = { playerId: opts.playerId, name: opts.name, timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps };
+  const base = { playerId: opts.playerId, name: opts.name, timeSec: opts.timeSec, kills: opts.kills, level: opts.level, maxDps: opts.maxDps } as any;
   const periods = [
     { board: 'global' as string, ttlSeconds: undefined as number | undefined },
     resolveBoard('daily:auto'),
@@ -344,17 +361,20 @@ export async function submitScoreAllPeriods(opts: {
   ];
   // Build list of boards to submit to, including per‑operative variants when characterId provided
   const boards: { board: string; ttlSeconds?: number }[] = [];
+  const mode = opts.mode;
+  const scoreOverride = (opts.primaryMetric === 'waves') ? (typeof opts.waves === 'number' ? Math.max(0, Math.floor(opts.waves)) : 0) : undefined;
   for (let i = 0; i < periods.length; i++) {
     const p = periods[i];
-    boards.push({ board: p.board, ttlSeconds: p.ttlSeconds });
+    const baseBoard = mode ? `${p.board}:mode:${mode}` : p.board;
+    boards.push({ board: baseBoard, ttlSeconds: p.ttlSeconds });
     if (opts.characterId) {
-      boards.push({ board: `${p.board}:op:${opts.characterId}`, ttlSeconds: p.ttlSeconds });
+      boards.push({ board: `${baseBoard}:op:${opts.characterId}`, ttlSeconds: p.ttlSeconds });
     }
   }
   for (let i=0;i<boards.length;i++) {
     const b = boards[i];
     try {
-      await submitScore({ ...base, board: b.board, ttlSeconds: b.ttlSeconds, characterId: opts.characterId });
+  await submitScore({ ...base, board: b.board, ttlSeconds: b.ttlSeconds, characterId: opts.characterId, scoreOverride, waves: opts.waves, mode });
     } catch {/* ignore individual board failure */}
   }
 }
@@ -379,6 +399,8 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
   }
   const key = boardKey(board);
   const metaKey = `${key}:meta`;
+  const isLastStand = /:mode:LAST_STAND/i.test(board);
+  const isDungeon = /:mode:DUNGEON/i.test(board);
   // If this is a per‑operative board, capture operative id from board name (e.g., global:op:neural_nomad)
   const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
   const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
@@ -386,48 +408,63 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
   // Helper to fetch a page and hydrate metadata
   const fetchPage = async (pageOffset: number, pageSize: number): Promise<LeaderEntry[]> => {
     const flat: string[] = await redis(['ZREVRANGE', key, String(pageOffset), String(pageOffset + pageSize - 1), 'WITHSCORES']);
-    const page: LeaderEntry[] = new Array(Math.ceil(flat.length / 2));
-    const tasks: Promise<void>[] = [];
-    for (let i = 0; i < flat.length; i += 2) {
-      ((idx: number) => {
-        const playerId = flat[idx];
-        const timeSecRaw = Number(flat[idx + 1]);
-        tasks.push((async () => {
-          let name = playerId;
-          let kills: number | undefined;
-          let level: number | undefined;
-          let maxDps: number | undefined;
-          let characterId: string | undefined;
-          const timeSec = timeSecRaw; // ZSET score is authoritative best run time
-          try {
-            const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
-            if (fetchedName) name = fetchedName;
-            // Use only per‑board meta to lock data to the best run on this board (no legacy fallback to avoid stale char)
-            let metaStr = await redis(['HGET', metaKey, playerId]).catch(()=>null);
-            if (metaStr) {
-              const meta = JSON.parse(metaStr);
-              const matches = (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
-              if (matches) {
-                if (typeof meta.kills === 'number') kills = meta.kills;
-                if (typeof meta.level === 'number') level = meta.level;
-                if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
-                if (typeof meta.char === 'string') characterId = meta.char;
-              } else {
-                // Do not read fields from a different run
-                characterId = undefined;
-              }
-            }
-          } catch {/* ignore per-player meta errors */}
-          const effectiveCharId = boardOpId || characterId;
-          page[idx/2] = { rank: pageOffset + idx / 2 + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId };
-        })());
-      })(i);
+    const count = Math.ceil(flat.length / 2);
+    if (!count) return [];
+    const page: LeaderEntry[] = new Array(count);
+    // Collect ids and scores
+    const ids: string[] = new Array(count);
+    const scores: number[] = new Array(count);
+    for (let i = 0, j = 0; i < flat.length; i += 2, j++) {
+      ids[j] = flat[i];
+      scores[j] = Number(flat[i + 1]);
     }
-    await Promise.all(tasks);
-    return page.filter(Boolean) as LeaderEntry[];
+    // Batch fetch names and per‑board meta
+    let names: (string | null)[] = [];
+    try { names = await redis(['HMGET', 'lb:names', ...ids]).catch(()=>[]); } catch { names = []; }
+    let metas: (string | null)[] = [];
+    try { metas = await redis(['HMGET', metaKey, ...ids]).catch(()=>[]); } catch { metas = []; }
+    for (let k = 0; k < count; k++) {
+      const playerId = ids[k];
+      const timeSec = scores[k]; // For LS boards, this is waves; for others, survival time
+      let name = names[k] || '';
+      if (!name) {
+        try { const n = await redis(['HGET', `name:${playerId}`, 'name']).catch(()=>null); if (n) name = n; } catch {}
+      }
+      if (!name) name = playerId;
+      let kills: number | undefined;
+      let level: number | undefined;
+      let maxDps: number | undefined;
+      let characterId: string | undefined;
+  let metaOk = !isLastStand; // default true for non-LS; LS requires strict match
+      try {
+        const metaStr = metas[k];
+        if (metaStr) {
+          const meta = JSON.parse(metaStr);
+          const matches = isLastStand
+            ? (typeof meta.waves === 'number' && meta.waves === timeSec)
+            : (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
+          // If meta carries mode, require it to match Dungeon boards (prevents Showdown entries in DUNGEON periods)
+          const modeOk = isDungeon ? (meta.mode === 'DUNGEON') : true;
+          if (matches) {
+            if (typeof meta.kills === 'number') kills = meta.kills;
+            if (typeof meta.level === 'number') level = meta.level;
+            if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
+            if (typeof meta.char === 'string') characterId = meta.char;
+            metaOk = !!modeOk;
+          }
+        }
+      } catch {/* ignore parse/meta errors */}
+      const effectiveCharId = boardOpId || characterId;
+      const waves = isLastStand ? timeSec : undefined;
+  const entry: LeaderEntry = { rank: pageOffset + k + 1, playerId, name: String(name), timeSec, kills, level, maxDps, characterId: effectiveCharId, waves };
+  (entry as any).__metaOk = metaOk;
+  page[k] = entry;
+    }
+    return page;
   };
 
   // Only-one-entry-per-name applies to non per‑operative boards ("all operatives" boards)
+  // It is scoped per-board; since board includes :mode:, Dungeon and Showdown won't mix.
   const enforceUniqueByName = !boardOpId;
   if (!enforceUniqueByName) {
     // Simple one-shot fetch (original path)
@@ -466,6 +503,8 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
   lbLog('fetchPlayerEntry:start', { board, playerId });
   const key = boardKey(board);
   const metaKey = `${key}:meta`;
+  const isLastStand = /:mode:LAST_STAND/i.test(board);
+  const isDungeon = /:mode:DUNGEON/i.test(board);
   // If this is a per‑operative board, capture operative id from board name
   const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
   const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
@@ -477,27 +516,33 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
   const timeSec = Number(rawScore) || 0;
   let name = playerId;
   let kills: number | undefined; let level: number | undefined; let maxDps: number | undefined; let characterId: string | undefined;
+  let metaOk = !isLastStand; // LS requires waves match
     try {
-  const fetchedName = await redis(['HGET', `name:${playerId}`, 'name']);
+  const fetchedName = await redis(['HGET', 'lb:names', playerId]).catch(()=>null) || await redis(['HGET', `name:${playerId}`, 'name']).catch(()=>null);
       if (fetchedName) name = fetchedName;
   // Use only per‑board meta (best-run locked) to avoid stale operative from legacy global meta
   let metaStr = await redis(['HGET', metaKey, playerId]).catch(()=>null);
-      if (metaStr) {
+    if (metaStr) {
         const meta = JSON.parse(metaStr);
-        const matches = (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
+        const matches = isLastStand
+          ? (typeof meta.waves === 'number' && meta.waves === timeSec)
+          : (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
+        const modeOk = isDungeon ? (meta.mode === 'DUNGEON') : true;
         if (matches) {
           if (typeof meta.kills === 'number') kills = meta.kills;
           if (typeof meta.level === 'number') level = meta.level;
           if (typeof meta.maxDps === 'number') maxDps = meta.maxDps;
           if (typeof meta.char === 'string') characterId = meta.char;
-        } else {
-          characterId = undefined;
+      metaOk = !!modeOk;
         }
       }
     } catch {/* ignore meta errors */}
   // Prefer board-derived operative id on per-operative boards to guarantee consistent labeling.
   const effectiveCharId = boardOpId || characterId;
-  return { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId };
+  const waves = isLastStand ? timeSec : undefined;
+  const entry: LeaderEntry = { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId, waves };
+  (entry as any).__metaOk = metaOk;
+  return entry;
   } catch {
     return null;
   }

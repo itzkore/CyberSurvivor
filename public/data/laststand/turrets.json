@@ -1,5 +1,18 @@
 {
-  "turret_gun": { "name": "Gun Turret", "range": 520, "dps": [30, 48, 72, 110], "price": [80, 120, 180, 260] },
-  "turret_freeze": { "name": "Freeze Node", "range": 440, "dps": [8, 12, 18, 26], "price": [70, 100, 150, 220] },
-  "turret_mortar": { "name": "Mini Mortar", "range": 680, "dps": [36, 54, 80, 120], "price": [100, 160, 220, 300] }
+  "turret_gun": { "name": "Gun Turret", "range": 520, "dps": [30, 48, 72, 110], "price": [60, 100, 160, 240] },
+  "turret_freeze": { "name": "Freeze Node", "range": 440, "dps": [8, 12, 18, 26], "price": [50, 90, 140, 210] },
+  "turret_mortar": { "name": "Mini Mortar", "range": 680, "dps": [36, 54, 80, 120], "price": [80, 140, 200, 280] },
+  "turret_heavy_mortar": { "name": "Heavy Mortar", "range": 720, "dps": [42, 64, 92, 138, 190], "price": [140, 210, 300, 420, 560] },
+  "turret_minigun": {
+    "name": "Minigun Turret",
+    "range": 560,
+    "dps": [35, 55, 80, 110, 150, 195, 245],
+  "price": [90, 130, 190, 270, 360, 460, 590]
+  },
+  "turret_crossbow3": {
+    "name": "Triple Crossbow",
+    "range": 600,
+    "dps": [32, 52, 78, 110, 150, 198, 255],
+  "price": [90, 130, 190, 270, 360, 460, 590]
+  }
 }

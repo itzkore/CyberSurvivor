@@ -39,18 +39,7 @@ export class PauseOverlay {
               <span id='pause-volume-val' class='pause-audio-val'></span>
             </div>
           </div>
-          <div id='pause-visual' class='pause-audio'>
-            <div class='pause-audio-title'>VISUAL</div>
-            <div class='pause-audio-row'>
-              <label class='pause-audio-label'>Fog of War</label>
-              <input id='pause-fow-toggle' type='checkbox' />
-            </div>
-            <div class='pause-audio-row'>
-              <span class='pause-audio-label'>Visibility Radius</span>
-              <input id='pause-fow-radius' type='range' min='1' max='10' step='1' />
-              <span id='pause-fow-radius-val' class='pause-audio-val'></span>
-            </div>
-          </div>
+          <!-- Fog of War controls removed: always-on in Last Stand and core modes -->
           <p class='pause-hint'>Esc = Resume  •  M = Main Menu</p>
         </div>`;
       document.body.appendChild(existing);
@@ -69,7 +58,7 @@ export class PauseOverlay {
   mainBtn?.addEventListener('click', () => this.returnToMenu());
   restartBtn?.addEventListener('click', () => this.restartRun());
   this.initAudioControls();
-  this.initFowControls();
+  // FOW always-on: controls removed
   }
 
   private requestResume() {
@@ -122,37 +111,7 @@ export class PauseOverlay {
     } catch { /* ignore */ }
   }
 
-  private initFowControls() {
-    const toggle = this.el.querySelector('#pause-fow-toggle') as HTMLInputElement | null;
-    const radius = this.el.querySelector('#pause-fow-radius') as HTMLInputElement | null;
-    const radiusVal = this.el.querySelector('#pause-fow-radius-val') as HTMLElement | null;
-    if (!toggle || !radius) return;
-    // Load persisted settings
-  let enabled = true; let r = 4;
-    try {
-      const s = localStorage.getItem('cs-fow-enabled');
-      if (s != null) enabled = s === '1';
-      const sr = localStorage.getItem('cs-fow-radius');
-  if (sr != null) r = Math.max(1, Math.min(10, parseInt(sr)));
-    } catch {}
-    toggle.checked = enabled;
-    radius.value = String(r);
-    if (radiusVal) radiusVal.textContent = `${r}`;
-    // Apply to game immediately
-    try { (this.game as any).fowEnabled = enabled; } catch {}
-    try { (this.game as any).fowRadiusBase = r; } catch {}
-    toggle.oninput = () => {
-      const v = !!toggle.checked;
-      try { (this.game as any).fowEnabled = v; } catch {}
-      try { localStorage.setItem('cs-fow-enabled', v ? '1' : '0'); } catch {}
-    };
-    radius.oninput = () => {
-  const v = Math.max(1, Math.min(10, parseInt(radius.value)));
-      if (radiusVal) radiusVal.textContent = `${v}`;
-      try { (this.game as any).fowRadiusBase = v; } catch {}
-      try { localStorage.setItem('cs-fow-radius', String(v)); } catch {}
-    };
-  }
+  // No initFowControls: enforce always-on in Game
 
   public show(auto: boolean) {
     if (this.visible) return;

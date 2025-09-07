@@ -8,7 +8,9 @@ function norm(path: string): string {
   try { return AssetLoader.normalizePath(path); } catch { return path; }
 }
 
-/** Load JSON data from a public URL. */
+/** Load JSON data from a public URL.
+ * Paths should be under '/data/...' so AssetLoader can apply basePrefix in production builds.
+ */
 export async function loadJSON<T = any>(path: string): Promise<T> {
   const url = norm(path);
   const res = await fetch(url, { cache: 'no-store' });
@@ -21,4 +23,5 @@ export const lastStandData = {
   waves: () => norm('/data/laststand/waves.json'),
   items: () => norm('/data/laststand/items.json'),
   turrets: () => norm('/data/laststand/turrets.json'),
+  config: () => norm('/data/laststand/config.json'),
 };

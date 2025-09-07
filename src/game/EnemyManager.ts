@@ -70,6 +70,10 @@ export class EnemyManager {
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid for enemies (optimization for zone queries)
   private spawnBudgetCarry: number = 0; // carry fractional spawn budget between ticks so early game spawns occur
   private enemySpeedScale: number = 0.55; // further reduced global speed scaler to keep mobs slower overall
+  // Last Stand tuning: global multiplier to enemy knockback resistance when applying knockback (1 = unchanged)
+  private lsKbResistMul: number = 1;
+  // Last Stand: optional speed boost for 'small' enemies to ensure they lead the charge
+  private lsSmallSpeedMul: number = 1;
   // Cap enemies' effective chase speed to a ratio of the player's current speed to avoid runaway scaling
   private readonly enemyChaseCapRatio: number = 0.9; // cap enemy chase to ~90% of player speed to avoid runaway pursuit
   // Base XP gem tier awarded per enemy type (before random upgrade chances)
@@ -612,10 +616,19 @@ export class EnemyManager {
     // Listen for explicit spawns of special items and treasures
     window.addEventListener('spawnSpecialItem', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
+      // Suppress special item spawns entirely in Last Stand
+      try {
+        const gm = (window as any).__gameInstance?.gameMode;
+        if (gm === 'LAST_STAND') return;
+      } catch {}
       this.spawnSpecialItem(d.x ?? this.player.x, d.y ?? this.player.y, d.type as SpecialItem['type'] | undefined);
     });
     window.addEventListener('spawnTreasure', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
+      try {
+        const gm = (window as any).__gameInstance?.gameMode;
+        if (gm === 'LAST_STAND') return; // disable treasure spawns in Last Stand
+      } catch {}
       this.spawnTreasure(d.x ?? this.player.x + 40, d.y ?? this.player.y + 40, d.hp ?? 200);
     });
     // Listen for Bio Engineer Outbreak events (force contagion radius around player)
@@ -850,8 +863,11 @@ export class EnemyManager {
   // Schedule first special spawn for real games
   try { this.scheduleNextSpecialSpawn(); } catch {}
     // On game start, scatter a few treasures well away from the player to encourage exploration
+    // Skip this behavior in Last Stand mode.
     window.addEventListener('startGame', () => {
       try {
+        const gm = (window as any).__gameInstance?.gameMode;
+        if (gm === 'LAST_STAND') return;
         const count = 3;
         for (let i = 0; i < count; i++) {
           const pos = this.pickSpecialSpawnPoint();
@@ -1073,6 +1089,8 @@ export class EnemyManager {
           const candidates = query(s.x, s.y, finaleR);
           for (let j = 0, jl = candidates.length; j < jl; j++) {
             const e = candidates[j]; if (!e.active) continue;
+            // LS FoW: skip invisible enemies entirely (no damage, no knockback)
+            try { if (!this.isVisibleInLastStand(e.x, e.y)) continue; } catch { /* ignore */ }
             const dx = e.x - s.x, dy = e.y - s.y; const d2 = dx*dx + dy*dy;
             if (d2 <= r2) {
               this.takeDamage(e, finaleDmg, false, false, WeaponType.DATA_SIGIL, s.x, s.y, undefined, true);
@@ -1550,6 +1568,14 @@ export class EnemyManager {
   }
 
   /**
+   * Provide a custom global chase target position for enemy AI.
+   * When set, enemies will move towards this target instead of the player's live position.
+   */
+  public setChaseTargetProvider(provider: (()=>{ x:number; y:number }) | null) {
+    (this as any).__chaseTargetProvider = provider || undefined;
+  }
+
+  /**
    * Query nearby enemies efficiently using the internal spatial grid.
    * Returns only active enemies within the given radius.
    */
@@ -1561,6 +1587,11 @@ export class EnemyManager {
       if (e && e.active && e.hp > 0) out.push(e);
     }
     return out;
+  }
+
+  /** Enable/disable internal dynamic spawns (pressure/elite systems). */
+  public setDynamicSpawnsEnabled(on: boolean) {
+    (this as any).__disableDynamicSpawns = !on;
   }
 
   /** Apply a short Neural Threader primer debuff (light DoT) to enable tether linking on subsequent hits. */
@@ -1650,7 +1681,9 @@ export class EnemyManager {
   private tryScheduledSpecialSpawns(nowMs: number) {
     // Only in real gameplay (SHOWDOWN/DUNGEON)
     const gm = (window as any).__gameInstance?.gameMode;
-    if (gm === 'SANDBOX') return;
+  if (gm === 'SANDBOX') return;
+  // In Last Stand, suppress all scheduled special spawns (items and treasures)
+  if (gm === 'LAST_STAND') return;
     if (!this.nextSpecialSpawnAtMs) this.scheduleNextSpecialSpawn();
     if (nowMs < this.nextSpecialSpawnAtMs) return;
     // Capacity checks
@@ -1662,8 +1695,9 @@ export class EnemyManager {
     }
     // Choose spawn type: 60% direct item, 40% treasure (if capacity allows)
     const roll = Math.random();
-    const canItem = activeItems < this.maxActiveSpecialItems;
-    const canTreasure = activeTreasures < this.maxActiveTreasures;
+  const canItem = activeItems < this.maxActiveSpecialItems;
+  // In non-LS modes, allow treasures if under cap
+  const canTreasure = (activeTreasures < this.maxActiveTreasures);
     const spawnTreasure = canTreasure && (!canItem ? true : roll >= 0.60);
     const pos = this.pickSpecialSpawnPoint();
     if (spawnTreasure) {
@@ -1676,6 +1710,72 @@ export class EnemyManager {
       this.spawnSpecialItem(pos.x, pos.y, t as SpecialItem['type']);
     }
     this.scheduleNextSpecialSpawn();
+  }
+
+  // --- Last Stand Fog-of-War visibility cache (per-frame) ---
+  /**
+   * Cache of Last Stand visibility parameters, recalculated once per frame using window.__frameId.
+   * Used to cheaply gate PLAYER-origin damage to enemies that are not visible (outside core radius and off corridor).
+   */
+  private _lsVisFrameId: number = -1;
+  private _lsVisEnabled: boolean = false;
+  private _lsVisCx: number = 0;
+  private _lsVisCy: number = 0;
+  private _lsVisR2: number = 0;
+  private _lsVisCorridors: Array<{x:number;y:number;w:number;h:number}> | null = null;
+
+  /** Ensure Last Stand visibility parameters are up-to-date for the current frame. */
+  private ensureLsVisibilityCache(): void {
+    // Recompute only when frame id changes
+    const fid = (window as any).__frameId || 0;
+    if (this._lsVisFrameId === fid) return;
+    this._lsVisFrameId = fid;
+    try {
+      const gi: any = (window as any).__gameInstance;
+      this._lsVisEnabled = !!(gi && gi.gameMode === 'LAST_STAND');
+      if (!this._lsVisEnabled) { this._lsVisCorridors = null; this._lsVisR2 = 0; return; }
+      // Anchor vision at Core in LS; fallback to player if core missing
+      const core: any = (window as any).__lsCore;
+      if (core && core.x != null && core.y != null) { this._lsVisCx = core.x; this._lsVisCy = core.y; }
+      else if (gi && gi.player) { this._lsVisCx = gi.player.x; this._lsVisCy = gi.player.y; }
+      else { this._lsVisCx = 0; this._lsVisCy = 0; }
+      // Radius in pixels, mirroring Game.ts FOW render radius
+      let radiusPx = 640;
+      try {
+        const tiles = typeof gi?.getEffectiveFowRadiusTiles === 'function' ? gi.getEffectiveFowRadiusTiles() : 4;
+        const ts = (gi && typeof gi.fowTileSize === 'number') ? gi.fowTileSize : 160;
+        radiusPx = Math.floor(tiles * ts * 0.95);
+      } catch { /* use fallback */ }
+      this._lsVisR2 = radiusPx * radiusPx;
+      // Corridor rectangles from RoomManager
+      const rm: any = (window as any).__roomManager;
+      const corrs = rm?.getCorridors?.();
+      this._lsVisCorridors = (corrs && corrs.length) ? corrs : null;
+    } catch {
+      this._lsVisEnabled = false; this._lsVisCorridors = null; this._lsVisR2 = 0;
+    }
+  }
+
+  /** Test whether a world position is visible in Last Stand FoW (core-radius or corridor). Returns true in non-LS modes. */
+  private isVisibleInLastStand(ex: number, ey: number): boolean {
+    try {
+      const gi: any = (window as any).__gameInstance;
+      if (!gi || gi.gameMode !== 'LAST_STAND') return true; // Only gate in LS
+      // Prefer the authoritative per-frame cache published by LastStandGameMode.update().
+      const cache: any = (window as any).__lsAimCache;
+      if (cache && typeof cache.cx === 'number' && typeof cache.cy === 'number' && typeof cache.r2 === 'number') {
+        const dx = ex - cache.cx, dy = ey - cache.cy;
+        return (dx*dx + dy*dy) <= cache.r2; // circle-only
+      }
+      // Safe fallback: use internal cached fields; compute if stale/missing
+      this.ensureLsVisibilityCache();
+      if (!this._lsVisEnabled) return false; // In LS but no cache: be conservative and treat as not visible
+      const dx = ex - (this._lsVisCx || 0); const dy = ey - (this._lsVisCy || 0);
+      if (dx*dx + dy*dy <= (this._lsVisR2 || 0)) return true;
+      const cs = this._lsVisCorridors;
+      if (cs && cs.length) { for (let i = 0; i < cs.length; i++) { const c = cs[i]; if (ex >= c.x && ex <= c.x + c.w && ey >= c.y && ey <= c.y + c.h) return true; } }
+      return false;
+    } catch { return true; }
   }
 
   /**
@@ -1693,8 +1793,12 @@ export class EnemyManager {
     sourceX?: number,
     sourceY?: number,
     weaponLevel?: number,
-    isIndirect?: boolean // AoE, DoT, zones, shockwaves, stomps, chain pulses, etc.
+    isIndirect?: boolean, // AoE, DoT, zones, shockwaves, stomps, chain pulses, etc.
+    origin?: 'PLAYER' | 'TURRET'
   ): void {
+  // In Last Stand, enemies hidden by Fog-of-War (outside core radius and corridor clears) are fully immune:
+  // no damage and no knockback are applied, regardless of source/origin.
+  try { if (!(this.isVisibleInLastStand(enemy.x, enemy.y))) return; } catch { /* ignore */ }
     if (!ignoreActiveCheck && (!enemy.active || enemy.hp <= 0)) return; // Only damage active, alive enemies unless ignored
 
     // Blocker riot shield mitigation: if a shot ray from source passes through the shield plate, reduce damage by 75%.
@@ -1813,7 +1917,9 @@ export class EnemyManager {
           if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
           if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25; // simple linear scaling
         }
-        const baseForcePerSec = perFrame * 60; // convert to px/sec
+  let baseForcePerSec = perFrame * 60; // convert to px/sec
+  // Reduce turret-origin knockback only in Last Stand to avoid affecting other modes
+  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND' && origin === 'TURRET') baseForcePerSec *= 0.1; } catch {}
         // Compute direction from chosen source point to enemy (push enemy away from source)
         let dx = enemy.x - sx;
         let dy = enemy.y - sy;
@@ -1826,8 +1932,9 @@ export class EnemyManager {
   const massScale = 24 / Math.max(8, enemy.radius);
   // Strongly dampen beams to avoid runaway stacking; apply extra damping for Bio ticks
   const beamDampen = isBioTick ? 0.08 : 0.3;
-  // Apply spawn-time knockback resistance (0..0.8) scaled over run time
-  const kbResist = (enemy as any)?._kbResist || 0;
+  // Apply spawn-time knockback resistance (0..0.8) scaled over run time; amplify in Last Stand if configured
+  const kbResistBase = (enemy as any)?._kbResist || 0;
+  const kbResist = Math.max(0, Math.min(0.95, kbResistBase * (this.lsKbResistMul || 1)));
   let impulse = baseForcePerSec * massScale * beamDampen * Math.max(0, 1 - kbResist);
         // Radial-only stacking: project any existing knockback onto radial axis, discard sideways component
         let existingRadial = 0;
@@ -1859,8 +1966,11 @@ export class EnemyManager {
     sourceX?: number,
     sourceY?: number,
     weaponLevel?: number,
-    isIndirect?: boolean // AoE/DoT contributions scaled for lifesteal
+    isIndirect?: boolean, // AoE/DoT contributions scaled for lifesteal
+    origin?: 'PLAYER' | 'TURRET'
   ): void {
+  // Apply same LS FoW gate for boss: fully immune while hidden by FoW in Last Stand
+  try { if (!(this.isVisibleInLastStand(boss.x, boss.y))) return; } catch { /* ignore */ }
     if (!boss || boss.hp <= 0 || boss.state !== 'ACTIVE') return;
     // Blocker riot shield mitigation for boss as well (shots traveling through a shield toward boss)
     try {
@@ -1941,7 +2051,8 @@ export class EnemyManager {
           if (perFrame < this.knockbackMinPerFrame) perFrame = this.knockbackMinPerFrame;
           if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25;
         }
-        const baseForcePerSec = perFrame * 60;
+  let baseForcePerSec = perFrame * 60;
+  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND' && origin === 'TURRET') baseForcePerSec *= 0.1; } catch {}
         let dx = boss.x - sx, dy = boss.y - sy; let dist = Math.hypot(dx, dy); if (dist < 0.0001){ dx=1; dy=0; dist=1; }
         const nx = dx/dist, ny = dy/dist;
         const massScale = 24 / Math.max(12, (boss.radius || 48));
@@ -2008,7 +2119,7 @@ export class EnemyManager {
         ex.triggerShockwave(primary.x, primary.y, execDamage, 165, '#FFD199');
       } else {
   // Fallback: direct damage if explosion manager is unavailable (treat as AoE/indirect for lifesteal)
-  this.takeDamage(primary, execDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y, undefined, true);
+  this.takeDamage(primary, execDamage, false, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y, undefined, true, 'PLAYER');
       }
       // Light particles for feedback
       this.particleManager?.spawn(primary.x, primary.y, 4, '#FFE6AA', { sizeMin: 1, sizeMax: 2, lifeMs: 240, speedMin: 0.7, speedMax: 1.4 });
@@ -2094,7 +2205,7 @@ export class EnemyManager {
         if (ex && typeof ex.triggerShockwave === 'function') {
           ex.triggerShockwave(boss.x, boss.y, execDamage, 180, '#FFD199');
         } else {
-          this.takeBossDamage(boss, execDamage, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y, undefined, true);
+          this.takeBossDamage(boss, execDamage, false, WeaponType.SPECTRAL_EXECUTIONER, origin.x, origin.y, undefined, true, 'PLAYER');
         }
         this.particleManager?.spawn(boss.x, boss.y, 5, '#FFE6AA', { sizeMin: 1, sizeMax: 2.2, lifeMs: 240, speedMin: 0.8, speedMax: 1.4 });
       } catch { /* ignore AoE errors */ }
@@ -3878,9 +3989,10 @@ export class EnemyManager {
   this.spawnIntervalDynamic += (targetInterval - this.spawnIntervalDynamic) * 0.15;
   // Wave-based spawning
     // Dynamic spawning (every 300ms) – disabled in Sandbox mode
-    const gm = (window as any).__gameInstance?.gameMode;
-    const isSandbox = gm === 'SANDBOX';
-    if (!isSandbox) {
+  const gm = (window as any).__gameInstance?.gameMode;
+  const isSandbox = gm === 'SANDBOX';
+  const isLastStand = gm === 'LAST_STAND';
+  if (!isSandbox && !isLastStand) {
       // Skip dynamic spawns while a freeze window is active
       const nowMs = nowFrame;
       if (nowMs < this.spawnFreezeUntilMs) {
@@ -3989,6 +4101,11 @@ export class EnemyManager {
     // Determine chase target. During Ghost cloak, enemies follow the snapshot at cloak start.
     let playerX = this.player.x;
     let playerY = this.player.y;
+    // Optional override: modes can provide a custom chase target (e.g., a defense core)
+    try {
+      const prov: (()=>{x:number;y:number}) | undefined = (this as any).__chaseTargetProvider;
+      if (prov) { const p = prov(); if (p && typeof p.x === 'number' && typeof p.y === 'number') { playerX = p.x; playerY = p.y; } }
+    } catch { /* ignore */ }
     if (this._ghostCloakFollow.active) {
       const nowT = performance.now();
       if (nowT <= this._ghostCloakFollow.until) {
@@ -4036,7 +4153,7 @@ export class EnemyManager {
         if (!e.active || e.hp <= 0) continue;
         const dx = e.x - px; const dy = e.y - py;
         if (dx*dx + dy*dy <= latticeR2) {
-          this.takeDamage(e, tickDamage);
+          this.takeDamage(e, tickDamage, false, false, WeaponType.PSIONIC_WAVE, px, py, lvl, true, 'PLAYER');
           const eAny: any = e as any;
           eAny._poisonFlashUntil = nowMs + 120; // reuse flash channel for quick feedback
           (e as any)._lastHitByWeapon = WeaponType.PSIONIC_WAVE;
@@ -4049,7 +4166,7 @@ export class EnemyManager {
         if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
           const dxB = boss.x - px; const dyB = boss.y - py; const rB = (boss.radius || 160);
           if (dxB*dxB + dyB*dyB <= (latticeR + rB) * (latticeR + rB)) {
-            this.takeBossDamage(boss, tickDamage);
+            this.takeBossDamage(boss, tickDamage, false, WeaponType.PSIONIC_WAVE, px, py, lvl, true, 'PLAYER');
           }
         }
       } catch { /* ignore boss lattice errors */ }
@@ -4832,7 +4949,7 @@ export class EnemyManager {
         g.x += (px - g.x) * (0.04 + ease * 0.18); // base pull + stronger as time passes
         g.y += (py - g.y) * (0.04 + ease * 0.18);
         if (Math.hypot(px - g.x, py - g.y) < 18) {
-          this.player.gainExp(g.value);
+          if ((window as any).__gameInstance?.gameMode !== 'LAST_STAND') this.player.gainExp(g.value);
           g.active = false;
           this.gemPool.push(g);
         }
@@ -4842,7 +4959,7 @@ export class EnemyManager {
         for (let i = 0; i < this.gems.length; i++) {
           const g = this.gems[i];
           if (!g.active) continue;
-          this.player.gainExp(g.value);
+          if ((window as any).__gameInstance?.gameMode !== 'LAST_STAND') this.player.gainExp(g.value);
           g.active = false;
           this.gemPool.push(g);
         }
@@ -4918,7 +5035,7 @@ export class EnemyManager {
 
         // Pickup when within generous player-sized radius
         if (d2 < pickupR2) {
-          this.player.gainExp(g.value);
+          if ((window as any).__gameInstance?.gameMode !== 'LAST_STAND') this.player.gainExp(g.value);
           g.active = false;
           if (this.particleManager) this.particleManager.spawn(g.x, g.y, 1, '#0ff');
           this.gemPool.push(g);
@@ -4972,6 +5089,50 @@ export class EnemyManager {
   /** Total enemies killed this run. */
   public getKillCount() { return this.killCount; }
 
+  /** Last Stand only: multiply enemy knockback resistance during knockback application. */
+  public setLastStandEnemyKbResistMultiplier(multiplier: number) {
+    if (!Number.isFinite(multiplier)) return;
+    this.lsKbResistMul = Math.max(0.1, Math.min(4, multiplier));
+  }
+
+  /** Last Stand only: multiply small enemy base speed. Use 1 to disable. */
+  public setLastStandSmallSpeedMultiplier(multiplier: number) {
+    if (!Number.isFinite(multiplier)) return;
+    // Clamp to a sane range to avoid physics instability
+    this.lsSmallSpeedMul = Math.max(0.5, Math.min(3, multiplier));
+  }
+
+  /**
+   * Ensure at least `minCount` elites are present by attempting perimeter spawns now.
+   * Returns the number of elites spawned in this call. Safe to call in wave scripts.
+   */
+  public ensureElitePresence(minCount: number, gameTime: number): number {
+    if (!Number.isFinite(minCount) || minCount <= 0) return 0;
+    // Unlock elites if not already
+    if (!this.elitesUnlocked) {
+      this.elitesUnlocked = true;
+      if (!this.elitesUnlockedAtSec || this.elitesUnlockedAtSec === 0) this.elitesUnlockedAtSec = Math.max(0, gameTime|0);
+    }
+    // Allow immediate spawn
+    this.nextEliteSpawnAllowedAtSec = Math.min(this.nextEliteSpawnAllowedAtSec || 0, gameTime);
+    // Count current elites
+    const current = this.activeEnemies.reduce((n, e) => n + ((((e as any)?._elite)?.kind) ? 1 : 0), 0);
+    let need = Math.max(0, Math.floor(minCount) - current);
+    let spawned = 0;
+    // Try a few times; honor caps and cooldowns inside the helper
+    let guard = Math.min(need + 2, 6);
+    while (need > 0 && guard-- > 0) {
+      if (this.trySpawnEliteNearPerimeter(gameTime)) {
+        spawned++; need--;
+        // Small spacing between forced spawns
+        this.nextEliteSpawnAllowedAtSec = gameTime + 1.2;
+      } else {
+        break;
+      }
+    }
+    return spawned;
+  }
+
   /**
    * Spawn a basic enemy of the given type at world coordinates.
    * For Sandbox/testing use. HP can be overridden; other stats derive from type defaults.
@@ -4980,12 +5141,34 @@ export class EnemyManager {
     let e = this.enemyPool.pop() as Enemy | undefined;
     if (!e) e = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '' } as Enemy;
     const enemy = e as Enemy;
+  // IMPORTANT: This is a normal enemy spawn. Ensure no elite flags/state leak from pooled objects.
+  const pooledAny: any = enemy as any;
+  if (pooledAny._elite) pooledAny._elite = undefined;
+  // Clear any elite-only AI/state remnants to avoid behavior leaks
+  pooledAny._blockerWall = undefined; pooledAny._suppressorState = undefined; pooledAny._dasherState = undefined; pooledAny._blinkerState = undefined; pooledAny._bomberState = undefined; pooledAny._gunnerState = undefined; pooledAny._siphonState = undefined;
+  // Also clear visual timers that differ for elites
+  pooledAny._walkFlipIntervalMs = undefined;
     const type = opts.type;
     enemy.type = type;
     // Defaults match spawnEnemy type presets (early game values)
-    if (type === 'small') { enemy.radius = 20; enemy.speed = 0.30 * this.enemySpeedScale; enemy.damage = 4; enemy.hp = opts.hp ?? 100; }
+  if (type === 'small') { enemy.radius = 20; enemy.speed = 0.30 * this.enemySpeedScale * this.lsSmallSpeedMul; enemy.damage = 4; enemy.hp = opts.hp ?? 100; }
     else if (type === 'medium') { enemy.radius = 30; enemy.speed = 0.65 * 0.30 * this.enemySpeedScale; enemy.damage = 7; enemy.hp = opts.hp ?? 220; }
     else { enemy.radius = 38; enemy.speed = 0.42 * 0.28 * this.enemySpeedScale; enemy.damage = 10; enemy.hp = opts.hp ?? 480; }
+    // Time-based speed ramp so medium/large don’t drag waves (Sandbox unaffected since gameTime=0)
+    try {
+      const gi: any = (window as any).__gameInstance;
+      const tSec: number = (gi && typeof gi.getGameTime === 'function') ? (gi.getGameTime() || 0) : 0;
+      const minutes = Math.max(0, tSec / 60);
+      if (type === 'medium') {
+        // +2.5% per minute, up to +35%
+        const mul = 1 + Math.min(0.35, 0.025 * minutes);
+        enemy.speed *= mul;
+      } else if (type === 'large') {
+        // +3% per minute, up to +45%
+        const mul = 1 + Math.min(0.45, 0.030 * minutes);
+        enemy.speed *= mul;
+      }
+    } catch { /* ignore */ }
     enemy.maxHp = enemy.hp; enemy.active = true; enemy.x = x; enemy.y = y; enemy.id = 'sb-' + Math.floor(Math.random() * 1e9);
     // Clear status flags likely present on pooled instance
     const anyE: any = enemy as any; anyE._isDummy = false; anyE._poisonStacks = 0; anyE._burnStacks = 0; anyE._poisonExpire = 0; anyE._burnExpire = 0; anyE._burnTickDamage = 0;
@@ -5016,7 +5199,7 @@ export class EnemyManager {
           enemy.maxHp = enemy.hp;
           enemy.radius = 20;
           // Make smalls slower baseline; they should no longer outpace the player
-          enemy.speed = (late ? 0.90 : 1.05) * 0.30 * this.enemySpeedScale; // ~0.167 early, ~0.167 late too (capped later by chase cap)
+          enemy.speed = (late ? 0.90 : 1.05) * 0.30 * this.enemySpeedScale * this.lsSmallSpeedMul; // LS can scale this up to ensure smalls lead
           enemy.damage = 4; // within 1-10
           break;
         }
@@ -5133,6 +5316,7 @@ export class EnemyManager {
    * - maxTier: optional cap on final tier after upgrades (e.g., non-elites cap at 3)
    */
   private spawnGem(x: number, y: number, baseTier: number = 1, maxTier?: number) {
+    if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') return;
     let gem = this.gemPool.pop();
     if (!gem) {
       gem = { x: 0, y: 0, vx: 0, vy: 0, life: 0, lifeMs: 0, size: 0, value: 0, active: false, tier: 1, color: '#33E6FF' } as any;
@@ -5200,7 +5384,16 @@ export class EnemyManager {
    * Used by systems that deal non-bullet damage (e.g., AoE pulses) so we don't rely solely on bullet overlap.
    */
   public damageTreasure(t: SpecialTreasure, amount: number): void {
+  /**
+   * Contract:
+   * - Inputs: existing treasure reference and positive damage amount.
+   * - In Last Stand, applies only if treasure is LS-visible (core or corridor); otherwise ignored.
+   * - Emits a small hit particle; on death, despawns treasure, returns to pool, and spawns a random special item.
+   * - Side effects: reuses preallocated pools; no allocations in hot path.
+   */
     if (!t || !t.active || amount <= 0) return;
+  // Last Stand: treasures hidden by FoW are immune
+  try { if (!(this.isVisibleInLastStand(t.x, t.y))) return; } catch { /* ignore */ }
     t.hp -= amount;
     if (this.particleManager) this.particleManager.spawn(t.x, t.y, 1, '#B3E5FF');
     if (t.hp <= 0) {
@@ -5224,7 +5417,7 @@ export class EnemyManager {
         const c = rm.clampToWalkable(t.x, t.y, t.radius);
         t.x = c.x; t.y = c.y;
       }
-      // Bullet collisions (simple loop; low counts typical). Use squared distances.
+      // Bullet collisions (use swept test to avoid tunneling for fast projectiles like Runner Gun)
       for (let b = 0; b < bullets.length; b++) {
         const bullet = bullets[b]; if (!bullet.active) continue;
         // Allow Resonant Web orbiting orbs to pass through treasures without being destroyed or dealing contact damage
@@ -5236,22 +5429,41 @@ export class EnemyManager {
         if ((bullet as any).isOrbiting && (bullet as any).weaponType === WeaponType.QUANTUM_HALO) {
           continue;
         }
-        const dx = bullet.x - t.x; const dy = bullet.y - t.y;
-        const rr = (t.radius + bullet.radius); if (dx*dx + dy*dy > rr*rr) continue;
-        // Hit!
-        t.hp -= bullet.damage;
-        bullet.active = false;
-        if (this.particleManager) this.particleManager.spawn(t.x, t.y, 1, '#B3E5FF');
-        if (t.hp <= 0) {
-          t.active = false; this.treasurePool.push(t);
-          // Drop random special item at treasure location
-          const roll = Math.random();
-          const type: SpecialItem['type'] = roll < 0.34 ? 'HEAL' : roll < 0.67 ? 'MAGNET' : 'NUKE';
-          this.spawnSpecialItem(t.x, t.y, type);
-          // Small burst
-          try { this.particleManager?.spawn(t.x, t.y, 10, '#66CCFF', { sizeMin: 1, sizeMax: 3, lifeMs: 420, speedMin: 1.5, speedMax: 3.5 }); } catch {}
-          break;
+        // Swept-circle vs circle collision: segment from lastX,lastY -> x,y against treasure radius
+        // Fallback to instantaneous check if lastX/lastY missing
+        const effR = (t.radius + (bullet.radius || 0));
+        const effR2 = effR * effR;
+        const sx = (bullet as any).lastX;
+        const sy = (bullet as any).lastY;
+        let hit = false;
+        if (Number.isFinite(sx) && Number.isFinite(sy)) {
+          const x1 = sx as number, y1 = sy as number;
+          const x2 = bullet.x, y2 = bullet.y;
+          let vx = x2 - x1, vy = y2 - y1;
+          const wx = t.x - x1, wy = t.y - y1;
+          const vv = vx*vx + vy*vy;
+          let proj = 0;
+          if (vv > 0.000001) {
+            proj = (wx*vx + wy*vy) / vv; // param along segment
+            if (proj < 0) proj = 0; else if (proj > 1) proj = 1;
+            const cx = x1 + vx * proj;
+            const cy = y1 + vy * proj;
+            const dx = t.x - cx; const dy = t.y - cy;
+            hit = (dx*dx + dy*dy) <= effR2;
+          } else {
+            // Degenerate segment; fall back to point distance
+            const dx = bullet.x - t.x; const dy = bullet.y - t.y;
+            hit = (dx*dx + dy*dy) <= effR2;
+          }
+        } else {
+          const dx = bullet.x - t.x; const dy = bullet.y - t.y;
+          hit = (dx*dx + dy*dy) <= effR2;
         }
+        if (!hit) continue;
+  // Hit! Route through centralized treasure intake to respect LS FoW immunity
+  this.damageTreasure(t, bullet.damage);
+        bullet.active = false;
+        break; // bullet consumed or registered; move to next treasure
       }
     }
     // Compact active list
@@ -5307,7 +5519,7 @@ export class EnemyManager {
       let collected = 0;
       for (let i = 0; i < this.gems.length; i++) {
         const g = this.gems[i]; if (!g.active) continue;
-        this.player.gainExp(g.value); g.active = false; this.gemPool.push(g); collected++;
+  if ((window as any).__gameInstance?.gameMode !== 'LAST_STAND') this.player.gainExp(g.value); g.active = false; this.gemPool.push(g); collected++;
       }
       // Small pulse FX + mild screenshake
       try {
@@ -5413,6 +5625,8 @@ export class EnemyManager {
 
   // Dynamic spawner: allocate enemy budget based on elapsed time and performance constraints
   private runDynamicSpawner(gameTime: number) {
+  // In Last Stand, dynamic spawner is disabled (waves are driven by LastStand orchestrator)
+  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') return; } catch {}
     const minutes = gameTime / 60;
     // Auto-unlock elites 30s into the run (no boss gate required)
     if (!this.elitesUnlocked && gameTime >= 30) {
@@ -5502,6 +5716,10 @@ export class EnemyManager {
       }
     }
 
+    // If dynamic spawns are disabled (e.g., Last Stand), skip autonomous enemy spawns
+    if ((this as any).__disableDynamicSpawns) {
+      this.spawnBudgetCarry = 0; // drain budget to avoid buildup
+    } else {
     // Spend accumulated budget spawning enemies by cost weight
     let safety = 20; // safety cap per tick to avoid infinite loops
     while (this.spawnBudgetCarry >= 1 && safety-- > 0) {
@@ -5561,6 +5779,7 @@ export class EnemyManager {
       if (cost > this.spawnBudgetCarry) break; // wait for more budget next tick
       this.spawnBudgetCarry -= cost;
       this.spawnEnemy(type, gameTime, this.pickPattern(gameTime));
+    }
     }
   }
 

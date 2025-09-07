@@ -192,16 +192,19 @@ export class AssetLoader {
     const candidates: string[] = [];
     const pushUnique = (p: string) => { if (p && !candidates.includes(p)) candidates.push(p); };
     pushUnique(normalized);
-    // Variant: ensure single leading slash (for dev server publicDir)
-    pushUnique('/' + normalized.replace(/^\.*\//, '').replace(/^\/+/, ''));
+  // Variant: ensure single leading slash (for dev server publicDir)
+  pushUnique('/' + normalized.replace(/^\.*\//, '').replace(/^\/+/, ''));
     // Variant: without leading slash (relative)
     pushUnique(normalized.replace(/^\/+/, ''));
     // Variant: remove basePrefix if present
     if (AssetLoader.basePrefix) {
       pushUnique(normalized.replace(AssetLoader.basePrefix, ''));
     }
-    // Variant: add basePrefix if missing and path starts with assets
+    // Variant: add basePrefix if missing and path starts with assets or data
     if (!normalized.startsWith(AssetLoader.basePrefix) && /^(\.?\/)?assets\//.test(normalized)) {
+      pushUnique((AssetLoader.basePrefix || '') + '/' + normalized.replace(/^\.?\//, ''));
+    }
+    if (!normalized.startsWith(AssetLoader.basePrefix) && /^(\.?\/)?data\//.test(normalized)) {
       pushUnique((AssetLoader.basePrefix || '') + '/' + normalized.replace(/^\.?\//, ''));
     }
     // File protocol special-case: prefer './assets/...'
@@ -253,13 +256,19 @@ export class AssetLoader {
   public static normalizePath(p: string): string {
     if (typeof location === 'undefined') return p;
     if (location.protocol === 'file:') {
-      if (p.startsWith('/assets/')) return '.' + p; // '/assets/x.png' -> './assets/x.png'
-      if (p.startsWith('assets/')) return './' + p; // 'assets/x.png' -> './assets/x.png'
+      // Assets and data JSON under file protocol should resolve relatively
+      if (p.startsWith('/assets/')) return '.' + p; // '/assets/x' -> './assets/x'
+      if (p.startsWith('assets/')) return './' + p; // 'assets/x' -> './assets/x'
+      if (p.startsWith('/data/')) return '.' + p; // '/data/x' -> './data/x'
+      if (p.startsWith('data/')) return './' + p; // 'data/x' -> './data/x'
       return p;
     }
     // http(s) hosting – inject basePrefix if path starts at root /assets
+    // Apply the same logic for JSON/config under /data
     if (p.startsWith('/assets/')) return AssetLoader.basePrefix + p; // '' or '/cs' prefix
     if (p.startsWith('assets/')) return AssetLoader.basePrefix + '/' + p; // relative form
+    if (p.startsWith('/data/')) return AssetLoader.basePrefix + p;
+    if (p.startsWith('data/')) return AssetLoader.basePrefix + '/' + p;
     return p;
   }
 

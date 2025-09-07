@@ -24,6 +24,7 @@ export class RoomManager {
   private quad: number = 0; // rotate quadrant preference to spread distribution
   private corridors: { x: number; y: number; w: number; h: number; }[] = []; // axis-aligned corridor rectangles
   private deadEnds: { x: number; y: number; w: number; h: number; }[] = [];
+  private blockRects: { x: number; y: number; w: number; h: number; }[] = [];
   private lastPlayerRoomId: number = -1;
   private enforceCollision: boolean = true; // toggle-able if needed
   private wallThickness = 26; // thinner walls for more interior space
@@ -45,6 +46,7 @@ export class RoomManager {
     this.rooms.length = 0;
     this.corridors.length = 0;
     this.deadEnds.length = 0;
+  this.blockRects.length = 0;
   }
 
   /** Enable/disable open world (no structure, all walkable). */
@@ -52,6 +54,10 @@ export class RoomManager {
 
   public getRooms() { return this.rooms; }
   public getCorridors() { return this.corridors; }
+  public getBlockRects() { return this.blockRects; }
+  public addBlockRect(r: { x: number; y: number; w: number; h: number; }) { this.blockRects.push(r); }
+  public addBlockRects(rs: { x: number; y: number; w: number; h: number; }[]) { for (const r of rs) this.blockRects.push(r); }
+  public clearBlockRects() { this.blockRects.length = 0; }
   public setCollisionEnabled(on: boolean) { this.enforceCollision = on; }
   public getLastPlayerRoomId() { return this.lastPlayerRoomId; }
   /** Project arbitrary point into nearest walkable interior (used when we lack previous position). */
@@ -198,6 +204,14 @@ export class RoomManager {
 
   private isWalkable(x: number, y: number, radius: number): boolean {
   if (this.openWorld) return true;
+    // Global blockers: treat as solid rectangles; block if circle (x,y,radius) overlaps any
+    for (let i=0;i<this.blockRects.length;i++) {
+      const b = this.blockRects[i];
+      const cx = Math.max(b.x, Math.min(x, b.x + b.w));
+      const cy = Math.max(b.y, Math.min(y, b.y + b.h));
+      const dx = x - cx; const dy = y - cy;
+      if ((dx*dx + dy*dy) < (radius*radius)) return false;
+    }
     const rRad = radius;
     // Rooms (interior minus wall thickness OR inside door opening strip)
     for (let i=0;i<this.rooms.length;i++) {

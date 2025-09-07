@@ -36,8 +36,8 @@ export class Cinematic {
   private duration: number = 900; // 15 seconds at 60fps
   // Cached skip button rect (logical space) for reliable hit detection
   private skipRect = { x:32, y:0, w:120, h:44 };
-  private mode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN';
-  private scripts: Record<'SHOWDOWN' | 'DUNGEON', Array<{ title: string; subtitle: string | null }>> = {
+  private mode: 'SHOWDOWN' | 'DUNGEON' | 'LAST_STAND' = 'SHOWDOWN';
+  private scripts: Record<'SHOWDOWN' | 'DUNGEON' | 'LAST_STAND', Array<{ title: string; subtitle: string | null }>> = {
     SHOWDOWN: [
       { title: 'SHOWDOWN PROTOCOL', subtitle: 'Open-sector engagement initiated.' },
       { title: 'NO WALLS • NO SANCTUARY', subtitle: 'An endless neon expanse. Hostiles can vector from any bearing.' },
@@ -49,6 +49,12 @@ export class Cinematic {
       { title: 'SEGMENTED HALL NETWORK', subtitle: 'Procedural rooms. Choke points. Ambush geometry favored.' },
       { title: 'ENEMY FABRICATORS ACTIVE', subtitle: 'Clear sectors, push deeper. Data shards fund survival.' },
       { title: 'OVERRIDE THE CORE', subtitle: 'Advance. Isolate. Erase rogue sub-AIs.' }
+    ],
+    LAST_STAND: [
+      { title: 'LAST STAND INITIATED', subtitle: 'A defense Core anchors the corridor. Keep it online.' },
+      { title: 'RIGHT-FLANK THREAT VECTOR', subtitle: 'Waves will drive from the east. Shape the kill lane.' },
+      { title: 'FORTIFY THE LINE', subtitle: 'Place turrets on neon pads. Buy palisades to hold the choke.' },
+      { title: 'SURVIVE THE ONSLAUGHT', subtitle: 'Shops open between waves. Spend scrap to escalate.' }
     ]
   };
 
@@ -76,7 +82,7 @@ export class Cinematic {
     this.progress = 0;
     this.active = true;
     if (typeof modeOrCb === 'string') {
-      this.mode = (modeOrCb === 'DUNGEON' ? 'DUNGEON' : 'SHOWDOWN');
+      this.mode = (modeOrCb === 'DUNGEON' ? 'DUNGEON' : modeOrCb === 'LAST_STAND' ? 'LAST_STAND' : 'SHOWDOWN');
       this.onComplete = maybeCb || null;
     } else {
       // legacy signature

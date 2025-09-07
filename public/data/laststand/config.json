@@ -1,0 +1,14 @@
+{
+  "core": {
+    "sprite": "/assets/core/core_1.png",
+  "scale": 0.43,
+  "rotationMul": 1.1,
+  "spinSpeed": 0.02,
+  "blur": 0.8,
+    "fx": {
+      "ring": true,
+      "pulses": true,
+      "sparks": true
+    }
+  }
+}

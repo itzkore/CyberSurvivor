@@ -27,7 +27,7 @@ export class MainMenu {
   private matrixDrops?: number[];
   private _matrixChars?: string[];
   private playerProfile: PlayerProfile;
-  private selectedMode: 'SHOWDOWN' | 'DUNGEON' = 'SHOWDOWN';
+  private selectedMode: 'SHOWDOWN' | 'DUNGEON' | 'LAST_STAND' = 'SHOWDOWN';
   private authUnsub?: () => void;
   private authUser: import('../auth/AuthService').GoogleUserProfile | null = null;
   private incrementalEntries: any[] = [];
@@ -37,10 +37,28 @@ export class MainMenu {
   // Player id is always the Google account id; no local fallback
   // Read dynamically from googleAuthService when needed
   private currentBoard: string = 'global';
+  private currentLbMode: 'LAST_STAND'|'SHOWDOWN'|'DUNGEON' = 'LAST_STAND';
+  // Each mode keeps its own period (board) selection; defaults to global
+  private lbModePeriod: Record<'LAST_STAND'|'SHOWDOWN'|'DUNGEON', string> = {
+    LAST_STAND: 'global',
+    SHOWDOWN: 'global',
+    DUNGEON: 'global'
+  };
   /** Patch notes for current day only (auto-dated). Newest entries first in array. */
   private patchNotesHistory: { version: string; date: string; entries: { tag: 'NEW'|'UI'|'BAL'|'FX'|'QOL'|string; text: string }[] }[] = (() => {
     // Use fixed release dates per version to avoid showing the same date for all entries
     return [
+      {
+        version: '0.5.0',
+        date: new Date().toISOString().slice(0,10),
+        entries: [
+          { tag: 'NEW', text: 'Last Stand Mode — defend the Core through escalating waves with a shop between rounds and turret placements.' },
+          { tag: 'NEW', text: 'Evolutions — weapon evolution gating and upgrades, with clear requirements and Codex docs.' },
+          { tag: 'SYS', text: 'Fog of War — visibility-restricted targeting and damage in Last Stand; no shooting into the dark.' },
+          { tag: 'NEW', text: 'New Passives — classic upgrades added to LS shop (Damage, Fire Rate, Crit, Area, Speed, Max HP, Magnet, Vision).'},
+          { tag: 'BAL', text: 'Elites — deterministic schedule, per‑kind cooldowns, and guaranteed elite presence in elite waves.' }
+        ]
+      },
       {
         version: '0.4.1',
         date: '2025-08-31',
@@ -307,7 +325,7 @@ export class MainMenu {
         <header class="mm-header">
           <div class="logo-block">
             <div class="logo-main">CYBER<span>SURVIVOR</span></div>
-            <div class="version-tag">v0.4.1 — PATCH NOTES</div>
+            <div class="version-tag">v0.5.0 — PATCH NOTES</div>
           </div>
           <div class="profile-block">
             <div class="currency-display compact">
@@ -338,8 +356,9 @@ export class MainMenu {
             <div class="mode-select-block">
               <label for="game-mode-select">MODE</label>
               <select id="game-mode-select" class="mode-select">
-                <option value="SHOWDOWN" selected>Showdown (Open)</option>
+                <option value="SHOWDOWN">Showdown (Open)</option>
                 <option value="DUNGEON">Dungeon (Rooms)</option>
+                <option value="LAST_STAND" selected>Last Stand (Waves)</option>
               </select>
               <div id="mode-desc" class="mode-desc"></div>
             </div>
@@ -384,7 +403,12 @@ export class MainMenu {
           </section>
           <section class="panel right highscores-panel wide2" id="highscores-panel">
             <div class="hs-header" id="hs-title">HIGHSCORES</div>
-            <div class="hs-board-select" style="margin:4px 0 6px;display:flex;gap:4px;flex-wrap:wrap">
+            <div class="hs-mode-tabs" id="hs-mode-tabs" style="display:flex;gap:6px;margin:4px 0 6px;flex-wrap:wrap">
+              <button class="nav-btn mini" data-mode="LAST_STAND">Last Stand</button>
+              <button class="nav-btn mini" data-mode="SHOWDOWN">Showdown</button>
+              <button class="nav-btn mini" data-mode="DUNGEON">Dungeon</button>
+            </div>
+            <div class="hs-board-select" id="hs-period-tabs" style="margin:2px 0 6px;display:flex;gap:4px;flex-wrap:wrap">
               <button class="nav-btn mini" data-board="global" style="padding:3px 6px;font-size:11px">Global</button>
               <button class="nav-btn mini" data-board="daily:auto" style="padding:3px 6px;font-size:11px">Daily</button>
               <button class="nav-btn mini" data-board="weekly:auto" style="padding:3px 6px;font-size:11px">Weekly</button>
@@ -618,15 +642,15 @@ export class MainMenu {
     #main-menu .main-menu-shell{position:relative}
     #main-menu .matrix-bg-overlay{position:absolute;inset:0;background:radial-gradient(circle at 50% 40%, #062025 0%, #020a0c 80%);z-index:0;pointer-events:none}
     .mm-header,.mm-main{position:relative;z-index:1}
-  .mm-topbar{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;gap:12px;padding:6px 8px;pointer-events:auto;z-index:20}
+  .mm-topbar{position:fixed;left:0;right:0;top:0;display:flex;justify-content:center;align-items:center;gap:12px;padding:6px 8px;pointer-events:auto;z-index:18}
   /* Radio unit */
-  .radio-unit{display:flex;align-items:center;gap:6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:4px 8px;border-radius:10px;width:640px;height:32px}
+  .radio-unit{display:flex;align-items:center;gap:6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,25,38,0.32);backdrop-filter:blur(4px);padding:4px 6px;border-radius:8px;width:600px;height:32px}
   .radio-unit .ru-btn{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:22px;border-radius:6px;border:1px solid rgba(0,255,255,0.45);background:rgba(0,45,60,0.35);color:#b8faff;cursor:pointer;font-size:12px;line-height:1;user-select:none}
   .radio-unit .ru-btn:hover{background:rgba(0,80,100,0.45);box-shadow:0 0 10px rgba(0,255,255,0.25) inset}
-  .radio-unit .ru-title{font-size:12px;color:#9adfff;width:360px;white-space:nowrap;overflow:hidden;position:relative}
+  .radio-unit .ru-title{font-size:12px;color:#9adfff;width:260px;white-space:nowrap;overflow:hidden;position:relative}
   .radio-unit .ru-title .scroll{display:inline-block;padding-left:100%;animation: ru-marquee 12s linear infinite}
   @keyframes ru-marquee{from{transform:translateX(0)}to{transform:translateX(-100%)}}
-  .radio-unit #ru-volume{appearance:none;width:120px;height:4px;background:rgba(0,255,255,0.25);border-radius:3px;outline:none;margin-left:6px}
+  .radio-unit #ru-volume{appearance:none;width:90px;height:4px;background:rgba(0,255,255,0.25);border-radius:3px;outline:none;margin-left:6px}
   .radio-unit #ru-volume::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:#26ffe9;border:1px solid rgba(0,255,255,0.7);box-shadow:0 0 8px rgba(38,255,233,0.45)}
   
   /* Radio unit */
@@ -646,6 +670,10 @@ export class MainMenu {
   .nav-panel .nav-buttons{display:flex;flex-direction:column;gap:10px;margin-top:14px}
   .nav-panel .main-cta{font-size:18px}
   .nav-panel .nav-btn{font-size:14px}
+  /* Mode select dark theme for readability */
+  .mode-select-block label{color:#9adfff}
+  #game-mode-select.mode-select{appearance:auto;background:rgba(0,25,38,0.8);color:#b8faff;border:1px solid rgba(0,255,255,0.35);border-radius:6px;padding:6px}
+  #game-mode-select.mode-select option{background:#06212a;color:#b8faff}
   .patch-notes-container{margin-top:16px;flex:1 1 auto;display:flex;flex-direction:column;border:1px solid rgba(0,255,255,0.28);background:rgba(0,25,38,0.28);backdrop-filter:blur(4px);padding:10px 10px 8px;min-height:160px;overflow:auto;position:relative}
   .patch-notes-container:before{content:'';position:absolute;inset:0;pointer-events:none;box-shadow:0 0 12px rgba(0,255,255,0.12) inset}
   .pn-header{font-size:18px;letter-spacing:1.2px;font-weight:700;margin-bottom:8px;color:#5EEBFF;text-shadow:0 0 6px #0ff}
@@ -749,13 +777,32 @@ export class MainMenu {
   .mode-tags{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}
   .mode-tag{font-size:9.5px;padding:3px 6px;border:1px solid rgba(0,255,255,0.35);background:rgba(0,255,255,0.08);border-radius:4px;letter-spacing:.5px;color:#9adfff}
     /* Highscores strict table */
-  .highscores-panel .hs-table{display:grid;grid-template-columns:50px 1fr 120px 90px 110px 54px 80px;align-items:center;gap:0;font-size:14px;border-top:1px solid rgba(0,255,255,0.25);border-left:1px solid rgba(0,255,255,0.15)}
+  .highscores-panel .hs-table{display:grid;align-items:center;gap:0;font-size:14px;border-top:1px solid rgba(0,255,255,0.25);border-left:1px solid rgba(0,255,255,0.15)}
+  /* Standard modes: rank | name | op | time | kills | lvl | dps */
+  .highscores-panel .hs-table.std{grid-template-columns:50px 1fr 120px 90px 110px 54px 80px}
+  /* Last Stand: rank | name | op | waves | kills */
+  .highscores-panel .hs-table.ls{grid-template-columns:50px 1fr 120px 90px 110px}
       .highscores-panel .hs-row{display:contents}
     .highscores-panel .hs-head span{font-weight:700;color:#5EEBFF;text-shadow:0 0 5px #0ff;font-size:13px;background:rgba(0,255,255,0.08);backdrop-filter:blur(2px)}
       .highscores-panel .hs-cell{padding:6px 8px;border-right:1px solid rgba(0,255,255,0.15);border-bottom:1px solid rgba(0,255,255,0.15);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
       .highscores-panel .hs-row.data:hover .hs-cell{background:rgba(0,255,255,0.08)}
       .highscores-panel .hs-row.me .hs-cell{background:rgba(0,160,255,0.28);box-shadow:0 0 6px #00cfff inset}
     .highscores-panel .hs-empty{opacity:.65;font-size:13px;margin-top:6px;text-align:center}
+  /* Epic cyber tabs for mode selector */
+  .hs-mode-tabs{position:relative;gap:8px;padding:8px 10px;border:1px solid rgba(0,255,255,0.25);border-radius:10px;background:linear-gradient(180deg,rgba(0,30,40,0.65),rgba(0,14,22,0.55));box-shadow:inset 0 0 12px rgba(0,255,255,0.08),0 0 12px rgba(0,255,255,0.08)}
+  .hs-mode-tabs:before{content:'';position:absolute;inset:-1px;border-radius:12px;pointer-events:none;box-shadow:0 0 16px rgba(0,255,255,0.12)}
+  .hs-mode-tabs .nav-btn.mini{position:relative;isolation:isolate;min-width:140px;justify-content:center;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:#9fefff;border:1px solid rgba(0,255,255,0.35);border-radius:8px;background:linear-gradient(180deg,rgba(0,65,80,0.35),rgba(0,25,38,0.35));box-shadow:0 0 0 rgba(0,255,255,0);transition:transform .15s ease,box-shadow .25s ease,filter .25s ease,border-color .25s ease}
+  .hs-mode-tabs .nav-btn.mini:hover{filter:brightness(1.08);border-color:rgba(0,255,255,0.55);box-shadow:0 0 10px rgba(0,255,255,0.18)}
+  .hs-mode-tabs .nav-btn.mini:before{content:'';position:absolute;inset:-1px;border-radius:9px;background:linear-gradient(180deg,rgba(94,235,255,0.18),rgba(0,0,0,0));opacity:.0;transition:opacity .2s ease;pointer-events:none}
+  .hs-mode-tabs .nav-btn.mini:hover:before{opacity:.5}
+  .hs-mode-tabs .nav-btn.mini.active{color:#001820;background:linear-gradient(180deg,#5EEBFF,#32b7c9);border-color:#5EEBFF;box-shadow:0 0 18px rgba(0,255,255,0.45),0 0 32px rgba(50,183,201,0.35);text-shadow:0 0 10px rgba(0,0,0,0.35)}
+  .hs-mode-tabs .nav-btn.mini.active:after{content:'';position:absolute;left:12px;right:12px;bottom:-4px;height:3px;border-radius:3px;background:radial-gradient(ellipse at center,rgba(94,235,255,0.85) 0,rgba(94,235,255,0) 70%);filter:blur(.2px)}
+  @keyframes tabPulse{0%{box-shadow:0 0 14px rgba(0,255,255,0.28),0 0 28px rgba(50,183,201,0.22)}100%{box-shadow:0 0 18px rgba(0,255,255,0.44),0 0 36px rgba(50,183,201,0.30)}}
+  .hs-mode-tabs .nav-btn.mini.active{animation:tabPulse 2.2s ease-in-out infinite alternate}
+  /* Period selector: clearer active state to match theme */
+  #hs-period-tabs .nav-btn.mini{border:1px solid rgba(0,255,255,0.28);background:rgba(0,25,38,0.35);color:#b8faff;border-radius:6px;transition:filter .15s ease,border-color .2s ease}
+  #hs-period-tabs .nav-btn.mini:hover{filter:brightness(1.08);border-color:rgba(0,255,255,0.5)}
+  #hs-period-tabs .nav-btn.mini.active{color:#001820;background:linear-gradient(180deg,#44d8ee,#1aa0b8);border-color:#5EEBFF;box-shadow:0 0 12px rgba(0,255,255,0.35)}
     /* Operative select readable theme */
     #hs-op-select{background:rgba(0,25,38,0.8);color:#b8faff;border:1px solid rgba(0,255,255,0.35);border-radius:4px}
     #hs-op-select option{background:#06212a;color:#b8faff}
@@ -796,12 +843,35 @@ export class MainMenu {
     // Initial load should be non-silent so user gets feedback if empty/error
     this.refreshHighScores(false);
     // Board selector events
-    this.mainMenuElement.querySelectorAll('.hs-board-select [data-board]')
+    this.mainMenuElement.querySelectorAll('#hs-period-tabs [data-board]')
       .forEach(btn => btn.addEventListener('click', (e) => {
         const b = (e.currentTarget as HTMLElement).getAttribute('data-board') || 'global';
         this.currentBoard = b;
+        // Remember per-mode selection
+        this.lbModePeriod[this.currentLbMode] = b;
+        // update active state
+        this.mainMenuElement?.querySelectorAll('#hs-period-tabs [data-board]')?.forEach(el => (el as HTMLElement).classList.toggle('active', (el as HTMLElement).getAttribute('data-board') === b));
         this.refreshHighScores(true); // silent to preserve current table until new data arrives
       }));
+    // Mode tabs events
+    this.mainMenuElement.querySelectorAll('#hs-mode-tabs [data-mode]')
+      .forEach(btn => btn.addEventListener('click', (e) => {
+        const m = (e.currentTarget as HTMLElement).getAttribute('data-mode') as any;
+        if (!m) return;
+        this.currentLbMode = m;
+        // Pull this mode's period selection and sync UI active state
+        const b = this.lbModePeriod[this.currentLbMode] || 'global';
+        this.currentBoard = b;
+        this.mainMenuElement?.querySelectorAll('#hs-mode-tabs [data-mode]')?.forEach(el => (el as HTMLElement).classList.toggle('active', (el as HTMLElement).getAttribute('data-mode') === m));
+        this.mainMenuElement?.querySelectorAll('#hs-period-tabs [data-board]')?.forEach(el => (el as HTMLElement).classList.toggle('active', (el as HTMLElement).getAttribute('data-board') === b));
+        this.refreshHighScores(true);
+      }));
+    // Set initial active
+    this.mainMenuElement?.querySelectorAll('#hs-mode-tabs [data-mode]')?.forEach(el => (el as HTMLElement).classList.toggle('active', (el as HTMLElement).getAttribute('data-mode') === this.currentLbMode));
+    {
+      const b = this.lbModePeriod[this.currentLbMode] || 'global';
+      this.mainMenuElement?.querySelectorAll('#hs-period-tabs [data-board]')?.forEach(el => (el as HTMLElement).classList.toggle('active', (el as HTMLElement).getAttribute('data-board') === b));
+    }
     // Populate operative filter select
     const opSel = document.getElementById('hs-op-select') as HTMLSelectElement | null;
     if (opSel) {
@@ -910,6 +980,20 @@ export class MainMenu {
       if (!this.mainMenuElement || this.mainMenuElement.style.display === 'none') return;
       if ((e.key === 'ArrowLeft' || e.key === 'Left') && !e.altKey && !e.ctrlKey && !e.metaKey) { this.cycleOperative(-1); }
       else if ((e.key === 'ArrowRight' || e.key === 'Right') && !e.altKey && !e.ctrlKey && !e.metaKey) { this.cycleOperative(+1); }
+      else if ((e.key === 'l' || e.key === 'L') && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        // Quick start Last Stand without sign-in when on main menu
+        if (!this.gameInstance?.selectedCharacterData) { this.showCharacterSelect(); return; }
+        SoundManager.playUiClick({ volume: 0.16, durationMs: 90, freq: 1120 });
+        const menuRoot = document.getElementById('main-menu-adaptive');
+        if (menuRoot && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          (menuRoot as HTMLElement).style.transition = 'opacity .35s ease';
+          (menuRoot as HTMLElement).style.opacity = '0';
+        }
+        setTimeout(() => {
+          this.hide();
+          window.dispatchEvent(new CustomEvent('startGame', { detail: { character: this.gameInstance.selectedCharacterData, mode: 'LAST_STAND' } }));
+        }, 350);
+      }
     });
 
     // Listen for character selection
@@ -936,11 +1020,15 @@ export class MainMenu {
     const modeDesc = document.getElementById('mode-desc');
     const updateDesc = () => {
       if (!modeSelect || !modeDesc) return;
-      const v = modeSelect.value as 'SHOWDOWN' | 'DUNGEON';
+      const v = modeSelect.value as 'SHOWDOWN' | 'DUNGEON' | 'LAST_STAND';
       this.selectedMode = v;
-      modeDesc.textContent = v === 'SHOWDOWN'
-        ? 'Showdown: Vast open cyber expanse. No walls; enemies can surround from any direction.'
-        : 'Dungeon: Procedurally linked rooms & corridors; funnel enemies and control routes.';
+      if (v === 'SHOWDOWN') {
+        modeDesc.textContent = 'Showdown: Vast open cyber expanse. No walls; enemies can surround from any direction.';
+      } else if (v === 'DUNGEON') {
+        modeDesc.textContent = 'Dungeon: Procedurally linked rooms & corridors; funnel enemies and control routes.';
+      } else {
+        modeDesc.textContent = 'Last Stand: Wave defense with shop breaks. Earn scrap, buy turrets, survive as long as possible.';
+      }
       // Mode info panel removed; description only
     };
     if (modeSelect) {
@@ -1474,23 +1562,52 @@ export class MainMenu {
       return;
     }
   const selectedOp = (document.getElementById('hs-op-select') as HTMLSelectElement | null)?.value || '';
-    const modeSelect = document.getElementById('game-mode-select') as HTMLSelectElement | null;
-    const mode = modeSelect?.value || 'SHOWDOWN';
+    const mode = this.currentLbMode || 'LAST_STAND';
+    const isLS = mode === 'LAST_STAND';
     const titleEl = document.getElementById('hs-title');
     if (titleEl) titleEl.textContent = 'HIGHSCORES';
-  if (!silent && !remotePanel.hasAttribute('data-hash')) remotePanel.innerHTML = '<div class="hs-empty">Loading…</div>';
+  // Detect view switch (mode/period/op) and clear panel immediately to avoid carry-over visuals
+    const viewKey = `${mode}|${this.currentBoard}|${selectedOp||'all'}`;
+    const prevViewKey = (remotePanel as HTMLElement).getAttribute('data-viewkey') || '';
+    const justSwitchedView = prevViewKey !== viewKey;
+    if (justSwitchedView) {
+      (remotePanel as HTMLElement).setAttribute('data-viewkey', viewKey);
+      (remotePanel as HTMLElement).removeAttribute('data-hash');
+      remotePanel.innerHTML = '<div class="hs-empty">Loading…</div>';
+    } else if (!silent && !remotePanel.hasAttribute('data-hash')) {
+      remotePanel.innerHTML = '<div class="hs-empty">Loading…</div>';
+    }
     try {
   const target = this.currentBoard;
   const { board } = resolveBoard(target);
-  const finalBoard = selectedOp ? `${board}:op:${selectedOp}` : board;
-  const top = await fetchTop(finalBoard, 10, 0).catch(()=>fetchTop(board,10,0));
-  // Enforce descending ordering by timeSec (defensive if backend ever returns unsorted)
-  const sorted = [...top].sort((a,b)=> (b.timeSec||0) - (a.timeSec||0));
+  const baseBoardMode = `${board}:mode:${mode}`;
+  const finalBoardMode = selectedOp ? `${baseBoardMode}:op:${selectedOp}` : baseBoardMode;
+  let usingLegacy = false;
+  let baseBoard = baseBoardMode;
+  let finalBoard = finalBoardMode;
+  let sorted = await fetchTop(finalBoard, 10, 0).catch(()=>fetchTop(baseBoardMode,10,0));
+  if ((!sorted || sorted.length === 0) && mode === 'SHOWDOWN') {
+    // Fallback to legacy (unscoped) boards for historical Showdown scores
+    const legacyBase = board; // no :mode suffix
+    const legacyFinal = selectedOp ? `${legacyBase}:op:${selectedOp}` : legacyBase;
+    const legacySorted = await fetchTop(legacyFinal, 10, 0).catch(()=>fetchTop(legacyBase,10,0));
+    if (legacySorted && legacySorted.length) {
+      usingLegacy = true;
+      baseBoard = legacyBase;
+      finalBoard = legacyFinal;
+      sorted = legacySorted;
+    }
+  }
+  // For Last Stand/Dungeon: only show entries that passed strict meta validation
+  if (mode === 'LAST_STAND' || mode === 'DUNGEON') {
+    const filtered = (sorted || []).filter(e => (e as any).__metaOk === true);
+    sorted = filtered.length ? filtered : [];
+  }
   // Try to complete missing run details by probing exact per-operative boards for the same time
   {
     const needsDetails = sorted.filter(e => !e.characterId || e.kills == null || e.level == null || (e as any).maxDps == null);
     if (needsDetails.length) {
-      const cache = new Map<string, any>(); // key: perBoard|playerId
+  const cache = new Map<string, any>(); // key: perBoard|playerId
       const charIds = CHARACTERS.map(c=>c.id);
       // Allow enough probes to resolve all visible rows, but keep a hard cap
       const MAX_PROBES = Math.min(200, charIds.length * needsDetails.length);
@@ -1504,15 +1621,16 @@ export class MainMenu {
         cache.set(key, v);
         return v;
       };
-      for (let i = 0; i < needsDetails.length && probes < MAX_PROBES; i++) {
+  for (let i = 0; i < needsDetails.length && probes < MAX_PROBES; i++) {
         const row = needsDetails[i];
         // Build candidate char list: if we already have a char, try that first; otherwise try all
         const candidates = row.characterId ? [row.characterId, ...charIds.filter(id=>id!==row.characterId)] : charIds;
         if (selectedOp) {
-          // Per-operative view: only probe the selected one
-          const perBoard = `${board}:op:${selectedOp}`;
+          // Per-operative view: only probe the selected one (mode-scoped)
+          const perBoard = `${baseBoard}:op:${selectedOp}`;
           const pe = await tryProbe(perBoard, row.playerId);
-          if (pe && pe.timeSec === row.timeSec) {
+          const match = isLS ? ((pe as any)?.waves != null && (pe as any).waves === (row as any).waves) : (pe && pe.timeSec === row.timeSec);
+          if (pe && match) {
             row.characterId = selectedOp;
             if (row.kills == null && pe.kills != null) row.kills = pe.kills;
             if (row.level == null && pe.level != null) row.level = pe.level;
@@ -1520,9 +1638,10 @@ export class MainMenu {
           }
         } else {
           for (let c = 0; c < candidates.length && probes < MAX_PROBES; c++) {
-            const perBoard = `${board}:op:${candidates[c]}`;
+            const perBoard = `${baseBoard}:op:${candidates[c]}`;
             const pe = await tryProbe(perBoard, row.playerId);
-            if (pe && pe.timeSec === row.timeSec) {
+            const match = isLS ? ((pe as any)?.waves != null && (pe as any).waves === (row as any).waves) : (pe && pe.timeSec === row.timeSec);
+            if (pe && match) {
               row.characterId = candidates[c];
               if (row.kills == null && pe.kills != null) row.kills = pe.kills;
               if (row.level == null && pe.level != null) row.level = pe.level;
@@ -1541,49 +1660,69 @@ export class MainMenu {
         const s=(t%60).toString().padStart(2,'0');
         return m+':'+s;
       };
-  if (sorted.length) {
-    const header = `<div class='hs-table'>
+  const header = isLS
+      ? `<div class='hs-table ls'>
           <div class='hs-row hs-head'>
             <span class='hs-cell rank'>#</span>
             <span class='hs-cell nick'>NAME</span>
-      <span class='hs-cell op'>OPERATIVE</span>
+            <span class='hs-cell op'>OPERATIVE</span>
+            <span class='hs-cell time'>WAVES</span>
+            <span class='hs-cell kills'>Kills</span>
+          </div>`
+      : `<div class='hs-table std'>
+          <div class='hs-row hs-head'>
+            <span class='hs-cell rank'>#</span>
+            <span class='hs-cell nick'>NAME</span>
+            <span class='hs-cell op'>OPERATIVE</span>
             <span class='hs-cell time'>TIME</span>
             <span class='hs-cell kills'>Kills</span>
             <span class='hs-cell lvl'>Lv</span>
             <span class='hs-cell dps'>DPS</span>
           </div>`;
-          const bodyHtml = sorted.map((e,i) => {
-          const timeSec = e.timeSec || 1;
-          const kills = e.kills ?? 0;
-          // Approx DPS estimation: (kills * avgDamagePerKill) / time; assume 50 dmg per kill fallback
-          const estDps = Math.round((kills * 50) / timeSec);
-          const maxDps = (e as any).maxDps as number | undefined;
-          const dps = (typeof maxDps === 'number' && isFinite(maxDps)) ? Math.round(maxDps) : estDps;
-          // Operative name strictly from the entry metadata (or per-op board); no UI fallback
-          const opLabel = this.opName((e as any).characterId);
-          return `<div class='hs-row data ${e.playerId===me?'me':''}'>
-            <span class='hs-cell rank'>${i+1}</span>
-            <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
-            <span class='hs-cell op'>${opLabel}</span>
-            <span class='hs-cell time'>${fmt(e.timeSec)}</span>
-            <span class='hs-cell kills'>${kills}</span>
-            <span class='hs-cell lvl'>${e.level ?? '-'}</span>
-            <span class='hs-cell dps'>${isFinite(dps)?dps:'-'}</span>
-          </div>`;}).join('');
-        let tableHtml = header + bodyHtml + '</div>';
+  if (sorted.length) {
+    const bodyHtml = sorted.map((e,i) => {
+      const timeSec = e.timeSec || 1;
+      const kills = e.kills ?? 0;
+      const estDps = Math.round((kills * 50) / Math.max(1,timeSec));
+      const maxDps = (e as any).maxDps as number | undefined;
+      const dps = (typeof maxDps === 'number' && isFinite(maxDps)) ? Math.round(maxDps) : estDps;
+      const opLabel = this.opName((e as any).characterId);
+      if (isLS) {
+        const waves = (e as any).waves ?? 0;
+        return `<div class='hs-row data ${e.playerId===me?'me':''}'>
+          <span class='hs-cell rank'>${i+1}</span>
+          <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
+          <span class='hs-cell op'>${opLabel}</span>
+          <span class='hs-cell time'>${waves}</span>
+          <span class='hs-cell kills'>${kills}</span>
+        </div>`;
+      }
+      return `<div class='hs-row data ${e.playerId===me?'me':''}'>
+        <span class='hs-cell rank'>${i+1}</span>
+        <span class='hs-cell nick'>${sanitizeName(e.name)}</span>
+        <span class='hs-cell op'>${opLabel}</span>
+        <span class='hs-cell time'>${fmt(e.timeSec)}</span>
+        <span class='hs-cell kills'>${kills}</span>
+        <span class='hs-cell lvl'>${e.level ?? '-'}</span>
+        <span class='hs-cell dps'>${isFinite(dps)?dps:'-'}</span>
+      </div>`;
+    }).join('');
+    let tableHtml = header + bodyHtml + '</div>';
         // If I'm not in visible list, append my row (will be appended again later if not careful)
         // We'll defer own-rank fetch below to preserve accuracy, not here.
         const newHtml = tableHtml; // already closed
-  const hash = `${selectedOp||'all'}|` + sorted.map(e=>`${e.playerId}:${e.timeSec}:${e.kills}:${e.level}:${(e as any).maxDps ?? ''}:${e.characterId ?? ''}`).join('|');
+  const hash = `${selectedOp||'all'}|${mode}|${usingLegacy?'legacy':'scoped'}|` + sorted.map(e=>`${e.playerId}:${(e as any).waves ?? e.timeSec}:${e.kills}:${e.level}:${(e as any).maxDps ?? ''}:${e.characterId ?? ''}`).join('|');
         const prevHash = (remotePanel as HTMLElement).getAttribute('data-hash');
-        if (prevHash !== hash) {
+        // Guard against out-of-order updates from a previous view
+        const currentViewKey = (remotePanel as HTMLElement).getAttribute('data-viewkey');
+        if (currentViewKey === viewKey && prevHash !== hash) {
           remotePanel.innerHTML = newHtml;
           remotePanel.setAttribute('data-hash', hash);
         }
         // If I'm not in the visible list, append own real rank from backend (may be >10)
   if (me && !sorted.some(e=>e.playerId===me)) {
           try {
-      const meEntry = await fetchPlayerEntry(finalBoard, me) || await fetchPlayerEntry(board, me); // uses backend rank ordering
+  const meEntry = await fetchPlayerEntry(finalBoard, me) || await fetchPlayerEntry(baseBoard, me); // uses backend rank ordering
             if (meEntry && meEntry.rank > 10) {
               const timeSec = meEntry.timeSec || 1;
               const kills = meEntry.kills ?? 0;
@@ -1592,24 +1731,44 @@ export class MainMenu {
               // Append inside existing table just before closing tag
               const table = remotePanel.querySelector('.hs-table');
               if (table) {
-                (table as HTMLElement).insertAdjacentHTML('beforeend', `<div class='hs-row data me'>
-                <span class='hs-cell rank'>${meEntry.rank}</span>
-                <span class='hs-cell nick'>${sanitizeName(meEntry.name)}</span>
-                <span class='hs-cell op'>${this.opName(meEntry.characterId)}</span>
-                <span class='hs-cell time'>${fmt(meEntry.timeSec)}</span>
-                <span class='hs-cell kills'>${kills}</span>
-                <span class='hs-cell lvl'>${meEntry.level ?? '-'}</span>
-                <span class='hs-cell dps'>${isFinite(dps)?dps:'-'}</span>
-              </div>`);
+                const isLS2 = isLS;
+                if (isLS2) {
+                  const waves = (meEntry as any).waves ?? meEntry.timeSec;
+                  (table as HTMLElement).insertAdjacentHTML('beforeend', `<div class='hs-row data me'>
+                    <span class='hs-cell rank'>${meEntry.rank}</span>
+                    <span class='hs-cell nick'>${sanitizeName(meEntry.name)}</span>
+                    <span class='hs-cell op'>${this.opName(meEntry.characterId)}</span>
+                    <span class='hs-cell time'>${waves}</span>
+                    <span class='hs-cell kills'>${kills}</span>
+                  </div>`);
+                } else {
+                  (table as HTMLElement).insertAdjacentHTML('beforeend', `<div class='hs-row data me'>
+                    <span class='hs-cell rank'>${meEntry.rank}</span>
+                    <span class='hs-cell nick'>${sanitizeName(meEntry.name)}</span>
+                    <span class='hs-cell op'>${this.opName(meEntry.characterId)}</span>
+                    <span class='hs-cell time'>${fmt(meEntry.timeSec)}</span>
+                    <span class='hs-cell kills'>${kills}</span>
+                    <span class='hs-cell lvl'>${meEntry.level ?? '-'}</span>
+                    <span class='hs-cell dps'>${isFinite(dps)?dps:'-'}</span>
+                  </div>`);
+                }
               }
             }
           } catch {/* ignore own-rank errors */}
         }
       } else {
-        if (!silent) remotePanel.innerHTML = '<div class="hs-empty">No times.</div>';
+        // Show mode-specific header even when empty
+        const emptyHtml = header + '</div>' + '<div class="hs-empty">No scores yet for this mode.</div>';
+        const hash = `${selectedOp||'all'}|${mode}|${usingLegacy?'legacy':'scoped'}|empty`;
+        const currentViewKey = (remotePanel as HTMLElement).getAttribute('data-viewkey');
+        const prevHash = (remotePanel as HTMLElement).getAttribute('data-hash');
+        if (currentViewKey === viewKey && (justSwitchedView || !silent) && prevHash !== hash) {
+          remotePanel.innerHTML = emptyHtml;
+          (remotePanel as HTMLElement).setAttribute('data-hash', hash);
+        }
       }
     } catch (err) {
-      if (!silent) remotePanel.innerHTML = '<div class="hs-empty">Error loading.</div>';
+      if (justSwitchedView || !silent) remotePanel.innerHTML = '<div class="hs-empty">Error loading.</div>';
     }
   }
 

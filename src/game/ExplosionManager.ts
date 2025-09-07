@@ -43,7 +43,7 @@ export class ExplosionManager {
         const enemy = enemies[i];
         if (!enemy.active || enemy.hp <= 0) continue;
         const dx = enemy.x - x; const dy = enemy.y - y;
-  if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(enemy, scaledDamage, false, false, undefined, x, y, undefined, true);
+  if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(enemy, scaledDamage, false, false, undefined, x, y, undefined, true, 'PLAYER');
       }
     }
     // Also damage boss within blast radius
@@ -54,7 +54,7 @@ export class ExplosionManager {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (scaledRadius + rB) * (scaledRadius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y, undefined, true);
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y, undefined, true, 'PLAYER');
         }
       }
     } catch { /* ignore boss explosion errors */ }
@@ -103,7 +103,7 @@ export class ExplosionManager {
         const e = enemies[i];
         if (!e.active || e.hp <= 0) continue;
         const dx = e.x - x; const dy = e.y - y;
-  if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, scaledDamage, false, false, undefined, x, y, undefined, true);
+  if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, scaledDamage, false, false, undefined, x, y, undefined, true, 'PLAYER');
       }
     }
     // Also damage boss in the blast
@@ -114,7 +114,7 @@ export class ExplosionManager {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (radius + rB) * (radius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, scaledDamage, false, undefined, x, y, undefined, true);
+          (this.enemyManager as any).takeBossDamage?.(boss, scaledDamage, false, undefined, x, y, undefined, true, 'PLAYER');
         }
       }
     } catch { /* ignore boss explosion errors */ }
@@ -430,7 +430,7 @@ export class ExplosionManager {
       const r2 = finalRadius * finalRadius;
       for (let i=0;i<enemies.length;i++) {
         const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
-  const dx = e.x - x; const dy = e.y - y; if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage, false, false, undefined, x, y, undefined, true);
+  const dx = e.x - x; const dy = e.y - y; if (dx*dx + dy*dy <= r2) this.enemyManager.takeDamage(e, damage, false, false, undefined, x, y, undefined, true, 'PLAYER');
       }
     }
     // Boss in plasma detonation radius
@@ -441,7 +441,7 @@ export class ExplosionManager {
         const dxB = (boss.x ?? 0) - x; const dyB = (boss.y ?? 0) - y;
         const rB = (boss.radius || 160);
         if (dxB*dxB + dyB*dyB <= (finalRadius + rB) * (finalRadius + rB)) {
-          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y, undefined, true);
+          (this.enemyManager as any).takeBossDamage?.(boss, damage, false, undefined, x, y, undefined, true, 'PLAYER');
         }
       }
     } catch { /* ignore boss plasma errors */ }

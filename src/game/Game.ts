@@ -23,6 +23,7 @@ import { VideoOverlay } from '../ui/VideoOverlay';
 import { DebugOverlay } from '../ui/DebugOverlay';
 import { FogOfWarSystem } from '../systems/FogOfWarSystem';
 import { LastStandGameMode } from './modes/last-stand';
+import { lastStandData, loadJSON } from './modes/config-loader';
 
 export class Game {
   /**
@@ -66,7 +67,7 @@ export class Game {
       this.gameLoop.stop();
     }
     // Show pending initial upgrade on first actual GAME entry
-    if (state === 'GAME' && this.pendingInitialUpgrade && !this.initialUpgradeOffered) {
+  if (state === 'GAME' && this.pendingInitialUpgrade && !this.initialUpgradeOffered && this.gameMode !== 'LAST_STAND') {
       const delay = 40; // allow UpgradePanel dynamic import & wiring
       setTimeout(() => {
         if (this.initialUpgradeOffered || this.state !== 'GAME') return;
@@ -133,7 +134,7 @@ export class Game {
   private environment: EnvironmentManager; // biome + ambient background
   private roomManager: RoomManager; // random rooms structure
   private showRoomDebug: boolean = false;
-  public gameMode: 'SHOWDOWN' | 'DUNGEON' | 'SANDBOX' | 'LAST_STAND' = 'SHOWDOWN'; // game mode selection
+  public gameMode: 'SHOWDOWN' | 'DUNGEON' | 'SANDBOX' | 'LAST_STAND' = 'LAST_STAND'; // default to Last Stand (main menu)
   private lastStand?: LastStandGameMode;
   // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
@@ -144,8 +145,8 @@ export class Game {
   // Fog of War
   /** Fog of War system and settings */
   private fog?: FogOfWarSystem;
-  private fowEnabled: boolean = true;
-  private fowRadiusBase: number = 4; // tiles (slightly larger default)
+  private fowEnabled: boolean = true; // locked on
+  private fowRadiusBase: number = 4; // tiles (locked baseline; passives may modify)
   private readonly fowTileSize: number = 160;
   private lastFowTileX: number = Number.NaN;
   private lastFowTileY: number = Number.NaN;
@@ -166,8 +167,24 @@ export class Game {
   private reviveCinematicStart: number = 0;
   private reviveCinematicDuration: number = 5000;
   private reviveCinematicScheduled: boolean = false;
+
+  // Utility: build a rounded-rectangle path on the current canvas context
+  private roundRectPath(x: number, y: number, w: number, h: number, r: number) {
+    const ctx = this.ctx; r = Math.max(0, Math.min(r, Math.min(w, h) * 0.5));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arcTo(x + w, y, x + w, y + r, r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+    ctx.lineTo(x + r, y + h);
+    ctx.arcTo(x, y + h, x, y + h - r, r);
+    ctx.lineTo(x, y + r);
+    ctx.arcTo(x, y, x + r, y, r);
+  }
   /** Schedules or shows the opening upgrade if not already offered and player has zero upgrades. */
   private showInitialUpgradeIfNeeded(delayMs: number = 0) {
+  if (this.gameMode === 'LAST_STAND') return; // No upgrade panel in Last Stand
     if (this.initialUpgradeOffered) return;
     const exec = () => {
       if (this.initialUpgradeOffered) return;
@@ -199,7 +216,9 @@ export class Game {
       else if (cid === 'titan_mech') classMul = 0.9; // huge body, slightly tighter FOV
       else if (cid === 'cyber_runner' || cid === 'data_sorcerer') classMul = 1.05; // mild +5%
       const passiveMul = Math.max(0.5, Math.min(2.5, (this.player as any)?.visionMultiplier || 1));
-      return base * classMul * passiveMul;
+  // Last Stand: increase baseline vision by +20% for better early awareness
+  const modeMul = (this.gameMode === 'LAST_STAND') ? 1.2 : 1.0;
+  return base * classMul * passiveMul * modeMul;
     } catch { return Math.max(1, Math.floor(this.fowRadiusBase)); }
   }
 
@@ -279,18 +298,16 @@ export class Game {
     const mode = this.parseModeFromUrl();
     if (mode) this.gameMode = mode;
   } catch {}
+  // Lock Fog-of-War always on (Pause menu controls removed)
+  this.fowEnabled = true;
   if (this.gameMode === 'DUNGEON') {
     this.roomManager.generate(60);
     (this.roomManager as any).setOpenWorld(false);
   }
   else { (this.roomManager as any).setOpenWorld(true); }
-  // Initialize Last Stand orchestration when selected
-  if (this.gameMode === 'LAST_STAND') {
-    this.lastStand = new LastStandGameMode(this as any);
-    // Start directly (skip cinematic)
-    this.setState('GAME');
-    this.lastStand.init?.();
-  }
+  // Defer Last Stand orchestration until after loop exists, and honor URL override
+  const parsedMode = this.parseModeFromUrl();
+  if (parsedMode) this.gameMode = parsedMode;
   // Expose globally for managers lacking direct reference (lightweight)
   try { (window as any).__roomManager = this.roomManager; } catch {}
   // Listen for revive to start a 5s cinematic overlay and schedule detonation
@@ -328,14 +345,22 @@ export class Game {
   // (Electron auto lowFX removed)
     // Removed frame pulse overlay (F9 toggle)
   this.gameLoop = new GameLoop(this.update.bind(this), this.render.bind(this));
+  // Initialize Last Stand after gameLoop only when explicitly requested via URL
+  if (parsedMode === 'LAST_STAND') {
+    this.lastStand = new LastStandGameMode(this as any);
+    this.setState('GAME');
+    this.lastStand.init?.();
+  }
 
     // Initialize camera position to center on player
     // Use logical (design) dimensions so small window (low resolution) starts centered correctly.
     this.camX = this.player.x - this.designWidth / 2;
     this.camY = this.player.y - this.designHeight / 2;
 
-    // Ensure game starts in MAIN_MENU state, not GAME_OVER
-    this.state = 'MAIN_MENU'; // Explicitly set initial state
+  // Ensure game starts in MAIN_MENU state, not GAME_OVER.
+  // Do not override if a mode already placed us into GAME (e.g., Last Stand immediate start).
+  const curState: any = this.state as any;
+  if (curState !== 'GAME') this.state = 'MAIN_MENU';
 
     window.addEventListener('upgradeOpen', () => {
       if (this.state === 'GAME') this.state = 'UPGRADE_MENU';
@@ -638,6 +663,23 @@ export class Game {
         this.handlePauseMenuClick(mouseX, mouseY);
       } else if (this.state === 'PAUSE') {
         // Pause interactions handled by HTML overlay now
+      } else if (this.state === 'GAME' && this.gameMode === 'LAST_STAND') {
+        // Handle small square skip button click during SHOP
+        try {
+          const rect = this.canvas.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+          const worldX = mouseX + this.camX;
+          const worldY = mouseY + this.camY;
+          const ls: any = (this as any).lastStand;
+          if (ls && typeof ls.tryClickSkipButton === 'function') {
+            if (ls.tryClickSkipButton(worldX, worldY)) {
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
+          }
+        } catch { /* ignore */ }
       }
     });
 
@@ -764,6 +806,9 @@ export class Game {
       this.bulletManager?.bullets?.forEach(b=> b.active = false);
       this._activeBeams.length = 0;
     } catch {}
+  // Dispose Last Stand specific UI/handlers if active
+  try { (this.lastStand as any)?.dispose?.(); } catch {}
+  try { this.lastStand = undefined as any; } catch {}
     // Reset shake / timers
     this.shakeDuration = 0; this.currentShakeTime = 0; this.shakeIntensity = 0;
     (this as any).pendingInitialUpgrade = false; // will be re-armed on next resetGame/start
@@ -824,6 +869,7 @@ export class Game {
 
   public startCinematicAndGame() {
   const isSandbox = this.gameMode === 'SANDBOX';
+  const isLastStand = this.gameMode === 'LAST_STAND';
   // Ensure world structure matches current mode
   if (this.gameMode === 'DUNGEON') {
     this.roomManager.clear?.();
@@ -843,6 +889,16 @@ export class Game {
       if (this.gameLoop) this.gameLoop.start();
       try { window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); } catch {}
     }
+    return;
+  }
+  if (isLastStand) {
+    // Play a dedicated Last Stand cinematic, then init mode
+    if (!this.lastStand) this.lastStand = new LastStandGameMode(this as any);
+    this.setState('CINEMATIC');
+    this.cinematic.start('LAST_STAND', () => {
+      this.setState('GAME');
+      if (this.lastStand && typeof this.lastStand.init === 'function') this.lastStand.init();
+    });
     return;
   }
   // Default path: play cinematic, then enter gameplay
@@ -931,9 +987,10 @@ export class Game {
     this.player.x = proj.x; this.player.y = proj.y;
   }
   this.explosionManager?.update(deltaTime);
-  this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets);
-  // Let mode orchestrator run (turrets, timers)
+  // Let mode orchestrator run (turrets, timers) early so LS visibility cache is fresh for this frame
   if (this.lastStand) this.lastStand.update(deltaTime);
+  // Enemy update after LS so intake/targeting can use freshly published LS cache
+  this.enemyManager.update(deltaTime, this.gameTime, this.bulletManager.bullets);
   // Enforce enemy collision with rooms / corridors (simple clamp against previous pos) to stop leaking through walls.
   const rmAny: any = this.roomManager;
   if (rmAny && typeof rmAny.constrainPosition === 'function') {
@@ -1186,11 +1243,333 @@ export class Game {
   // In SANDBOX, keep environment bright and avoid darkening overlays
   if (this.gameMode === 'SANDBOX') (this as any).brightenMode = true;
   this.environment.draw(this.ctx, this.camX, this.camY, this.canvas.width, this.canvas.height);
+  // Darker vibe for Last Stand: cool vignette overlay
+  if (this.gameMode === 'LAST_STAND') {
+    this.ctx.save();
+    const g = this.ctx.createRadialGradient(this.canvas.width/2, this.canvas.height/2, Math.min(this.canvas.width, this.canvas.height) * 0.25,
+                                            this.canvas.width/2, this.canvas.height/2, Math.max(this.canvas.width, this.canvas.height) * 0.75);
+    g.addColorStop(0, 'rgba(0,0,0,0.0)');
+    g.addColorStop(1, 'rgba(8,12,20,0.35)');
+    this.ctx.fillStyle = g;
+    this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height);
+    this.ctx.restore();
+  }
   // Light biome pocket tint overlay (not part of debug) for visual variety
   if (!this.showRoomDebug) {
     // New unified walkable underlay: darken outside + soft tint inside, beneath entities
-    if (this.gameMode === 'DUNGEON') {
+    if (this.gameMode === 'DUNGEON' || this.gameMode === 'LAST_STAND') {
       this.roomManager.drawWalkableUnderlay(this.ctx, this.camX, this.camY);
+      // Last Stand terrain: UNWALKABLE = desert sand, WALKABLE (corridor) = grey road
+      if (this.gameMode === 'LAST_STAND') {
+        try {
+          // Build (and cache) a small pattern canvas once
+          const w: any = window as any;
+          // Desert pattern (used outside the corridor)
+          if (!w.__lsDesertPattern) {
+            const pC = document.createElement('canvas'); pC.width = 96; pC.height = 96;
+            const pCtx = pC.getContext('2d');
+            if (pCtx) {
+              pCtx.fillStyle = '#b8a382';
+              pCtx.fillRect(0,0,pC.width,pC.height);
+              const img = pCtx.getImageData(0,0,pC.width,pC.height); const data = img.data;
+              for (let i=0;i<data.length;i+=4){
+                const n = (Math.random()*22)|0;
+                data[i] = Math.max(0, data[i]-n);
+                data[i+1] = Math.max(0, data[i+1]-Math.floor(n*0.9));
+                data[i+2] = Math.max(0, data[i+2]-Math.floor(n*0.6));
+              }
+              pCtx.putImageData(img,0,0);
+              pCtx.strokeStyle = 'rgba(60,48,28,0.12)';
+              pCtx.lineWidth = 1;
+              for (let x=0; x<=pC.width; x+=48) { pCtx.beginPath(); pCtx.moveTo(x,0); pCtx.lineTo(x+24,pC.height); pCtx.stroke(); }
+              for (let y=0; y<=pC.height; y+=48) { pCtx.beginPath(); pCtx.moveTo(0,y); pCtx.lineTo(pC.width,y+24); pCtx.stroke(); }
+              pCtx.fillStyle = 'rgba(50,38,22,0.14)';
+              for (let i=0;i<120;i++){ const x = Math.random()*pC.width; const y = Math.random()*pC.height; pCtx.fillRect(x,y,1,1); }
+            }
+            w.__lsDesertPattern = pC;
+          }
+          // Road pattern (used inside the corridor)
+          if (!w.__lsRoadPattern) {
+            const rC = document.createElement('canvas'); rC.width = 96; rC.height = 96;
+            const rCtx = rC.getContext('2d');
+            if (rCtx) {
+              // Asphalt base
+              rCtx.fillStyle = '#42474c';
+              rCtx.fillRect(0,0,rC.width,rC.height);
+              // Fine asphalt noise
+              const img2 = rCtx.getImageData(0,0,rC.width,rC.height); const d2 = img2.data;
+              for (let i=0;i<d2.length;i+=4){
+                const v = ((Math.random()*12)|0) - 6; // -6..+5
+                d2[i] = Math.max(0, Math.min(255, d2[i] + v));
+                d2[i+1] = Math.max(0, Math.min(255, d2[i+1] + v));
+                d2[i+2] = Math.max(0, Math.min(255, d2[i+2] + v));
+              }
+              rCtx.putImageData(img2,0,0);
+              // Subtle seams
+              rCtx.strokeStyle = 'rgba(255,255,255,0.03)'; rCtx.lineWidth = 1;
+              for (let y=0; y<=rC.height; y+=48) { rCtx.beginPath(); rCtx.moveTo(0,y); rCtx.lineTo(rC.width,y); rCtx.stroke(); }
+            }
+            w.__lsRoadPattern = rC;
+          }
+          const desertPat = this.ctx.createPattern(w.__lsDesertPattern, 'repeat');
+          const roadPat = this.ctx.createPattern(w.__lsRoadPattern, 'repeat');
+          if (desertPat && roadPat) {
+            this.ctx.save();
+            this.ctx.translate(-this.camX, -this.camY);
+            // 1) Fill visible viewport with desert (unwalkable)
+            this.ctx.fillStyle = desertPat;
+            this.ctx.fillRect(this.camX, this.camY, this.canvas.width, this.canvas.height);
+            // 2) Draw grey road inside corridor (walkable)
+            const corrs = this.roomManager.getCorridors?.() || [];
+            for (let i=0;i<corrs.length;i++){
+              const c = corrs[i]; if (!c) continue;
+              this.ctx.save();
+              this.ctx.beginPath(); this.ctx.rect(c.x, c.y, c.w, c.h); this.ctx.clip();
+              this.ctx.fillStyle = roadPat; this.ctx.fillRect(c.x, c.y, c.w, c.h);
+              // Road edges — brighter for visible corridor walls
+              this.ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+              this.ctx.lineWidth = 3;
+              this.ctx.strokeRect(c.x + 1, c.y + 1, c.w - 2, c.h - 2);
+              // Inner dashed lane lines for depth
+              this.ctx.save();
+              this.ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+              this.ctx.setLineDash([10, 14]);
+              this.ctx.lineWidth = 2;
+              const midY = c.y + Math.floor(c.h/2);
+              this.ctx.beginPath(); this.ctx.moveTo(c.x + 10, midY); this.ctx.lineTo(c.x + c.w - 10, midY); this.ctx.stroke();
+              this.ctx.restore();
+              // Reset opacity before drawing gameplay props (pads, palisades, holders)
+              this.ctx.globalAlpha = 1.0;
+              // Draw turret pads and palisades if present
+              try {
+                const pads: any[] = ((window as any).__gameInstance?.lastStand as any)?.pads || [];
+                const pals: any[] = ((window as any).__gameInstance?.lastStand as any)?.palisades || [];
+                const holders: any[] = ((window as any).__gameInstance?.lastStand as any)?.holders || [];
+                const lsAny: any = (window as any).__gameInstance?.lastStand as any;
+                const turretMgr: any = (lsAny && typeof lsAny.getTurretManager === 'function') ? lsAny.getTurretManager() : (lsAny?.turrets || null);
+                // Pads — hidden per feedback (no neon circles)
+                // Turrets: draw solid colored blocks at turret positions
+                try {
+                  if (turretMgr && typeof turretMgr.list === 'function') {
+                    const list = turretMgr.list();
+                    for (let i=0;i<list.length;i++){
+                      const t = list[i]; if (!t) continue;
+                      const color = (t.id === 'turret_minigun') ? '#0BD9BD' : (t.id === 'turret_crossbow3') ? '#D98B2B' : (t.id === 'turret_heavy_mortar' ? '#FFC857' : '#6CA6FF');
+                      this.ctx.fillStyle = color; this.ctx.strokeStyle = 'rgba(0,0,0,0.65)'; this.ctx.lineWidth = 2;
+                      const size = 26; // square block base
+                      const x0 = t.x - size/2, y0 = t.y - size/2;
+                      this.ctx.fillRect(x0, y0, size, size);
+                      this.ctx.strokeRect(x0 + 0.5, y0 + 0.5, size-1, size-1);
+                      // Icon overlay per type to show it was bought & what it is
+                      this.ctx.save();
+                      this.ctx.translate(t.x, t.y);
+                      // Face nearest enemy for a tiny bit of life/aim feedback
+                      try {
+                        const em: any = (this as any).enemyManager || (this as any).getEnemyManager?.();
+                        const enemies: any[] = em?.getEnemies?.() || [];
+                        let ang = 0; let bd2 = Infinity;
+                        for (let ei=0;ei<enemies.length;ei++){
+                          const e = enemies[ei]; if (!e?.active || e.hp<=0) continue;
+                          const dx = e.x - t.x, dy = e.y - t.y; const d2 = dx*dx + dy*dy; if (d2<bd2){ bd2 = d2; ang = Math.atan2(dy, dx); }
+                        }
+                        this.ctx.rotate(ang);
+                      } catch { /* ignore */ }
+                      if (t.id === 'turret_minigun') {
+                        // Minigun glyph: base + tri-barrels + mount
+                        this.ctx.fillStyle = '#073c36';
+                        // Mount
+                        this.ctx.fillRect(-6, 6, 12, 3);
+                        // Body
+                        this.ctx.fillRect(-6, -4, 12, 8);
+                        // Barrels
+                        this.ctx.fillStyle = '#0b6f63';
+                        this.ctx.fillRect(4, -5, 10, 2);
+                        this.ctx.fillRect(4, -1, 10, 2);
+                        this.ctx.fillRect(4, 3, 10, 2);
+                        // Pivot
+                        this.ctx.fillStyle = 'rgba(0,0,0,0.45)';
+                        this.ctx.beginPath(); this.ctx.arc(-2, 0, 3, 0, Math.PI*2); this.ctx.fill();
+                      } else if (t.id === 'turret_crossbow3') {
+                        // Triple crossbow glyph (three chevrons)
+                        this.ctx.strokeStyle = '#5a3008'; this.ctx.lineWidth = 2;
+                        this.ctx.beginPath(); this.ctx.moveTo(-8,-4); this.ctx.lineTo(0,0); this.ctx.lineTo(-8,4); this.ctx.stroke();
+                        this.ctx.beginPath(); this.ctx.moveTo(0,-4); this.ctx.lineTo(8,0); this.ctx.lineTo(0,4); this.ctx.stroke();
+                        this.ctx.beginPath(); this.ctx.moveTo(-4,-6); this.ctx.lineTo(4,0); this.ctx.lineTo(-4,6); this.ctx.stroke();
+                      } else if (t.id === 'turret_mortar' || t.id === 'turret_heavy_mortar') {
+                        // Mortar glyph: tube + baseplate
+                        this.ctx.fillStyle = 'rgba(0,0,0,0.45)';
+                        this.ctx.fillRect(-10, 6, 20, 4); // baseplate
+                        this.ctx.fillStyle = '#6b5b2a';
+                        this.ctx.rotate(-Math.PI/7);
+                        this.ctx.fillRect(-2, -10, 4, 14); // tube
+                        this.ctx.rotate(Math.PI/7);
+                      } else {
+                        // Default turret glyph
+                        this.ctx.fillStyle = 'rgba(0,0,0,0.35)';
+                        this.ctx.beginPath(); this.ctx.arc(0,0,5,0,Math.PI*2); this.ctx.fill();
+                      }
+                      this.ctx.restore();
+                      // Subtle range ring for placement awareness
+                      try {
+                        const spec: any = turretMgr.getSpec?.(t.id);
+                        const r = spec?.range || 520;
+                        this.ctx.save();
+                        this.ctx.globalAlpha = 0.08;
+                        this.ctx.strokeStyle = color;
+                        this.ctx.lineWidth = 2;
+                        this.ctx.beginPath(); this.ctx.arc(t.x, t.y, r, 0, Math.PI*2); this.ctx.stroke();
+                        this.ctx.restore();
+                      } catch { /* ignore */ }
+                    }
+                    // Draw visible shot tracers (currently disabled in TurretManager to avoid flashing)
+                    const shots = turretMgr.listShots?.() || [];
+                    if (shots.length) {
+                      for (let s=0;s<shots.length;s++){
+                        const sh = shots[s];
+                        const a = Math.max(0, Math.min(1, sh.life / sh.maxLife));
+                        this.ctx.strokeStyle = sh.color;
+                        this.ctx.globalAlpha = 0.85 * a + 0.15;
+                        this.ctx.lineWidth = sh.width;
+                        this.ctx.beginPath(); this.ctx.moveTo(sh.x, sh.y); this.ctx.lineTo(sh.x2, sh.y2); this.ctx.stroke();
+                        this.ctx.globalAlpha = 1;
+                      }
+                    }
+                  }
+                } catch { /* ignore */ }
+                // Palisades: full visual (vertical posts with caps)
+                for (let k=0;k<pals.length;k++){
+                  const ps = pals[k]; if (!ps) continue;
+                  // Shadow
+                  this.ctx.save();
+                  this.ctx.fillStyle = 'rgba(0,0,0,0.35)';
+                  this.ctx.filter = 'blur(1px)';
+                  this.ctx.fillRect(ps.x + 3, ps.y + 3, ps.w, ps.h);
+                  this.ctx.filter = 'none';
+                  this.ctx.restore();
+                  // Body (wood/metal tone)
+                  const vertical = ps.h >= ps.w;
+                  const grad = vertical
+                    ? this.ctx.createLinearGradient(ps.x, ps.y, ps.x + ps.w, ps.y)
+                    : this.ctx.createLinearGradient(ps.x, ps.y, ps.x, ps.y + ps.h);
+                  grad.addColorStop(0, 'rgba(70,80,88,1.0)');
+                  grad.addColorStop(0.5, 'rgba(112,132,144,1.0)');
+                  grad.addColorStop(1, 'rgba(70,80,88,1.0)');
+                  this.ctx.fillStyle = grad;
+                  this.ctx.strokeStyle = 'rgba(20,30,36,0.85)';
+                  this.ctx.lineWidth = 3;
+                  this.ctx.beginPath(); this.ctx.rect(ps.x, ps.y, ps.w, ps.h); this.ctx.fill(); this.ctx.stroke();
+                  // Top/Bottom caps
+                  this.ctx.fillStyle = 'rgba(190,210,220,0.95)';
+                  const cap = Math.max(6, Math.min(12, vertical ? Math.round(ps.w*0.9) : Math.round(ps.h*0.15)));
+                  if (vertical) {
+                    this.ctx.fillRect(ps.x-2, ps.y-4, ps.w+4, 6);
+                    this.ctx.fillRect(ps.x-2, ps.y + ps.h - 2, ps.w+4, 6);
+                  } else {
+                    this.ctx.fillRect(ps.x-4, ps.y-2, 6, ps.h+4);
+                    this.ctx.fillRect(ps.x + ps.w - 2, ps.y-2, 6, ps.h+4);
+                  }
+                  // Bolts / studs every 28px
+                  this.ctx.fillStyle = 'rgba(235,245,250,0.95)';
+                  const step = 28;
+                  if (vertical) {
+                    for (let yy = ps.y + 10; yy < ps.y + ps.h - 10; yy += step) {
+                      this.ctx.fillRect(ps.x + Math.floor(ps.w/2) - 1, yy, 2, 2);
+                    }
+                  } else {
+                    for (let xx = ps.x + 10; xx < ps.x + ps.w - 10; xx += step) {
+                      this.ctx.fillRect(xx, ps.y + Math.floor(ps.h/2) - 1, 2, 2);
+                    }
+                  }
+                }
+                // Turret holders (blocking)
+                for (let k=0;k<holders.length;k++){
+                  const h = holders[k]; if (!h) continue;
+                  const occupied = !!(h as any).turretId;
+                  // base block with different styling if occupied
+                  this.ctx.save();
+                  if (!occupied) { this.ctx.shadowColor = 'rgba(120,255,235,0.75)'; this.ctx.shadowBlur = 14; }
+                  this.ctx.fillStyle = occupied ? 'rgba(10,20,24,0.98)' : 'rgba(14,34,40,0.98)';
+                  this.ctx.strokeStyle = occupied ? 'rgba(255,211,110,0.95)' : 'rgba(120,255,235,0.95)';
+                  this.ctx.lineWidth = 3;
+                  this.ctx.beginPath(); this.ctx.rect(h.x, h.y, h.w, h.h); this.ctx.fill(); this.ctx.stroke();
+                  this.ctx.restore();
+                  if (!occupied) {
+                    // empty slot visual
+                    this.ctx.fillStyle = 'rgba(120,255,235,0.45)';
+                    this.ctx.fillRect(h.x+6, h.y + h.h/2 - 3, h.w-12, 6);
+                    this.ctx.strokeStyle = 'rgba(140,220,210,0.65)'; this.ctx.lineWidth = 1.5;
+                    for (let yy=h.y+6; yy<h.y+h.h-6; yy+=8) {
+                      this.ctx.beginPath(); this.ctx.moveTo(h.x+4, yy); this.ctx.lineTo(h.x+h.w-4, yy); this.ctx.stroke();
+                    }
+                  } else {
+                    // occupied: draw a compact turret-type glyph inside the holder
+                    const id = String((h as any).turretId || '');
+                    this.ctx.save();
+                    this.ctx.translate(h.x + h.w/2, h.y + h.h/2);
+                    // small base plate
+                    this.ctx.fillStyle = 'rgba(0,0,0,0.35)';
+                    this.ctx.fillRect(-Math.min(12,h.w/2-3), Math.min(8,h.h/2-4), Math.min(24,h.w-6), 4);
+                    if (id === 'turret_minigun') {
+                      this.ctx.fillStyle = '#0BD9BD';
+                      this.ctx.fillRect(-6, -4, 12, 8);
+                      this.ctx.fillStyle = '#0b6f63';
+                      this.ctx.fillRect(4, -5, 10, 2);
+                      this.ctx.fillRect(4, -1, 10, 2);
+                      this.ctx.fillRect(4, 3, 10, 2);
+                    } else if (id === 'turret_crossbow3') {
+                      this.ctx.strokeStyle = '#D98B2B'; this.ctx.lineWidth = 2;
+                      this.ctx.beginPath(); this.ctx.moveTo(-6,-3); this.ctx.lineTo(0,0); this.ctx.lineTo(-6,3); this.ctx.stroke();
+                      this.ctx.beginPath(); this.ctx.moveTo(0,-3); this.ctx.lineTo(6,0); this.ctx.lineTo(0,3); this.ctx.stroke();
+                    } else if (id === 'turret_mortar' || id === 'turret_heavy_mortar') {
+                      this.ctx.fillStyle = id === 'turret_heavy_mortar' ? '#FFC857' : '#C7B26A';
+                      this.ctx.rotate(-Math.PI/7);
+                      this.ctx.fillRect(-2, -8, 4, 12);
+                    } else {
+                      this.ctx.fillStyle = '#6CA6FF';
+                      this.ctx.beginPath(); this.ctx.arc(0,0,4,0,Math.PI*2); this.ctx.fill();
+                    }
+                    this.ctx.restore();
+                  }
+                  // UX: show a subtle "F" hint above the nearest holder when player is close enough to interact
+                  try {
+                    const p = this.player; if (p && holders.length) {
+                      const pr = (p.radius || 20);
+                      let best: any = null; let bd2 = Infinity;
+                      for (let i=0;i<holders.length;i++){
+                        const h = holders[i];
+                        const cx = Math.max(h.x, Math.min(p.x, h.x + h.w));
+                        const cy = Math.max(h.y, Math.min(p.y, h.y + h.h));
+                        const dx = p.x - cx, dy = p.y - cy; const d2 = dx*dx + dy*dy;
+                        if (d2 < bd2) { bd2 = d2; best = h; }
+                      }
+                      if (best && bd2 <= ((pr+36)*(pr+36))) {
+                        const bx = best.x + best.w/2;
+                        // position inside the holder box (top-center), with small padding
+                        const by = best.y + Math.max(10, Math.min(16, best.h * 0.2));
+                        this.ctx.save();
+                        // Soft glow circle
+                        const r = 10;
+                        this.ctx.fillStyle = 'rgba(120,255,235,0.22)';
+                        this.ctx.beginPath(); this.ctx.arc(bx, by, r, 0, Math.PI*2); this.ctx.fill();
+                        // Key label
+                        this.ctx.font = 'bold 12px sans-serif';
+                        this.ctx.textAlign = 'center'; this.ctx.textBaseline = 'middle';
+                        this.ctx.fillStyle = '#7DFFEA';
+                        this.ctx.strokeStyle = 'rgba(10,20,24,0.9)'; this.ctx.lineWidth = 3;
+                        this.ctx.strokeText('F', bx, by);
+                        this.ctx.fillText('F', bx, by);
+                        this.ctx.restore();
+                      }
+                    }
+                  } catch { /* ignore F hint errors */ }
+                }
+              } catch { /* ignore */ }
+              this.ctx.restore();
+            }
+            this.ctx.restore();
+          }
+        } catch { /* ignore */ }
+      }
     }
   } else {
     this.roomManager.debugDraw(this.ctx, this.camX, this.camY, 0.18);
@@ -1198,6 +1577,114 @@ export class Game {
         // Now apply camera transform and draw entities
         this.ctx.save();
         this.ctx.translate(-this.camX + shakeOffsetX, -this.camY + shakeOffsetY);
+  // Draw Last Stand core marker (if present)
+  try {
+    if (this.gameMode === 'LAST_STAND') {
+      const core: any = (window as any).__lsCore;
+      if (core && core.x != null && core.y != null && core.radius != null) {
+        // Soft glow + solid core + outline ring
+        this.ctx.save();
+        const r = core.radius as number;
+        // Advance spin using wall clock (render lacks delta argument)
+        try {
+          const w:any = window as any;
+          const now = performance.now();
+          const last = w.__lsCoreSpinTs || now; const dt = Math.min(50, Math.max(0, now - last));
+          w.__lsCoreSpinTs = now;
+          const cfg:any = w.__lsCoreCfg;
+          const spinSpeed = Math.max(0.001, Math.min(0.05, Number(cfg?.core?.spinSpeed ?? 0.0025)));
+          core.spin = (core.spin || 0) + dt * spinSpeed; // configurable rad/ms
+        } catch {}
+  // Glow — darker teal spectrum
+  const grad = this.ctx.createRadialGradient(core.x, core.y, r*0.28, core.x, core.y, r*1.7);
+  grad.addColorStop(0, 'rgba(26,255,233,0.24)');
+  grad.addColorStop(0.55, 'rgba(20,160,150,0.14)');
+  grad.addColorStop(1, 'rgba(10,20,24,0.00)');
+  const oldComp: GlobalCompositeOperation = this.ctx.globalCompositeOperation as GlobalCompositeOperation;
+  if (!this.lowFX) this.ctx.globalCompositeOperation = 'lighter';
+  this.ctx.fillStyle = grad; this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r*1.7, 0, Math.PI*2); this.ctx.fill();
+  this.ctx.globalCompositeOperation = oldComp;
+        // Core sprite (fallback to disk until image loads)
+        try {
+          const w:any = window as any;
+          // Read or fetch LS config once
+          if (!w.__lsCoreCfgLoading) {
+            w.__lsCoreCfgLoading = true;
+            (async () => {
+              try { w.__lsCoreCfg = await loadJSON(lastStandData.config()); } catch { w.__lsCoreCfg = null; }
+            })();
+          }
+          const cfg = w.__lsCoreCfg || { core: { sprite: AssetLoader.normalizePath('/assets/core/core_1.png'), scale: 2.0, rotationMul: 0.35 } };
+          const spritePath = cfg?.core?.sprite ? AssetLoader.normalizePath(cfg.core.sprite) : AssetLoader.normalizePath('/assets/core/core_1.png');
+          let img: HTMLImageElement | undefined = w.__lsCoreImg as HTMLImageElement | undefined;
+          if (!img || w.__lsCoreImgPath !== spritePath) { img = new Image(); img.src = spritePath; w.__lsCoreImg = img; w.__lsCoreImgPath = spritePath; }
+          if (img && img.complete && img.naturalWidth > 0) {
+            this.ctx.save();
+            this.ctx.translate(core.x, core.y);
+            // Subtle rotation for life; tie to spin phase
+            const rotMul = Math.max(0, Math.min(2, Number(cfg?.core?.rotationMul ?? 0.35)));
+            this.ctx.rotate((core.spin || 0) * rotMul);
+            const scl = Math.max(0.5, Math.min(3, Number(cfg?.core?.scale ?? 2.0)));
+            const size = Math.round(r * scl);
+            // Optional blur for speed glow
+            const prevFilter = (this.ctx as any).filter as string | undefined;
+            try {
+              const blurPx = Math.max(0, Math.min(8, Number(cfg?.core?.blur ?? 0)));
+              if (blurPx > 0 && (this.ctx as any).filter !== undefined) {
+                (this.ctx as any).filter = `blur(${blurPx}px)`;
+              }
+            } catch { /* ignore filter errors */ }
+            this.ctx.drawImage(img, -size/2, -size/2, size, size);
+            try { if ((this.ctx as any).filter !== undefined) (this.ctx as any).filter = prevFilter || 'none'; } catch {}
+            this.ctx.restore();
+          } else {
+            // Fallback: neon disk
+            this.ctx.fillStyle = '#1affd5';
+            this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r*0.75, 0, Math.PI*2); this.ctx.fill();
+          }
+        } catch { /* ignore sprite errors */ }
+        // Optional FX
+        try {
+          const cfg:any = (window as any).__lsCoreCfg;
+          const fx = cfg?.core?.fx || { ring:true, pulses:true, sparks:true };
+          if (fx.ring) {
+            this.ctx.lineWidth = 4; this.ctx.strokeStyle = 'rgba(38,255,233,0.85)';
+            this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r, 0, Math.PI*2); this.ctx.stroke();
+          }
+          if (fx.pulses) {
+            this.ctx.save();
+            this.ctx.translate(core.x, core.y);
+            this.ctx.rotate(core.spin || 0);
+            this.ctx.strokeStyle = 'rgba(38,255,233,0.65)';
+            this.ctx.lineWidth = 3;
+            for (let i=0;i<4;i++){
+              const a0 = i * (Math.PI * 2 / 4) + 0.10;
+              const a1 = a0 + 0.42;
+              this.ctx.beginPath(); this.ctx.arc(0, 0, r*1.12, a0, a1); this.ctx.stroke();
+            }
+            this.ctx.restore();
+          }
+          if (fx.sparks) {
+            this.ctx.save();
+            this.ctx.translate(core.x, core.y);
+            this.ctx.rotate(-(core.spin||0) * 0.6);
+            this.ctx.strokeStyle = 'rgba(38,255,233,0.5)';
+            this.ctx.lineWidth = 2;
+            for (let i=0;i<6;i++){
+              const a = (core.spin||0) * (1+i*0.13) + i * (Math.PI*2/6);
+              const r0 = r*0.8, r1 = r*1.35;
+              const oldComp2: GlobalCompositeOperation = this.ctx.globalCompositeOperation as GlobalCompositeOperation;
+              if (!this.lowFX) this.ctx.globalCompositeOperation = 'lighter';
+              this.ctx.beginPath(); this.ctx.moveTo(Math.cos(a)*r0, Math.sin(a)*r0); this.ctx.lineTo(Math.cos(a)*r1, Math.sin(a)*r1); this.ctx.stroke();
+              this.ctx.globalCompositeOperation = oldComp2;
+            }
+            this.ctx.restore();
+          }
+        } catch { /* ignore FX config */ }
+        this.ctx.restore();
+      }
+    }
+  } catch { /* ignore core draw errors */ }
   this.enemyManager.draw(this.ctx, this.camX, this.camY);
         this.bulletManager.draw(this.ctx);
         // Active beams (railgun/sniper) under player for proper layering
@@ -1464,14 +1951,95 @@ export class Game {
     const cam = { x: this.camX, y: this.camY, width: this.designWidth, height: this.designHeight };
     // Compute a smooth pixel radius tied to tile radius (slightly larger to reduce grid feel)
   const radiusPx = Math.floor(this.getEffectiveFowRadiusTiles() * this.fowTileSize * 0.95);
+    // In Last Stand, bind core as the vision anchor; optional flashlight adds a wedge in front of player
+    let visX = this.player.x, visY = this.player.y;
+    try {
+      if (this.gameMode === 'LAST_STAND') {
+        const core: any = (window as any).__lsCore;
+        if (core && core.x != null && core.y != null) { visX = core.x; visY = core.y; }
+      }
+    } catch { /* ignore */ }
+    // If Last Stand, also clear corridor rectangle(s) so enemies appear when they step onto the road
+    let extraRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
+    try {
+      if (this.gameMode === 'LAST_STAND') {
+        const corrs = this.roomManager.getCorridors?.() || [];
+        if (corrs.length) extraRects = corrs.map((c:any)=> ({ x:c.x, y:c.y, w:c.w, h:c.h }));
+      }
+    } catch { /* ignore */ }
     this.fog.render(this.ctx, cam, {
       enable: true,
-      visibleCenterX: this.player.x,
-      visibleCenterY: this.player.y,
+      visibleCenterX: visX,
+      visibleCenterY: visY,
       visibleRadiusPx: radiusPx,
       exploredAlpha: 0.34,
+      visibleRects: extraRects,
     });
+    // Flashlight wedge: reveal an arc ahead of player (bonus item toggles this)
+    try {
+      const ls: any = (this as any).lastStand;
+      const hasFlashlight = !!(ls && ls.getFlashlight && ls.getFlashlight());
+  if (hasFlashlight) {
+        const px = this.player.x - this.camX;
+        const py = this.player.y - this.camY;
+        const angle = Math.atan2((this.player as any).lastDirY || 0, (this.player as any).lastDirX || 1);
+  // Slightly smaller and tighter cone per feedback; reveal-only, no visible light sprite
+  const wedgeR = Math.max(200, Math.floor(this.fowTileSize * 3.6));
+  const wedgeHalf = Math.PI / 9; // ~40° cone
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'destination-out';
+        const g = this.ctx.createRadialGradient(px, py, 0, px, py, wedgeR);
+        g.addColorStop(0, 'rgba(255,255,255,1)');
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        this.ctx.fillStyle = g;
+        this.ctx.beginPath();
+        this.ctx.moveTo(px, py);
+        this.ctx.arc(px, py, wedgeR, angle - wedgeHalf, angle + wedgeHalf);
+        this.ctx.closePath();
+        this.ctx.fill();
+        this.ctx.restore();
+  // Do not mark explored along the flashlight path to avoid flicker and unintended memory reveal
+      }
+    } catch { /* ignore */ }
   }
+  // Draw visual red skip button (holder-like) near core during Last Stand. Visible and interactive only in SHOP.
+  try {
+    if (this.gameMode === 'LAST_STAND') {
+      const ls: any = (this as any).lastStand;
+      const core: any = (window as any).__lsCore;
+      const sk: any = (ls && typeof ls.getSkipRect === 'function') ? ls.getSkipRect() : null;
+      if (core && core.x != null && sk) {
+        const isShop = (ls && (ls as any).phase === 'SHOP');
+        if (isShop) {
+          this.ctx.save();
+          this.ctx.translate(-this.camX, -this.camY);
+          // Harden against blend-state leakage from enemy hit flashes
+          const prevOp = this.ctx.globalCompositeOperation as any;
+          const prevAlpha = this.ctx.globalAlpha;
+          this.ctx.globalCompositeOperation = 'source-over';
+          this.ctx.globalAlpha = 1;
+          const bw = sk.w ?? 28, bh = sk.h ?? 28;
+          const bx = sk.x;
+          const by = sk.y;
+          // Small square button
+          this.ctx.fillStyle = '#8f1010';
+          this.ctx.strokeStyle = '#ff5c5c';
+          this.ctx.lineWidth = 2;
+          this.ctx.beginPath(); this.roundRectPath(bx, by, bw, bh, 4); this.ctx.fill(); this.ctx.stroke();
+          // Minimal inner indicator
+          this.ctx.fillStyle = '#ffd6d6';
+          this.ctx.font = '700 11px Orbitron, monospace';
+          this.ctx.textAlign = 'center';
+          this.ctx.textBaseline = 'middle';
+          this.ctx.fillText('F', bx + bw/2, by + bh/2 + 0.5);
+          // restore blend state
+          this.ctx.globalCompositeOperation = prevOp;
+          this.ctx.globalAlpha = prevAlpha;
+          this.ctx.restore();
+        }
+      }
+    }
+  } catch { /* ignore */ }
   // Draw boss screen-space FX (e.g., Supernova darken) before HUD so UI stays readable on top
   this.bossManager.drawScreenFX(this.ctx, this.designWidth, this.designHeight);
   // Removed full-screen additive overlay to prevent global flash; enemy hit feedback now strictly per-entity.

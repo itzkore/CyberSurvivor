@@ -578,7 +578,7 @@ export class BulletManager {
               const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
               const baseDmg = (b.damage||scaled.damage||20);
               const dmgBase = baseDmg * (isCrit?critMult:1);
-              this.enemyManager.takeDamage(e, dmgBase, isCrit, false, b.weaponType, b.x, b.y, level);
+              this.enemyManager.takeDamage(e, dmgBase, isCrit, false, b.weaponType, b.x, b.y, level, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
               b.contactCooldownMap[eid] = nowT + 1000; // halo: 1s per-enemy
               if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#7DFFEA');
             }
@@ -599,13 +599,7 @@ export class BulletManager {
                 const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
                 const baseDmg = (b.damage||scaled.damage||20);
                 const dmgBase = baseDmg * (isCrit?critMult:1);
-                if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                  (this.enemyManager as any).takeBossDamage(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level);
-                } else {
-                  // Fallback path
-                  boss.hp -= dmgBase;
-                  window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage: dmgBase, crit: isCrit, x: b.x, y: b.y } }));
-                }
+                (this.enemyManager as any).takeBossDamage?.(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
                 b.contactCooldownMap[key] = nowT + 1000;
                 if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#7DFFEA');
               }
@@ -679,8 +673,7 @@ export class BulletManager {
                   const anyB: any = boss as any;
                   const marked = (anyB._psionicMarkUntil || 0) > nowP;
                   const dmg = Math.round(baseDmg * (marked ? 1.6 : 1.0));
-                  if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, false, WeaponType.RESONANT_WEB, px, py, level, true);
-                  else boss.hp -= dmg;
+                  (this.enemyManager as any).takeBossDamage?.(boss, dmg, false, WeaponType.RESONANT_WEB, px, py, level, true, 'PLAYER');
                   anyB._psionicMarkUntil = Math.max(anyB._psionicMarkUntil || 0, nowP + 1000);
                   if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#FF99FF');
                 }
@@ -722,17 +715,30 @@ export class BulletManager {
             (b as any)._nextWeaverShotAt = nowC + ((b.orbitIndex || 0) * Math.floor(intervalPerOrb / count));
           }
           if (nowC >= (b as any)._nextWeaverShotAt) {
-            // Gate: only fire if an enemy or boss is within 800px of the player
+            // Gate: only fire if an enemy or boss is within 800px of the player.
+            // In Last Stand, require targets to be inside LS visibility (core or corridors).
             let hasEnemyNearPlayer = false;
             try {
               const pxG = playerRef?.x ?? b.x; const pyG = playerRef?.y ?? b.y;
               const nearGate = this.queryEnemies(pxG, pyG, 800) as any[];
-              for (let gi = 0; gi < nearGate.length; gi++) { const ge: any = nearGate[gi]; if (ge.active && ge.hp > 0) { hasEnemyNearPlayer = true; break; } }
+              const isVisibleLSNear = (ex: number, ey: number): boolean => {
+                try {
+                  const gi: any = (window as any).__gameInstance; if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+                  const cache: any = (window as any).__lsAimCache; if (!cache) return false;
+                  const dx = ex - cache.cx, dy = ey - cache.cy; if (dx*dx + dy*dy <= cache.r2) return true;
+                  const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+                  if (corridors && corridors.length) {
+                    for (let i = 0; i < corridors.length; i++) { const c = corridors[i]; if (ex >= c.x && ex <= c.x + c.w && ey >= c.y && ey <= c.y + c.h) return true; }
+                  }
+                  return false;
+                } catch { return true; }
+              };
+              for (let gi = 0; gi < nearGate.length; gi++) { const ge: any = nearGate[gi]; if (ge.active && ge.hp > 0 && isVisibleLSNear(ge.x, ge.y)) { hasEnemyNearPlayer = true; break; } }
               // Also consider boss proximity
               if (!hasEnemyNearPlayer) {
                 const bossMgr: any = (window as any).__bossManager;
                 const boss = bossMgr && bossMgr.getActiveBoss ? bossMgr.getActiveBoss() : null;
-                if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+                if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && isVisibleLSNear(boss.x, boss.y)) {
                   const dxB = boss.x - pxG; const dyB = boss.y - pyG; if (dxB*dxB + dyB*dyB <= 800*800) hasEnemyNearPlayer = true;
                 }
               }
@@ -742,7 +748,7 @@ export class BulletManager {
                 if (emAny && typeof emAny.getTreasures === 'function') {
                   const ts = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number }>;
                   for (let ti = 0; ti < ts.length; ti++) {
-                    const t = ts[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const t = ts[ti]; if (!t || !t.active || (t as any).hp <= 0) continue; if (!isVisibleLSNear(t.x, t.y)) continue;
                     const dxT = (t.x ?? 0) - pxG; const dyT = (t.y ?? 0) - pyG;
                     if (dxT*dxT + dyT*dyT <= 800*800) { hasEnemyNearPlayer = true; break; }
                   }
@@ -762,11 +768,24 @@ export class BulletManager {
             let found = false;
             const searchR = 1200;
             const near = this.queryEnemies(b.x, b.y, searchR) as any[];
+            // LS: visibility helper using per-frame cache (core + corridors)
+            const isVisibleLS = (ex: number, ey: number): boolean => {
+              try {
+                const gi: any = (window as any).__gameInstance; if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+                const cache: any = (window as any).__lsAimCache; if (!cache) return false;
+                const dx = ex - cache.cx, dy = ey - cache.cy; if (dx*dx + dy*dy <= cache.r2) return true;
+                const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+                if (corridors && corridors.length) {
+                  for (let i = 0; i < corridors.length; i++) { const c = corridors[i]; if (ex >= c.x && ex <= c.x + c.w && ey >= c.y && ey <= c.y + c.h) return true; }
+                }
+                return false;
+              } catch { return true; }
+            };
             let bestMarked: any = null; let bestMarkedD2 = Infinity;
             let best: any = null; let bestD2 = Infinity;
             const nowM = performance.now();
             for (let iN = 0; iN < near.length; iN++) {
-              const e: any = near[iN]; if (!e.active || e.hp <= 0) continue;
+              const e: any = near[iN]; if (!e.active || e.hp <= 0) continue; if (!isVisibleLS(e.x, e.y)) continue;
               const dx = e.x - b.x, dy = e.y - b.y; const d2 = dx*dx + dy*dy; if (d2 < 24*24) continue; // skip too-close
               if ((e._psionicMarkUntil || 0) > nowM) { if (d2 < bestMarkedD2) { bestMarkedD2 = d2; bestMarked = e; } }
               if (d2 < bestD2) { bestD2 = d2; best = e; }
@@ -776,7 +795,7 @@ export class BulletManager {
             try {
               const bossMgr: any = (window as any).__bossManager;
               const boss = bossMgr && bossMgr.getActiveBoss ? bossMgr.getActiveBoss() : null;
-              if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+              if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && isVisibleLS(boss.x, boss.y)) {
                 const dxB = boss.x - b.x; const dyB = boss.y - b.y; const d2B = dxB*dxB + dyB*dyB;
                 if (d2B <= searchR*searchR) { bossCand = boss; bossD2 = d2B; bossMarked = ((boss as any)._psionicMarkUntil || 0) > nowM; }
               }
@@ -788,7 +807,7 @@ export class BulletManager {
               if (emAny && typeof emAny.getTreasures === 'function') {
                 const treasures = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number }>;
                 for (let ti = 0; ti < treasures.length; ti++) {
-                  const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                  const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue; if (!isVisibleLS(t.x, t.y)) continue;
                   const dxT = (t.x ?? 0) - b.x; const dyT = (t.y ?? 0) - b.y; const d2T = dxT*dxT + dyT*dyT;
                   if (d2T < bestTreasureD2 && d2T <= searchR*searchR) { bestTreasureD2 = d2T; bestTreasure = t; }
                 }
@@ -810,6 +829,16 @@ export class BulletManager {
             if (target) {
               tx = target.x; ty = target.y; found = true;
             } else {
+              // In Last Stand, do not fire outward when there is no visible target.
+              try {
+                const gi: any = (window as any).__gameInstance;
+                if (gi && gi.gameMode === 'LAST_STAND') {
+                  // Back off a bit and skip this shot
+                  (b as any)._nextWeaverShotAt = nowC + Math.max(250, Math.min(400, Math.floor(intervalPerOrb / 2)));
+                  activeBullets.push(b);
+                  continue;
+                }
+              } catch { /* fallback to non-LS outward shot */ }
               const ang = b.orbitAngle || 0;
               const len = 360;
               tx = b.x + Math.cos(ang) * len;
@@ -883,13 +912,25 @@ export class BulletManager {
             const searchR = 1000;
             let target: any = null; let bestD2 = Infinity;
             const near = this.queryEnemies(b.x, b.y, searchR) as any[];
+            const isVisibleLS = (ex: number, ey: number): boolean => {
+              try {
+                const gi: any = (window as any).__gameInstance; if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+                const cache: any = (window as any).__lsAimCache; if (!cache) return false;
+                const dx = ex - cache.cx, dy = ey - cache.cy; if (dx*dx + dy*dy <= cache.r2) return true;
+                const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+                if (corridors && corridors.length) {
+                  for (let i = 0; i < corridors.length; i++) { const c = corridors[i]; if (ex >= c.x && ex <= c.x + c.w && ey >= c.y && ey <= c.y + c.h) return true; }
+                }
+                return false;
+              } catch { return true; }
+            };
             for (let iN = 0; iN < near.length; iN++) {
-              const e: any = near[iN]; if (!e.active || e.hp <= 0) continue;
+              const e: any = near[iN]; if (!e.active || e.hp <= 0) continue; if (!isVisibleLS(e.x, e.y)) continue;
               const dx = e.x - b.x, dy = e.y - b.y; const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; target = e; }
             }
             // Consider boss
             let boss: any = null; let bossD2 = Infinity;
-            try { const bossMgr: any = (window as any).__bossManager; const bb = bossMgr?.getActiveBoss?.(); if (bb && bb.active && bb.hp > 0 && bb.state === 'ACTIVE') { const dxB = bb.x - b.x, dyB = bb.y - b.y; const d2B = dxB*dxB + dyB*dyB; if (d2B < bossD2 && d2B <= searchR*searchR) { boss = bb; bossD2 = d2B; } } } catch {}
+            try { const bossMgr: any = (window as any).__bossManager; const bb = bossMgr?.getActiveBoss?.(); if (bb && bb.active && bb.hp > 0 && bb.state === 'ACTIVE' && isVisibleLS(bb.x, bb.y)) { const dxB = bb.x - b.x, dyB = bb.y - b.y; const d2B = dxB*dxB + dyB*dyB; if (d2B < bossD2 && d2B <= searchR*searchR) { boss = bb; bossD2 = d2B; } } } catch {}
             if (boss && bossD2 < bestD2) target = boss;
             // Consider treasures
             if (!target) {
@@ -898,7 +939,7 @@ export class BulletManager {
                 if (emAny && typeof emAny.getTreasures === 'function') {
                   const treasures = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number }>;
                   for (let ti = 0; ti < treasures.length; ti++) {
-                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue; if (!isVisibleLS(t.x, t.y)) continue;
                     const dxT = (t.x ?? 0) - b.x; const dyT = (t.y ?? 0) - b.y; const d2T = dxT*dxT + dyT*dyT;
                     if (d2T < bestD2 && d2T <= searchR*searchR) { bestD2 = d2T; target = t; }
                   }
@@ -917,23 +958,22 @@ export class BulletManager {
               const lvl = (b as any).level || 1;
               const enemies = this.queryEnemies(b.x, b.y, Math.min(searchR, len + 80));
               for (let ei = 0; ei < enemies.length; ei++) {
-                const e = enemies[ei]; if (!e.active || e.hp <= 0) continue;
+                const e = enemies[ei]; if (!e.active || e.hp <= 0) continue; if (!isVisibleLS(e.x, e.y)) continue;
                 const relX = e.x - b.x; const relY = e.y - b.y;
                 const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > len) continue;
                 const ortho = Math.abs(-sinA * relX + cosA * relY);
                 if (ortho <= thickness + (e.radius || 14)) {
-                  this.enemyManager.takeDamage(e, dBase, false, false, WeaponType.SORCERER_ORB, b.x, b.y, lvl);
+                  this.enemyManager.takeDamage(e, dBase, false, false, WeaponType.SORCERER_ORB, b.x, b.y, lvl, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
                 }
               }
               // Boss hit
-              if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+              if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE' && isVisibleLS(boss.x, boss.y)) {
                 const relX = boss.x - b.x; const relY = boss.y - b.y;
                 const proj = relX * cosA + relY * sinA;
                 if (proj >= 0 && proj <= len) {
                   const ortho = Math.abs(-sinA * relX + cosA * relY);
                   if (ortho <= thickness + (boss.radius || 160)) {
-                    if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dBase, false, WeaponType.SORCERER_ORB, b.x, b.y, lvl);
-                    else boss.hp -= dBase;
+                    (this.enemyManager as any).takeBossDamage?.(boss, dBase, false, WeaponType.SORCERER_ORB, b.x, b.y, lvl, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
                   }
                 }
               }
@@ -943,7 +983,7 @@ export class BulletManager {
                 if (emAny && typeof emAny.getTreasures === 'function') {
                   const treasures = emAny.getTreasures() as Array<{ x:number;y:number;radius:number;active:boolean;hp:number }>;
                   for (let ti = 0; ti < treasures.length; ti++) {
-                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue; if (!isVisibleLS(t.x, t.y)) continue;
                     const relX = t.x - b.x; const relY = t.y - b.y;
                     const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > len) continue;
                     const ortho = Math.abs(-sinA * relX + cosA * relY);
@@ -991,7 +1031,7 @@ export class BulletManager {
               const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
               const baseDmg = (specGrind?.getLevelStats ? specGrind.getLevelStats(level).damage : (b.damage||20));
               const dmgBase = baseDmg * (isCrit?critMult:1);
-              this.enemyManager.takeDamage(e, dmgBase, isCrit, false, b.weaponType, b.x, b.y, level);
+              this.enemyManager.takeDamage(e, dmgBase, isCrit, false, b.weaponType, b.x, b.y, level, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
               b.contactCooldownMap[eid] = nowT + 160; // grinder: ~6 ticks/sec per target
               if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#7DFFEA');
             }
@@ -1012,13 +1052,7 @@ export class BulletManager {
                 const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
                 const baseDmg = (specGrind?.getLevelStats ? specGrind.getLevelStats(level).damage : (b.damage||20));
                 const dmgBase = baseDmg * (isCrit?critMult:1);
-                if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                  (this.enemyManager as any).takeBossDamage(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level);
-                } else {
-                  // Fallback
-                  boss.hp -= dmgBase;
-                  window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage: dmgBase, crit: isCrit, x: b.x, y: b.y } }));
-                }
+                (this.enemyManager as any).takeBossDamage?.(boss, dmgBase, isCrit, b.weaponType, b.x, b.y, level, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
                 b.contactCooldownMap[key] = nowT + 160;
                 if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#7DFFEA');
               }
@@ -1125,7 +1159,7 @@ export class BulletManager {
             const p:any = this.player; const critChance=Math.min(0.6,(((p?.agility||0)*0.5+(p?.luck||0)*0.7)/100 + 0.08));
             const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
             const dmg = (b.damage||28) * (isCrit?critMult:1);
-            this.enemyManager.takeDamage(e, dmg, isCrit, false, b.weaponType, b.x, b.y, (b as any).level||1);
+            this.enemyManager.takeDamage(e, dmg, isCrit, false, b.weaponType, b.x, b.y, (b as any).level||1, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
             // Increment scrap meter and trigger class explosion on threshold
             // Constraints:
             // - Per shot: only 1 stack per enemy (covers both outbound and return hits)
@@ -1172,8 +1206,7 @@ export class BulletManager {
                 const p:any = this.player; let critChance=0.10; if (p){ const agi=p.agility||0; const luck=p.luck||0; critChance=Math.min(0.6,(agi*0.5+luck*0.7)/100 + 0.08); }
                 const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
                 const dmg = (b.damage||28) * (isCrit?critMult:1);
-                if ((this.enemyManager as any).takeBossDamage) (this.enemyManager as any).takeBossDamage(boss, dmg, isCrit, WeaponType.SCRAP_LASH, b.x, b.y, (b as any).level||1);
-                else boss.hp -= dmg;
+                (this.enemyManager as any).takeBossDamage?.(boss, dmg, isCrit, WeaponType.SCRAP_LASH, b.x, b.y, (b as any).level||1, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
                 (b as any).contactCooldownMap[key] = nowB + 500; // 0.5s per-boss hit cooldown
                 if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#F6E27F');
                 // Lash also contributes to scrap meter on boss hit
@@ -1217,10 +1250,28 @@ export class BulletManager {
 
       // Smart Rifle homing logic – stabilized (reduced "wild" steering, no piercing)
       if (b.weaponType === WeaponType.RAPID && b.active) {
+        const isVisibleLS = (ex: number, ey: number): boolean => {
+          try {
+            const gi: any = (window as any).__gameInstance;
+            if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+            const cache: any = (window as any).__lsAimCache;
+            if (!cache) return false;
+            const dx = ex - cache.cx; const dy = ey - cache.cy;
+            if (dx*dx + dy*dy <= cache.r2) return true;
+            const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+            if (corridors && corridors.length) {
+              for (let i = 0; i < corridors.length; i++) {
+                const c = corridors[i];
+                if (ex >= c.x && ex <= c.x + c.w && ey >= c.y && ey <= c.y + c.h) return true;
+              }
+            }
+            return false;
+          } catch { return true; }
+        };
         // Boss priority: if a boss is active & alive, always (re)lock to boss, even mid-flight
         const bossMgr: any = (window as any).__bossManager;
         const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
-        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && b.targetId !== 'boss') {
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && isVisibleLS(boss.x, boss.y) && b.targetId !== 'boss') {
           b.targetId = 'boss';
         }
         // Resolve current locked target if any
@@ -1232,6 +1283,7 @@ export class BulletManager {
             const near = this.queryEnemies(b.x, b.y, 400);
             for (let i2 = 0; i2 < near.length; i2++) {
               const e = near[i2];
+              if (!isVisibleLS(e.x, e.y)) continue;
               const eid = (e as any).id || (e as any)._gid;
               if (eid === b.targetId && e.active && e.hp > 0) { target = e; break; }
             }
@@ -1283,6 +1335,24 @@ export class BulletManager {
       }
       // Basic Pistol: subtle curving toward nearby forward targets (gentle seeking) with optional wobble
       if (b.weaponType === WeaponType.PISTOL && b.active) {
+        const isVisibleLS = (ex: number, ey: number): boolean => {
+          try {
+            const gi: any = (window as any).__gameInstance;
+            if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+            const cache: any = (window as any).__lsAimCache;
+            if (!cache) return false;
+            const dx = ex - cache.cx; const dy = ey - cache.cy;
+            if (dx*dx + dy*dy <= cache.r2) return true;
+            const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+            if (corridors && corridors.length) {
+              for (let i = 0; i < corridors.length; i++) {
+                const c = corridors[i];
+                if (ex >= c.x && ex <= c.x + c.w && ey >= c.y && ey <= c.y + c.h) return true;
+              }
+            }
+            return false;
+          } catch { return true; }
+        };
         const nowT = performance.now();
         const seekEvery = 80; // ms
         const nextAt = (b as any)._seekNextAt || 0;
@@ -1297,7 +1367,7 @@ export class BulletManager {
           const cand = this.queryEnemies(b.x, b.y, searchRadius);
           let best: any = null; let bestScore = -Infinity;
           for (let ci = 0; ci < cand.length; ci++) {
-            const e = cand[ci]; if (!e.active || e.hp <= 0) continue;
+            const e = cand[ci]; if (!e.active || e.hp <= 0) continue; if (!isVisibleLS(e.x, e.y)) continue;
             const dx = e.x - b.x; const dy = e.y - b.y; const d2 = dx*dx + dy*dy; if (d2 < 12*12) continue; // skip self-collocated
             const dist = Math.sqrt(d2);
             const dot = (dx*fx + dy*fy) / (dist || 1);
@@ -1613,9 +1683,19 @@ export class BulletManager {
             const fallbackId = (b as any)._pendingFallbackEnemyId;
             let targetEnemy: any = null;
             const nearby = this.queryEnemies(cx, cy, 1400);
+            const isVisibleLS = (ex: number, ey: number): boolean => {
+              try {
+                const gi: any = (window as any).__gameInstance; if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+                const cache: any = (window as any).__lsAimCache; if (!cache) return false;
+                const dx = ex - cache.cx, dy = ey - cache.cy; if (dx*dx + dy*dy <= cache.r2) return true;
+                const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+                if (corridors && corridors.length) { for (let i = 0; i < corridors.length; i++) { const c = corridors[i]; if (ex >= c.x && ex <= c.x + c.w && ey >= c.y && ey <= c.y + c.h) return true; } }
+                return false;
+              } catch { return true; }
+            };
             let nearest: any = null; let nearestD2 = Infinity;
             for (let i2=0;i2<nearby.length;i2++) {
-              const e = nearby[i2]; if (!e.active || e.hp<=0) continue;
+              const e = nearby[i2]; if (!e.active || e.hp<=0) continue; if (!isVisibleLS(e.x, e.y)) continue;
               const eid = (e as any).id || (e as any)._gid;
               const dxp = e.x - cx; const dyp = e.y - cy; const d2p = dxp*dxp + dyp*dyp;
               if (d2p < nearestD2) { nearestD2 = d2p; nearest = e; }
@@ -1918,7 +1998,7 @@ export class BulletManager {
                   anyE._resonanceStacks = 0;
                 }
               }
-              this.enemyManager.takeDamage(enemy, outDamage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel);
+              this.enemyManager.takeDamage(enemy, outDamage, isCritical, false, b.weaponType, b.x, b.y, weaponLevel, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
               // Singularity Spear: explode on each contact (micro-explosion)
               if (b.weaponType === WeaponType.SINGULARITY_SPEAR) {
                 try {
@@ -2090,10 +2170,21 @@ export class BulletManager {
             if (b.weaponType === WeaponType.PSIONIC_WAVE && (b as any).bouncesRemaining && (b as any).bouncesRemaining > 0) {
               const searchRadius = 560;
               const candidates = this.queryEnemies(b.x, b.y, searchRadius);
+              const isVisibleLS = (ex: number, ey: number): boolean => {
+                try {
+                  const gi: any = (window as any).__gameInstance;
+                  if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+                  const cache: any = (window as any).__lsAimCache; if (!cache) return false;
+                  const dx = ex - cache.cx, dy = ey - cache.cy; if (dx*dx + dy*dy <= cache.r2) return true;
+                  const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+                  if (corridors) { for (let i=0;i<corridors.length;i++){ const c=corridors[i]; if (ex>=c.x && ex<=c.x+c.w && ey>=c.y && ey<=c.y+c.h) return true; } }
+                  return false;
+                } catch { return true; }
+              };
               let best: any = null; let bestD2 = Infinity;
               for (let ci = 0; ci < candidates.length; ci++) {
                 const c = candidates[ci];
-                if (!c.active || c.hp <= 0) continue;
+                if (!c.active || c.hp <= 0) continue; if (!isVisibleLS(c.x, c.y)) continue;
                 const cid = (c as any).id || (c as any)._gid;
                 if (b.hitIds && cid && b.hitIds.indexOf(cid) !== -1) continue;
                 const dxC = c.x - b.x; const dyC = c.y - b.y; const d2C = dxC*dxC + dyC*dyC;
@@ -2196,10 +2287,21 @@ export class BulletManager {
               // Attempt to find a new target different from already hit enemies
               const searchRadius = 520; // generous search radius
               const candidates = this.queryEnemies(b.x, b.y, searchRadius);
+              const isVisibleLS = (ex: number, ey: number): boolean => {
+                try {
+                  const gi: any = (window as any).__gameInstance;
+                  if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+                  const cache: any = (window as any).__lsAimCache; if (!cache) return false;
+                  const dx = ex - cache.cx, dy = ey - cache.cy; if (dx*dx + dy*dy <= cache.r2) return true;
+                  const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+                  if (corridors) { for (let i=0;i<corridors.length;i++){ const c=corridors[i]; if (ex>=c.x && ex<=c.x+c.w && ey>=c.y && ey<=c.y+c.h) return true; } }
+                  return false;
+                } catch { return true; }
+              };
               let best: any = null; let bestD2 = Infinity;
               for (let ci = 0; ci < candidates.length; ci++) {
                 const c = candidates[ci];
-                if (!c.active || c.hp <= 0) continue;
+                if (!c.active || c.hp <= 0) continue; if (!isVisibleLS(c.x, c.y)) continue;
                 const cid = (c as any).id || (c as any)._gid;
                 if (b.hitIds && cid && b.hitIds.indexOf(cid) !== -1) continue; // already hit
                 const dxC = c.x - b.x; const dyC = c.y - b.y; const d2C = dxC*dxC + dyC*dyC;
@@ -2221,10 +2323,21 @@ export class BulletManager {
             if (b.weaponType === WeaponType.SERPENT_CHAIN && (b as any).bouncesRemaining && (b as any).bouncesRemaining > 0) {
               const searchRadius = 560;
               const candidates = this.queryEnemies(b.x, b.y, searchRadius);
+              const isVisibleLS = (ex: number, ey: number): boolean => {
+                try {
+                  const gi: any = (window as any).__gameInstance;
+                  if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+                  const cache: any = (window as any).__lsAimCache; if (!cache) return false;
+                  const dx = ex - cache.cx, dy = ey - cache.cy; if (dx*dx + dy*dy <= cache.r2) return true;
+                  const corridors = cache.corridors as Array<{x:number;y:number;w:number;h:number}> | undefined;
+                  if (corridors) { for (let i=0;i<corridors.length;i++){ const c=corridors[i]; if (ex>=c.x && ex<=c.x+c.w && ey>=c.y && ey<=c.y+c.h) return true; } }
+                  return false;
+                } catch { return true; }
+              };
               let best: any = null; let bestD2 = Infinity;
               for (let ci = 0; ci < candidates.length; ci++) {
                 const c = candidates[ci];
-                if (!c.active || c.hp <= 0) continue;
+                if (!c.active || c.hp <= 0) continue; if (!isVisibleLS(c.x, c.y)) continue;
                 const cid = (c as any).id || (c as any)._gid;
                 if (b.hitIds && cid && b.hitIds.indexOf(cid) !== -1) continue;
                 const dxC = c.x - b.x; const dyC = c.y - b.y; const d2C = dxC*dxC + dyC*dyC;
@@ -2405,12 +2518,7 @@ export class BulletManager {
                 bAny._resonanceStacks = 0;
               }
             }
-            if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-              (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, (b as any).level ?? 1);
-            } else {
-              boss.hp -= damage;
-              window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
-            }
+            (this.enemyManager as any).takeBossDamage?.(boss, damage, isCritical, b.weaponType, b.x, b.y, (b as any).level ?? 1, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
             // Tech Warrior charged volley lifesteal on boss hits as well
             try {
               if ((b as any)._isVolley) {
@@ -2462,12 +2570,7 @@ export class BulletManager {
                 const critMult = p?.critMultiplier ?? 2.0;
                 const isCritical = Math.random() < critChance;
                 const damage = isCritical ? b.damage * critMult : b.damage;
-                if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                  (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
-                } else {
-                  boss.hp -= damage;
-                  window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
-                }
+                (this.enemyManager as any).takeBossDamage?.(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
                 // Consume pierce and slow spear like on enemy hits
                 if (b.pierceRemaining && b.pierceRemaining > 0) {
                   b.pierceRemaining -= 1;
@@ -2508,12 +2611,7 @@ export class BulletManager {
               const critMult = p?.critMultiplier ?? 2.0;
               const isCritical = Math.random() < critChance;
               const damage = isCritical ? b.damage * critMult : b.damage;
-              if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
-              } else {
-                boss.hp -= damage;
-                window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
-              }
+              (this.enemyManager as any).takeBossDamage?.(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
               // Apply primer debuff so threads can latch and add boss as an anchor if a thread exists and has room
               try { (this.enemyManager as any).applyBossNeuralDebuff?.(boss); } catch {}
               try {
@@ -2585,12 +2683,7 @@ export class BulletManager {
               const critMult = p?.critMultiplier ?? 2.0;
               const isCritical = Math.random() < critChance;
               const damage = isCritical ? b.damage * critMult : b.damage;
-              if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
-              } else {
-                boss.hp -= damage;
-                window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
-              }
+              (this.enemyManager as any).takeBossDamage?.(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
               // Apply brief paralysis and schedule Oracle DoT on boss
               try {
                 const bAny: any = boss as any;
@@ -2640,12 +2733,7 @@ export class BulletManager {
               const critMult = p?.critMultiplier ?? 2.0;
               const isCritical = Math.random() < critChance;
               const damage = isCritical ? b.damage * critMult : b.damage;
-              if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
-              } else {
-                boss.hp -= damage;
-                window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
-              }
+              (this.enemyManager as any).takeBossDamage?.(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
               // Schedule light glyph DoT and brief paralysis on boss
               try {
                 const bAny: any = boss as any; const nowP = performance.now();
@@ -2724,12 +2812,7 @@ export class BulletManager {
                 continue; // handled
               } else {
                 // Reuse enemyManager damage pathway if compatible, else dispatch custom event
-                if (this.enemyManager && (this.enemyManager as any).takeBossDamage) {
-                  (this.enemyManager as any).takeBossDamage(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
-                } else {
-                  boss.hp -= damage;
-                  window.dispatchEvent(new CustomEvent('bossHit', { detail: { damage, crit: isCritical, x: b.x, y: b.y } }));
-                }
+                (this.enemyManager as any).takeBossDamage?.(boss, damage, isCritical, b.weaponType, b.x, b.y, weaponLevel);
                 if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#ff8080');
                 b.active = false;
                 this.bulletPool.push(b);
@@ -2884,7 +2967,7 @@ export class BulletManager {
       }
 
   // Trail accumulation for weapons with trail visuals (added LASER for subtle trace)
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
+  if ((b as any).origin !== 'TURRET' && (b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.active && b.projectileVisual && (b.projectileVisual as any).trailLength) {
         // Lightweight distance-based sampling to avoid oversampling at high bullet speed.
         // This reduces allocations and draw segment count significantly for Runner weapons.
         if (!b.trail) b.trail = [];
@@ -3042,7 +3125,7 @@ export class BulletManager {
       } catch { /* ignore blocker checks */ }
       ctx.save();
   // Draw trail first (behind projectile) – add neon variant for Runner Gun
-  if ((b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
+  if ((b as any).origin !== 'TURRET' && (b.weaponType === WeaponType.TRI_SHOT || b.weaponType === WeaponType.RAPID || b.weaponType === WeaponType.LASER || b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER || b.weaponType === WeaponType.TACHYON_SPEAR || b.weaponType === WeaponType.SINGULARITY_SPEAR || b.weaponType === WeaponType.RUNNER_GUN || b.weaponType === WeaponType.RUNNER_OVERDRIVE || b.weaponType === WeaponType.SERPENT_CHAIN) && b.trail && b.trail.length > 1 && b.projectileVisual && (b.projectileVisual as any).trailColor) {
         const visual = b.projectileVisual as any;
         ctx.save();
   // Thicker, softer trail for mortar; lightweight base pass for all bullets
@@ -3778,10 +3861,24 @@ export class BulletManager {
    * @returns Target entity or null
    */
   private selectSmartRifleTarget(cx: number, cy: number, searchRadius: number): any | null {
+    // Helper: in Last Stand, restrict targeting to what the player can actually "see"
+  const isVisibleLS = (ex: number, ey: number): boolean => {
+      try {
+        const gi: any = (window as any).__gameInstance;
+        if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+        const cache: any = (window as any).__lsAimCache;
+    if (!cache) return false;
+    const dx = ex - cache.cx; const dy = ey - cache.cy;
+    return (dx*dx + dy*dy) <= cache.r2; // circle-only
+      } catch {
+        // Be conservative in Last Stand: if visibility context fails, treat as not visible
+        try { return ((window as any).__gameInstance?.gameMode) !== 'LAST_STAND'; } catch { return true; }
+      }
+    };
     // Absolute boss priority
     const bossMgr: any = (window as any).__bossManager;
     const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
-    if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+    if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && isVisibleLS(boss.x, boss.y)) {
       return boss; // unconditional priority
     }
 
@@ -3793,6 +3890,8 @@ export class BulletManager {
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
       if (!e.active || e.hp <= 0) continue;
+      // Last Stand: skip enemies hidden by Fog-of-War
+      if (!isVisibleLS(e.x, e.y)) continue;
       const eMax = (e as any).maxHp != null ? (e as any).maxHp : e.hp;
       if (eMax > bestMaxHp) {
         best = e; bestMaxHp = eMax; bestHpTieBreaker = e.hp;
@@ -3803,7 +3902,7 @@ export class BulletManager {
     return best;
   }
 
-  public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1): Bullet | undefined {
+  public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1, origin?: 'PLAYER' | 'TURRET'): Bullet | undefined {
     // Resonant Web is a persistent orbit system; do not spawn a standard projectile
     if (weapon === WeaponType.RESONANT_WEB) {
       // Ensure strands are created on demand this tick
@@ -3964,9 +4063,10 @@ export class BulletManager {
     } else {
       b.life = spec?.lifetime ?? 60;
     }
-    b.active = true;
+  b.active = true;
   b.damage = appliedDamage; // leveled damage
     b.weaponType = weapon;
+  (b as any).origin = origin || 'PLAYER';
   (b as any).level = level; // persist level on the bullet for per-shot logic
     // Persist per-level base speed for Scrap Lash so the return phase and rethrows never scale from prior speed
     if (weapon === WeaponType.SCRAP_LASH) {
@@ -3983,7 +4083,7 @@ export class BulletManager {
         b.vy = (b.vy / m) * lashSpeed;
       } catch { /* ignore */ }
     }
-    b.projectileImageKey = projectileImageKey;
+  b.projectileImageKey = projectileImageKey;
     // If Heavy Gunner boost is active, tint bullets slightly more red
     try {
       const p: any = this.player as any;

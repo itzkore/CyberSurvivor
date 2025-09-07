@@ -843,6 +843,8 @@ export class Player {
               const r2 = radius * radius;
               for (let i = 0; i < enemies.length; i++) {
                 const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
+                // LS FoW: enemies hidden by fog are untargetable and immune to knockback
+                try { if (!this.isVisibleForAim(e.x, e.y)) continue; } catch { /* ignore */ }
                 const dx = e.x - this.x, dy = e.y - this.y; const d2 = dx*dx + dy*dy; if (d2 > r2) continue;
                 const d = Math.max(1, Math.sqrt(d2)); const nx = dx / d, ny = dy / d;
                 const boost = 2600; // a bit stronger than Data Sigil finale
@@ -881,6 +883,8 @@ export class Player {
               const r2 = radius * radius;
               for (let i = 0; i < enemies.length; i++) {
                 const e = enemies[i]; if (!e.active || e.hp <= 0) continue;
+                // LS FoW: enforce immunity to knockback when hidden
+                try { if (!this.isVisibleForAim(e.x, e.y)) continue; } catch { /* ignore */ }
                 const dx = e.x - this.x, dy = e.y - this.y; const d2 = dx*dx + dy*dy; if (d2 > r2) continue;
                 const d = Math.max(1, Math.sqrt(d2)); const nx = dx / d, ny = dy / d;
                 const boost = 2600;
@@ -1045,6 +1049,10 @@ export class Player {
 
   // Generic auto-aim target for most weapons (includes enemies, boss, treasures)
   let target = this.findNearestEnemy();
+  // Last Stand backstop: if any path returned a non-visible target, discard it
+  if (target && !this.isVisibleForAim(target.x, target.y)) {
+    target = null;
+  }
   if (target) {
     // Face target for non-sniper weapons and general aim visuals
     this.rotation = Math.atan2(target.y - this.y, target.x - this.x);
@@ -1056,10 +1064,10 @@ export class Player {
     // Use a conservative avoid window equal to charge time (1.5s) since we pick before starting charge
     let target = this.findSniperTargetAvoidingSoonExploding(1500);
     // Fallback: if no enemy is found, try boss, then treasures
-    if (!target) {
+  if (!target) {
       try {
         const boss = (this.gameContext as any)?.bossManager?.getActiveBoss?.();
-        if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+    if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE' && this.isVisibleForAim(boss.x, boss.y)) {
           target = boss as any;
         }
       } catch {}
@@ -1072,7 +1080,7 @@ export class Player {
           let bestT: any = null; let bestD2 = Infinity;
           for (let i = 0; i < treasures.length; i++) {
             const t = treasures[i];
-            if (!t || !t.active || (t as any).hp <= 0) continue;
+      if (!t || !t.active || (t as any).hp <= 0) continue; if (!this.isVisibleForAim(t.x, t.y)) continue;
             const dx = (t.x - this.x); const dy = (t.y - this.y); const d2 = dx*dx + dy*dy;
             if (d2 < bestD2) { bestD2 = d2; bestT = t; }
           }
@@ -1271,10 +1279,9 @@ export class Player {
           if (!(target && spec && typeof spec.range === 'number' && spec.range > 0)) {
             canFire = !!target;
           }
-          // Exception: Kamikaze Drone (HOMING) may spawn without any target nearby.
+          // Exception: Kamikaze Drone (HOMING) may spawn without target, but in Last Stand restrict to visible space.
           if (weaponType === WeaponType.HOMING) {
             canFire = true;
-            // Enforce per-level drone cap: check current hovering (ASCEND/HOVER) drones
             try {
               const bm = this.gameContext?.bulletManager;
               const lvl = Math.max(1, Math.min(7, Math.floor(level)));
@@ -1282,26 +1289,45 @@ export class Player {
               let hovering = 0;
               const bullets = bm?.bullets || [];
               for (let bi = 0; bi < bullets.length; bi++) {
-                const bb = bullets[bi];
-                if (!bb || !bb.active) continue;
-                if (bb.weaponType !== WeaponType.HOMING) continue;
-                const ph = (bb as any).phase;
-                if (ph === 'ASCEND' || ph === 'HOVER') { hovering++; if (hovering >= cap) { canFire = false; break; } }
+                const bb = bullets[bi]; if (!bb || !bb.active) continue; if (bb.weaponType !== WeaponType.HOMING) continue;
+                const ph = (bb as any).phase; if (ph === 'ASCEND' || ph === 'HOVER') { hovering++; if (hovering >= cap) { canFire = false; break; } }
+              }
+              // In LS, disallow spawning a homing drone if no visible enemy exists right now
+              if (canFire) {
+                const gi: any = (window as any).__gameInstance; const inLs = !!(gi && gi.gameMode === 'LAST_STAND');
+                if (inLs) {
+                  let anyVisible = false;
+                  const enemies = this.enemyProvider ? this.enemyProvider() : [];
+                  for (let i = 0; i < enemies.length; i++) { const e = enemies[i]; if (!e || !e.active || e.hp <= 0) continue; if (this.isVisibleForAim(e.x, e.y)) { anyVisible = true; break; } }
+                  if (!anyVisible) canFire = false;
+                }
               }
             } catch {}
           }
             if (canFire && target && spec && typeof spec.range === 'number' && spec.range > 0 && weaponType !== WeaponType.HOMING) {
               const dx = target.x - this.x;
               const dy = target.y - this.y;
-              const dist = Math.hypot(dx, dy);
+              let dist = Math.hypot(dx, dy);
               const isGunner = this.characterData?.id === 'heavy_gunner';
               let rangeMul = 1;
               if (isGunner && (weaponType === WeaponType.GUNNER_MINIGUN || weaponType === WeaponType.GUNNER_LAVA_MINIGUN)) {
                 const tShaped = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : this.getGunnerBoostT();
                 rangeMul = 1 + (this.gunnerBoostRange - 1) * tShaped;
               }
-              const effectiveRange = spec.range * rangeMul;
+              let effectiveRange = spec.range * rangeMul;
+              // LS: clamp effective range to vision radius (circle-only)
+              try {
+                const gi: any = (window as any).__gameInstance;
+                if (gi && gi.gameMode === 'LAST_STAND') {
+                  let rVis = 640; try { const tiles = typeof gi.getEffectiveFowRadiusTiles === 'function' ? gi.getEffectiveFowRadiusTiles() : 4; const ts = (typeof gi.fowTileSize === 'number') ? gi.fowTileSize : 160; rVis = Math.floor(tiles * ts * 0.95); } catch {}
+                  effectiveRange = Math.min(effectiveRange, rVis);
+                }
+              } catch {}
               canFire = dist <= effectiveRange;
+              // FoW gate: don't fire at targets outside visible field
+              if (canFire && !this.isVisibleForAim(target.x, target.y)) {
+                canFire = false;
+              }
               // Railgun: require a nearby enemy to even begin charging to avoid firing into empty space
               if (canFire && weaponType === WeaponType.RAILGUN) {
                 const minProximity = 480; // px
@@ -1310,6 +1336,10 @@ export class Player {
             }
           // Determine final target for this weapon.
           // For other weapons: fire only if a valid target is available and in range.
+          // If the current target is invisible (e.g., slipped behind fog), cancel this shot
+          if (canFire && target && !this.isVisibleForAim(target.x, target.y)) {
+            target = null; canFire = false;
+          }
           let fireTarget: Enemy | null = canFire ? target : null;
           // If no target but this is a homing drone, synthesize a forward dummy target so we can spawn.
           if (!fireTarget && canFire && weaponType === WeaponType.HOMING) {
@@ -1331,7 +1361,7 @@ export class Player {
               const pairs: Array<{ e: any; d2: number }> = [];
               // Enemies
               for (let i = 0; i < enemies.length; i++) {
-                const e = enemies[i]; if (!e || !(e as any).active || e.hp <= 0) continue;
+                const e = enemies[i]; if (!e || !(e as any).active || e.hp <= 0) continue; if (!this.isVisibleForAim(e.x, e.y)) continue;
                 const dx = (e.x - this.x); const dy = (e.y - this.y); const d2 = dx*dx + dy*dy;
                 if (d2 > rangeSq) continue; // enforce weapon range
                 pairs.push({ e, d2 });
@@ -1353,7 +1383,7 @@ export class Player {
                 if (emAny && typeof emAny.getTreasures === 'function') {
                   const treasures = emAny.getTreasures() as Array<{ x:number; y:number; active:boolean; hp:number }>;
                   for (let ti = 0; ti < treasures.length; ti++) {
-                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+                    const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue; if (!this.isVisibleForAim(t.x, t.y)) continue;
                     const dxT = (t.x - this.x); const dyT = (t.y - this.y); const d2T = dxT*dxT + dyT*dyT;
                     if (d2T <= rangeSq) pairs.push({ e: t as any, d2: d2T });
                   }
@@ -1683,6 +1713,49 @@ export class Player {
   // Removed setPlayerLook as player look is now based on shape/color
 
   /**
+   * Test if a world position is inside the player's visible FoW area for aiming.
+   * Returns true when FoW is disabled. Mirrors render-side radius and class/passive multipliers.
+   */
+  private isVisibleForAim(x: number, y: number): boolean {
+    // Strict in Last Stand: any failure defaults to NOT visible
+    try {
+      const gi: any = (window as any).__gameInstance;
+      const inLs = !!(gi && gi.gameMode === 'LAST_STAND');
+      if (inLs) {
+        // Prefer per-frame cache from Last Stand controller
+        try {
+          const cache: any = (window as any).__lsAimCache;
+          if (cache && typeof cache.cx === 'number' && typeof cache.cy === 'number' && typeof cache.r2 === 'number') {
+            const dxc = x - cache.cx, dyc = y - cache.cy;
+            return (dxc*dxc + dyc*dyc) <= cache.r2; // circle-only
+          }
+        } catch { /* fall through to compute fallback */ }
+        // Fallback compute from core only (circle); no corridor clearance for aim gating
+        try {
+          const core: any = (window as any).__lsCore;
+          const cx = (core && core.x != null) ? core.x : (gi?.player?.x ?? this.x);
+          const cy = (core && core.y != null) ? core.y : (gi?.player?.y ?? this.y);
+          let radiusPx = 640;
+          try { const tiles = typeof gi?.getEffectiveFowRadiusTiles === 'function' ? gi.getEffectiveFowRadiusTiles() : 4; const ts = (gi && typeof gi.fowTileSize === 'number') ? gi.fowTileSize : 160; radiusPx = Math.floor(tiles * ts * 0.95); } catch { /* keep fallback */ }
+          const dx1 = x - cx, dy1 = y - cy; return (dx1*dx1 + dy1*dy1) <= (radiusPx * radiusPx);
+        } catch { return false; }
+      }
+      // Non-LS: player-centered FoW (render-aligned). If context missing, default visible.
+      const g: any = this.gameContext as any;
+      if (!g || !g.fowEnabled || !g.fog) return true;
+      const ts: number = (g.fowTileSize || 160);
+      const baseTiles: number = Math.max(1, Math.floor(g.fowRadiusBase || 3));
+      const aimPad = (g?.__fowAimPad || 1.15);
+      const radiusPx = Math.max(220, Math.floor(baseTiles * ts * 0.95 * aimPad));
+      const dx = (x - this.x); const dy = (y - this.y);
+      return (dx * dx + dy * dy) <= (radiusPx * radiusPx);
+    } catch {
+      // If anything goes wrong, be strict in LS and permissive elsewhere
+      try { return ((window as any).__gameInstance?.gameMode) !== 'LAST_STAND'; } catch { return false; }
+    }
+  }
+
+  /**
    * Unified target acquisition for all weapons.
    * - mode 'closest' picks the nearest valid candidate (enemies, boss, treasures, chests).
    * - mode 'toughest' prefers highest-HP within range, then closest within range, then closest overall.
@@ -1701,8 +1774,8 @@ export class Player {
     const includeChests = options?.includeChests !== false;
     const avoidMs = Math.max(0, options?.avoidExplodingBeforeMs || 0);
 
-    // Compute effective max weapon range (Infinity if any weapon lacks finite range)
-    let maxRange = 0;
+  // Compute effective max weapon range (Infinity if any weapon lacks finite range)
+  let maxRange = 0;
     try {
       if (this.activeWeapons && this.activeWeapons.size > 0) {
         for (const [w, _lvl] of this.activeWeapons) {
@@ -1720,34 +1793,20 @@ export class Player {
         maxRange = Infinity;
       }
     } catch { maxRange = Infinity; }
+    // Last Stand: clamp max range to the edge of vision circle so aim cannot exceed visible area
+    try {
+      const gi: any = (window as any).__gameInstance;
+      if (gi && gi.gameMode === 'LAST_STAND') {
+        let rVis = 640;
+        try { const tiles = typeof gi.getEffectiveFowRadiusTiles === 'function' ? gi.getEffectiveFowRadiusTiles() : 4; const ts = (typeof gi.fowTileSize === 'number') ? gi.fowTileSize : 160; rVis = Math.floor(tiles * ts * 0.95); } catch {}
+        if (Number.isFinite(maxRange)) maxRange = Math.min(maxRange, rVis);
+      }
+    } catch { /* ignore */ }
     const maxRangeSq = Number.isFinite(maxRange) ? (maxRange * maxRange) : Infinity;
 
-    const em: any = (this.gameContext as any)?.enemyManager;
-    // FOW visibility gating: only consider candidates inside current visible circle when enabled
-  const isVisible = (x: number, y: number): boolean => {
-      try {
-        const g: any = this.gameContext as any;
-        if (!g || !g.fowEnabled || !g.fog) return true; // no FOW, all visible
-        const ts: number = (g.fowTileSize || 160);
-        // Effective radius in pixels (match Game.render computation)
-        let baseTiles: number = Math.max(1, Math.floor(g.fowRadiusBase || 3));
-        // Apply per-operative vision baseline tweaks and passive multiplier if present
-        const anyP: any = this as any;
-        // Class tweaks: snipers see a bit farther; titan a bit less; runner/sorcerer neutral
-        const cid = anyP?.characterData?.id as string | undefined;
-        let classMul = 1.0;
-        if (cid === 'ghost_operative' || cid === 'shadow_operative') classMul = 1.2; // +20% vision
-        else if (cid === 'titan_mech') classMul = 0.9; // slightly tighter FOV
-        else if (cid === 'cyber_runner' || cid === 'data_sorcerer') classMul = 1.05; // tiny boost
-        const passiveMul = Math.max(0.5, Math.min(2.5, anyP?.visionMultiplier || 1));
-    // Aim pad: allow a small margin beyond the visual circle for targeting; also clamp a safety minimum
-    const aimPad = (g?.__fowAimPad || 1.15);
-    const safetyMin = 220; // px
-    const radiusPx = Math.max(safetyMin, Math.floor(baseTiles * ts * 0.95 * classMul * passiveMul * aimPad));
-        const dx = (x - this.x); const dy = (y - this.y);
-        return (dx * dx + dy * dy) <= (radiusPx * radiusPx);
-      } catch { return true; }
-    };
+  const em: any = (this.gameContext as any)?.enemyManager;
+  // FOW visibility gating: reuse unified helper that matches LS core/corridor model
+  const isVisible = (x: number, y: number): boolean => this.isVisibleForAim(x, y);
     const enemies: Enemy[] = this.enemyProvider ? [...this.enemyProvider()] : [];
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -1873,14 +1932,14 @@ export class Player {
       const d2B = dxB*dxB + dyB*dyB; bestD2 = d2B; pick = boss as any;
     }
     for (let i = 0; i < enemies.length; i++) {
-      const e = enemies[i]; if (!enemyOk(e)) continue;
+      const e = enemies[i]; if (!enemyOk(e)) continue; if (!isVisible(e.x, e.y)) continue;
       const dx = (e.x ?? 0) - (this.x ?? 0);
       const dy = (e.y ?? 0) - (this.y ?? 0);
       const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = e; }
     }
     if (includeTreasures) {
       for (let i = 0; i < treasures.length; i++) {
-        const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue;
+        const t = treasures[i]; if (!t || !t.active || t.hp <= 0) continue; if (!isVisible(t.x, t.y)) continue;
         const dx = (t.x ?? 0) - (this.x ?? 0);
         const dy = (t.y ?? 0) - (this.y ?? 0);
         const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (t as unknown as Enemy); }
@@ -1888,7 +1947,7 @@ export class Player {
     }
     if (includeChests) {
       for (let i = 0; i < chests.length; i++) {
-        const c = chests[i]; if (!c || !c.active) continue;
+        const c = chests[i]; if (!c || !c.active) continue; if (!isVisible(c.x, c.y)) continue;
         const dx = (c.x ?? 0) - (this.x ?? 0);
         const dy = (c.y ?? 0) - (this.y ?? 0);
         const d2 = dx*dx + dy*dy; if (d2 < bestD2) { bestD2 = d2; pick = (c as unknown as Enemy); }
@@ -1911,6 +1970,13 @@ export class Player {
   }
 
   private shootAt(target: Enemy, weaponType: WeaponType) {
+    // Hard gate: never fire at targets hidden by Fog-of-War in Last Stand (final safety net)
+    try {
+      const gi: any = (window as any).__gameInstance;
+      if (gi && gi.gameMode === 'LAST_STAND') {
+        if (!this.isVisibleForAim(target.x, target.y)) return;
+      }
+    } catch { /* ignore and proceed for non-LS */ }
     // Rogue Hacker: suppress class weapon bullets (zones are auto-cast elsewhere)
     if (this.characterData?.id === 'rogue_hacker' && weaponType === WeaponType.HACKER_VIRUS) {
       return;
@@ -2670,6 +2736,8 @@ export class Player {
           const effRange = (beamObj as any)._effectiveRange ?? range;
           for (const e of enemies) {
             if (!e.active || e.hp <= 0) continue;
+            // Last Stand safety: skip invisible enemies outright
+            try { if (!this.isVisibleForAim(e.x, e.y)) continue; } catch { /* ignore vis check errors */ }
             const relX = e.x - originX;
             const relY = e.y - originY;
             const proj = relX * cosA + relY * sinA; // distance along beam
@@ -2679,7 +2747,7 @@ export class Player {
               // Apply tick damage once per frame segment
               const deltaSec = (now - beamObj.lastTick)/1000;
               const dmg = dps * deltaSec;
-              game.enemyManager.takeDamage(e, dmg, false, false, WeaponType.RAILGUN, this.x, this.y, weaponLevel);
+              game.enemyManager.takeDamage(e, dmg, false, false, WeaponType.RAILGUN, this.x, this.y, weaponLevel, false, 'PLAYER');
             }
           }
           // Boss intersection damage
@@ -2695,7 +2763,7 @@ export class Player {
                 if (ortho <= (thickness + (boss.radius || 160))) {
                   const deltaSec = (now - beamObj.lastTick)/1000;
                   const dmg = dps * deltaSec;
-                  (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dmg, false, WeaponType.RAILGUN, originX, originY, weaponLevel);
+                  (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dmg, false, WeaponType.RAILGUN, originX, originY, weaponLevel, false, 'PLAYER');
                 }
               }
             }
@@ -2834,6 +2902,7 @@ export class Player {
         for (let i = 0; i < enemies.length; i++) {
           const e = enemies[i];
           if (!e || !e.active || e.hp <= 0) continue;
+          if (!this.isVisibleForAim(e.x, e.y)) continue;
           const anyE: any = e as any;
           const until: number = anyE._specterMarkUntil || 0;
           if (until > 0 && (until - nowPick) <= 100) continue; // about to explode
@@ -2887,7 +2956,7 @@ export class Player {
           const dist = Math.hypot(e.x - originX, e.y - originY);
           // Damage only the targeted enemy
           const distCrit = dist > 600 ? 1.25 : 1.0;
-          game.enemyManager.takeDamage(e, perShot * distCrit, distCrit > 1.0, false, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel);
+          game.enemyManager.takeDamage(e, perShot * distCrit, distCrit > 1.0, false, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel, false, 'PLAYER');
           if (game && game.dpsHistory) game.dpsHistory.push({ time: performance.now(), damage: perShot * distCrit });
           // Mark if survived and not in anti-repeat window
           try {
@@ -2912,10 +2981,7 @@ export class Player {
           const ang = Math.atan2(by - originY, bx - originX);
           const dist = Math.hypot(bx - originX, by - originY);
           const distCrit = dist > 600 ? 1.25 : 1.0;
-          try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, perShot * distCrit, distCrit > 1.0, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel); } catch {
-            boss.hp -= perShot * distCrit;
-            window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: perShot * distCrit, isCritical: distCrit > 1.0, x: bx, y: by } }));
-          }
+          (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, perShot * distCrit, distCrit > 1.0, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel, false, 'PLAYER');
           // Mark boss if survived and not in anti-repeat
           try {
             const bAny: any = boss; if (bAny.active && bAny.hp > 0) {
@@ -2976,6 +3042,7 @@ export class Player {
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
         if (!e.active || e.hp <= 0) continue;
+    if (!this.isVisibleForAim(e.x, e.y)) continue; // FoW: skip invisible
         const relX = e.x - originX;
         const relY = e.y - originY;
         const proj = relX * cosA + relY * sinA;
@@ -2988,17 +3055,19 @@ export class Player {
       candidates.sort((a,b) => a.proj - b.proj);
   // Track the first-hit enemy to apply Specter Mark for evolved variant
   let firstHitEnemy: any = null;
+  let anyVisibleEffect = false;
   for (let i = 0; i < candidates.length && remaining > 0.5; i++) {
         const e = candidates[i].e;
         // Long-range sweet spot crit: extra sting if shot traveled far (> 600px)
   const distCrit = candidates[i].proj > 600 ? 1.25 : 1.0; // reduced long-shot bonus
         const dmg = remaining * distCrit;
   const wType = (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? WeaponType.SPECTRAL_EXECUTIONER : WeaponType.GHOST_SNIPER);
-  game.enemyManager.takeDamage(e, dmg, distCrit > 1.0, false, wType, originX, originY, weaponLevel);
+  game.enemyManager.takeDamage(e, dmg, distCrit > 1.0, false, wType, originX, originY, weaponLevel, false, 'PLAYER');
         // bleed a bit of damage into damage history for HUD DPS
         if (game && game.dpsHistory) game.dpsHistory.push({ time: performance.now(), damage: dmg });
         remaining *= falloff;
         if (!firstHitEnemy) firstHitEnemy = e;
+    anyVisibleEffect = true;
       }
 
       // Spectral Executioner: apply Specter Mark to first hit target, only if it survived the initial shot
@@ -3017,7 +3086,7 @@ export class Player {
       }
 
       // Also damage treasures intersecting the beam
-      try {
+  try {
         const emAny: any = game.enemyManager;
         if (emAny && typeof emAny.getTreasures === 'function') {
           const treasures = emAny.getTreasures() as Array<{ x:number;y:number;radius:number;active:boolean;hp:number }>;
@@ -3025,11 +3094,13 @@ export class Player {
           const dmgVal = dmgTreasure * heavyMult * gdmSN;
           for (let ti = 0; ti < treasures.length; ti++) {
             const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+    if (!this.isVisibleForAim(t.x, t.y)) continue; // FoW gate
             const relX = t.x - originX; const relY = t.y - originY;
             const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > effRange) continue;
             const ortho = Math.abs(-sinA * relX + cosA * relY);
             if (ortho <= (thickness + t.radius) && typeof emAny.damageTreasure === 'function') {
               emAny.damageTreasure(t, dmgVal);
+      anyVisibleEffect = true;
             }
           }
         }
@@ -3039,21 +3110,16 @@ export class Player {
       try {
         const bossMgr: any = (window as any).__bossManager;
         const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
-        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && this.isVisibleForAim(boss.x, boss.y)) {
           const relX = boss.x - originX;
           const relY = boss.y - originY;
           const proj = relX * cosA + relY * sinA;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
           if (proj >= 0 && proj <= effRange && ortho <= (thickness + (boss.radius||160))) {
             const bossDmg = (baseDamage * heavyMult * gdmSN) * 0.7; // include global damage passive
-            try {
-              const wType = (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? WeaponType.SPECTRAL_EXECUTIONER : WeaponType.GHOST_SNIPER);
-              (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, bossDmg, (proj > 600), wType, originX, originY, weaponLevel);
-            } catch {
-              // Fallback in unlikely absence
-              boss.hp -= bossDmg;
-              window.dispatchEvent(new CustomEvent('damageDealt', { detail: { amount: bossDmg, isCritical: proj > 600, x: boss.x, y: boss.y } }));
-            }
+            const wType = (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? WeaponType.SPECTRAL_EXECUTIONER : WeaponType.GHOST_SNIPER);
+            (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, bossDmg, (proj > 600), wType, originX, originY, weaponLevel, false, 'PLAYER');
+            anyVisibleEffect = true;
             // Spectral Executioner: always mark the boss on intersection (respect anti-repeat and existing mark)
             try {
               if (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER)) {
@@ -3076,27 +3142,29 @@ export class Player {
         }
       } catch {}
 
-      // Recoil: nudge player backward a touch
-      this.x -= Math.cos(beamAngle) * 8;
-      this.y -= Math.sin(beamAngle) * 8;
+      // Recoil and visuals only if something visible was actually affected
+      if (anyVisibleEffect) {
+        this.x -= Math.cos(beamAngle) * 8;
+        this.y -= Math.sin(beamAngle) * 8;
 
-      // Visual: short-lived sniper beam
-      if (!game._activeBeams) game._activeBeams = [];
-      const beamObj = {
+        // Visual: short-lived sniper beam
+        if (!game._activeBeams) game._activeBeams = [];
+        const beamObj = {
   type: (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? 'sniper_exec' : 'sniper'),
-        x: originX,
-        y: originY,
-        angle: beamAngle,
-        range: effRange,
-        start: performance.now(),
-        duration: 1500, // 1.5s fade-out
-        lastTick: performance.now(),
-        weaponLevel,
-        thickness: 10
-      };
-      game._activeBeams.push(beamObj);
-      // Impact feel
-      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+          x: originX,
+          y: originY,
+          angle: beamAngle,
+          range: effRange,
+          start: performance.now(),
+          duration: 1500, // 1.5s fade-out
+          lastTick: performance.now(),
+          weaponLevel,
+          thickness: 10
+        };
+        game._activeBeams.push(beamObj);
+        // Impact feel
+        window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+      }
     };
     requestAnimationFrame(chargeStep);
   }
@@ -3168,7 +3236,7 @@ export class Player {
         this.shootCooldowns.set(weaponKind, effCd);
       }
       const game: any = this.gameContext; if (!game) return;
-    const beamAngle = Math.atan2(target.y - originY, target.x - originX);
+  const beamAngle = Math.atan2(target.y - originY, target.x - originX);
   const range = spec.range || 1200;
   const ghostSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
   const baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
@@ -3192,9 +3260,11 @@ export class Player {
       const cosA = Math.cos(beamAngle);
       const sinA = Math.sin(beamAngle);
       const candidates: Array<{e: Enemy, proj: number}> = [];
+      // Build only visible candidates so LS FoW can never be bypassed by range
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
         if (!e.active || e.hp <= 0) continue;
+        if (!this.isVisibleForAim(e.x, e.y)) continue;
         const relX = e.x - originX; const relY = e.y - originY;
   const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > effRange) continue;
         const ortho = Math.abs(-sinA * relX + cosA * relY);
@@ -3205,6 +3275,7 @@ export class Player {
   const evolvedToBlackSun = (weaponKind === WeaponType.BLACK_SUN) || this.activeWeapons.has(WeaponType.BLACK_SUN);
   // Schedule DoT (non-evolved) or spawn Black Sun seeds (evolved) on each hit enemy
       const nowBase = performance.now();
+      let anyVisibleEffect = false;
   for (let i = 0; i < candidates.length; i++) {
         const e = candidates[i].e as any;
         if (evolvedToBlackSun) {
@@ -3222,6 +3293,7 @@ export class Player {
             const gm: any = this.gameContext?.enemyManager;
             if (gm && typeof gm.spawnBlackSunSeed === 'function') {
               gm.spawnBlackSunSeed(e.x, e.y, { fuseMs, pullRadius, pullStrength, collapseRadius, slowPct: (params?.seedSlowPct ?? 0.25), tickIntervalMs: (params?.seedTickIntervalMs ?? 300), ticks: seedTicks, tickDmg: seedTickDmg, collapseDmg });
+              anyVisibleEffect = true;
             }
           } catch { /* ignore spawn errors */ }
     } else {
@@ -3230,7 +3302,7 @@ export class Player {
           if (!dot) {
             e._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 } as any;
       // Immediate impact damage on hit (single instance) in addition to DoT
-      try { (this.gameContext as any)?.enemyManager?.takeDamage?.(e, Math.max(1, Math.round(baseDamageGhost * 0.6 * gdmVS)), false, false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+      try { (this.gameContext as any)?.enemyManager?.takeDamage?.(e, Math.max(1, Math.round(baseDamageGhost * 0.6 * gdmVS)), false, false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel, false, 'PLAYER'); } catch {}
       if (e._voidSniperDot.left > 0) e._voidSniperDot.left--; // consume the first-tick slot
           } else {
             dot.left = Math.max(dot.left, ticks);
@@ -3238,12 +3310,13 @@ export class Player {
             dot.next = nowBase + tickIntervalMs;
             dot.stacks = (dot.stacks || 1) + 1;
       // Apply a reduced immediate hit when stacking to reward focus, but smaller to prevent burst spikes
-      try { (this.gameContext as any)?.enemyManager?.takeDamage?.(e, Math.max(1, Math.round(baseDamageGhost * 0.25 * gdmVS)), false, false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+      try { (this.gameContext as any)?.enemyManager?.takeDamage?.(e, Math.max(1, Math.round(baseDamageGhost * 0.25 * gdmVS)), false, false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel, false, 'PLAYER'); } catch {}
       if (dot.left > 0) dot.left--; // consume the first-tick slot
           }
           // Brief paralysis on impact (0.5s)
           e._paralyzedUntil = Math.max(e._paralyzedUntil || 0, nowBase + 500);
           e._lastHitByWeapon = WeaponType.VOID_SNIPER as any;
+          anyVisibleEffect = true;
         }
       }
       // If evolved and no enemy was intersected, plant a seed at max beam range so ability is visible
@@ -3261,9 +3334,15 @@ export class Player {
           const collapseDmg = Math.max(1, Math.round((params?.collapseMult ?? 1.8) * baseDamageGhost * gdmVS));
           const sx = originX + Math.cos(beamAngle) * range;
           const sy = originY + Math.sin(beamAngle) * range;
+          // Do not plant miss-seeds in fog
+          if (!this.isVisibleForAim(sx, sy)) {
+            // skip spawning if endpoint is not visible
+          } else {
           const gm: any = this.gameContext?.enemyManager;
           if (gm && typeof gm.spawnBlackSunSeed === 'function') {
             gm.spawnBlackSunSeed(sx, sy, { fuseMs, pullRadius, pullStrength, collapseRadius, slowPct: (params?.seedSlowPct ?? 0.25), tickIntervalMs: (params?.seedTickIntervalMs ?? 300), ticks: seedTicks, tickDmg: seedTickDmg, collapseDmg });
+            anyVisibleEffect = true;
+          }
           }
         } catch { /* ignore miss-seed errors */ }
       }
@@ -3275,11 +3354,13 @@ export class Player {
           const treasures = emAny.getTreasures() as Array<{ x:number;y:number;radius:number;active:boolean;hp:number }>;
           for (let ti = 0; ti < treasures.length; ti++) {
             const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
+            if (!this.isVisibleForAim(t.x, t.y)) continue;
             const relX = t.x - originX; const relY = t.y - originY;
             const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > effRange) continue;
             const ortho = Math.abs(-sinA * relX + cosA * relY);
             if (ortho <= (thickness + t.radius) && typeof emAny.damageTreasure === 'function') {
               emAny.damageTreasure(t, Math.max(1, Math.round(perTick)));
+              anyVisibleEffect = true;
             }
           }
         }
@@ -3289,7 +3370,7 @@ export class Player {
       try {
         const bossMgr: any = (window as any).__bossManager;
         const boss = bossMgr && bossMgr.getBoss ? bossMgr.getBoss() : null;
-        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+        if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && this.isVisibleForAim(boss.x, boss.y)) {
           const relX = boss.x - originX; const relY = boss.y - originY;
           const proj = relX * cosA + relY * sinA;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
@@ -3310,6 +3391,7 @@ export class Player {
                 const gm: any = this.gameContext?.enemyManager;
                 if (gm && typeof gm.spawnBlackSunSeed === 'function') {
                   gm.spawnBlackSunSeed(boss.x, boss.y, { fuseMs, pullRadius, pullStrength, collapseRadius, slowPct: (params?.seedSlowPct ?? 0.25), tickIntervalMs: (params?.seedTickIntervalMs ?? 300), ticks: seedTicks, tickDmg: seedTickDmg, collapseDmg });
+                  anyVisibleEffect = true;
                 }
               } catch { /* ignore boss spawn errors */ }
       } else {
@@ -3317,29 +3399,32 @@ export class Player {
               if (!dotB) {
                 bAny._voidSniperDot = { next: nowBase + tickIntervalMs, left: ticks, dmg: perTick, stacks: 1 };
         // Immediate impact damage on boss as well
-        try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, Math.max(1, Math.round(baseDamageGhost * 0.6 * gdmVS)), false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+  try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, Math.max(1, Math.round(baseDamageGhost * 0.6 * gdmVS)), false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel, false, 'PLAYER'); } catch {}
         if ((bAny._voidSniperDot as any).left > 0) (bAny._voidSniperDot as any).left--; // consume first tick
               } else {
                 dotB.left = Math.max(dotB.left, ticks);
                 dotB.dmg = (dotB.dmg || 0) + perTick;
                 dotB.next = nowBase + tickIntervalMs;
                 dotB.stacks = (dotB.stacks || 1) + 1;
-        // Reduced immediate hit on stacking
-        try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, Math.max(1, Math.round(baseDamageGhost * 0.25 * gdmVS)), false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel); } catch {}
+  // Reduced immediate hit on stacking
+  try { (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, Math.max(1, Math.round(baseDamageGhost * 0.25 * gdmVS)), false, WeaponType.VOID_SNIPER, originX, originY, weaponLevel, false, 'PLAYER'); } catch {}
         if (dotB.left > 0) dotB.left--; // consume first tick
               }
               (boss as any)._lastHitByWeapon = WeaponType.VOID_SNIPER;
               try { this.gameContext?.particleManager?.spawn(boss.x, boss.y, 1, '#B266FF'); } catch {}
+              anyVisibleEffect = true;
             }
           }
         }
       } catch {}
       // Recoil & visuals
-      this.x -= Math.cos(beamAngle) * 8; this.y -= Math.sin(beamAngle) * 8;
-      if (!game._activeBeams) game._activeBeams = [];
-  const beamObj = { type: 'voidsniper', x: originX, y: originY, angle: beamAngle, range: effRange, start: performance.now(), duration: 1500, lastTick: performance.now(), weaponLevel, thickness: 10 };
-      game._activeBeams.push(beamObj);
-      window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+      if (anyVisibleEffect) {
+        this.x -= Math.cos(beamAngle) * 8; this.y -= Math.sin(beamAngle) * 8;
+        if (!game._activeBeams) game._activeBeams = [];
+        const beamObj = { type: 'voidsniper', x: originX, y: originY, angle: beamAngle, range: effRange, start: performance.now(), duration: 1500, lastTick: performance.now(), weaponLevel, thickness: 10 } as any;
+        game._activeBeams.push(beamObj);
+        window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 120, intensity: 3 } }));
+      }
     };
     requestAnimationFrame(chargeStep);
   }
@@ -3410,7 +3495,7 @@ export class Player {
       const thickness = 6;
       const rayAligned: Array<{e: Enemy, proj: number}> = [];
       for (let i = 0; i < enemies.length; i++) {
-        const e = enemies[i]; if (!e || !e.active || e.hp <= 0) continue;
+        const e = enemies[i]; if (!e || !e.active || e.hp <= 0) continue; if (!this.isVisibleForAim(e.x, e.y)) continue;
         const relX = e.x - originX, relY = e.y - originY;
         const proj = relX * cosA + relY * sinA; if (proj < 0 || proj > range) continue;
         const ortho = Math.abs(-sinA * relX + cosA * relY);
@@ -3423,6 +3508,7 @@ export class Player {
         const remaining = [] as Array<{e: Enemy, d2: number}>;
         for (let i = 0; i < enemies.length; i++) {
           const e = enemies[i]; if (!e || !e.active || e.hp <= 0 || used.has(e)) continue;
+          if (!this.isVisibleForAim(e.x, e.y)) continue;
           const dx = e.x - originX, dy = e.y - originY; const d2 = dx*dx + dy*dy;
           if (Math.sqrt(d2) <= range) remaining.push({ e, d2 });
         }
@@ -3430,7 +3516,7 @@ export class Player {
         for (let i=0;i<remaining.length && selected.length<5;i++){ used.add(remaining[i].e); selected.push(remaining[i].e); }
       }
       // Consider boss as a candidate if active
-      if (selected.length < 5 && boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
+  if (selected.length < 5 && boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0 && this.isVisibleForAim(boss.x, boss.y)) {
         selected.push(boss as any as Enemy);
       }
 
@@ -3450,7 +3536,7 @@ export class Player {
           // Black Sun visuals ignore blocker walls completely
           let visDist = Math.hypot(t.x - originX, t.y - originY);
           if (t === (boss as any)) {
-            em.takeBossDamage?.(t, beamDamage, false, WeaponType.BLACK_SUN, originX, originY);
+            em.takeBossDamage?.(t, beamDamage, false, WeaponType.BLACK_SUN, originX, originY, weaponLevel, false, 'PLAYER');
             // Apply DoT on boss
             const bAny: any = t as any;
             const nowB = performance.now();
@@ -3466,7 +3552,7 @@ export class Player {
               if (dotB.left > 0) dotB.left--; // consume immediate tick slot
             }
           } else {
-            em.takeDamage?.(t, beamDamage, false, false, WeaponType.BLACK_SUN, originX, originY);
+            em.takeDamage?.(t, beamDamage, false, false, WeaponType.BLACK_SUN, originX, originY, weaponLevel, false, 'PLAYER');
             // Apply DoT and short paralysis on regular enemies
             const eAny: any = t as any;
             const nowE = performance.now();
@@ -3621,7 +3707,7 @@ export class Player {
           if (proj < 0 || proj > range) continue;
           const ortho = Math.abs(-sinA * relX + cosA * relY);
           if (ortho <= thickness + e.radius) {
-            game.enemyManager.takeDamage(e, dmgThisFrame, false, false, WeaponType.GUNNER_LAVA_MINIGUN, originX, originY, weaponLevel);
+            game.enemyManager.takeDamage(e, dmgThisFrame, false, false, WeaponType.GUNNER_LAVA_MINIGUN, originX, originY, weaponLevel, false, 'PLAYER');
           }
         }
         // Boss check

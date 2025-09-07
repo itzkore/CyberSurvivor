@@ -86,8 +86,12 @@ export class GameOverOverlay {
     // Record high score (using kill count as score baseline for now)
   (async () => {
       try {
-    const characterId = (this.game as any).selectedCharacterData?.id || 'unknown';
-    const mode = (this.game as any).currentMode || 'SHOWDOWN';
+  const characterId = (this.game as any).selectedCharacterData?.id || 'unknown';
+  const mode = ((this.game as any).gameMode || (this.game as any).currentMode || 'SHOWDOWN') as 'SHOWDOWN'|'DUNGEON'|'LAST_STAND'|'SANDBOX';
+  const isLS = mode === 'LAST_STAND';
+  // Waves reached for Last Stand. Prefer lastStand API; fallback to HUD label parse if needed.
+  let waves = 0;
+  try { const ls:any = (this.game as any).lastStand; if (ls && typeof ls.getWavesReached === 'function') waves = Math.max(0, Math.floor(ls.getWavesReached())); } catch { /* ignore */ }
   const kills = this.game.getKillCount();
   const timeSec = duration; // survival time in seconds
   const score = timeSec; // primary metric
@@ -107,9 +111,27 @@ export class GameOverOverlay {
   if (isLeaderboardConfigured()) {
     // Always submit even if guest (guest runs can still appear)
   // Unified multi-board submission
-  try { await submitScoreAllPeriods({ playerId: pid, name, timeSec, kills, level, maxDps: maxDpsVal, characterId }); } catch {}
+  try {
+        await submitScoreAllPeriods({
+          playerId: pid,
+          name,
+          timeSec,
+          kills,
+          level,
+          maxDps: maxDpsVal,
+          characterId,
+          mode,
+          primaryMetric: isLS ? 'waves' : 'time',
+          waves: isLS ? waves : undefined
+        });
+      } catch {}
     try {
-  const top = await fetchTop('global', 3, 0);
+  const baseBoard = 'global' as const;
+  const boardWithMode = `${baseBoard}:mode:${mode}`;
+  // Do not fallback to unscoped for Dungeon/LS to avoid mixing; Showdown can fallback for legacy data
+  const top = (mode === 'SHOWDOWN')
+    ? await fetchTop(boardWithMode, 3, 0).catch(()=>fetchTop(baseBoard,3,0))
+    : await fetchTop(boardWithMode, 3, 0);
       const me = pid;
       const fmt = (t:number)=>{
         const m=Math.floor(t/60).toString().padStart(2,'0');
@@ -126,30 +148,58 @@ export class GameOverOverlay {
         // If player not in top list, fetch their rank separately
         let myRow = '';
         if (!top.some(e=>e.playerId===me)) {
-          const entry = await fetchPlayerEntry('global', me);
+          const entry = (mode === 'SHOWDOWN')
+            ? await fetchPlayerEntry(boardWithMode, me).catch(()=>fetchPlayerEntry(baseBoard, me))
+            : await fetchPlayerEntry(boardWithMode, me);
             if (entry) {
               const currentOpId = ((this.game as any).selectedCharacterData?.id) || entry.characterId;
               const currentOpName = opName(currentOpId);
-              myRow = `<div class='hs-row me'><span class='rank'>${entry.rank}</span><span class='nick'>${sanitizeName(entry.name)}</span><span class='op'>${currentOpName}</span><span class='time'>${fmt(entry.timeSec)}</span><span class='kills'>${entry.kills??'-'}</span><span class='lvl'>${entry.level??'-'}</span></div>`;
+              if (isLS) {
+                const w = (entry as any).waves ?? entry.timeSec;
+                myRow = `<div class='hs-row me'><span class='rank'>${entry.rank}</span><span class='nick'>${sanitizeName(entry.name)}</span><span class='op'>${currentOpName}</span><span class='time'>${w}</span><span class='kills'>${entry.kills??'-'}</span></div>`;
+              } else {
+                myRow = `<div class='hs-row me'><span class='rank'>${entry.rank}</span><span class='nick'>${sanitizeName(entry.name)}</span><span class='op'>${currentOpName}</span><span class='time'>${fmt(entry.timeSec)}</span><span class='kills'>${entry.kills??'-'}</span><span class='lvl'>${entry.level??'-'}</span></div>`;
+              }
             }
         }
-          topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div>`+hint+
-          `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='op'>OP</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>`+
-          top.map(e=>`<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='op'>${opName((e as any).characterId)}</span><span class='time'>${fmt(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('')+myRow+
-          `</div>`;
+          if (isLS) {
+            topHtml = `<div class='go-highscores'><div class='hs-title'>Waves ${waves} · Kills ${kills}</div>`+hint+
+              `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='op'>OP</span><span class='time'>WAVES</span><span class='kills'>K</span></div>`+
+              top.map(e=>{
+                const w = (e as any).waves ?? e.timeSec;
+                return `<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='op'>${opName((e as any).characterId)}</span><span class='time'>${w}</span><span class='kills'>${e.kills??'-'}</span></div>`;
+              }).join('')+myRow+`</div>`;
+          } else {
+            topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div>`+hint+
+              `<div class='hs-row hs-head'><span class='rank'>#</span><span class='nick'>NAME</span><span class='op'>OP</span><span class='time'>TIME</span><span class='kills'>K</span><span class='lvl'>Lv</span></div>`+
+              top.map(e=>`<div class='hs-row ${e.playerId===me?'me':''}'><span class='rank'>${e.rank}</span><span class='nick'>${sanitizeName(e.name)}</span><span class='op'>${opName((e as any).characterId)}</span><span class='time'>${fmt(e.timeSec)}</span><span class='kills'>${e.kills??'-'}</span><span class='lvl'>${e.level??'-'}</span></div>`).join('')+myRow+
+              `</div>`;
+          }
       } else {
         const hint = user ? 'No scores yet.' : 'No scores yet. First guest run will appear.';
-        topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div><div class='hs-empty'>${hint}</div></div>`;
+        if (isLS) {
+          topHtml = `<div class='go-highscores'><div class='hs-title'>Waves ${waves} · Kills ${kills}</div><div class='hs-empty'>${hint}</div></div>`;
+        } else {
+          topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${fmt(timeSec)} · Kills ${kills}</div><div class='hs-empty'>${hint}</div></div>`;
+        }
       }
     } catch {
-      const mm = Math.floor(timeSec/60).toString().padStart(2,'0');
-      const ss = (timeSec%60).toString().padStart(2,'0');
-      topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${mm}:${ss} · Kills ${kills}</div><div class='hs-empty'>Error loading leaderboard.</div></div>`;
+      if (isLS) {
+        topHtml = `<div class='go-highscores'><div class='hs-title'>Waves ${waves} · Kills ${kills}</div><div class='hs-empty'>Error loading leaderboard.</div></div>`;
+      } else {
+        const mm = Math.floor(timeSec/60).toString().padStart(2,'0');
+        const ss = (timeSec%60).toString().padStart(2,'0');
+        topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${mm}:${ss} · Kills ${kills}</div><div class='hs-empty'>Error loading leaderboard.</div></div>`;
+      }
     }
   } else {
-    const mm = Math.floor(timeSec/60).toString().padStart(2,'0');
-    const ss = (timeSec%60).toString().padStart(2,'0');
-    topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${mm}:${ss} · Kills ${kills}</div><div class='hs-empty'>Leaderboard not configured.</div></div>`;
+    if (isLS) {
+      topHtml = `<div class='go-highscores'><div class='hs-title'>Waves ${waves} · Kills ${kills}</div><div class='hs-empty'>Leaderboard not configured.</div></div>`;
+    } else {
+      const mm = Math.floor(timeSec/60).toString().padStart(2,'0');
+      const ss = (timeSec%60).toString().padStart(2,'0');
+      topHtml = `<div class='go-highscores'><div class='hs-title'>Survived ${mm}:${ss} · Kills ${kills}</div><div class='hs-empty'>Leaderboard not configured.</div></div>`;
+    }
   }
   const baseStats = stats.map(s=>`<div class='go-stat'><span class='label'>${s[0]}</span><span class='value'>${s[1]}</span></div>`).join('');
   this.statsEl.innerHTML = baseStats + topHtml;

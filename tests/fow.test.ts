@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { FogOfWarSystem, FowTileState } from '../src/systems/FogOfWarSystem';
 
 describe('FogOfWarSystem', () => {
-  it('marks visible around player and keeps explored after moving one tile', () => {
+  it('marks visible around player and keeps explored after moving out of radius', () => {
     const fow = new FogOfWarSystem();
     fow.setGrid(undefined as any, undefined as any, 100); // tile size irrelevant for logic here
 
@@ -14,12 +14,12 @@ describe('FogOfWarSystem', () => {
     // A border tile within radius should be visible
     expect(fow.getTileState(px + 2, py)).toBe(FowTileState.Visible);
 
-    // Move by one tile and recompute
-    fow.compute(px + 1, py, r);
+  // Move beyond radius so previous center exits the visible circle
+  fow.compute(px + r + 1, py, r);
 
     // New center visible
     expect(fow.getTileState(px + 1, py)).toBe(FowTileState.Visible);
-    // Previous center should have downgraded to explored
+  // Previous center should have downgraded to explored (no longer within visible radius)
     expect(fow.getTileState(px, py)).toBe(FowTileState.Explored);
   });
 });

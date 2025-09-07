@@ -49,19 +49,22 @@ export class HUD {
   const COLOR_TEXT_DIM = 'rgba(185,225,220,0.68)';
     ctx.imageSmoothingEnabled = true;
 
-    // --- TIMER (center top) ---
-    const minutes = Math.floor(gameTime / 60).toString().padStart(2, '0');
-    const seconds = Math.floor(gameTime % 60).toString().padStart(2, '0');
-    ctx.font = FONT_TITLE;
-    ctx.textAlign = 'center';
-    this.drawGlowText(ctx, `${minutes}:${seconds}`, width / 2, 46, COLOR_TEXT, COLOR_CYAN, 14);
-    // Kill count (compact) under main timer
-    try {
-      const gameRef: any = (window as any).__gameInstance;
-      const kills = gameRef?.getKillCount ? gameRef.getKillCount() : 0;
-      ctx.font = 'bold 14px Orbitron, sans-serif';
-      this.drawGlowText(ctx, `Kills ${kills}`, width / 2, 66, COLOR_TEXT_DIM, COLOR_ACCENT_ALT, 6);
-    } catch { /* ignore */ }
+    // --- TIMER (center top) --- (hidden in Last Stand; LS HUD box shows mode-specific info)
+    const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
+    if (!isLastStand) {
+      const minutes = Math.floor(gameTime / 60).toString().padStart(2, '0');
+      const seconds = Math.floor(gameTime % 60).toString().padStart(2, '0');
+      ctx.font = FONT_TITLE;
+      ctx.textAlign = 'center';
+      this.drawGlowText(ctx, `${minutes}:${seconds}`, width / 2, 46, COLOR_TEXT, COLOR_CYAN, 14);
+      // Kill count (compact) under main timer
+      try {
+        const gameRef: any = (window as any).__gameInstance;
+        const kills = gameRef?.getKillCount ? gameRef.getKillCount() : 0;
+        ctx.font = 'bold 14px Orbitron, sans-serif';
+        this.drawGlowText(ctx, `Kills ${kills}`, width / 2, 66, COLOR_TEXT_DIM, COLOR_ACCENT_ALT, 6);
+      } catch { /* ignore */ }
+    }
   // We'll draw FPS later once minimap position vars are defined so it sits in the gap above minimap.
 
   // --- LEFT PANEL (Simplified Class Stats) ---
@@ -362,10 +365,12 @@ export class HUD {
       } catch { /* ignore */ }
     } catch { /* ignore */ }
 
-  // XP Bar
+  // XP Bar (hidden in Last Stand)
+  if ((window as any).__gameInstance?.gameMode !== 'LAST_STAND') {
     const xpBarY = height - 34;
     const nextExp = this.player.getNextExp();
-  this.drawThemedBar(ctx, 20, xpBarY, width - 40, 14, this.player.exp / nextExp, '#0099c8', '#022e33', COLOR_CYAN, `XP ${this.player.exp}/${nextExp}`);
+    this.drawThemedBar(ctx, 20, xpBarY, width - 40, 14, this.player.exp / nextExp, '#0099c8', '#022e33', COLOR_CYAN, `XP ${this.player.exp}/${nextExp}`);
+  }
 
   // Minimap (always on)
   const minimapPositionSize = minimapSize; // ensure consistent reference
@@ -571,8 +576,10 @@ export class HUD {
       ctx.fill();
     }
 
-  // XP Orbs (crisp cyan, no glow) above enemy dots with last-10s flicker/pulse
+  // XP Orbs (hidden in Last Stand)
     try {
+      if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') { /* skip in LS */ }
+      else {
       const em: any = (window as any).__gameInstance?.getEnemyManager?.();
       const gems = em?.getActiveGems ? em.getActiveGems() : (em?.getGems ? em.getGems() : []);
       if (gems && gems.length) {
@@ -607,6 +614,7 @@ export class HUD {
           ctx.fill();
         }
         ctx.restore();
+      }
       }
     } catch { /* ignore */ }
 

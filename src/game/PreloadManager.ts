@@ -12,8 +12,10 @@ export class PreloadManager {
     progress(0.02, 'Loading manifest');
     try { await assetLoader.loadManifest(); } catch (e) { Logger.warn('[Preload] Manifest load failed (continuing)', e as any); }
 
-    progress(0.06, 'Preloading images');
-    try { await assetLoader.loadAllFromManifest(); } catch (e) { Logger.warn('[Preload] Image preloads had issues', e as any); }
+  progress(0.06, 'Preloading images');
+  try { await assetLoader.loadAllFromManifest(); } catch (e) { Logger.warn('[Preload] Image preloads had issues', e as any); }
+  // Warm explicit extras used across modes but not guaranteed in manifest
+  try { await assetLoader.loadImage('/assets/core/core_1.png'); } catch {/* ignore */}
 
     // 2) Background music + radio tracks (optional but recommended)
     const AL: any = (window as any).AssetLoader;

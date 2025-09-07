@@ -13,6 +13,8 @@ export type Bullet = {
   damage: number;
   speed?: number;
   weaponType: WeaponType | number;
+  /** Logical source of this projectile; allows mode-specific visuals (e.g., turret bullets have no trails). */
+  origin?: 'PLAYER' | 'TURRET';
   projectileImageKey?: string;
   projectileVisual?: ProjectileVisual;
   snakeTargets?: Array<{ x: number; y: number }>;

@@ -62,17 +62,19 @@ describe('regen + lifesteal with AoE', () => {
     const assets = new AssetLoader();
     enemyMgr = new EnemyManager(player, bulletGrid, particles, assets, 1);
     (player as any).setEnemyProvider(() => enemyMgr.getEnemies());
-    (player as any).setGameContext({ getGameTime: () => 0 });
+    (player as any).setGameContext({ getGameTime: () => curTimeSec });
   });
+
+  let curTimeSec = 0;
 
   it('applies regen over time using efficiency', () => {
     applyPassive(player as any, 9, 4); // regen level 4 => 1.0 hp/s
     player.hp = 50; player.maxHp = 100;
-    (global as any).window.__gameInstance.getGameTime = () => 0; // eff=1
+  curTimeSec = 0; // eff=1
     player.update(1000);
     expect(player.hp).toBeGreaterThanOrEqual(50.9);
     expect(player.hp).toBeLessThanOrEqual(51.1);
-    (global as any).window.__gameInstance.getGameTime = () => 30*60; // eff=0.01
+  curTimeSec = 30*60; // eff=0.01
     const before = player.hp;
     player.update(1000);
     expect(player.hp - before).toBeGreaterThanOrEqual(0.009);

@@ -92,7 +92,9 @@ export class FogOfWarSystem {
     }
   }
 
-  /** Draws the fog mask over the world space (call before HUD/UI). */
+  /** Draws the fog mask over the world space (call before HUD/UI).
+   * Note: Explored memory is cosmetic only and never clears visibility (prevents enemies from appearing outside the visible circle).
+   */
   public render(
     ctx: CanvasRenderingContext2D,
     camera: CameraLike,
@@ -103,6 +105,7 @@ export class FogOfWarSystem {
       visibleCenterX?: number; // world coords (player.x)
       visibleCenterY?: number; // world coords (player.y)
       visibleRadiusPx?: number; // override radius in pixels (fallback = lastRadiusTiles * tileSize)
+  visibleRects?: Array<{ x:number; y:number; w:number; h:number }>; // extra clear rects in world coords
     }
   ) {
     if (opts && opts.enable === false) return; // disabled
@@ -110,9 +113,9 @@ export class FogOfWarSystem {
     this.ensureMaskSurface(Math.ceil(camera.width), Math.ceil(camera.height));
     if (!this.maskCtx || !this.maskCanvas) return;
 
-    const mctx = this.maskCtx as CanvasRenderingContext2D;
+  const mctx = this.maskCtx as CanvasRenderingContext2D;
     // Fill darkness
-  const darkAlpha = Math.max(0, Math.min(1, (opts?.darkAlpha ?? 1.0)));
+  const darkAlpha = Math.max(0.25, Math.min(1, (opts?.darkAlpha ?? 1.0)));
     mctx.globalCompositeOperation = 'source-over';
     mctx.globalAlpha = darkAlpha;
     mctx.fillStyle = '#000';
@@ -137,6 +140,18 @@ export class FogOfWarSystem {
   mctx.beginPath();
   mctx.arc(vcx, vcy, vR, 0, Math.PI * 2);
   mctx.fill();
+
+  // 1b) Additional clear rectangles (e.g., corridor road) in world coords
+  if (opts?.visibleRects && opts.visibleRects.length) {
+    mctx.globalCompositeOperation = 'destination-out';
+    mctx.globalAlpha = 1;
+    for (let i=0;i<opts.visibleRects.length;i++){
+      const r = opts.visibleRects[i]; if (!r) continue;
+      const rx = r.x - camera.x;
+      const ry = r.y - camera.y;
+      mctx.fillRect(Math.round(rx), Math.round(ry), Math.round(r.w), Math.round(r.h));
+    }
+  }
 
   // 2) Explored memory: visual only, no transparency punch-out
   //    We previously cut soft holes (destination-out) for explored tiles, which revealed units.

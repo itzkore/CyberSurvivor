@@ -22,7 +22,16 @@ if (typeof (g as any).CustomEvent === 'undefined') {
   (g as any).CustomEvent = class { type: string; detail: any; constructor(type: string, params?: any) { this.type = type; this.detail = params?.detail; } } as any;
 }
 if (typeof g.document === 'undefined') {
-  g.document = { createElement: () => ({ getContext: () => ({}) }) } as any;
+  const make2D = () => ({
+    canvas: { width: 64, height: 64 },
+    beginPath: () => {}, closePath: () => {}, moveTo: () => {}, lineTo: () => {}, arc: () => {}, fill: () => {}, stroke: () => {},
+    save: () => {}, restore: () => {}, translate: () => {}, rotate: () => {}, scale: () => {},
+    drawImage: () => {}, fillRect: () => {}, strokeRect: () => {}, clearRect: () => {},
+    createRadialGradient: () => ({ addColorStop: () => {} }),
+    getImageData: () => ({ data: new Uint8ClampedArray(64*64*4) }), putImageData: () => {},
+    globalCompositeOperation: 'source-over', fillStyle: '#000', strokeStyle: '#000', lineWidth: 1, globalAlpha: 1,
+  });
+  g.document = { createElement: (tag: string) => tag === 'canvas' ? ({ width:64, height:64, getContext: () => make2D() }) : ({}) } as any;
 }
 if (typeof g.Image === 'undefined') { g.Image = class { onload: any; onerror: any; set src(_v: string) { setTimeout(() => this.onload && this.onload(), 0); } } as any; }
 

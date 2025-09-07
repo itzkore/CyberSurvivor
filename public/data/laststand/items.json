@@ -2,8 +2,23 @@
   "items": [
     { "id":"w_railgun", "kind":"weapon", "price":120, "data": { "weaponType": 7 }, "weight": 1 },
     { "id":"w_mortar",  "kind":"weapon", "price":120, "data": { "weaponType": 17 }, "weight": 1 },
-    { "id":"p_vision",  "kind":"passive", "price":80,  "data": { "passiveName": "Vision" }, "weight": 1 },
-    { "id":"perk_hp",   "kind":"perk",    "price":60,  "data": { "hp": 40 }, "weight": 1 },
-    { "id":"turret_gun","kind":"turret",  "price":100, "data": { "specId": "turret_gun" }, "weight": 1 }
+  { "id":"w_laser",   "kind":"weapon", "price":110, "data": { "weaponType": 4 },  "weight": 1.0 },
+  { "id":"w_ricochet","kind":"weapon", "price":105, "data": { "weaponType": 5 },  "weight": 1.0 },
+  { "id":"w_deagle",  "kind":"weapon", "price":90,  "data": { "weaponType": 0 },  "weight": 1.2 },
+  { "id":"w_shotgun", "kind":"weapon", "price":100, "data": { "weaponType": 1 },  "weight": 1.1 },
+  { "id":"w_crossbow","kind":"weapon", "price":110, "data": { "weaponType": 2 },  "weight": 1.1 },
+    
+  { "id":"p_damage",   "kind":"passive", "price":90,  "data": { "passiveName": "Damage Up" }, "weight": 1.1 },
+  { "id":"p_fireRate", "kind":"passive", "price":90,  "data": { "passiveName": "Fire Rate" }, "weight": 1.1 },
+  { "id":"p_crit",     "kind":"passive", "price":100, "data": { "passiveName": "Crit" },       "weight": 1.0 },
+  { "id":"p_area",     "kind":"passive", "price":85,  "data": { "passiveName": "Area Up" },    "weight": 1.0 },
+  { "id":"p_speed",    "kind":"passive", "price":75,  "data": { "passiveName": "Speed Boost" },"weight": 0.9 },
+  { "id":"p_maxhp",    "kind":"passive", "price":85,  "data": { "passiveName": "Max HP" },     "weight": 1.0 },
+  { "id":"p_magnet",   "kind":"passive", "price":65,  "data": { "passiveName": "Magnet" },     "weight": 0.9 },
+  { "id":"p_vision",   "kind":"passive", "price":80,  "data": { "passiveName": "Vision" },     "weight": 1 },
+    
+  { "id":"perk_hp",   "kind":"perk",    "price":60,  "data": { "hp": 40 }, "weight": 1 },
+  { "id":"perk_fire","kind":"perk",    "price":70,  "data": { "fireRate": 0.10 }, "weight": 0.8 }
+  ,{ "id":"bonus_flashlight", "kind":"bonus", "price":70, "data": { "name":"Flashlight" }, "weight": 0.9 }
   ]
 }
