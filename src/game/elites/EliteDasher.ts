@@ -16,11 +16,20 @@ export function updateEliteDasher(e: any, playerX: number, playerY: number, now:
   const baseCd = 2600; // ms between dashes
   const windupMs = 280; // brief telegraph
   const dashMs = 320; // short burst
+  // Last Stand: require visibility before attacking/casting
+  let canAct = true;
+  try {
+    const gi: any = (window as any).__gameInstance; if (gi && gi.gameMode === 'LAST_STAND') {
+      const em: any = gi.enemyManager; const vis = em?.isVisibleInLastStand?.(e.x, e.y);
+      canAct = (vis !== false);
+    }
+  } catch { canAct = true; }
   if (!st.cdUntil) st.cdUntil = now + 1200 + ((e.id?.length || 0) % 400);
   if (!st.phase) st.phase = 'IDLE';
   switch (st.phase) {
     case 'IDLE': {
       if (now >= (st.cdUntil as number)) {
+        if (!canAct) { st.cdUntil = now + 220; break; }
         st.phase = 'WINDUP';
         st.phaseUntil = now + windupMs;
         // subtle shake tag for draw layer
@@ -30,6 +39,7 @@ export function updateEliteDasher(e: any, playerX: number, playerY: number, now:
       break;
     }
     case 'WINDUP': {
+      if (!canAct) { st.phaseUntil = now + 120; break; }
       if (now >= (st.phaseUntil as number)) {
         st.phase = 'ACTION';
         st.phaseUntil = now + dashMs;

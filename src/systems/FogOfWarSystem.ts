@@ -35,6 +35,10 @@ export class FogOfWarSystem {
   private holeVisible: OffscreenCanvas | HTMLCanvasElement | null = null;
   private holeExplored: OffscreenCanvas | HTMLCanvasElement | null = null;
   private holeSizePx = 0; // diameter in pixels for hole sprites
+  // Cached circular reveal sprite (alpha falloff) to avoid per-frame gradient creation.
+  // We generate a medium-resolution texture and scale it to the requested radius at draw time.
+  private circleSprite: OffscreenCanvas | HTMLCanvasElement | null = null;
+  private circleSpriteBaseSize = 512; // px, tuned for balance of quality/perf
 
   /** Configure grid metadata. For sparse mode only tileSize is required. */
   public setGrid(cols: number | undefined, rows: number | undefined, tileSize: number) {
@@ -106,6 +110,8 @@ export class FogOfWarSystem {
       visibleCenterY?: number; // world coords (player.y)
       visibleRadiusPx?: number; // override radius in pixels (fallback = lastRadiusTiles * tileSize)
   visibleRects?: Array<{ x:number; y:number; w:number; h:number }>; // extra clear rects in world coords
+  /** Optional: clip the circular reveal to these rects (world coords). Useful to restrict visibility outside corridors. */
+  circleClipRects?: Array<{ x:number; y:number; w:number; h:number }>;
     }
   ) {
     if (opts && opts.enable === false) return; // disabled
@@ -115,7 +121,7 @@ export class FogOfWarSystem {
 
   const mctx = this.maskCtx as CanvasRenderingContext2D;
     // Fill darkness
-  const darkAlpha = Math.max(0.25, Math.min(1, (opts?.darkAlpha ?? 1.0)));
+  const darkAlpha = Math.max(0.25, Math.min(1, (opts?.darkAlpha ?? 0.95))); // slightly lighter by default to reduce perceived banding
     mctx.globalCompositeOperation = 'source-over';
     mctx.globalAlpha = darkAlpha;
     mctx.fillStyle = '#000';
@@ -130,16 +136,28 @@ export class FogOfWarSystem {
   // Guard against NaN/Infinity: fall back to viewport center and a safe radius
   if (!isFinite(vcx) || !isFinite(vcy)) { vcx = this.maskW * 0.5; vcy = this.maskH * 0.5; }
   if (!isFinite(vR) || vR <= 0) vR = Math.max(64, Math.floor(this.tileSize * Math.max(1, this.lastRadiusTiles)));
-  // Feathered edge: inner full clear at ~90%, fade to 0 at 100%
-  const rInner = Math.floor(vR * 0.9);
-  const grad = mctx.createRadialGradient(vcx, vcy, 0, vcx, vcy, vR);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(Math.max(0, Math.min(1, rInner / vR)), 'rgba(255,255,255,1)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  mctx.fillStyle = grad;
-  mctx.beginPath();
-  mctx.arc(vcx, vcy, vR, 0, Math.PI * 2);
-  mctx.fill();
+  // Ensure cached circle sprite exists (alpha falloff baked once)
+  this.ensureCircleSprite();
+  // If circleClipRects provided, constrain the circle reveal to their union
+  const hasClipRects = !!(opts?.circleClipRects && opts.circleClipRects.length);
+  if (hasClipRects) {
+    mctx.save();
+    mctx.beginPath();
+    for (let i = 0; i < (opts!.circleClipRects as any).length; i++) {
+      const r = (opts as any).circleClipRects[i]; if (!r) continue;
+      const rx = r.x - camera.x;
+      const ry = r.y - camera.y;
+      mctx.rect(Math.round(rx), Math.round(ry), Math.round(r.w), Math.round(r.h));
+    }
+    mctx.clip();
+    // Draw cached radial sprite scaled to requested radius
+    const d = vR * 2;
+    mctx.drawImage(this.circleSprite as any, Math.round(vcx - vR), Math.round(vcy - vR), Math.round(d), Math.round(d));
+    mctx.restore();
+  } else {
+    const d = vR * 2;
+    mctx.drawImage(this.circleSprite as any, Math.round(vcx - vR), Math.round(vcy - vR), Math.round(d), Math.round(d));
+  }
 
   // 1b) Additional clear rectangles (e.g., corridor road) in world coords
   if (opts?.visibleRects && opts.visibleRects.length) {
@@ -162,7 +180,7 @@ export class FogOfWarSystem {
   ctx.save();
   ctx.globalCompositeOperation = 'source-over';
   ctx.globalAlpha = 1;
-  ctx.drawImage(this.maskCanvas as any, 0, 0);
+  ctx.drawImage(this.maskCanvas as any, 0|0, 0|0); // integer-align
   ctx.restore();
   }
 
@@ -187,6 +205,24 @@ export class FogOfWarSystem {
     this.holeSizePx = diameter;
   this.holeVisible = this.makeRadialHoleSprite(diameter, 1.0);
   this.holeExplored = this.makeRadialHoleSprite(diameter, 0.75);
+  }
+
+  /** Ensure the cached circular reveal sprite is available. Built once at a fixed resolution and scaled at draw time. */
+  private ensureCircleSprite() {
+    if (this.circleSprite) return;
+    const sz = this.circleSpriteBaseSize;
+    const c = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(sz, sz) : (() => { const el = document.createElement('canvas'); el.width = sz; el.height = sz; return el; })();
+    const g = (c as any).getContext ? (c as HTMLCanvasElement).getContext('2d')! : (c as OffscreenCanvas).getContext('2d')!;
+    const r = sz / 2;
+    // Match the feather profile used previously (inner 0.8 full, then soft falloff to ~0.22 at rim)
+    const grad = g.createRadialGradient(r, r, 0, r, r, r);
+    grad.addColorStop(0.00, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.80, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.92, 'rgba(255,255,255,0.45)');
+    grad.addColorStop(1.00, 'rgba(255,255,255,0.22)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, sz, sz);
+    this.circleSprite = c;
   }
 
   private makeRadialHoleSprite(diameter: number, innerAlpha: number): OffscreenCanvas | HTMLCanvasElement {

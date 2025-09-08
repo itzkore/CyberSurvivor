@@ -2,6 +2,8 @@
  * Central balance constants used across gameplay & UI so displays stay consistent.
  */
 export const SPEED_SCALE = 0.45; // Converts character sheet speed -> in‑game movement units
+// Expose in window for runtime guards used in managers (defensive clamps)
+try { (window as any).SPEED_SCALE = SPEED_SCALE; } catch {}
 
 // --- Runtime / Progression Pacing ---
 // Target: ~10 minute survival window (previously ~5) with 3 boss encounters.

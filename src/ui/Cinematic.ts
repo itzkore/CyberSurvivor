@@ -5,6 +5,7 @@ export class Cinematic {
    * @param canvas HTMLCanvasElement
    */
   private drawSkipButton(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, logicalH: number) {
+    const locked = !!(window as any).__cinSkipLocked;
     // Adaptive sizing for very small heights
     const small = logicalH < 480;
     const btnWidth = small ? 100 : 120;
@@ -13,21 +14,21 @@ export class Cinematic {
     const bottomPad = small ? 16 : 32;
     const y = Math.max(8, logicalH - btnHeight - bottomPad);
     ctx.save();
-    ctx.globalAlpha = 0.85;
-    ctx.fillStyle = '#222';
-    ctx.strokeStyle = '#0ff';
+    ctx.globalAlpha = locked ? 0.65 : 0.85;
+    ctx.fillStyle = locked ? '#151a1c' : '#222';
+    ctx.strokeStyle = locked ? 'rgba(120,160,170,0.8)' : '#0ff';
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.roundRect(x, y, btnWidth, btnHeight, 12);
     ctx.fill();
     ctx.stroke();
     ctx.font = 'bold 22px Orbitron, sans-serif';
-    ctx.fillStyle = '#0ff';
+    ctx.fillStyle = locked ? '#9bb' : '#0ff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.shadowColor = '#00f6ff';
-    ctx.shadowBlur = 12;
-    ctx.fillText('Skip', x + btnWidth / 2, y + btnHeight / 2);
+    ctx.shadowColor = locked ? 'rgba(0,0,0,0)' : '#00f6ff';
+    ctx.shadowBlur = locked ? 0 : 12;
+    ctx.fillText(locked ? 'Loading…' : 'Skip', x + btnWidth / 2, y + btnHeight / 2);
     ctx.restore();
   }
   private progress: number = 0;
@@ -92,6 +93,7 @@ export class Cinematic {
     // Attach temporary key listener for ESC skip
     const escHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.active) {
+        if ((window as any).__cinSkipLocked) { e.preventDefault(); return; }
         this.active = false;
         if (this.onComplete) this.onComplete();
         window.removeEventListener('keydown', escHandler);
@@ -229,6 +231,19 @@ export class Cinematic {
   drawBlock(seg.title, seg.subtitle, ['#8cefff','#7dd2e6'], '#00f6ff');
   // Skip button drawn in adjusted logical coordinate space
   this.drawSkipButton(ctx, canvas, logicalH);
+  // If locked, draw a tiny spinner next to the button to indicate background loading
+  if ((window as any).__cinSkipLocked) {
+    ctx.save();
+    const small = logicalH < 480;
+    const btnH = small ? 36 : 44;
+    const bottomPad = small ? 16 : 32;
+    const y = Math.max(8, logicalH - btnH - bottomPad);
+    const x = (small ? 24 : 32) + (small ? 100 : 120) + 12;
+    const r = 8;
+    ctx.lineWidth = 3; ctx.strokeStyle = '#7bd';
+    ctx.beginPath(); ctx.arc(x, y + btnH/2, r, Math.PI*0.25, Math.PI*1.75); ctx.stroke();
+    ctx.restore();
+  }
   // Update hit rect (match adaptive sizing logic)
   const small = logicalH < 480;
   this.skipRect.w = small ? 100 : 120;
@@ -252,6 +267,7 @@ export class Cinematic {
   /** External click handler for reliable skip (coordinates already relative to canvas client box). */
   public handleClick(x:number, y:number, canvas:HTMLCanvasElement): boolean {
     if (!this.active) return false;
+  if ((window as any).__cinSkipLocked) return false;
     // x,y are in CSS pixels (logical space) because getBoundingClientRect() was used upstream.
     const r = this.skipRect;
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {

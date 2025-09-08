@@ -14,11 +14,14 @@ export function updateEliteGunner(e: any, playerX: number, playerY: number, now:
   const st = ensureGunnerState(e);
   const cd = 2800; // long cooldown between shots
   const windup = 360; // telegraph
+  // LS visibility requirement
+  let canAct = true; try { const gi:any=(window as any).__gameInstance; if (gi && gi.gameMode==='LAST_STAND'){ const em:any=gi.enemyManager; const vis = em?.isVisibleInLastStand?.(e.x,e.y); canAct = (vis!==false);} } catch {}
   if (!st.cdUntil) st.cdUntil = now + 1200 + ((e.id?.length || 0) % 500);
   if (!st.phase) st.phase = 'IDLE';
   switch (st.phase) {
     case 'IDLE': {
       if (now >= (st.cdUntil as number)) {
+        if (!canAct) { st.cdUntil = now + 240; break; }
         st.phase = 'WINDUP';
         st.phaseUntil = now + windup;
         e._shakeUntil = now + windup; e._shakeAmp = 0.9; e._shakePhase = ((e._shakePhase||0)+1);
@@ -26,6 +29,7 @@ export function updateEliteGunner(e: any, playerX: number, playerY: number, now:
       break;
     }
     case 'WINDUP': {
+      if (!canAct) { st.phaseUntil = now + 120; break; }
       if (now >= (st.phaseUntil as number)) {
         st.phase = 'ACTION';
         st.phaseUntil = now + 80;

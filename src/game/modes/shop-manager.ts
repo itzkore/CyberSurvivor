@@ -44,10 +44,15 @@ export class ShopManager {
     // Detect loadout state to bias/limit offers when capped
     let ownedWeaponTypes = new Set<number>();
     let ownedPassiveNames = new Set<string>();
+    // Selected class weapon (default weapon for operative)
+    let classWeaponType: number | null = null;
     // Track weapon levels for evolution gating (best-effort)
     const weaponLevels: Record<number, number> = Object.create(null);
     try {
       const g:any = (window as any).__gameInstance || (window as any).game || {};
+      if (g?.selectedCharacterData && typeof g.selectedCharacterData.defaultWeapon === 'number') {
+        classWeaponType = g.selectedCharacterData.defaultWeapon | 0;
+      }
       const aw: Map<number, number> | undefined = g?.player?.activeWeapons;
       if (aw && typeof (aw as any).forEach === 'function') {
         (aw as any).forEach((v:number,k:number)=> { ownedWeaponTypes.add(k); weaponLevels[k] = v|0; });
@@ -145,10 +150,43 @@ export class ShopManager {
       out.push(chosen.item);
       perkPool.splice(idx,1);
     }
+    // Guarantee: Always include the class weapon as an offer (expensive), preferably as an upgrade.
+    try {
+      const gm = (window as any).__gameInstance?.gameMode;
+      const isLS = gm === 'LAST_STAND';
+      if (isLS && typeof classWeaponType === 'number' && classWeaponType != null) {
+        const wt = classWeaponType as any;
+        const allowed = !this.allowedWeapons || this.allowedWeapons.has(wt);
+        const owned = ownedWeaponTypes.has(wt);
+        const atCap = ownedWeaponTypes.size >= 3;
+        // If we're at weapon cap and don't own the class weapon, don't add an unlock we can't buy.
+        if (allowed && (!atCap || owned)) {
+          // If already present, mark it expensive; else inject and keep total at 'count'.
+          let existing = out.find(i => i.kind === 'weapon' && i.data?.weaponType === wt);
+          const level = (weaponLevels[wt] || 0) | 0;
+          const price = Math.max(120, (owned ? (220 + 60 * level) : 260)); // expensive baseline
+          if (existing) {
+            existing.price = price;
+          } else {
+            const guaranteed: Item = { id: `w_class_${wt}`, kind: 'weapon', price, data: { weaponType: wt }, weight: 0.01 };
+            if (out.length < count) {
+              out.push(guaranteed);
+            } else {
+              // Replace a non-weapon first; prefer perk, then passive; else last slot
+              let repIdx = out.findIndex(i => i.kind === 'perk');
+              if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'bonus');
+              if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'passive');
+              if (repIdx < 0) repIdx = out.length - 1;
+              out[repIdx] = guaranteed;
+            }
+          }
+        }
+      }
+    } catch { /* ignore guarantee errors */ }
     return out;
   }
 
-  purchase(item: Item, game: any, currency: CurrencySystem): boolean {
+  purchase(item: Item, game: any, currency: CurrencySystem, useFree: boolean = false): boolean {
     // Enforce Last Stand specific caps: max 3 weapons, max 3 passives
     try {
       const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
@@ -171,7 +209,12 @@ export class ShopManager {
         }
       }
     } catch { /* ignore */ }
-    if (!currency.spend(item.price)) return false;
+    // Support free-upgrade token
+    if (useFree && currency.hasFreeUpgrade()) {
+      currency.consumeFreeUpgrade();
+    } else {
+      if (!currency.spend(item.price)) return false;
+    }
     // Route purchase to systems
     try {
       switch (item.kind) {

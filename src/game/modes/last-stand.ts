@@ -9,7 +9,7 @@ import { CoreEntity } from './core-entity';
 import { WeaponType } from '../../game/WeaponType';
 import { ensureWaveWarningOverlay } from '../../ui/WaveWarningOverlay';
 
-type Phase = 'COMBAT'|'SHOP';
+type Phase = 'COMBAT'|'SHOP'|'WARMUP';
 
 export class LastStandGameMode {
   private phase: Phase = 'COMBAT';
@@ -21,9 +21,12 @@ export class LastStandGameMode {
   private overlay!: LastStandShopOverlay;
   private shopEndsAtMs = 0;
   private shopSkippableUsed = false;
+  private postShopWarmupMs = 2000; // 2s grace before next wave
+  private warmupEndsAtMs = 0;
   private skipEl: HTMLDivElement | null = null;
   private core!: CoreEntity;
   private onCompleteHooked = false;
+  private waitingForElites = false;
   private corridor: { x:number; y:number; w:number; h:number } | null = null;
   private pads: Array<{x:number;y:number;r:number;occupied?:boolean}> = [];
   private palisades: Array<{x:number;y:number;w:number;h:number}> = [];
@@ -41,17 +44,46 @@ export class LastStandGameMode {
   constructor(private game: any){
     this.hud.show(); this.hud.setPhase('COMBAT');
     this.currency.onChange(v => this.hud.setScrap(v));
+    // Keep HUD "enemies left" accurate by including alive elites in the count
+    const updateEnemiesLeftDisplay = () => {
+      try {
+        const EM: any = this.game.getEnemyManager?.();
+        let eliteAlive = 0;
+        if (EM && typeof EM.getEnemies === 'function') {
+          const arr = EM.getEnemies();
+          for (let i = 0; i < arr.length; i++) {
+            const e: any = arr[i];
+            if (e && e.active && e._elite && e._elite.kind) eliteAlive++;
+          }
+        }
+        const rem = this.wave.getEnemiesRemaining() + eliteAlive;
+        this.hud.setEnemiesLeft(rem);
+      } catch { /* ignore */ }
+    };
   // Kick off LS asset preloading in background ASAP to avoid first-visibility stalls
   try { setTimeout(() => { this.preloadAssets().catch(()=>{}); }, 0); } catch {}
     // Earn 1 scrap per kill baseline; decrement alive counter
-    eventBus.on('enemyDead', () => {
+    eventBus.on('enemyDead', (payload) => {
       // Early-wave economy boost: award extra scrap for first waves
       const wv = this.wave.getCurrentWaveNumber() + 1;
       const bonus = (wv <= 5) ? 1 : 0; // 2 scrap/kill in waves 1-5
       this.currency.add(1 + bonus);
+      // Reward: elite kill grants one free upgrade token
+      try {
+        if (payload && (payload as any).elite) {
+          this.currency.addFreeUpgradeTokens(1);
+          try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 2 } })); } catch {}
+          try {
+            const hud:any = (this as any).hud;
+            if (hud && typeof hud.flashMessage === 'function') hud.flashMessage('+1 Free Upgrade', '#ffd36b');
+          } catch {}
+        }
+      } catch {}
       this.wave.onEnemyDefeated();
-  try { this.hud.setEnemiesLeft(this.wave.getEnemiesRemaining()); } catch {}
+      updateEnemiesLeftDisplay();
     });
+    // Update remaining display when elites spawn as well
+    try { eventBus.on('eliteSpawned', () => { updateEnemiesLeftDisplay(); }); } catch {}
     // Turret placement via event (store handler for later cleanup)
     this.placeTurretHandler = (e: Event) => {
       const d = (e as CustomEvent).detail || {}; const id = d.turretId || 'turret_gun';
@@ -144,8 +176,8 @@ export class LastStandGameMode {
     this.setupCorridorAndCore();
   // Prime LS visibility cache once (center/radius/corridors) to avoid first-frame cost at reveal
   try { this.updateLsAimCache(); } catch {}
-  // LS tuning: make small enemies significantly faster so they lead the charge
-  try { const EM:any = this.game.getEnemyManager(); EM.setLastStandSmallSpeedMultiplier?.(1.8); } catch { /* ignore */ }
+  // LS tuning: keep small enemies slightly faster than mediums (reduce rush without inverting tiers)
+  try { const EM:any = this.game.getEnemyManager(); EM.setLastStandSmallSpeedMultiplier?.(1.25); } catch { /* ignore */ }
   // LS tuning: increase enemy knockback resistance by +300% (3x) so pushes are substantially reduced
   try { const EM:any = this.game.getEnemyManager(); EM.setLastStandEnemyKbResistMultiplier?.(3.0); } catch { /* ignore */ }
     // Clamp player to corridor start area
@@ -171,8 +203,8 @@ export class LastStandGameMode {
       }
     } catch { /* ignore */ }
     this.hud.setWave(this.wave.getCurrentWaveNumber()+1);
-    this.overlay = new LastStandShopOverlay(this.shop, this.currency, (off) => {
-      this.shop.purchase(off, this.game, this.currency);
+    this.overlay = new LastStandShopOverlay(this.shop, this.currency, (off, useFree) => {
+      this.shop.purchase(off, this.game, this.currency, !!useFree);
     }, () => {
       // Exit shop early
       this.endShopPhase();
@@ -244,6 +276,14 @@ export class LastStandGameMode {
       this.hud.setTimer(remain);
       this.overlay?.setTimer(remain);
       if (performance.now() >= this.shopEndsAtMs) this.endShopPhase();
+    }
+    // Post-shop warmup countdown
+    if (this.phase === 'WARMUP'){
+      const remain = Math.max(0, Math.ceil((this.warmupEndsAtMs - performance.now())/1000));
+      this.hud.setTimer(remain);
+      if (performance.now() >= this.warmupEndsAtMs) {
+        this.startCombatPhase();
+      }
     }
     // Debug: show wave and remaining count faintly for diagnostics (auto-fades after 30s)
     try {
@@ -331,7 +371,13 @@ export class LastStandGameMode {
           return { x, y };
         }
       });
-  try { this.hud.setEnemiesLeft(this.wave.getEnemiesRemaining()); } catch {}
+  try {
+    // Include elites in remaining display so wave doesn't look complete while an elite is alive
+    const EM:any = this.game.getEnemyManager();
+    let eliteAlive = 0; const arr = EM?.getEnemies?.() || [];
+    for (let i=0;i<arr.length;i++){ const e:any = arr[i]; if (e && e.active && e._elite && e._elite.kind) eliteAlive++; }
+    this.hud.setEnemiesLeft(this.wave.getEnemiesRemaining() + eliteAlive);
+  } catch {}
   // Boss appears much later to keep early waves elite-focused
   if (this.isBossWave(nextWave) && bm && typeof bm['spawnBoss'] === 'function') {
       const margin = 60;
@@ -355,8 +401,8 @@ export class LastStandGameMode {
         }
       } catch { /* ignore */ }
     }
-    // When wave completes, open shop
-    if (!this.onCompleteHooked) { this.wave.onWaveComplete(()=> this.startShopPhase()); this.onCompleteHooked = true; }
+  // When wave completes, open shop — but only after any elites are cleared
+  if (!this.onCompleteHooked) { this.wave.onWaveComplete(()=> this.onWaveCleared()); this.onCompleteHooked = true; }
   if (first) this.currency.add(100); // seed more initial scrap for first shop
   }
 
@@ -389,10 +435,44 @@ export class LastStandGameMode {
   this.showSkipControl();
   }
 
+  /** After the wave's regular enemies are cleared, wait for elites/boss to die before opening the shop. */
+  private onWaveCleared(){
+    if (this.phase !== 'COMBAT') return; // ignore if already transitioned
+    const EM:any = this.game.getEnemyManager();
+    const hasThreatsAlive = () => {
+      try {
+        if (EM && typeof EM.hasActiveElites === 'function') {
+          if (EM.hasActiveElites()) return true;
+        } else {
+          const arr = EM?.getEnemies?.() || [];
+          for (let i=0;i<arr.length;i++) { const e:any = arr[i]; if (e && e.active && (e._elite && e._elite.kind)) return true; }
+        }
+      } catch {}
+      // Also gate on boss alive
+      try {
+        const bm:any = (window as any).__bossManager; const boss = bm?.getBoss ? bm.getBoss() : (bm?.boss);
+        if (boss && boss.active && boss.hp > 0) return true;
+      } catch {}
+      return false;
+    };
+    if (!hasThreatsAlive()) { this.startShopPhase(); return; }
+    // Poll until elites/boss are gone (no failsafe — shop will not open early)
+    if (this.waitingForElites) return; this.waitingForElites = true;
+    const poll = () => {
+      if (this.phase !== 'COMBAT') { this.waitingForElites = false; return; }
+      if (!hasThreatsAlive()) { this.waitingForElites = false; this.startShopPhase(); return; }
+      requestAnimationFrame(poll);
+    };
+    requestAnimationFrame(poll);
+  }
+
   private endShopPhase(){
-    this.overlay.hide();
-    this.hideSkipControl();
-    this.startCombatPhase();
+  this.overlay.hide();
+  this.hideSkipControl();
+  // Enter a short warmup instead of starting the next wave instantly
+  this.phase = 'WARMUP';
+  this.hud.setPhase('COMBAT'); // show combat HUD elements during warmup
+  this.warmupEndsAtMs = performance.now() + this.postShopWarmupMs;
   }
 
   /** Show a minimal turret shop at the nearest holder when pressing F */
@@ -681,13 +761,18 @@ export class LastStandGameMode {
           try {
             const enemies = EM.getEnemies ? EM.getEnemies() : EM.enemies;
             if (enemies && enemies.length && core && core.hp > 0) {
+              const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
               const r2 = (core.radius + 18) * (core.radius + 18);
               for (let i=0;i<enemies.length;i++){
                 const e = enemies[i]; if (!e || !e.active || e.hp <= 0) continue;
                 const dx = e.x - core.x; const dy = e.y - core.y; if (dx*dx + dy*dy <= r2) {
                   // Deal contact damage to core and apply small pushback to enemy
                   const dmg = Math.max(1, Math.round((e.damage||1) * (e.type==='small'?1: e.type==='medium'?2:3)));
-                  core.takeDamage(dmg);
+                  // Rate limit: each enemy can damage the core at most once every 0.5s
+                  if (!e._lsNextCoreHitMs || now >= e._lsNextCoreHitMs) {
+                    core.takeDamage(dmg);
+                    e._lsNextCoreHitMs = now + 500;
+                  }
                   const d = Math.hypot(dx, dy) || 1; e.x += (dx/d) * 6; e.y += (dy/d) * 6;
                 }
               }

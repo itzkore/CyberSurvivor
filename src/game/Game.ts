@@ -895,9 +895,22 @@ export class Game {
     // Play a dedicated Last Stand cinematic, then init mode
     if (!this.lastStand) this.lastStand = new LastStandGameMode(this as any);
     this.setState('CINEMATIC');
+    // Lock skip until LS assets are warmed to avoid stutter at T0
+    (window as any).__cinSkipLocked = true;
+    const unlock = () => { try { (window as any).__cinSkipLocked = false; } catch {} };
+  // Kick a targeted LS preload in parallel (UI and common assets)
+    (async () => {
+      try {
+        const al: any = (this as any).assetLoader;
+        await al?.loadManifest?.();
+        await al?.loadAllFromManifest?.();
+      } catch {}
+      unlock();
+    })();
     this.cinematic.start('LAST_STAND', () => {
-      this.setState('GAME');
-      if (this.lastStand && typeof this.lastStand.init === 'function') this.lastStand.init();
+      // If preload still running, delay transition a tick to avoid first-frame jank
+      const go = () => { this.setState('GAME'); if (this.lastStand && typeof this.lastStand.init === 'function') this.lastStand.init(); };
+      if ((window as any).__cinSkipLocked) { setTimeout(go, 50); } else { go(); }
     });
     return;
   }
@@ -1027,9 +1040,16 @@ export class Game {
     const ts = this.fowTileSize; // keep in sync with setGrid tile size
     const tx = Math.floor(this.player.x / ts);
     const ty = Math.floor(this.player.y / ts);
-    if (tx !== this.lastFowTileX || ty !== this.lastFowTileY) {
+    // Recompute strictly on tile-cross or after a small time interval to avoid rapid thrash
+    const movedTile = (tx !== this.lastFowTileX || ty !== this.lastFowTileY);
+    // Recompute budget every ~120ms if not moved across a tile, to keep explored downgrade progressing
+    const now = performance.now ? performance.now() : Date.now();
+    const lastFowAt = (this as any).__lastFowComputeAt || 0;
+    const timeBudgetHit = (now - lastFowAt) >= 120;
+    if (movedTile || timeBudgetHit) {
   this.fog.compute(tx, ty, Math.max(1, Math.floor(this.getEffectiveFowRadiusTiles())));
       this.lastFowTileX = tx; this.lastFowTileY = ty;
+      (this as any).__lastFowComputeAt = now;
     }
   }
   // (handled at top) revive cinematic timing and detonation
@@ -1259,34 +1279,58 @@ export class Game {
     // New unified walkable underlay: darken outside + soft tint inside, beneath entities
     if (this.gameMode === 'DUNGEON' || this.gameMode === 'LAST_STAND') {
       this.roomManager.drawWalkableUnderlay(this.ctx, this.camX, this.camY);
-      // Last Stand terrain: UNWALKABLE = desert sand, WALKABLE (corridor) = grey road
+      // Last Stand terrain: UNWALKABLE = grey dystopian terrain, WALKABLE (corridor) = grey road
       if (this.gameMode === 'LAST_STAND') {
         try {
           // Build (and cache) a small pattern canvas once
           const w: any = window as any;
-          // Desert pattern (used outside the corridor)
-          if (!w.__lsDesertPattern) {
+          // Grey dystopian terrain (used outside the corridor)
+          if (!w.__lsDystopiaPattern) {
             const pC = document.createElement('canvas'); pC.width = 96; pC.height = 96;
             const pCtx = pC.getContext('2d');
             if (pCtx) {
-              pCtx.fillStyle = '#b8a382';
+              // Base concrete
+              pCtx.fillStyle = '#2c2f33';
               pCtx.fillRect(0,0,pC.width,pC.height);
+              // Fine noise pass (one-time)
               const img = pCtx.getImageData(0,0,pC.width,pC.height); const data = img.data;
               for (let i=0;i<data.length;i+=4){
-                const n = (Math.random()*22)|0;
-                data[i] = Math.max(0, data[i]-n);
-                data[i+1] = Math.max(0, data[i+1]-Math.floor(n*0.9));
-                data[i+2] = Math.max(0, data[i+2]-Math.floor(n*0.6));
+                const v = ((Math.random()*14)|0) - 7; // -7..+6
+                data[i] = Math.max(0, Math.min(255, data[i] + v));
+                data[i+1] = Math.max(0, Math.min(255, data[i+1] + v));
+                data[i+2] = Math.max(0, Math.min(255, data[i+2] + v));
               }
               pCtx.putImageData(img,0,0);
-              pCtx.strokeStyle = 'rgba(60,48,28,0.12)';
+              // Cracks (random jagged lines)
+              pCtx.strokeStyle = 'rgba(0,0,0,0.22)';
               pCtx.lineWidth = 1;
-              for (let x=0; x<=pC.width; x+=48) { pCtx.beginPath(); pCtx.moveTo(x,0); pCtx.lineTo(x+24,pC.height); pCtx.stroke(); }
-              for (let y=0; y<=pC.height; y+=48) { pCtx.beginPath(); pCtx.moveTo(0,y); pCtx.lineTo(pC.width,y+24); pCtx.stroke(); }
-              pCtx.fillStyle = 'rgba(50,38,22,0.14)';
-              for (let i=0;i<120;i++){ const x = Math.random()*pC.width; const y = Math.random()*pC.height; pCtx.fillRect(x,y,1,1); }
+              for (let c=0;c<8;c++) {
+                let x = Math.random()*pC.width;
+                let y = Math.random()*pC.height;
+                pCtx.beginPath(); pCtx.moveTo(x,y);
+                const seg = 3 + (Math.random()*3|0);
+                for (let s=0;s<seg;s++) {
+                  x += (Math.random()*18 - 9);
+                  y += (Math.random()*18 - 9);
+                  pCtx.lineTo(x,y);
+                }
+                pCtx.stroke();
+              }
+              // Debris specks
+              for (let i=0;i<140;i++){
+                const sx = Math.random()*pC.width, sy = Math.random()*pC.height;
+                const sz = (Math.random()<0.85)?1:2;
+                pCtx.fillStyle = (Math.random()<0.5) ? 'rgba(200,205,210,0.10)' : 'rgba(0,0,0,0.20)';
+                pCtx.fillRect(sx, sy, sz, sz);
+              }
+              // Subtle oil stains
+              pCtx.fillStyle = 'rgba(0,0,0,0.08)';
+              for (let i=0;i<3;i++){
+                const cx = Math.random()*pC.width, cy = Math.random()*pC.height, r = 10 + Math.random()*20;
+                pCtx.beginPath(); pCtx.arc(cx, cy, r, 0, Math.PI*2); pCtx.fill();
+              }
             }
-            w.__lsDesertPattern = pC;
+            w.__lsDystopiaPattern = pC;
           }
           // Road pattern (used inside the corridor)
           if (!w.__lsRoadPattern) {
@@ -1311,7 +1355,7 @@ export class Game {
             }
             w.__lsRoadPattern = rC;
           }
-          const desertPat = this.ctx.createPattern(w.__lsDesertPattern, 'repeat');
+          const desertPat = this.ctx.createPattern(w.__lsDystopiaPattern, 'repeat');
           const roadPat = this.ctx.createPattern(w.__lsRoadPattern, 'repeat');
           if (desertPat && roadPat) {
             this.ctx.save();
@@ -1582,7 +1626,7 @@ export class Game {
     if (this.gameMode === 'LAST_STAND') {
       const core: any = (window as any).__lsCore;
       if (core && core.x != null && core.y != null && core.radius != null) {
-        // Soft glow + solid core + outline ring
+  // Soft glow + solid core + outline ring (reduce layers when lowFX)
         this.ctx.save();
         const r = core.radius as number;
         // Advance spin using wall clock (render lacks delta argument)
@@ -1596,53 +1640,52 @@ export class Game {
           core.spin = (core.spin || 0) + dt * spinSpeed; // configurable rad/ms
         } catch {}
   // Glow — darker teal spectrum
-  const grad = this.ctx.createRadialGradient(core.x, core.y, r*0.28, core.x, core.y, r*1.7);
-  grad.addColorStop(0, 'rgba(26,255,233,0.24)');
-  grad.addColorStop(0.55, 'rgba(20,160,150,0.14)');
-  grad.addColorStop(1, 'rgba(10,20,24,0.00)');
-  const oldComp: GlobalCompositeOperation = this.ctx.globalCompositeOperation as GlobalCompositeOperation;
-  if (!this.lowFX) this.ctx.globalCompositeOperation = 'lighter';
-  this.ctx.fillStyle = grad; this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r*1.7, 0, Math.PI*2); this.ctx.fill();
-  this.ctx.globalCompositeOperation = oldComp;
-        // Core sprite (fallback to disk until image loads)
+  if (!this.lowFX) {
+    const grad = this.ctx.createRadialGradient(core.x, core.y, r*0.28, core.x, core.y, r*1.7);
+    grad.addColorStop(0, 'rgba(26,255,233,0.24)');
+    grad.addColorStop(0.55, 'rgba(20,160,150,0.14)');
+    grad.addColorStop(1, 'rgba(10,20,24,0.00)');
+    const oldComp: GlobalCompositeOperation = this.ctx.globalCompositeOperation as GlobalCompositeOperation;
+    this.ctx.globalCompositeOperation = 'lighter';
+    this.ctx.fillStyle = grad; this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r*1.7, 0, Math.PI*2); this.ctx.fill();
+    this.ctx.globalCompositeOperation = oldComp;
+  }
+        // Vector orb core (color-cycling). Removes PNG sprite dependency for performance & style.
         try {
           const w:any = window as any;
-          // Read or fetch LS config once
-          if (!w.__lsCoreCfgLoading) {
+          // Config fetch (retain spinSpeed, optional fx toggles)
+          if (!w.__lsCoreCfgLoading && !w.__lsCoreCfg) {
             w.__lsCoreCfgLoading = true;
-            (async () => {
-              try { w.__lsCoreCfg = await loadJSON(lastStandData.config()); } catch { w.__lsCoreCfg = null; }
-            })();
+            (async () => { try { w.__lsCoreCfg = await loadJSON(lastStandData.config()); } catch { w.__lsCoreCfg = {}; } })();
           }
-          const cfg = w.__lsCoreCfg || { core: { sprite: AssetLoader.normalizePath('/assets/core/core_1.png'), scale: 2.0, rotationMul: 0.35 } };
-          const spritePath = cfg?.core?.sprite ? AssetLoader.normalizePath(cfg.core.sprite) : AssetLoader.normalizePath('/assets/core/core_1.png');
-          let img: HTMLImageElement | undefined = w.__lsCoreImg as HTMLImageElement | undefined;
-          if (!img || w.__lsCoreImgPath !== spritePath) { img = new Image(); img.src = spritePath; w.__lsCoreImg = img; w.__lsCoreImgPath = spritePath; }
-          if (img && img.complete && img.naturalWidth > 0) {
-            this.ctx.save();
-            this.ctx.translate(core.x, core.y);
-            // Subtle rotation for life; tie to spin phase
-            const rotMul = Math.max(0, Math.min(2, Number(cfg?.core?.rotationMul ?? 0.35)));
-            this.ctx.rotate((core.spin || 0) * rotMul);
-            const scl = Math.max(0.5, Math.min(3, Number(cfg?.core?.scale ?? 2.0)));
-            const size = Math.round(r * scl);
-            // Optional blur for speed glow
-            const prevFilter = (this.ctx as any).filter as string | undefined;
-            try {
-              const blurPx = Math.max(0, Math.min(8, Number(cfg?.core?.blur ?? 0)));
-              if (blurPx > 0 && (this.ctx as any).filter !== undefined) {
-                (this.ctx as any).filter = `blur(${blurPx}px)`;
-              }
-            } catch { /* ignore filter errors */ }
-            this.ctx.drawImage(img, -size/2, -size/2, size, size);
-            try { if ((this.ctx as any).filter !== undefined) (this.ctx as any).filter = prevFilter || 'none'; } catch {}
-            this.ctx.restore();
-          } else {
-            // Fallback: neon disk
-            this.ctx.fillStyle = '#1affd5';
-            this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r*0.75, 0, Math.PI*2); this.ctx.fill();
-          }
-        } catch { /* ignore sprite errors */ }
+          const t = (performance.now() || 0) * 0.001; // seconds
+          // HSV-like cycling: compute a hue and map to RGB manually (avoid canvas state churn)
+          const hue = (t * 18) % 360; // slow rotate
+          const sat = 0.72, val = 1.0;
+          const h = (hue/60)|0; const f = (hue/60 - h);
+          const p = val * (1 - sat), q = val * (1 - sat * f), s = val * (1 - sat * (1 - f));
+          let rC=0,gC=0,bC=0; switch (h) { case 0: rC=val;gC=s; bC=p; break; case 1: rC=q; gC=val; bC=p; break; case 2: rC=p; gC=val; bC=s; break; case 3: rC=p; gC=q; bC=val; break; case 4: rC=s; gC=p; bC=val; break; default: rC=val; gC=p; bC=q; }
+          const inner = `rgba(${Math.round(rC*255)},${Math.round(gC*255)},${Math.round(bC*255)},1)`;
+          const rim = 'rgba(255,255,255,0.85)';
+          // Orb body: inner bright gradient
+          const g = this.ctx.createRadialGradient(core.x, core.y, 0, core.x, core.y, r*0.9);
+          g.addColorStop(0.0, inner);
+          g.addColorStop(0.6, inner);
+          g.addColorStop(1.0, 'rgba(255,255,255,0)');
+          this.ctx.fillStyle = g;
+          this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r*0.9, 0, Math.PI*2); this.ctx.fill();
+          // Gloss highlight arc (uses spin)
+          const glossR = r*0.92;
+          this.ctx.save();
+          this.ctx.translate(core.x, core.y);
+          this.ctx.rotate((core.spin||0) * 0.35);
+          this.ctx.strokeStyle = 'rgba(255,255,255,0.45)'; this.ctx.lineWidth = 3;
+          this.ctx.beginPath(); this.ctx.arc(0, 0, glossR, -0.9, -0.2); this.ctx.stroke();
+          this.ctx.restore();
+          // Outer ring
+          this.ctx.lineWidth = 4; this.ctx.strokeStyle = rim;
+          this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r, 0, Math.PI*2); this.ctx.stroke();
+        } catch { /* ignore orb errors */ }
         // Optional FX
         try {
           const cfg:any = (window as any).__lsCoreCfg;
@@ -1651,7 +1694,7 @@ export class Game {
             this.ctx.lineWidth = 4; this.ctx.strokeStyle = 'rgba(38,255,233,0.85)';
             this.ctx.beginPath(); this.ctx.arc(core.x, core.y, r, 0, Math.PI*2); this.ctx.stroke();
           }
-          if (fx.pulses) {
+          if (fx.pulses && !this.lowFX) {
             this.ctx.save();
             this.ctx.translate(core.x, core.y);
             this.ctx.rotate(core.spin || 0);
@@ -1664,7 +1707,7 @@ export class Game {
             }
             this.ctx.restore();
           }
-          if (fx.sparks) {
+          if (fx.sparks && !this.lowFX) {
             this.ctx.save();
             this.ctx.translate(core.x, core.y);
             this.ctx.rotate(-(core.spin||0) * 0.6);
@@ -1959,12 +2002,38 @@ export class Game {
         if (core && core.x != null && core.y != null) { visX = core.x; visY = core.y; }
       }
     } catch { /* ignore */ }
-    // If Last Stand, also clear corridor rectangle(s) so enemies appear when they step onto the road
+    // In Last Stand, constrain the circular reveal to the corridor union (~100px margin) so outside visibility is limited
+    // We do NOT fully clear corridor rectangles; visibility should remain circle-limited inside the corridors.
     let extraRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
+    let circleClipRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
     try {
       if (this.gameMode === 'LAST_STAND') {
         const corrs = this.roomManager.getCorridors?.() || [];
-        if (corrs.length) extraRects = corrs.map((c:any)=> ({ x:c.x, y:c.y, w:c.w, h:c.h }));
+        if (corrs.length) {
+          const margin = 100; // px
+          // Union adjacent/overlapping corridor rects to reduce clip path complexity
+          const expanded = corrs.map((c:any)=> ({ x: c.x - margin, y: c.y - margin, w: c.w + margin*2, h: c.h + margin*2 }));
+          const merged: Array<{x:number;y:number;w:number;h:number}> = [];
+          for (let i=0;i<expanded.length;i++){
+            const r = expanded[i]; if (!r) continue;
+            let mergedInto = false;
+            for (let j=0;j<merged.length;j++){
+              const m = merged[j];
+              const ax1=r.x, ay1=r.y, ax2=r.x+r.w, ay2=r.y+r.h;
+              const bx1=m.x, by1=m.y, bx2=m.x+m.w, by2=m.y+m.h;
+              const overlap = !(ax2 < bx1 || bx2 < ax1 || ay2 < by1 || by2 < ay1);
+              const near = Math.abs(ax1-bx2)<=16 || Math.abs(bx1-ax2)<=16 || Math.abs(ay1-by2)<=16 || Math.abs(by1-ay2)<=16;
+              if (overlap || near) {
+                const nx1 = Math.min(ax1, bx1), ny1 = Math.min(ay1, by1);
+                const nx2 = Math.max(ax2, bx2), ny2 = Math.max(ay2, by2);
+                m.x = nx1; m.y = ny1; m.w = nx2 - nx1; m.h = ny2 - ny1;
+                mergedInto = true; break;
+              }
+            }
+            if (!mergedInto) merged.push({ x:r.x, y:r.y, w:r.w, h:r.h });
+          }
+          circleClipRects = merged;
+        }
       }
     } catch { /* ignore */ }
     this.fog.render(this.ctx, cam, {
@@ -1973,25 +2042,40 @@ export class Game {
       visibleCenterY: visY,
       visibleRadiusPx: radiusPx,
       exploredAlpha: 0.34,
-      visibleRects: extraRects,
+      // Do not pass visibleRects in Last Stand; we only clip the circle to corridors.
+      circleClipRects,
     });
     // Flashlight wedge: reveal an arc ahead of player (bonus item toggles this)
     try {
       const ls: any = (this as any).lastStand;
       const hasFlashlight = !!(ls && ls.getFlashlight && ls.getFlashlight());
   if (hasFlashlight) {
-        const px = this.player.x - this.camX;
-        const py = this.player.y - this.camY;
+        const px = Math.round(this.player.x - this.camX);
+        const py = Math.round(this.player.y - this.camY);
         const angle = Math.atan2((this.player as any).lastDirY || 0, (this.player as any).lastDirX || 1);
   // Slightly smaller and tighter cone per feedback; reveal-only, no visible light sprite
   const wedgeR = Math.max(200, Math.floor(this.fowTileSize * 3.6));
   const wedgeHalf = Math.PI / 9; // ~40° cone
         this.ctx.save();
         this.ctx.globalCompositeOperation = 'destination-out';
-        const g = this.ctx.createRadialGradient(px, py, 0, px, py, wedgeR);
-        g.addColorStop(0, 'rgba(255,255,255,1)');
-        g.addColorStop(1, 'rgba(255,255,255,0)');
-        this.ctx.fillStyle = g;
+        // Constrain wedge to corridor-expanded rects if available
+        if (circleClipRects && circleClipRects.length) {
+          this.ctx.beginPath();
+          for (let i=0;i<circleClipRects.length;i++){
+            const r = circleClipRects[i];
+            const rx = Math.round(r.x - this.camX);
+            const ry = Math.round(r.y - this.camY);
+            this.ctx.rect(rx, ry, Math.round(r.w), Math.round(r.h));
+          }
+          this.ctx.clip();
+        }
+        // Use a simple linear gradient fill; radial gradient per frame is more expensive for a large cone
+        const gx = Math.cos(angle), gy = Math.sin(angle);
+        const edgeX = Math.round(px + gx * wedgeR), edgeY = Math.round(py + gy * wedgeR);
+        const grad = this.ctx.createLinearGradient(px, py, edgeX, edgeY);
+        grad.addColorStop(0, 'rgba(255,255,255,1)');
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+        this.ctx.fillStyle = grad;
         this.ctx.beginPath();
         this.ctx.moveTo(px, py);
         this.ctx.arc(px, py, wedgeR, angle - wedgeHalf, angle + wedgeHalf);

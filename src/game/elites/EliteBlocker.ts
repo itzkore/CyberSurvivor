@@ -9,13 +9,15 @@ export function ensureBlockerState(e: any): EliteRuntime {
 export function updateEliteBlocker(e: any, playerX: number, playerY: number, now: number) {
   const st = ensureBlockerState(e);
   const cd = 3600; const wind = 420;
+  let canAct = true; try { const gi:any=(window as any).__gameInstance; if (gi && gi.gameMode==='LAST_STAND'){ const em:any=gi.enemyManager; const vis=em?.isVisibleInLastStand?.(e.x,e.y); canAct=(vis!==false);} } catch {}
   if (!st.cdUntil) st.cdUntil = now + 1500;
   if (!st.phase) st.phase = 'IDLE';
   switch (st.phase) {
     case 'IDLE':
-      if (now >= (st.cdUntil as number)) { st.phase = 'WINDUP'; st.phaseUntil = now + wind; e._shakeUntil = st.phaseUntil; }
+      if (now >= (st.cdUntil as number)) { if (!canAct) { st.cdUntil = now + 260; break; } st.phase = 'WINDUP'; st.phaseUntil = now + wind; e._shakeUntil = st.phaseUntil; }
       break;
     case 'WINDUP':
+      if (!canAct) { st.phaseUntil = now + 120; break; }
       if (now >= (st.phaseUntil as number)) {
         st.phase = 'ACTION'; st.phaseUntil = now + 100;
         try {

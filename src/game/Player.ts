@@ -847,7 +847,8 @@ export class Player {
                 try { if (!this.isVisibleForAim(e.x, e.y)) continue; } catch { /* ignore */ }
                 const dx = e.x - this.x, dy = e.y - this.y; const d2 = dx*dx + dy*dy; if (d2 > r2) continue;
                 const d = Math.max(1, Math.sqrt(d2)); const nx = dx / d, ny = dy / d;
-                const boost = 2600; // a bit stronger than Data Sigil finale
+                let boost = 2600; // a bit stronger than Data Sigil finale
+                try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') boost *= 0.25; } catch {}
                 const existingRadial = ((e as any).knockbackVx || 0) * nx + ((e as any).knockbackVy || 0) * ny;
                 const added = boost * (existingRadial > 0 ? (em as any).knockbackStackScale || 0.55 : 1);
                 const maxV = (em as any).knockbackMaxVelocity || 4200;
@@ -887,7 +888,8 @@ export class Player {
                 try { if (!this.isVisibleForAim(e.x, e.y)) continue; } catch { /* ignore */ }
                 const dx = e.x - this.x, dy = e.y - this.y; const d2 = dx*dx + dy*dy; if (d2 > r2) continue;
                 const d = Math.max(1, Math.sqrt(d2)); const nx = dx / d, ny = dy / d;
-                const boost = 2600;
+                let boost = 2600;
+                try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') boost *= 0.25; } catch {}
                 const existingRadial = ((e as any).knockbackVx || 0) * nx + ((e as any).knockbackVy || 0) * ny;
                 const added = boost * (existingRadial > 0 ? (em as any).knockbackStackScale || 0.55 : 1);
                 const maxV = (em as any).knockbackMaxVelocity || 4200;

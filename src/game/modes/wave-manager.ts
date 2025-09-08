@@ -1,4 +1,5 @@
 import { loadJSON, lastStandData } from './config-loader';
+import { SPEED_SCALE } from '../Balance';
 
 type WaveSpawn = { type: 'small'|'medium'|'large'; count: number };
 export type WaveDef = { id: number; spawns: WaveSpawn[]; boss?: boolean };
@@ -38,6 +39,14 @@ export class WaveManager {
   this.waveToken++;
   const token = this.waveToken;
     const wave = this.waves[this.waveIndex] || { id: this.waveIndex+1, spawns:[{type:'small',count:12+(this.waveIndex*5)}], boss: ((this.waveIndex+1)%5)===0 };
+  // Wave-based speed multiplier: Wave 1 = 2.0x, rises gently, and reaches its maximum at Wave 30
+  // New curve: linear ramp from 2.0x at Wave 1 to 2.4x at Wave 30; clamped beyond 30
+  // This tones down late-wave movement speeds (esp. beyond Wave 10) while preserving early urgency.
+  const waveNum = this.waveIndex + 1;
+  const t30 = Math.min(1, Math.max(0, (waveNum - 1) / 29)); // 0 at W1 -> 1 at W30
+  const waveSpeedMul = 2.0 + 0.40 * t30; // 2.0 .. 2.4 (at W30+)
+  // Absolute global cap: no enemy should exceed Ghost Operative default movement speed (9.0 scaled)
+  const ghostCap = 9.0 * SPEED_SCALE; // ~4.05 units if SPEED_SCALE=0.45
   let alive = 0;
     let offsetMs = 0;
   // Faster pacing: tighten spawn cadence to feel more snappy
@@ -57,10 +66,21 @@ export class WaveManager {
           }
           const e = enemyManager.spawnEnemyAt?.(x, y, { type: s.type });
           if (e) {
+            // Apply wave speed scaling first, then add minor jitter for variety
+            try { e.speed = Math.max(0.05, e.speed * waveSpeedMul); } catch { /* ignore */ }
             // Speed jitter per spawn for variety
             try {
               const mul = 0.9 + Math.random()*0.3; // 0.9x..1.2x
               e.speed = Math.max(0.05, e.speed * mul);
+            } catch {/* ignore */}
+            // Enforce per-type caps and global ghost cap after all scaling
+            try {
+              if (typeof enemyManager.clampToTypeCaps === 'function') {
+                e.speed = enemyManager.clampToTypeCaps(e.speed, s.type);
+              } else {
+                // Fallback: at least clamp to global ghost cap
+                if (e.speed > ghostCap) e.speed = ghostCap;
+              }
             } catch {/* ignore */}
             this.aliveInWave++;
           } else {

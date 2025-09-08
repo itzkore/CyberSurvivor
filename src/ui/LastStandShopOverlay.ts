@@ -17,10 +17,11 @@ export class LastStandShopOverlay {
   private rerollBase = 20;
   private rerollCount = 0;
   private scrapSpan!: HTMLSpanElement;
+  private freeSpan!: HTMLSpanElement;
   // Track purchased offer ids for the current roll to enforce one-time purchase per card
   private purchasedIds: Set<string> = new Set();
 
-  constructor(private shop: ShopManager, private currency: CurrencySystem, private onPurchase:(offer:Offer)=>void, private onExit:()=>void) {
+  constructor(private shop: ShopManager, private currency: CurrencySystem, private onPurchase:(offer:Offer, useFree?: boolean)=>void, private onExit:()=>void) {
     const root = document.createElement('div');
     root.className = 'ls-shop-overlay';
     Object.assign(root.style, {
@@ -41,10 +42,11 @@ export class LastStandShopOverlay {
     Object.assign(header.style, { fontSize:'24px', marginBottom:'6px', color:'#a5fff5', letterSpacing:'0.8px', textShadow:'0 0 12px rgba(0,255,220,0.25)' } as CSSStyleDeclaration);
   const sub = document.createElement('div');
   const capNote = `<span style="opacity:.85;font-size:11px;color:#8cf6ff">(Max 3 weapons, 3 passives)</span>`;
-  sub.innerHTML = `Scrap <span id="ls-shop-scrap" style="color:#fff">${this.currency.getBalance()}</span> · <span style="opacity:.9">Shop closes in <span id="ls-shop-timer">30</span>s</span> ${capNote}`;
+  sub.innerHTML = `Scrap <span id="ls-shop-scrap" style="color:#fff">${this.currency.getBalance()}</span> · <span style="opacity:.9">Shop closes in <span id="ls-shop-timer">30</span>s</span> ${capNote} <span id="ls-shop-free" style="margin-left:8px;color:#ffd36b;opacity:.95"></span>`;
     Object.assign(sub.style, { fontSize:'12px', opacity:'0.95', marginBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' } as CSSStyleDeclaration);
-    this.timer = sub.querySelector('#ls-shop-timer') as HTMLSpanElement;
-    this.scrapSpan = sub.querySelector('#ls-shop-scrap') as HTMLSpanElement;
+  this.timer = sub.querySelector('#ls-shop-timer') as HTMLSpanElement;
+  this.scrapSpan = sub.querySelector('#ls-shop-scrap') as HTMLSpanElement;
+  this.freeSpan = sub.querySelector('#ls-shop-free') as HTMLSpanElement;
     const list = document.createElement('div'); this.list = list;
     Object.assign(list.style, { display:'grid', gridTemplateColumns:'1fr 1fr', gap:'14px' } as CSSStyleDeclaration);
     const actions = document.createElement('div');
@@ -62,6 +64,10 @@ export class LastStandShopOverlay {
 
     this.currency.onChange(v => {
       const s = panel.querySelector('#ls-shop-scrap'); if (s) s.textContent = String(v);
+      if (this.freeSpan) {
+        const n = this.currency.getFreeUpgradeTokens();
+        this.freeSpan.textContent = n > 0 ? `• Free upgrade available: ${n}` : '';
+      }
     });
     reroll.onclick = () => this.handleReroll();
     close.onclick = () => this.exit();
@@ -75,8 +81,12 @@ export class LastStandShopOverlay {
       if (!isNaN(idx) && idx >= 1 && idx <= this.offers.length) {
         const target = this.offers[idx-1];
         if (this.purchasedIds.has(target.id)) return;
-        if (this.currency.getBalance() >= target.price) {
-          this.onPurchase(target);
+        const capped = this.isOfferCapped(target);
+        const canUseFree = this.currency.hasFreeUpgrade();
+        const affordable = (!capped) && (this.currency.getBalance() >= target.price || canUseFree);
+        if (affordable) {
+          const useFree = canUseFree && this.currency.getBalance() < target.price; // auto-use when needed
+          this.onPurchase(target, useFree);
           this.purchasedIds.add(target.id);
           this.refreshOffers(false);
         }
@@ -85,6 +95,25 @@ export class LastStandShopOverlay {
   }
 
   setTimer(seconds:number){ this.timer.textContent = String(Math.max(0, Math.ceil(seconds))); }
+
+  private isOfferCapped(off: Offer): boolean {
+    const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
+    if (!isLastStand) return false;
+    try {
+      if (off.kind === 'weapon') {
+        const aw: Map<number, number> | undefined = (window as any).__gameInstance?.player?.activeWeapons || (window as any).game?.player?.activeWeapons;
+        const size = aw ? (aw as any).size : 0;
+        const has = aw ? (aw as any).has(off.data?.weaponType) : false;
+        return (!has && size >= 3);
+      } else if (off.kind === 'passive') {
+        const ap: Array<{type:string,level:number}> | undefined = (window as any).__gameInstance?.player?.activePassives || (window as any).game?.player?.activePassives;
+        const count = Array.isArray(ap) ? ap.length : 0;
+        const already = Array.isArray(ap) ? !!ap.find(p => p.type === off.data?.passiveName) : false;
+        return (!already && count >= 3);
+      }
+    } catch { /* ignore */ }
+    return false;
+  }
 
   private renderOffers(){
     this.list.innerHTML = '';
@@ -154,32 +183,20 @@ export class LastStandShopOverlay {
       }
       const buyWrap = document.createElement('div');
       Object.assign(buyWrap.style, { display:'grid', gap:'6px', justifyItems:'end', alignContent:'center' } as CSSStyleDeclaration);
-      const price = document.createElement('div'); price.textContent = `${off.price} Scrap`; Object.assign(price.style, { fontSize:'15px', color:'#fff', textShadow:'0 0 10px rgba(120,255,235,0.25)' } as CSSStyleDeclaration);
-  const buyBtn = document.createElement('div'); buyBtn.textContent = alreadyBought ? 'Purchased' : `Buy  [${i+1}]`; Object.assign(buyBtn.style, { fontSize:'12px', color:'#012', background:accent, padding:'6px 10px', borderRadius:'8px', border:'1px solid rgba(0,0,0,0.2)' } as CSSStyleDeclaration);
+  const price = document.createElement('div'); Object.assign(price.style, { fontSize:'15px', color:'#fff', textShadow:'0 0 10px rgba(120,255,235,0.25)' } as CSSStyleDeclaration);
+  const buyBtn = document.createElement('div'); Object.assign(buyBtn.style, { fontSize:'12px', color:'#012', background:accent, padding:'6px 10px', borderRadius:'8px', border:'1px solid rgba(0,0,0,0.2)' } as CSSStyleDeclaration);
+  const hasFree = this.currency.hasFreeUpgrade();
+  const showFree = hasFree && !alreadyBought;
+  price.textContent = showFree ? 'FREE' : `${off.price} Scrap`;
+  buyBtn.textContent = alreadyBought ? 'Purchased' : (showFree ? `Claim Free  [${i+1}]` : `Buy  [${i+1}]`);
       const hint = document.createElement('div'); hint.textContent = `[#${i+1}]`; Object.assign(hint.style, { fontSize:'11px', opacity:'0.65', textAlign:'right' } as CSSStyleDeclaration);
   body.appendChild(titleNode); body.appendChild(desc);
       buyWrap.appendChild(price); buyWrap.appendChild(buyBtn);
       card.appendChild(icon); card.appendChild(body); card.appendChild(buyWrap);
 
       // Enforce UI disabling for caps in Last Stand (mirror of ShopManager.purchase guard)
-      const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
-      let capped = false;
-      if (isLastStand) {
-        try {
-          if (off.kind === 'weapon') {
-            const aw: Map<number, number> | undefined = (window as any).__gameInstance?.player?.activeWeapons || (window as any).game?.player?.activeWeapons;
-            const size = aw ? (aw as any).size : 0;
-            const has = aw ? (aw as any).has(off.data?.weaponType) : false;
-            capped = !has && size >= 3;
-          } else if (off.kind === 'passive') {
-            const ap: Array<{type:string,level:number}> | undefined = (window as any).__gameInstance?.player?.activePassives || (window as any).game?.player?.activePassives;
-            const count = Array.isArray(ap) ? ap.length : 0;
-            const already = Array.isArray(ap) ? !!ap.find(p => p.type === off.data?.passiveName) : false;
-            capped = !already && count >= 3;
-          }
-        } catch { /* ignore */ }
-      }
-      const affordable = this.currency.getBalance() >= off.price && !capped && !alreadyBought;
+      const capped = this.isOfferCapped(off);
+      const affordable = (this.currency.getBalance() >= off.price || hasFree) && !capped && !alreadyBought;
       if (!affordable) {
         card.style.opacity = '0.8';
         buyBtn.style.filter = 'grayscale(0.4)';
@@ -189,7 +206,8 @@ export class LastStandShopOverlay {
 
       card.onclick = () => {
         if (!affordable) return;
-        this.onPurchase(off);
+        const useFree = this.currency.hasFreeUpgrade() && this.currency.getBalance() < off.price;
+        this.onPurchase(off, useFree);
         this.purchasedIds.add(off.id);
         this.refreshOffers(false);
       };

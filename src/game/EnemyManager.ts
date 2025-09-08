@@ -1564,7 +1564,40 @@ export class EnemyManager {
   }
 
   public getEnemies() {
-  return this.activeEnemies;
+    // Return a snapshot array of active enemies only; avoids exposing pooled/inactive items
+    const out = new Array(this.activeEnemies.length);
+    let n = 0;
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const e = this.activeEnemies[i];
+      if (e && e.active) out[n++] = e;
+    }
+    out.length = n; return out;
+  }
+
+  /**
+   * True if any elite is currently alive. Scans the full enemy list to avoid
+   * timing issues with the per-frame activeEnemies snapshot during update.
+   */
+  public hasActiveElites(): boolean {
+    for (let i = 0; i < this.enemies.length; i++) {
+      const eAny: any = this.enemies[i] as any;
+      if (!eAny || !eAny.active) continue;
+      const elite = eAny._elite; if (elite && elite.kind) return true;
+    }
+    return false;
+  }
+
+  /** Clamp a speed value to per-type caps and the global Ghost cap. */
+  public clampToTypeCaps(speed: number, type: 'small'|'medium'|'large'): number {
+    let cap = Number.POSITIVE_INFINITY;
+    if (type === 'small') cap = 0.36 * this.enemySpeedScale; // smalls slightly faster than mediums
+    else if (type === 'medium') cap = 0.34 * this.enemySpeedScale;
+    else if (type === 'large') cap = 0.26 * this.enemySpeedScale;
+    // Defensive global cap: Ghost Operative default speed
+    let ghostCap = Infinity;
+    try { ghostCap = 9.0 * ((window as any)?.SPEED_SCALE || 0.45); } catch { ghostCap = 9.0 * 0.45; }
+    const c = Math.min(speed, cap, ghostCap);
+    return Number.isFinite(c) ? c : speed;
   }
 
   /**
@@ -1918,8 +1951,10 @@ export class EnemyManager {
           if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25; // simple linear scaling
         }
   let baseForcePerSec = perFrame * 60; // convert to px/sec
-  // Reduce turret-origin knockback only in Last Stand to avoid affecting other modes
-  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND' && origin === 'TURRET') baseForcePerSec *= 0.1; } catch {}
+  // Last Stand: reduce all player/turret knockback by 75% flat to keep enemies advancing
+  try {
+    if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') baseForcePerSec *= 0.25;
+  } catch {}
         // Compute direction from chosen source point to enemy (push enemy away from source)
         let dx = enemy.x - sx;
         let dy = enemy.y - sy;
@@ -1934,7 +1969,14 @@ export class EnemyManager {
   const beamDampen = isBioTick ? 0.08 : 0.3;
   // Apply spawn-time knockback resistance (0..0.8) scaled over run time; amplify in Last Stand if configured
   const kbResistBase = (enemy as any)?._kbResist || 0;
-  const kbResist = Math.max(0, Math.min(0.95, kbResistBase * (this.lsKbResistMul || 1)));
+  let kbResist = Math.max(0, Math.min(0.95, kbResistBase * (this.lsKbResistMul || 1)));
+  // In Last Stand, enforce 90% knockback resistance for all enemies above 'small'
+  try {
+    const gm = (window as any).__gameInstance?.gameMode;
+    if (gm === 'LAST_STAND' && enemy.type !== 'small') {
+      kbResist = 0.90;
+    }
+  } catch { /* ignore */ }
   let impulse = baseForcePerSec * massScale * beamDampen * Math.max(0, 1 - kbResist);
         // Radial-only stacking: project any existing knockback onto radial axis, discard sideways component
         let existingRadial = 0;
@@ -2052,7 +2094,8 @@ export class EnemyManager {
           if (weaponLevel && weaponLevel > 1) perFrame *= 1 + (weaponLevel - 1) * 0.25;
         }
   let baseForcePerSec = perFrame * 60;
-  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND' && origin === 'TURRET') baseForcePerSec *= 0.1; } catch {}
+  // Last Stand: reduce all player/turret knockback by 75% flat
+  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') baseForcePerSec *= 0.25; } catch {}
         let dx = boss.x - sx, dy = boss.y - sy; let dist = Math.hypot(dx, dy); if (dist < 0.0001){ dx=1; dy=0; dist=1; }
         const nx = dx/dist, ny = dy/dist;
         const massScale = 24 / Math.max(12, (boss.radius || 48));
@@ -2975,14 +3018,21 @@ export class EnemyManager {
     const nowA = performance.now();
     for (let i = 0; i < this.activeEnemies.length; i++) {
       const eAny: any = this.activeEnemies[i] as any; if (!eAny || !eAny.active) continue;
-      const until = eAny._siphonAimUntil || 0; if (until <= nowA) continue;
+  const until = eAny._siphonAimUntil || 0; if (until <= nowA) continue;
+  // Defensive: if a beam is already active, skip the aim telegraph regardless of until timestamp
+  if ((eAny._beamUntil || 0) > nowA) continue;
       const x0 = eAny.x, y0 = eAny.y; if (x0 < minX-900 || x0 > maxX+900 || y0 < minY-900 || y0 > maxY+900) continue;
       // If target snapshot is present, recompute angle from it to avoid tracking during windup
-      const tx = eAny._siphonAimTargetX ?? (x0 + Math.cos(eAny._siphonAimAngle || 0));
-      const ty = eAny._siphonAimTargetY ?? (y0 + Math.sin(eAny._siphonAimAngle || 0));
+      let tx = eAny._siphonAimTargetX ?? (x0 + Math.cos(eAny._siphonAimAngle || 0));
+      let ty = eAny._siphonAimTargetY ?? (y0 + Math.sin(eAny._siphonAimAngle || 0));
       const ang = Math.atan2(ty - y0, tx - x0);
       const bw = Math.max(3, Math.min(12, eAny._siphonAimWidth || 8));
-  // Draw only up to the initial player snapshot point (do not extend beyond)
+  // Cap telegraph length to the actual beam length so it never overextends beyond the action range
+  const maxLen = 900; // must mirror EliteSiphon beam length
+  {
+    const dx = tx - x0, dy = ty - y0; const d = Math.sqrt(dx*dx + dy*dy);
+    if (d > maxLen) { const s = maxLen / d; tx = x0 + dx * s; ty = y0 + dy * s; }
+  }
   const x1 = tx; const y1 = ty;
       const start = eAny._siphonAimStart || (until - 900);
       const tIn = Math.max(0, Math.min(1, (nowA - start) / 200));
@@ -4098,24 +4148,27 @@ export class EnemyManager {
   } catch { /* ignore */ }
 
   // Update enemies
-    // Determine chase target. During Ghost cloak, enemies follow the snapshot at cloak start.
-    let playerX = this.player.x;
-    let playerY = this.player.y;
-    // Optional override: modes can provide a custom chase target (e.g., a defense core)
-    try {
-      const prov: (()=>{x:number;y:number}) | undefined = (this as any).__chaseTargetProvider;
-      if (prov) { const p = prov(); if (p && typeof p.x === 'number' && typeof p.y === 'number') { playerX = p.x; playerY = p.y; } }
-    } catch { /* ignore */ }
+    // Determine per-role chase targets.
+    // 1) Player chase point (respects Ghost cloak follow snapshot)
+    let playerChaseX = this.player.x;
+    let playerChaseY = this.player.y;
     if (this._ghostCloakFollow.active) {
       const nowT = performance.now();
       if (nowT <= this._ghostCloakFollow.until) {
-        playerX = this._ghostCloakFollow.x;
-        playerY = this._ghostCloakFollow.y;
+        playerChaseX = this._ghostCloakFollow.x;
+        playerChaseY = this._ghostCloakFollow.y;
       } else {
         // Safety: auto-clear if time elapsed without explicit end event
         this._ghostCloakFollow.active = false;
       }
     }
+    // 2) Optional core chase target provided by modes (e.g., Last Stand core)
+    let coreChaseX: number | undefined;
+    let coreChaseY: number | undefined;
+    try {
+      const prov: (()=>{x:number;y:number}) | undefined = (this as any).__chaseTargetProvider;
+      if (prov) { const p = prov(); if (p && typeof p.x === 'number' && typeof p.y === 'number') { coreChaseX = p.x; coreChaseY = p.y; } }
+    } catch { /* ignore */ }
   // Psionic Weaver Lattice: compute slow zone radius if active
   const nowMs = nowFrame;
   const latticeUntil = (window as any).__weaverLatticeActiveUntil || 0;
@@ -4204,16 +4257,16 @@ export class EnemyManager {
       this.activeEnemies.push(enemy);
       // Decay damage flash counter (ms-based) so hit highlight fades out
   // (damage flash removed)
-      // Calculate distance to player for movement and collision
-      const dx = playerX - enemy.x;
-      const dy = playerY - enemy.y;
-      const distSq = dx*dx + dy*dy;
-      const dist = distSq > 0 ? Math.sqrt(distSq) : 0;
+  // Calculate distance to player for LOD/collision checks (screen relevance)
+  const dpx = this.player.x - enemy.x;
+  const dpy = this.player.y - enemy.y;
+  const distSq = dpx*dpx + dpy*dpy;
+  const distPlayer = distSq > 0 ? Math.sqrt(distSq) : 0;
   // Note: Psionic slow marks are now applied only by direct PSIONIC_WAVE impacts (and their AoE)
   // to avoid perceived "random" slow auras on nearby enemies during lattice.
   // LOD: if far, skip some frames but accumulate skipped time so motion stays consistent
       let effectiveDelta = deltaTime;
-      if (distSq > this.lodFarDistSq) {
+  if (distSq > this.lodFarDistSq) {
         if (this.lodToggle) {
           enemy._lodCarryMs = (enemy._lodCarryMs || 0) + deltaTime;
           // Still decay knockback timers minimally even if skipping movement (no heavy math)
@@ -4229,23 +4282,23 @@ export class EnemyManager {
       // Elite AI: if this enemy carries elite state, update its behavior
       try {
         const elite: EliteRuntime | undefined = (enemy as any)._elite;
-        if (elite && enemy.hp > 0) {
+          if (elite && enemy.hp > 0) {
           const now = performance.now();
           if (elite.kind === 'DASHER') {
-            updateEliteDasher(enemy as any, playerX, playerY, now);
+            updateEliteDasher(enemy as any, playerChaseX, playerChaseY, now);
           } else if (elite.kind === 'GUNNER') {
             const dmgScale = 1; // could scale with time if desired
-            updateEliteGunner(enemy as any, playerX, playerY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts), dmgScale);
+            updateEliteGunner(enemy as any, playerChaseX, playerChaseY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts), dmgScale);
           } else if (elite.kind === 'SUPPRESSOR') {
-            updateEliteSuppressor(enemy as any, playerX, playerY, now);
+            updateEliteSuppressor(enemy as any, playerChaseX, playerChaseY, now);
           } else if (elite.kind === 'BOMBER') {
-            updateEliteBomber(enemy as any, playerX, playerY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts));
+            updateEliteBomber(enemy as any, playerChaseX, playerChaseY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts));
           } else if (elite.kind === 'BLINKER') {
-            updateEliteBlinker(enemy as any, playerX, playerY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts));
+            updateEliteBlinker(enemy as any, playerChaseX, playerChaseY, now, (x,y,vx,vy,opts)=>this.spawnEnemyProjectile(x,y,vx,vy,opts));
           } else if (elite.kind === 'BLOCKER') {
-            updateEliteBlocker(enemy as any, playerX, playerY, now);
+            updateEliteBlocker(enemy as any, playerChaseX, playerChaseY, now);
           } else if (elite.kind === 'SIPHON') {
-            updateEliteSiphon(enemy as any, playerX, playerY, now);
+            updateEliteSiphon(enemy as any, playerChaseX, playerChaseY, now);
           }
         }
       } catch { /* ignore elite errors */ }
@@ -4276,8 +4329,8 @@ export class EnemyManager {
           kny = (enemy.knockbackVy as number) / speed;
         } else {
           // Recompute outward direction each frame so normal knockback always moves enemy further from hero
-          let kdx = enemy.x - playerX;
-          let kdy = enemy.y - playerY;
+          let kdx = enemy.x - playerChaseX;
+          let kdy = enemy.y - playerChaseY;
           let kdist = Math.hypot(kdx, kdy);
           if (kdist < 0.0001) { kdx = 1; kdy = 0; kdist = 1; }
           knx = kdx / kdist;
@@ -4325,11 +4378,23 @@ export class EnemyManager {
         enemy.knockbackVy = 0;
         enemy.knockbackTimer = 0;
         // Move toward player (with chase speed cap relative to player)
+        // Per-enemy chase target: elites chase the player; others chase core if provided
+        const isElite = !!((enemy as any)?._elite);
+        const tx = isElite ? playerChaseX : (coreChaseX ?? playerChaseX);
+        const ty = isElite ? playerChaseY : (coreChaseY ?? playerChaseY);
+        const dx = tx - enemy.x;
+        const dy = ty - enemy.y;
+        const dist = Math.hypot(dx, dy);
         if (dist > enemy.radius) { // Use radius to prevent jittering when close
           const inv = dist === 0 ? 0 : 1 / dist;
           const moveScale = (effectiveDelta / 16.6667); // scale like deltaFactor but using effective delta
           // Clamp chase speed to ~90% of player speed to reduce exponential-feel scaling
-          const baseSpeed = enemy.speed > chaseCap ? chaseCap : enemy.speed;
+          // Defensive: clamp to per-type and global caps before applying slows
+          let baseSpeed = enemy.speed > chaseCap ? chaseCap : enemy.speed;
+          try {
+            const t: 'small'|'medium'|'large' = (enemy.type === 'small' || enemy.type === 'medium') ? enemy.type : 'large';
+            baseSpeed = this.clampToTypeCaps(baseSpeed, t);
+          } catch { /* ignore */ }
           const effSpeed = this.getEffectiveEnemySpeed(enemy, baseSpeed);
           const mvx = dx * inv * effSpeed * moveScale;
           const mvy = dy * inv * effSpeed * moveScale;
@@ -4373,7 +4438,7 @@ export class EnemyManager {
         this.executeBossSpecterExecution('expire');
       } catch { /* ignore */ }
       // Player-enemy collision (do not apply for Sandbox dummies)
-      if (dist < enemy.radius + this.player.radius) {
+  if (distPlayer < enemy.radius + this.player.radius) {
         const isDummy = (enemy as any)._isDummy === true;
         if (!isDummy) {
         // Hit cooldown: enemies can damage player at most once per second
@@ -4528,17 +4593,18 @@ export class EnemyManager {
             }
           }
         }
-        // Before recycling, ensure elite flags/state are cleared to avoid pool leakage
+        // Before recycling, announce death (including elite flag) for hooks like rewards
+        try {
+          const eliteDead: EliteRuntime | undefined = (enemy as any)?._elite;
+          eventBus.emit('enemyDead', { id: enemy.id, elite: !!eliteDead, kind: eliteDead?.kind, x: enemy.x, y: enemy.y, time: (window as any)?.__gameInstance?.getGameTime?.() ?? 0 });
+        } catch { /* ignore */ }
+        // Then clear elite flags/state to avoid pool leakage
         try {
           const rAny: any = enemy as any;
           if (rAny._elite) rAny._elite = undefined;
           rAny._blockerWall = undefined; rAny._suppressorState = undefined; rAny._dasherState = undefined; rAny._blinkerState = undefined; rAny._bomberState = undefined; rAny._gunnerState = undefined; rAny._siphonState = undefined;
           // Reset walk cadence override used by elites
           rAny._walkFlipIntervalMs = undefined;
-        } catch { /* ignore */ }
-        try {
-          const eliteDead: EliteRuntime | undefined = (enemy as any)?._elite;
-          eventBus.emit('enemyDead', { id: enemy.id, elite: !!eliteDead, kind: eliteDead?.kind, x: enemy.x, y: enemy.y, time: (window as any)?.__gameInstance?.getGameTime?.() ?? 0 });
         } catch { /* ignore */ }
         this.enemyPool.push(enemy);
       }
@@ -5152,22 +5218,35 @@ export class EnemyManager {
     enemy.type = type;
     // Defaults match spawnEnemy type presets (early game values)
   if (type === 'small') { enemy.radius = 20; enemy.speed = 0.30 * this.enemySpeedScale * this.lsSmallSpeedMul; enemy.damage = 4; enemy.hp = opts.hp ?? 100; }
-    else if (type === 'medium') { enemy.radius = 30; enemy.speed = 0.65 * 0.30 * this.enemySpeedScale; enemy.damage = 7; enemy.hp = opts.hp ?? 220; }
-    else { enemy.radius = 38; enemy.speed = 0.42 * 0.28 * this.enemySpeedScale; enemy.damage = 10; enemy.hp = opts.hp ?? 480; }
-    // Time-based speed ramp so medium/large don’t drag waves (Sandbox unaffected since gameTime=0)
+    else if (type === 'medium') { enemy.radius = 30; enemy.speed = 0.92 * 0.30 * this.enemySpeedScale; enemy.damage = 7; enemy.hp = opts.hp ?? 220; }
+    else { enemy.radius = 38; enemy.speed = 0.45 * 0.28 * this.enemySpeedScale; enemy.damage = 10; enemy.hp = opts.hp ?? 480; }
+  // Rebalanced LS speed profile: a small early boost, gentler late scaling, and hard caps per type
     try {
       const gi: any = (window as any).__gameInstance;
       const tSec: number = (gi && typeof gi.getGameTime === 'function') ? (gi.getGameTime() || 0) : 0;
       const minutes = Math.max(0, tSec / 60);
-      if (type === 'medium') {
-        // +2.5% per minute, up to +35%
-        const mul = 1 + Math.min(0.35, 0.025 * minutes);
-        enemy.speed *= mul;
-      } else if (type === 'large') {
-        // +3% per minute, up to +45%
-        const mul = 1 + Math.min(0.45, 0.030 * minutes);
-        enemy.speed *= mul;
+      if (type === 'medium' || type === 'large') {
+        // Early assistance: up to +22% at t=0, fading linearly to 0 by 4 minutes
+        const earlyBoost = 1 + Math.max(0, 0.22 * (1 - Math.min(1, minutes / 4)));
+        enemy.speed *= earlyBoost;
+        // Gentler late ramp (previously too steep): medium <= +20%, large <= +28%
+        const lateMul = (type === 'medium')
+          ? (1 + Math.min(0.20, 0.015 * minutes))
+          : (1 + Math.min(0.28, 0.018 * minutes));
+        enemy.speed *= lateMul;
+        // Hard caps by type to avoid outpacing intended cadence even with buffs
+        const capMed = 0.34 * this.enemySpeedScale;   // medium cap
+        const capLg  = 0.26 * this.enemySpeedScale;   // large cap
+        const cap = type === 'medium' ? capMed : capLg;
+        if (enemy.speed > cap) enemy.speed = cap;
       }
+  } catch { /* ignore */ }
+  // Clamp to per-type caps immediately upon spawn
+  try { const t: 'small'|'medium'|'large' = (type === 'small'||type==='medium')?type:'large'; enemy.speed = this.clampToTypeCaps(enemy.speed, t); } catch { /* ignore */ }
+    // Defensive global cap: no enemy should exceed Ghost Operative default movement speed
+    try {
+      const ghostCap = 9.0 * (window as any)?.SPEED_SCALE || 9.0 * 0.45; // fallback to 0.45
+      if (enemy.speed > ghostCap) enemy.speed = ghostCap;
     } catch { /* ignore */ }
     enemy.maxHp = enemy.hp; enemy.active = true; enemy.x = x; enemy.y = y; enemy.id = 'sb-' + Math.floor(Math.random() * 1e9);
     // Clear status flags likely present on pooled instance
@@ -5192,7 +5271,7 @@ export class EnemyManager {
     enemy.type = type;
     enemy.id = `enemy-${Date.now()}-${Math.random().toFixed(4)}`; // Assign unique ID
   // (damage flash removed)
-    switch (type) {
+  switch (type) {
         case 'small': {
           const late = gameTime >= 180;
           enemy.hp = late ? 160 : 100;
@@ -5208,7 +5287,8 @@ export class EnemyManager {
           enemy.hp = late ? 380 : 220;
           enemy.maxHp = enemy.hp;
           enemy.radius = 30;
-          enemy.speed = 0.65 * 0.30 * this.enemySpeedScale; // ~0.121
+          // Raise baseline medium speed to avoid early-wave stall
+          enemy.speed = 0.92 * 0.30 * this.enemySpeedScale; // was 0.65; ~+41% baseline
           enemy.damage = 7; // within 1-10
           break;
         }
@@ -5217,27 +5297,65 @@ export class EnemyManager {
           enemy.hp = late ? 900 : 480;
           enemy.maxHp = enemy.hp;
           enemy.radius = 38;
-          enemy.speed = 0.42 * 0.28 * this.enemySpeedScale; // ~0.073
+          // Very small bump to keep packs cohesive behind mediums
+          enemy.speed = 0.45 * 0.28 * this.enemySpeedScale; // was 0.42
           enemy.damage = 10; // cap at 10
           break;
         }
     }
-    // Emphasize HP/damage/knockback resistance growth over time; keep speed mostly flat
-    {
+    // Defensive global cap: clamp base speed before progression ramps are applied further down
+    try {
+      const ghostCap = 9.0 * (window as any)?.SPEED_SCALE || 9.0 * 0.45;
+      if ((enemy as any).speed > ghostCap) (enemy as any).speed = ghostCap;
+    } catch { /* ignore */ }
+    // Emphasize HP/damage/knockback resistance growth over time; keep speed balanced:
+    // - Early: medium/large get a temporary boost (so waves don't stall)
+    // - Late: gentler ramp so enemies don't become too fast
+  {
       const minutes = Math.max(0, gameTime / 60);
       // HP grows strongly into late game; tuned to ~6x at 10m
       const hpMul = 1 + 0.20 * minutes + 0.03 * minutes * minutes;
       // Damage grows modestly; tuned to ~2.6x at 10m
       const dmgMul = 1 + 0.06 * minutes + 0.01 * minutes * minutes;
-      // Knockback resistance ramps up; cap to avoid complete immunity
-      const kbResist = Math.min(0.75, 0.05 * minutes + 0.008 * minutes * minutes);
+      // Knockback resistance ramps up; add type-based floor early to prevent ragdolling
+      const kbFloor = enemy.type === 'medium' ? 0.35 : (enemy.type === 'large' ? 0.50 : 0.00);
+      const kbResist = Math.min(0.75, kbFloor + 0.05 * minutes + 0.008 * minutes * minutes);
       enemy.hp = Math.max(1, Math.round(enemy.hp * hpMul));
       enemy.maxHp = enemy.hp;
       enemy.damage = Math.max(1, Math.round(enemy.damage * dmgMul));
       (enemy as any)._kbResist = kbResist;
-      // Keep speed conservative: optional tiny uptick late, capped
-      const speedMul = 1 + Math.min(0.12, 0.01 * minutes);
-      enemy.speed *= speedMul;
+
+  // Speed profile rebalanced
+      if (enemy.type === 'small') {
+        // Keep smalls almost flat; tiny late uptick only
+        const smMul = 1 + Math.min(0.04, 0.004 * minutes);
+        enemy.speed *= smMul;
+      } else {
+        // Early assistance: up to +35% at t=0, fades to 0 by 3 minutes
+        const earlyBoost = 1 + Math.max(0, 0.35 * (1 - Math.min(1, minutes / 3)));
+        enemy.speed *= earlyBoost;
+        // Gentler late ramp
+        const lateMul = enemy.type === 'medium'
+          ? (1 + Math.min(0.12, 0.010 * minutes))
+          : (1 + Math.min(0.12, 0.010 * minutes));
+        enemy.speed *= lateMul;
+        // Absolute caps per type (defensive; normally not hit with the gentler ramps)
+        try {
+          // In this branch, enemy.type is guaranteed not to be 'small'
+          const t: 'medium'|'large' = (enemy.type === 'medium') ? 'medium' : 'large';
+          enemy.speed = this.clampToTypeCaps(enemy.speed, t);
+        } catch { /* ignore */ }
+        // Global absolute clamp versus Ghost Operative default speed (after all ramps)
+        try {
+          const ghostCap = 9.0 * (window as any)?.SPEED_SCALE || 9.0 * 0.45;
+          if (enemy.speed > ghostCap) enemy.speed = ghostCap;
+        } catch { /* ignore */ }
+        // Briefly suppress knockback on fresh spawns in the first minute to avoid boring push-loops
+        if (minutes < 1.0) {
+          const eAny: any = enemy as any;
+          eAny._kbSuppressUntil = (performance.now ? performance.now() : Date.now()) + 550;
+        }
+      }
     }
   // Spawn placement with safe distance logic
   const minSafeDist = 520; // do not spawn closer than this to player
@@ -5855,26 +5973,73 @@ export class EnemyManager {
       }
     }
     const kind = picks[Math.floor(Math.random() * picks.length)];
-    // Spawn position: ring around player beyond safe distance; avoid clumping by trying a few candidates
+    // Spawn position:
+    // - In Last Stand: force elites to the corridor's right side, behind normal wave spawns
+    // - Elsewhere: ring around player
     const px = this.player.x, py = this.player.y;
-    const minR = 560, maxR = 760;
     let x = px, y = py;
-    let bestScore = -Infinity;
-    for (let t = 0; t < 4; t++) {
-      const ang = Math.random() * Math.PI * 2;
-      const r = minR + Math.random() * (maxR - minR);
-      const cx = px + Math.cos(ang) * r;
-      const cy = py + Math.sin(ang) * r;
-      // Score by distance to nearest elite to reduce clumping
-      let nearest = Infinity;
-      for (let i = 0; i < this.activeEnemies.length; i++) {
-        const e: any = this.activeEnemies[i];
-        if (!e || !e.active || !(e._elite && e._elite.kind)) continue;
-        const dx = e.x - cx, dy = e.y - cy;
-        const d2 = dx*dx + dy*dy; if (d2 < nearest) nearest = d2;
+    let placedLs = false;
+    try {
+      const gi: any = (window as any).__gameInstance;
+      if (gi && gi.gameMode === 'LAST_STAND') {
+        const core: any = (window as any).__lsCore;
+        const rm: any = (window as any).__roomManager;
+        const corrs = (rm && typeof rm.getCorridors === 'function') ? (rm.getCorridors() || []) : [];
+        // Choose the corridor containing the core if possible; otherwise take the widest
+        let corr = null as any;
+        for (let i=0;i<corrs.length;i++) {
+          const c = corrs[i]; if (!c) continue;
+          const inside = core && (core.x >= c.x && core.x <= c.x + c.w && core.y >= c.y && core.y <= c.y + c.h);
+          if (inside) { corr = c; break; }
+          if (!corr || (c.w*c.h) > (corr.w*corr.h)) corr = c;
+        }
+        if (corr && core) {
+          const margin = 28;
+          const rightInner = corr.x + corr.w - margin;
+          const leftInner = corr.x + margin;
+          // Place notably farther than regular enemy spawns (which are ~900–1400px from core)
+          const baseBehind = 1500; // ensure behind normal packs
+          const jitter = 120 + Math.random() * 160;
+          const rawX = core.x + baseBehind + jitter;
+          x = Math.min(rightInner, Math.max(leftInner, Math.floor(rawX)));
+          // Distribute y within corridor and de-clump from existing elites
+          let bestScore = -Infinity; let bestY = core.y;
+          for (let t = 0; t < 4; t++) {
+            const cy = corr.y + margin + Math.random() * Math.max(10, (corr.h - margin*2));
+            let nearest = Infinity;
+            for (let i = 0; i < this.activeEnemies.length; i++) {
+              const e: any = this.activeEnemies[i];
+              if (!e || !e.active || !(e._elite && e._elite.kind)) continue;
+              const dx = e.x - x, dy = e.y - cy; const d2 = dx*dx + dy*dy; if (d2 < nearest) nearest = d2;
+            }
+            const score = Math.sqrt(Math.max(0, nearest));
+            if (score > bestScore) { bestScore = score; bestY = cy; }
+          }
+          y = bestY;
+          placedLs = true;
+        }
       }
-      const score = -Math.abs((r - (minR+maxR)/2)) + Math.sqrt(Math.max(0, nearest));
-      if (score > bestScore) { bestScore = score; x = cx; y = cy; }
+    } catch { /* ignore LS placement errors; fall back below */ }
+    if (!placedLs) {
+      // Fallback: ring around player beyond safe distance; avoid clumping by trying a few candidates
+      const minR = 560, maxR = 760;
+      let bestScore = -Infinity;
+      for (let t = 0; t < 4; t++) {
+        const ang = Math.random() * Math.PI * 2;
+        const r = minR + Math.random() * (maxR - minR);
+        const cx = px + Math.cos(ang) * r;
+        const cy = py + Math.sin(ang) * r;
+        // Score by distance to nearest elite to reduce clumping
+        let nearest = Infinity;
+        for (let i = 0; i < this.activeEnemies.length; i++) {
+          const e: any = this.activeEnemies[i];
+          if (!e || !e.active || !(e._elite && e._elite.kind)) continue;
+          const dx = e.x - cx, dy = e.y - cy;
+          const d2 = dx*dx + dy*dy; if (d2 < nearest) nearest = d2;
+        }
+        const score = -Math.abs((r - (minR+maxR)/2)) + Math.sqrt(Math.max(0, nearest));
+        if (score > bestScore) { bestScore = score; x = cx; y = cy; }
+      }
     }
   this.spawnElite(kind, x, y, gameTime);
   // Set per-kind respawn cooldown so the same type doesn't pop back instantly
@@ -5915,6 +6080,13 @@ export class EnemyManager {
   // Add scalable knockback resistance to elites so fewer-but-tougher feel impactful
   (en as any)._kbResist = Math.min(0.85, 0.25 + 0.04 * minutes + 0.006 * minutes * minutes);
   en.radius = radius; en.speed = baseSpeed * (1 + Math.min(0.10, 0.008 * minutes));
+  // Last Stand: elites get +50% movement speed to increase pressure
+  try {
+    const gi: any = (window as any).__gameInstance;
+    if (gi && gi.gameMode === 'LAST_STAND') {
+      en.speed *= 1.5;
+    }
+  } catch { /* ignore */ }
   // Hard cap elite walk speed so they never feel "fast"; respects global speed scale
   en.speed = Math.min(en.speed, 0.42 * this.enemySpeedScale);
     en.x = x; en.y = y; en.id = `elite-${kind}-${Date.now()}-${Math.floor(Math.random()*1e6)}`;

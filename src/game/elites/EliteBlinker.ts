@@ -12,13 +12,15 @@ export function updateEliteBlinker(e: any, playerX: number, playerY: number, now
   const baseCd = 2400; const cdJitter = 360; // ±360ms
   const cd = baseCd + (Math.random() * 2 - 1) * cdJitter;
   const wind = 360; const slashMs = 180;
+  let canAct = true; try { const gi:any=(window as any).__gameInstance; if (gi && gi.gameMode==='LAST_STAND'){ const em:any=gi.enemyManager; const vis=em?.isVisibleInLastStand?.(e.x,e.y); canAct=(vis!==false);} } catch {}
   if (!st.cdUntil) st.cdUntil = now + 1000;
   if (!st.phase) st.phase = 'IDLE';
   switch (st.phase) {
     case 'IDLE':
-      if (now >= (st.cdUntil as number)) { st.phase = 'WINDUP'; st.phaseUntil = now + wind; e._blinkTelegraphUntil = st.phaseUntil; }
+      if (now >= (st.cdUntil as number)) { if (!canAct) { st.cdUntil = now + 220; break; } st.phase = 'WINDUP'; st.phaseUntil = now + wind; e._blinkTelegraphUntil = st.phaseUntil; }
       break;
     case 'WINDUP':
+      if (!canAct) { st.phaseUntil = now + 120; break; }
       if (now >= (st.phaseUntil as number)) {
   // Teleport to a safer ring around the player (not strictly behind), further away for readability.
   const ang = Math.random()*Math.PI*2; const r = 340 + Math.random()*120; // 340..460px

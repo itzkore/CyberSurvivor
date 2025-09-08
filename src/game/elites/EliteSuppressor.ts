@@ -14,11 +14,13 @@ export function updateEliteSuppressor(e: any, playerX: number, playerY: number, 
   const st = ensureSuppressorState(e);
   const cd = 3000;
   const pulseMs = 900;
+  let canAct = true; try { const gi:any=(window as any).__gameInstance; if (gi && gi.gameMode==='LAST_STAND'){ const em:any=gi.enemyManager; const vis=em?.isVisibleInLastStand?.(e.x,e.y); canAct=(vis!==false);} } catch {}
   if (!st.cdUntil) st.cdUntil = now + 1600 + ((e.id?.length || 0) % 500);
   if (!st.phase) st.phase = 'IDLE';
   switch (st.phase) {
     case 'IDLE': {
       if (now >= (st.cdUntil as number)) {
+        if (!canAct) { st.cdUntil = now + 220; break; }
         st.phase = 'ACTION';
         st.phaseUntil = now + pulseMs;
         // Visual hint via shake
@@ -33,6 +35,7 @@ export function updateEliteSuppressor(e: any, playerX: number, playerY: number, 
       break;
     }
     case 'ACTION': {
+  if (!canAct) { st.phaseUntil = now + 120; break; }
       // Apply slow to player if within radius
       const r = (e.radius || 34) + 140; // decent area
       const dx = playerX - e.x; const dy = playerY - e.y;

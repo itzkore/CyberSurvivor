@@ -9,13 +9,15 @@ export function ensureBomberState(e: any): EliteRuntime {
 export function updateEliteBomber(e: any, playerX: number, playerY: number, now: number, spawnProjectile: SpawnProjectileFn, dmgScale: number = 1) {
   const st = ensureBomberState(e);
   const cd = 3200; const wind = 420;
+  let canAct = true; try { const gi:any=(window as any).__gameInstance; if (gi && gi.gameMode==='LAST_STAND'){ const em:any=gi.enemyManager; const vis=em?.isVisibleInLastStand?.(e.x,e.y); canAct=(vis!==false);} } catch {}
   if (!st.cdUntil) st.cdUntil = now + 1200;
   if (!st.phase) st.phase = 'IDLE';
   switch (st.phase) {
     case 'IDLE':
-      if (now >= (st.cdUntil as number)) { st.phase = 'WINDUP'; st.phaseUntil = now + wind; e._shakeUntil = st.phaseUntil; e._shakeAmp = 1.0; }
+      if (now >= (st.cdUntil as number)) { if (!canAct) { st.cdUntil = now + 240; break; } st.phase = 'WINDUP'; st.phaseUntil = now + wind; e._shakeUntil = st.phaseUntil; e._shakeAmp = 1.0; }
       break;
     case 'WINDUP':
+      if (!canAct) { st.phaseUntil = now + 130; break; }
       if (now >= (st.phaseUntil as number)) {
         st.phase = 'ACTION'; st.phaseUntil = now + 80;
         const dx = (playerX - e.x), dy = (playerY - e.y); const d = Math.hypot(dx, dy) || 1; const nx = dx/d, ny = dy/d;

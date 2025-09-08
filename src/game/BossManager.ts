@@ -111,6 +111,15 @@ export class BossManager {
   private readonly volleyLifeMs: number = 3000; // projectile lifespan
   // Fan spread arc for volley shots (radians). Wide arc for better readability
   private readonly volleyFanArcRad: number = Math.PI * 0.6; // ~108°
+  // LS visibility gating: boss cannot cast or apply spell effects while hidden by FoW in Last Stand
+  private lsBossCanAct(): boolean {
+    try {
+      const gi: any = (window as any).__gameInstance; if (!gi || gi.gameMode !== 'LAST_STAND') return true;
+      const em: any = gi.enemyManager; const boss = this.boss; if (!boss) return false;
+      const vis = em?.isVisibleInLastStand?.(boss.x, boss.y);
+      return (vis !== false);
+    } catch { return true; }
+  }
   // --- Player damage routing helpers ---
   /** True if player should currently take damage (not during revive cinematic or i-frames). */
   private isPlayerVulnerable(): boolean {
@@ -270,7 +279,8 @@ export class BossManager {
           this.showAlert(`BOSS ${label} ENGAGED`, '#FFD700', 2200);
         } catch {}
       }
-    } else if (this.boss && this.boss.state === 'ACTIVE') {
+  } else if (this.boss && this.boss.state === 'ACTIVE') {
+  const canAct = this.lsBossCanAct();
     const dx = this.player.x - this.boss.x;
       const dy = this.player.y - this.boss.y;
       const dist = Math.hypot(dx, dy);
@@ -320,7 +330,7 @@ export class BossManager {
           }
         }
         // Build charge only while idle (no active spell) to avoid mid-spell special pop
-        if (!isSpellActive) {
+        if (!isSpellActive && canAct) {
           this.boss.specialCharge = (this.boss.specialCharge || 0) + deltaTime;
           if (this.boss.specialCharge > 6000) { // Charge for 6 seconds
             this.boss.specialReady = true;
@@ -329,11 +339,11 @@ export class BossManager {
         }
       } else {
         // Telegraph special attack: stop and charge for 3 seconds
-        // Only telegraph/execute special when idle; if a spell is active, pause telegraph progression
-        if (!isSpellActive) this.boss.specialCharge = (this.boss.specialCharge || 0) + deltaTime;
+        // Only telegraph/execute special when idle and visible; if hidden or a spell is active, pause
+        if (!isSpellActive && canAct) this.boss.specialCharge = (this.boss.specialCharge || 0) + deltaTime;
         if (this.boss.specialCharge < this.specialWindupMs) {
           // Show telegraph effect (spawn particles less frequently)
-          if (this.particleManager) {
+          if (this.particleManager && canAct) {
             // piggyback on telegraph FX cadence: drop a pulse every 120ms during special charge
             this.telegraphFxAccMs += deltaTime;
             while (this.telegraphFxAccMs >= 120) {
@@ -341,7 +351,7 @@ export class BossManager {
               this.telegraphFxAccMs -= 120;
             }
           }
-        } else if (!isSpellActive) {
+        } else if (!isSpellActive && canAct) {
           // Unleash special attack (e.g., massive area damage)
           if (dist < this.getSpecialRadius()) {
             const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
@@ -362,7 +372,12 @@ export class BossManager {
       // Attack wave timer in ms
       this.boss.attackTimer -= deltaTime;
       if (this.boss.attackTimer <= 0) {
-        this.launchAttackWave();
+        if (canAct) {
+          this.launchAttackWave();
+        } else {
+          // Delay basic attacks while hidden in LS
+          this.boss.attackTimer = 120;
+        }
         const spawnHasteFrames = Math.min(20, (this.bossSpawnCount - 1) * 2);
         const baseFrames = 52;
         const nextFrames = Math.max(22, baseFrames - (this.difficulty - 1) * 10 - spawnHasteFrames);
@@ -371,6 +386,8 @@ export class BossManager {
       // Decide and advance spells when not in boss special telegraph
       if (!this.boss.specialReady) {
         if (performance.now() >= this.nextSpellAtMs && this.spellState === 'IDLE') {
+          if (!canAct) { this.nextSpellAtMs = performance.now() + 250; }
+          else {
           const identity = (this.boss as any).id as string | undefined;
           const beh = this.bossDefs.find(b => b.id === identity)?.behavior || 'balanced';
           // Exclusive kits per boss
@@ -394,6 +411,7 @@ export class BossManager {
             // Alpha: Cone Slam or Earthshatter
             if (Math.random() < 0.55) this.startConeSlam(dx, dy, dist); else this.startEarthshatter();
           }
+          }
         }
         if (this.spellState !== 'IDLE') this.updateSpells(deltaTime);
       }
@@ -411,7 +429,7 @@ export class BossManager {
             this.boss.x += nx * 4; this.boss.y += ny * 4;
           }
         } else {
-        if (!this.boss.lastContactHitTime || now - this.boss.lastContactHitTime >= 1000) {
+        if (canAct && (!this.boss.lastContactHitTime || now - this.boss.lastContactHitTime >= 1000)) {
           this.boss.lastContactHitTime = now;
           this.damagePlayer(30); // fixed contact damage base
           this.damagePlayer(Math.round(30 * (1 + 0.18 * (this.bossSpawnCount - 1))) - 30); // additional scaled damage over base
@@ -1044,6 +1062,7 @@ export class BossManager {
   // --- Spells ---
   private startShockNova() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     this.spellState = 'NOVA_CHARGE';
     this.spellTimerMs = 0;
     this.novaRadius = 0;
@@ -1054,6 +1073,7 @@ export class BossManager {
 
   private startMultiNova() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     this.spellState = 'MULTINOVA_CHARGE';
     this.spellTimerMs = 0;
     this.multiNovaIndex = -1; // none launched yet
@@ -1111,6 +1131,7 @@ export class BossManager {
   // New spells
   private startSuperNova() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     this.spellState = 'SUPERNOVA_CHARGE';
     this.spellTimerMs = 0;
     this.novaHitApplied = false;
@@ -1132,6 +1153,7 @@ export class BossManager {
 
   private startLineDash(dx: number, dy: number, dist: number) {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     if (dist < 0.0001) { dx = 1; dy = 0; dist = 1; }
     this.dashDirX = dx / dist;
     this.dashDirY = dy / dist;
@@ -1143,6 +1165,7 @@ export class BossManager {
 
   private startConeSlam(dx: number, dy: number, dist: number) {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     if (dist < 0.0001) { dx = 1; dy = 0; dist = 1; }
     this.coneDirX = dx / dist; this.coneDirY = dy / dist;
     this.spellState = 'CONE_WINDUP';
@@ -1151,6 +1174,7 @@ export class BossManager {
 
   private startEarthshatter() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     this.spellState = 'EARTH_WINDUP';
     this.spellTimerMs = 0;
     this.showAlert('ALPHA: EARTHSHATTER', '#FF5533', 1400);
@@ -1158,6 +1182,7 @@ export class BossManager {
 
   private startSummonRifts() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     // Pick rift positions in a ring around the player
     const count = 4 + Math.min(3, this.difficulty); // 4-7 rifts
     const radius = 260;
@@ -1174,6 +1199,7 @@ export class BossManager {
 
   private startRiftBarrage() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     this.spellState = 'RIFT_BARRAGE_WINDUP';
     this.spellTimerMs = 0;
     this.showAlert('GAMMA: RIFT BARRAGE', '#FFA733', 1400);
@@ -1181,6 +1207,7 @@ export class BossManager {
 
   private startCrossSlash() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
     this.spellState = 'CROSS_WINDUP';
     this.spellTimerMs = 0;
     this.showAlert('OMEGA: CROSS SLASH', '#FF3366', 1200);
@@ -1188,6 +1215,12 @@ export class BossManager {
 
   private updateSpells(dtMs: number) {
     if (!this.boss) return;
+    const canAct = this.lsBossCanAct();
+    // While hidden in Last Stand, freeze spell timers and skip transitions/damage
+    if (!canAct) {
+      // Allow visual telegraphs to continue drawing but don't progress timers
+      return;
+    }
     switch (this.spellState) {
       case 'NOVA_CHARGE': {
         this.spellTimerMs += dtMs;
@@ -1519,6 +1552,7 @@ export class BossManager {
   /** Update hazards independent of spell state so projectiles keep moving after spells end */
   private updateHazards(dtMs: number) {
     if (!this.hazards.length) return;
+  const canAct = this.lsBossCanAct();
     for (let i = this.hazards.length - 1; i >= 0; i--) {
       const hz = this.hazards[i];
       hz.elapsedMs += dtMs;
@@ -1556,7 +1590,7 @@ export class BossManager {
           if (hit) { hitX = sx + dx * t; hitY = sy + dy * t; }
         }
         hz.x = nx; hz.y = ny;
-        if (hit) {
+  if (hit && canAct) {
           const specialScale = Math.pow(1.22, this.bossSpawnCount - 1);
           this.damagePlayer(Math.round((hz.damage || 18) * specialScale));
           window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 90, intensity: 3 } }));
@@ -1573,7 +1607,7 @@ export class BossManager {
       }
       const live = hz.elapsedMs < hz.windupMs + hz.activeMs;
       const active = hz.elapsedMs >= hz.windupMs && hz.elapsedMs < hz.windupMs + hz.activeMs;
-      if (active) {
+  if (active && canAct) {
         if (hz.kind === 'aoe' && hz.radius) {
           const d = Math.hypot(this.player.x - hz.x, this.player.y - hz.y);
           if (d <= hz.radius) this.damagePlayer(hz.damage);
@@ -1621,6 +1655,7 @@ export class BossManager {
 
   private startVolley() {
     if (!this.boss) return;
+  if (!this.lsBossCanAct()) { this.nextSpellAtMs = performance.now() + 250; return; }
   // Exactly 5 continually shot shots with clear wide arc fan
   const phase = (this.boss as any)._phase || 1;
   this.volleyCount = 5;
