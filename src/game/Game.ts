@@ -216,8 +216,8 @@ export class Game {
       else if (cid === 'titan_mech') classMul = 0.9; // huge body, slightly tighter FOV
       else if (cid === 'cyber_runner' || cid === 'data_sorcerer') classMul = 1.05; // mild +5%
       const passiveMul = Math.max(0.5, Math.min(2.5, (this.player as any)?.visionMultiplier || 1));
-  // Last Stand: increase baseline vision by +20% for better early awareness
-  const modeMul = (this.gameMode === 'LAST_STAND') ? 1.2 : 1.0;
+  // Last Stand: increase baseline vision by +30% for better early awareness
+  const modeMul = (this.gameMode === 'LAST_STAND') ? 1.3 : 1.0;
   return base * classMul * passiveMul * modeMul;
     } catch { return Math.max(1, Math.floor(this.fowRadiusBase)); }
   }
@@ -1014,7 +1014,7 @@ export class Game {
         if (!e.active) continue;
         const prevEx = e._prevX ?? e.x;
         const prevEy = e._prevY ?? e.y;
-        const c = this.roomManager.constrainPosition(prevEx, prevEy, e.x, e.y, e.radius || 18);
+  const c = this.roomManager.constrainPosition(prevEx, prevEy, e.x, e.y, e.radius || 18, 'enemy');
         e.x = c.x; e.y = c.y;
         e._prevX = e.x; e._prevY = e.y;
       }
@@ -1382,7 +1382,7 @@ export class Game {
               const midY = c.y + Math.floor(c.h/2);
               this.ctx.beginPath(); this.ctx.moveTo(c.x + 10, midY); this.ctx.lineTo(c.x + c.w - 10, midY); this.ctx.stroke();
               this.ctx.restore();
-              // Reset opacity before drawing gameplay props (pads, palisades, holders)
+              // Reset opacity before drawing gameplay props (pads, palisades, holders, gate)
               this.ctx.globalAlpha = 1.0;
               // Draw turret pads and palisades if present
               try {
@@ -1525,6 +1525,77 @@ export class Game {
                     }
                   }
                 }
+                // Precompute nearest interactable (gate repair vs. holder) so only one hint appears and F targets it
+                let __nearestType: 'gate'|'holder'|null = null;
+                let __nearestHolder: any = null;
+                let __nearestD2 = Infinity;
+                try {
+                  const p = this.player; if (p) {
+                    const pr = (p.radius || 20);
+                    const thresh2 = (pr + 36) * (pr + 36);
+                    // Nearest holder
+                    if (holders && holders.length) {
+                      for (let i=0;i<holders.length;i++){
+                        const h = holders[i]; if (!h) continue;
+                        const cx = Math.max(h.x, Math.min(p.x, h.x + h.w));
+                        const cy = Math.max(h.y, Math.min(p.y, h.y + h.h));
+                        const dx = p.x - cx, dy = p.y - cy; const d2 = dx*dx + dy*dy;
+                        if (d2 < __nearestD2 && d2 <= thresh2) { __nearestD2 = d2; __nearestType = 'holder'; __nearestHolder = h; }
+                      }
+                    }
+                    // Gate (only if active and damaged)
+                    try {
+                      const gate: any = lsAny?.gate || null;
+                      if (gate && gate.active && gate.hp > 0 && gate.hp < gate.maxHp) {
+                        const cx = Math.max(gate.x, Math.min(p.x, gate.x + gate.w));
+                        const cy = Math.max(gate.y, Math.min(p.y, gate.y + gate.h));
+                        const dx = p.x - cx, dy = p.y - cy; const d2 = dx*dx + dy*dy;
+                        if (d2 < __nearestD2 && d2 <= thresh2) { __nearestD2 = d2; __nearestType = 'gate'; __nearestHolder = null; }
+                      }
+                    } catch { /* ignore */ }
+                  }
+                } catch { /* ignore */ }
+                // Gate: always draw if present (active bright, inside is transparent); HP bar + repair hint when selected
+                try {
+                  const gate: any = lsAny?.gate || null;
+                  if (gate && gate.h > 0) {
+                    this.ctx.save();
+                    const active = !!gate.active && gate.hp > 0;
+                    const col = active ? 'rgba(76,255,120,0.95)' : 'rgba(76,255,120,0.45)';
+                    // If player is inside the gate rect, inner fill becomes translucent
+                    let inside = false;
+                    try {
+                      const p = this.player; if (p) inside = (p.x >= gate.x && p.x <= gate.x + gate.w && p.y >= gate.y && p.y <= gate.y + gate.h);
+                    } catch { inside = false; }
+                    // Shadow
+                    this.ctx.fillStyle = 'rgba(0,0,0,0.35)'; this.ctx.fillRect(gate.x + 3, gate.y + 3, gate.w, gate.h);
+                    // Body
+                    this.ctx.fillStyle = inside ? 'rgba(22,42,28,0.35)' : 'rgba(22,42,28,0.95)'; this.ctx.fillRect(gate.x, gate.y, gate.w, gate.h);
+                    this.ctx.strokeStyle = col; this.ctx.lineWidth = 3; this.ctx.strokeRect(gate.x + 0.5, gate.y + 0.5, gate.w - 1, gate.h - 1);
+                    // HP bar
+                    const pct = (gate.maxHp > 0) ? Math.max(0, Math.min(1, gate.hp / gate.maxHp)) : 0;
+                    const barW = Math.max(0, Math.floor((gate.w - 6) * pct));
+                    this.ctx.fillStyle = 'rgba(30,60,36,0.9)';
+                    this.ctx.fillRect(gate.x + 3, gate.y + 3, Math.max(0, gate.w - 6), 6);
+                    this.ctx.fillStyle = 'rgba(76,255,120,0.9)';
+                    this.ctx.fillRect(gate.x + 3, gate.y + 3, barW, 6);
+                    // Repair hint: only when this is the nearest interactable
+                    if (active && gate.hp < gate.maxHp && __nearestType === 'gate') {
+                      try {
+                        const cost = typeof lsAny.getGateRepairCost === 'function' ? lsAny.getGateRepairCost() : 0;
+                        // Place compact hint just above gate center
+                        const px = gate.x + gate.w / 2; const py = gate.y - 14;
+                        this.ctx.font = 'bold 12px sans-serif';
+                        this.ctx.textAlign = 'center'; this.ctx.textBaseline = 'bottom';
+                        this.ctx.fillStyle = 'rgba(22,42,28,0.9)';
+                        this.ctx.fillText(`F ${cost}`.trim(), px, py);
+                        this.ctx.fillStyle = '#7DFFEA';
+                        this.ctx.fillText(`F ${cost}`.trim(), px, py);
+                      } catch { /* ignore */ }
+                    }
+                    this.ctx.restore();
+                  }
+                } catch { /* ignore gate draw */ }
                 // Turret holders (blocking)
                 for (let k=0;k<holders.length;k++){
                   const h = holders[k]; if (!h) continue;
@@ -1574,22 +1645,13 @@ export class Game {
                     }
                     this.ctx.restore();
                   }
-                  // UX: show a subtle "F" hint above the nearest holder when player is close enough to interact
+                  // UX: show a subtle "F" hint only for the selected nearest holder
                   try {
-                    const p = this.player; if (p && holders.length) {
-                      const pr = (p.radius || 20);
-                      let best: any = null; let bd2 = Infinity;
-                      for (let i=0;i<holders.length;i++){
-                        const h = holders[i];
-                        const cx = Math.max(h.x, Math.min(p.x, h.x + h.w));
-                        const cy = Math.max(h.y, Math.min(p.y, h.y + h.h));
-                        const dx = p.x - cx, dy = p.y - cy; const d2 = dx*dx + dy*dy;
-                        if (d2 < bd2) { bd2 = d2; best = h; }
-                      }
-                      if (best && bd2 <= ((pr+36)*(pr+36))) {
-                        const bx = best.x + best.w/2;
+                    const p = this.player;
+                    if (p && holders.length && __nearestType === 'holder' && __nearestHolder === h) {
+                        const bx = h.x + h.w/2;
                         // position inside the holder box (top-center), with small padding
-                        const by = best.y + Math.max(10, Math.min(16, best.h * 0.2));
+                        const by = h.y + Math.max(10, Math.min(16, h.h * 0.2));
                         this.ctx.save();
                         // Soft glow circle
                         const r = 10;
@@ -1603,7 +1665,6 @@ export class Game {
                         this.ctx.strokeText('F', bx, by);
                         this.ctx.fillText('F', bx, by);
                         this.ctx.restore();
-                      }
                     }
                   } catch { /* ignore F hint errors */ }
                 }
@@ -1795,6 +1856,7 @@ export class Game {
                 }
                 this.ctx.globalCompositeOperation = 'source-over';
               }
+              // (Gate drawing moved to world props section above so it renders every frame)
               this.ctx.beginPath();
               this.ctx.rect(0, -thickness/2, len, thickness);
               this.ctx.fill();
@@ -2004,37 +2066,11 @@ export class Game {
     } catch { /* ignore */ }
     // In Last Stand, constrain the circular reveal to the corridor union (~100px margin) so outside visibility is limited
     // We do NOT fully clear corridor rectangles; visibility should remain circle-limited inside the corridors.
-    let extraRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
-    let circleClipRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
+  let extraRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
+  let circleClipRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
     try {
-      if (this.gameMode === 'LAST_STAND') {
-        const corrs = this.roomManager.getCorridors?.() || [];
-        if (corrs.length) {
-          const margin = 100; // px
-          // Union adjacent/overlapping corridor rects to reduce clip path complexity
-          const expanded = corrs.map((c:any)=> ({ x: c.x - margin, y: c.y - margin, w: c.w + margin*2, h: c.h + margin*2 }));
-          const merged: Array<{x:number;y:number;w:number;h:number}> = [];
-          for (let i=0;i<expanded.length;i++){
-            const r = expanded[i]; if (!r) continue;
-            let mergedInto = false;
-            for (let j=0;j<merged.length;j++){
-              const m = merged[j];
-              const ax1=r.x, ay1=r.y, ax2=r.x+r.w, ay2=r.y+r.h;
-              const bx1=m.x, by1=m.y, bx2=m.x+m.w, by2=m.y+m.h;
-              const overlap = !(ax2 < bx1 || bx2 < ax1 || ay2 < by1 || by2 < ay1);
-              const near = Math.abs(ax1-bx2)<=16 || Math.abs(bx1-ax2)<=16 || Math.abs(ay1-by2)<=16 || Math.abs(by1-ay2)<=16;
-              if (overlap || near) {
-                const nx1 = Math.min(ax1, bx1), ny1 = Math.min(ay1, by1);
-                const nx2 = Math.max(ax2, bx2), ny2 = Math.max(ay2, by2);
-                m.x = nx1; m.y = ny1; m.w = nx2 - nx1; m.h = ny2 - ny1;
-                mergedInto = true; break;
-              }
-            }
-            if (!mergedInto) merged.push({ x:r.x, y:r.y, w:r.w, h:r.h });
-          }
-          circleClipRects = merged;
-        }
-      }
+  // In Last Stand, do not clip the circular reveal to corridor rectangles.
+  // Visuals show a clean arc; gameplay targeting remains gated by LS visibility checks.
     } catch { /* ignore */ }
     this.fog.render(this.ctx, cam, {
       enable: true,
@@ -2042,8 +2078,7 @@ export class Game {
       visibleCenterY: visY,
       visibleRadiusPx: radiusPx,
       exploredAlpha: 0.34,
-      // Do not pass visibleRects in Last Stand; we only clip the circle to corridors.
-      circleClipRects,
+      // Do not clip the circle in Last Stand – keep a clean arc on the right.
     });
     // Flashlight wedge: reveal an arc ahead of player (bonus item toggles this)
     try {
@@ -2059,10 +2094,11 @@ export class Game {
         this.ctx.save();
         this.ctx.globalCompositeOperation = 'destination-out';
         // Constrain wedge to corridor-expanded rects if available
-        if (circleClipRects && circleClipRects.length) {
+        const clipRects: Array<{x:number;y:number;w:number;h:number}> | undefined = Array.isArray(circleClipRects) ? circleClipRects as any : undefined;
+        if (clipRects && clipRects.length) {
           this.ctx.beginPath();
-          for (let i=0;i<circleClipRects.length;i++){
-            const r = circleClipRects[i];
+          for (let i=0;i<clipRects.length;i++){
+            const r = clipRects[i];
             const rx = Math.round(r.x - this.camX);
             const ry = Math.round(r.y - this.camY);
             this.ctx.rect(rx, ry, Math.round(r.w), Math.round(r.h));

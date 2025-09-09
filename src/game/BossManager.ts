@@ -258,8 +258,17 @@ export class BossManager {
         }
       }
     } else if (this.boss.state === 'TELEGRAPH') {
+      // In Last Stand, pause telegraph countdown while boss is hidden by FoW
+      let canTick = true;
+      try {
+        const gi: any = (window as any).__gameInstance; if (gi && gi.gameMode === 'LAST_STAND') {
+          const em: any = gi.enemyManager;
+          const vis = em?.isVisibleInLastStand?.(this.boss.x, this.boss.y);
+          if (vis === false) canTick = false;
+        }
+      } catch { /* ignore */ }
       // Telegraph counts down in ms
-      this.boss.telegraph -= deltaTime;
+      if (canTick) this.boss.telegraph -= deltaTime; else this.boss.telegraph -= 0;
       // Particle throttle ~ every 50ms
       if (this.particleManager) {
         this.telegraphFxAccMs += deltaTime;
@@ -268,7 +277,7 @@ export class BossManager {
           this.telegraphFxAccMs -= 50;
         }
       }
-      if (this.boss.telegraph <= 0) {
+  if (this.boss.telegraph <= 0) {
         this.boss.state = 'ACTIVE';
         const hasteFrames = Math.min(12, (this.bossSpawnCount - 1) * 2);
         const nextFrames = 60 - hasteFrames;
@@ -511,6 +520,23 @@ export class BossManager {
       bx = px + Math.cos(angle) * dist;
       by = py + Math.sin(angle) * dist;
     }
+    // In Last Stand, bias spawn into the corridor center line to avoid off-path or off-screen entries
+    try {
+      const gi: any = (window as any).__gameInstance; const ls = gi?.lastStand; const gm = gi?.gameMode;
+      if (gm === 'LAST_STAND' && ls && typeof ls.getGate === 'function') {
+        const cor: any = (ls as any).corridor || null;
+        const core: any = (window as any).__lsCore;
+        const cy = core?.y ?? this.player.y;
+        if (cor && cy != null) {
+          // Push X inside corridor and close to gate x+ (so boss arrives fairly)
+          const wallX = (ls as any).holders?.[0]?.x ?? (cor.x + Math.floor(cor.w * 0.35));
+          const holdW = (ls as any).holders?.[0]?.w ?? 36;
+          const minX = cor.x + 40, maxX = cor.x + cor.w - 120;
+          bx = Math.min(maxX, Math.max(minX, Math.max(bx, wallX + holdW + 140)));
+          by = cy;
+        }
+      }
+    } catch { /* ignore */ }
     // Choose boss definition
     // In standard modes (SHOWDOWN/DUNGEON), always spawn Boss 2 (Beta) for now.
     // In SANDBOX, keep rotation and allow forced id via payload.

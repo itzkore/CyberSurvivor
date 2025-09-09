@@ -51,7 +51,7 @@ export class LastStandShopOverlay {
     Object.assign(list.style, { display:'grid', gridTemplateColumns:'1fr 1fr', gap:'14px' } as CSSStyleDeclaration);
     const actions = document.createElement('div');
     Object.assign(actions.style, { marginTop:'12px', display:'flex', gap:'8px', justifyContent:'space-between', alignItems:'center' } as CSSStyleDeclaration);
-    const reroll = document.createElement('button'); this.rerollBtn = reroll;
+  const reroll = document.createElement('button'); this.rerollBtn = reroll;
     reroll.textContent = 'Reroll (20)  [R]';
     const close = document.createElement('button'); this.closeBtn = close; close.textContent = 'Leave Shop  [Enter]';
     Object.assign(reroll.style, { padding:'9px 14px', borderRadius:'9px', border:'1px solid #0aa', background:'linear-gradient(180deg,#07323a,#042126)', color:'#7dffea', cursor:'pointer' } as CSSStyleDeclaration);
@@ -69,13 +69,13 @@ export class LastStandShopOverlay {
         this.freeSpan.textContent = n > 0 ? `• Free upgrade available: ${n}` : '';
       }
     });
-    reroll.onclick = () => this.handleReroll();
+  reroll.onclick = () => this.handleReroll();
     close.onclick = () => this.exit();
 
     // Keyboard shortcuts
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       if (!this.visible) return;
-      if (e.key.toLowerCase() === 'r') { this.handleReroll(); e.preventDefault(); }
+  if (e.key.toLowerCase() === 'r') { this.handleReroll(); e.preventDefault(); }
       if (e.key === 'Enter') { this.exit(); e.preventDefault(); }
       const idx = parseInt(e.key, 10);
       if (!isNaN(idx) && idx >= 1 && idx <= this.offers.length) {
@@ -216,7 +216,7 @@ export class LastStandShopOverlay {
   }
 
   private refreshOffers(newRoll = true){
-    if (newRoll) this.offers = this.shop.rollOffers(6);
+  if (newRoll) this.offers = this.shop.rollOffers(8);
     this.renderOffers();
     this.updateRerollUI();
   }
@@ -228,7 +228,8 @@ export class LastStandShopOverlay {
 
   private handleReroll(){
     const price = this.currentRerollPrice();
-    if (this.currency.spend(price)) {
+    // Only proceed if we can afford the reroll
+    if (this.currency.getBalance() >= price && this.currency.spend(price)) {
       this.rerollCount++;
       this.refreshOffers();
       this.updateRerollUI();
@@ -236,7 +237,16 @@ export class LastStandShopOverlay {
   }
 
   private currentRerollPrice(){ return this.rerollBase + Math.floor(this.rerollCount * 10); }
-  private updateRerollUI(){ this.rerollBtn.textContent = `Reroll (${this.currentRerollPrice()})  [R]`; if (this.scrapSpan) this.scrapSpan.textContent = String(this.currency.getBalance()); }
+  private updateRerollUI(){
+    const price = this.currentRerollPrice();
+    this.rerollBtn.textContent = `Reroll (${price})  [R]`;
+    const canAfford = this.currency.getBalance() >= price;
+    this.rerollBtn.disabled = !canAfford;
+    // Subtle visual when disabled
+    this.rerollBtn.style.opacity = canAfford ? '1' : '0.75';
+    this.rerollBtn.style.filter = canAfford ? 'none' : 'grayscale(0.4)';
+    if (this.scrapSpan) this.scrapSpan.textContent = String(this.currency.getBalance());
+  }
 
   private describe(off: Offer): string {
     switch (off.kind) {

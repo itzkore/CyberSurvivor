@@ -551,6 +551,8 @@ export class UpgradePanel {
     const passivePool: number[] = this.shuffle(
       PASSIVE_SPECS
         .filter(p => {
+          // In Last Stand, Magnet has no use—remove it from shop offerings
+          if (this.game && this.game.gameMode === 'LAST_STAND' && p.name === 'Magnet') return false;
           const existing = this.player.activePassives.find(ap => ap.type === p.name);
           if (havePassives >= MAX_PASSIVES) {
             // At cap: only include if already owned and not maxed

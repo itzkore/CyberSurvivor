@@ -961,7 +961,8 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     range: 0,
     maxLevel: 1,
     damage: 24,
-    projectileVisual: { type: 'plasma', color: '#FF66FF', size: 10, glowColor: '#FF99FF', glowRadius: 28, trailColor: 'rgba(255,102,255,0.25)', trailLength: 10 },
+  // Smaller, punchier orb visuals for a more energetic feel
+  projectileVisual: { type: 'plasma', color: '#FF66FF', size: 8, glowColor: '#FF99FF', glowRadius: 30, trailColor: 'rgba(255,102,255,0.25)', trailLength: 12 },
     traits: ['Orbit','Pulses','Mark Synergy','Evolution'],
     isClassWeapon: true,
     knockback: 6,

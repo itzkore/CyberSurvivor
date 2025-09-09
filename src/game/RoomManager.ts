@@ -25,6 +25,8 @@ export class RoomManager {
   private corridors: { x: number; y: number; w: number; h: number; }[] = []; // axis-aligned corridor rectangles
   private deadEnds: { x: number; y: number; w: number; h: number; }[] = [];
   private blockRects: { x: number; y: number; w: number; h: number; }[] = [];
+  // Enemy-only blockers (e.g., LS gates/funnels): ignored for player movement
+  private enemyOnlyBlockRects: { x: number; y: number; w: number; h: number; }[] = [];
   private lastPlayerRoomId: number = -1;
   private enforceCollision: boolean = true; // toggle-able if needed
   private wallThickness = 26; // thinner walls for more interior space
@@ -58,11 +60,18 @@ export class RoomManager {
   public addBlockRect(r: { x: number; y: number; w: number; h: number; }) { this.blockRects.push(r); }
   public addBlockRects(rs: { x: number; y: number; w: number; h: number; }[]) { for (const r of rs) this.blockRects.push(r); }
   public clearBlockRects() { this.blockRects.length = 0; }
+  // Enemy-only blocker API
+  public getEnemyBlockRects() { return this.enemyOnlyBlockRects; }
+  public addEnemyBlockRect(r: { x: number; y: number; w: number; h: number; }) { this.enemyOnlyBlockRects.push(r); }
+  public addEnemyBlockRects(rs: { x: number; y: number; w: number; h: number; }[]) { for (const r of rs) this.enemyOnlyBlockRects.push(r); }
+  public clearEnemyBlockRects() { this.enemyOnlyBlockRects.length = 0; }
   public setCollisionEnabled(on: boolean) { this.enforceCollision = on; }
   public getLastPlayerRoomId() { return this.lastPlayerRoomId; }
-  /** Project arbitrary point into nearest walkable interior (used when we lack previous position). */
-  public clampToWalkable(x: number, y: number, radius: number): { x: number; y: number; } {
-    if (this.isWalkable(x, y, radius)) return { x, y };
+  /** Project arbitrary point into nearest walkable interior (used when we lack previous position).
+   * Guarantees a walkable return by respecting solid block rectangles and performing a short local search if needed.
+   */
+  public clampToWalkable(x: number, y: number, radius: number, group: 'player'|'enemy'|'all' = 'player'): { x: number; y: number; } {
+    if (this.isWalkable(x, y, radius, group)) return { x, y };
     let bestX = x, bestY = y, bestD = Infinity;
     const rRad = radius;
     // Consider each room interior rect
@@ -81,10 +90,10 @@ export class RoomManager {
       if (r.doorRects) {
         for (let dIdx=0; dIdx<r.doorRects.length; dIdx++) {
           const dr = r.doorRects[dIdx];
-            const cx2 = Math.max(dr.x + rRad, Math.min(x, dr.x + dr.w - rRad));
-            const cy2 = Math.max(dr.y + rRad, Math.min(y, dr.y + dr.h - rRad));
-            const dx2 = cx2 - x; const dy2 = cy2 - y; const d2 = dx2*dx2 + dy2*dy2;
-            if (d2 < bestD) { bestD = d2; bestX = cx2; bestY = cy2; }
+          const cx2 = Math.max(dr.x + rRad, Math.min(x, dr.x + dr.w - rRad));
+          const cy2 = Math.max(dr.y + rRad, Math.min(y, dr.y + dr.h - rRad));
+          const dx2 = cx2 - x; const dy2 = cy2 - y; const d2 = dx2*dx2 + dy2*dy2;
+          if (d2 < bestD) { bestD = d2; bestX = cx2; bestY = cy2; }
         }
       }
     }
@@ -104,7 +113,49 @@ export class RoomManager {
       const dx = cx - x; const dy = cy - y; const d = dx*dx + dy*dy;
       if (d < bestD) { bestD = d; bestX = cx; bestY = cy; }
     }
-    return { x: bestX, y: bestY };
+
+    // If the best candidate still overlaps solid blockers, push it outside along the smallest axis delta.
+    const pushOutOfRects = (px: number, py: number): { x:number; y:number } => {
+      const rects = this.blockRects; // solid for all groups
+      let outX = px, outY = py;
+      for (let i=0;i<rects.length;i++) {
+        const b = rects[i];
+        // Check overlap with rectangle expanded by radius
+        const minX = b.x - rRad, maxX = b.x + b.w + rRad;
+        const minY = b.y - rRad, maxY = b.y + b.h + rRad;
+        if (outX >= minX && outX <= maxX && outY >= minY && outY <= maxY) {
+          // Compute minimal translation along axis
+          const dxLeft = (minX) - outX;
+          const dxRight = (maxX) - outX;
+          const dyTop = (minY) - outY;
+          const dyBot = (maxY) - outY;
+          // Choose the axis with the smallest absolute move that resolves overlap
+          const ax = Math.abs(dxLeft) < Math.abs(dxRight) ? dxLeft : dxRight;
+          const ay = Math.abs(dyTop) < Math.abs(dyBot) ? dyTop : dyBot;
+          if (Math.abs(ax) < Math.abs(ay)) outX += ax; else outY += ay;
+        }
+      }
+      return { x: outX, y: outY };
+    };
+
+    let cand = { x: bestX, y: bestY };
+    // First attempt: axis push out of any overlapping solid rects
+    cand = pushOutOfRects(cand.x, cand.y);
+    if (this.isWalkable(cand.x, cand.y, radius, group)) return cand;
+
+    // Second attempt: short radial search around candidate to find nearest walkable point.
+    // Sample 16 directions up to 200px in small steps.
+    const dirs = 16;
+    for (let r=2; r<=200; r+=2) {
+      for (let i=0;i<dirs;i++) {
+        const a = (i / dirs) * Math.PI * 2;
+        const tx = cand.x + Math.cos(a) * r;
+        const ty = cand.y + Math.sin(a) * r;
+        if (this.isWalkable(tx, ty, radius, group)) return { x: tx, y: ty };
+      }
+    }
+    // Fallback: return the original candidate (may still be constrained next frame)
+    return cand;
   }
 
   /** Deterministic LCG for reproducible layout */
@@ -192,17 +243,17 @@ export class RoomManager {
   }
 
   /** Collision clamp: if destination outside any room/corridor keep previous position */
-  public constrainPosition(prevX: number, prevY: number, nextX: number, nextY: number, radius: number): { x: number; y: number; } {
+  public constrainPosition(prevX: number, prevY: number, nextX: number, nextY: number, radius: number, group: 'player'|'enemy'|'all' = 'player'): { x: number; y: number; } {
   if (this.openWorld) return { x: nextX, y: nextY }; // no constraints
     if (!this.enforceCollision) return { x: nextX, y: nextY };
-    if (this.isWalkable(nextX, nextY, radius)) return { x: nextX, y: nextY };
-    // Try axis-wise resolution (allow sliding along edges)
-    if (this.isWalkable(nextX, prevY, radius)) return { x: nextX, y: prevY };
-    if (this.isWalkable(prevX, nextY, radius)) return { x: prevX, y: nextY };
+    if (this.isWalkable(nextX, nextY, radius, group)) return { x: nextX, y: nextY };
+    // Try axis-wise resolution (allow sliding along edges) respecting group blockers
+    if (this.isWalkable(nextX, prevY, radius, group)) return { x: nextX, y: prevY };
+    if (this.isWalkable(prevX, nextY, radius, group)) return { x: prevX, y: nextY };
     return { x: prevX, y: prevY }; // revert fully
   }
 
-  private isWalkable(x: number, y: number, radius: number): boolean {
+  private isWalkable(x: number, y: number, radius: number, group: 'player'|'enemy'|'all' = 'player'): boolean {
   if (this.openWorld) return true;
     // Global blockers: treat as solid rectangles; block if circle (x,y,radius) overlaps any
     for (let i=0;i<this.blockRects.length;i++) {
@@ -211,6 +262,16 @@ export class RoomManager {
       const cy = Math.max(b.y, Math.min(y, b.y + b.h));
       const dx = x - cx; const dy = y - cy;
       if ((dx*dx + dy*dy) < (radius*radius)) return false;
+    }
+    // Enemy-only blockers: apply only to enemies (or group 'all')
+    if (group === 'enemy' || group === 'all') {
+      for (let i=0;i<this.enemyOnlyBlockRects.length;i++) {
+        const b = this.enemyOnlyBlockRects[i];
+        const cx = Math.max(b.x, Math.min(x, b.x + b.w));
+        const cy = Math.max(b.y, Math.min(y, b.y + b.h));
+        const dx = x - cx; const dy = y - cy;
+        if ((dx*dx + dy*dy) < (radius*radius)) return false;
+      }
     }
     const rRad = radius;
     // Rooms (interior minus wall thickness OR inside door opening strip)

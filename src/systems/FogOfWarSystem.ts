@@ -214,12 +214,12 @@ export class FogOfWarSystem {
     const c = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(sz, sz) : (() => { const el = document.createElement('canvas'); el.width = sz; el.height = sz; return el; })();
     const g = (c as any).getContext ? (c as HTMLCanvasElement).getContext('2d')! : (c as OffscreenCanvas).getContext('2d')!;
     const r = sz / 2;
-    // Match the feather profile used previously (inner 0.8 full, then soft falloff to ~0.22 at rim)
+  // Softer feather profile: longer transition from full to edge to avoid harsh edge against black
     const grad = g.createRadialGradient(r, r, 0, r, r, r);
-    grad.addColorStop(0.00, 'rgba(255,255,255,1)');
-    grad.addColorStop(0.80, 'rgba(255,255,255,1)');
-    grad.addColorStop(0.92, 'rgba(255,255,255,0.45)');
-    grad.addColorStop(1.00, 'rgba(255,255,255,0.22)');
+  grad.addColorStop(0.00, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.74, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.90, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(1.00, 'rgba(255,255,255,0.28)');
     g.fillStyle = grad;
     g.fillRect(0, 0, sz, sz);
     this.circleSprite = c;

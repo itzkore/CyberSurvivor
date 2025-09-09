@@ -97,6 +97,22 @@ export class EnemyManager {
   private readonly knockbackBaseMs: number = 140;
   private readonly knockbackMaxVelocity: number = 4200; // clamp to avoid extreme stacking
   private readonly knockbackStackScale: number = 0.55; // scaling when stacking onto existing velocity
+  // Separation guardrails (reduce enemy stacking without heavy physics)
+  private readonly sepEnabled: boolean = true;
+  // Tighter, smoother separation: allow closer proximity and smaller corrections
+  /**
+   * Max total separation push per frame (pixels). Lower = softer corrections and fewer rebounds.
+   * Goal: let enemies touch and slide instead of bouncing apart.
+   */
+  private readonly sepMaxPushPerFrame: number = 0.9;
+  /**
+   * Resolve at most this many neighbor pairs per enemy per frame. Lower to reduce jitter and CPU.
+   */
+  private readonly sepPairsPerEnemy: number = 1;
+  /**
+   * Effective collision padding multiplier. <1 allows slight overlap to form tight layers.
+   */
+  private readonly sepPadding: number = 0.82;
   private readonly knockbackMinPerFrame: number = 4; // legacy per-frame minimum (converted to px/sec later)
   // Minimal knockback used for Bio Engineer poison DoT ticks to avoid pushing enemies around
   private readonly knockbackBioTickPerFrame: number = 0.2;
@@ -1678,29 +1694,22 @@ export class EnemyManager {
     let sx = px, sy = py;
     try {
       const rm: any = (window as any).__roomManager;
-      // Prefer far, unvisited room center if structure exists
       if (rm && typeof rm.getFarthestRoom === 'function') {
         const far = rm.getFarthestRoom(px, py, true);
         if (far) { sx = far.x + far.w/2; sy = far.y + far.h/2; }
-        else {
-          // Fallback: random ring 1200..1800 away
-          const ang = Math.random() * Math.PI * 2;
-          const dist = 1200 + Math.random() * 600;
-          sx = px + Math.cos(ang) * dist; sy = py + Math.sin(ang) * dist;
-        }
-        // Clamp to walkable interior if available
-        if (typeof rm.clampToWalkable === 'function') {
-          const c = rm.clampToWalkable(sx, sy, 18);
-          sx = c.x; sy = c.y;
-        }
       } else {
         // Open world: random ring 1200..1800 away
         const ang = Math.random() * Math.PI * 2;
         const dist = 1200 + Math.random() * 600;
         sx = px + Math.cos(ang) * dist; sy = py + Math.sin(ang) * dist;
       }
+      // Clamp to walkable interior if available
+      if (rm && typeof rm.clampToWalkable === 'function') {
+        const c = rm.clampToWalkable(sx, sy, 18);
+        sx = c.x; sy = c.y;
+      }
     } catch { /* ignore, use px/py fallback */ }
-    // Ensure not too close; if so, push outward along ray
+    // Ensure not too close to the player; if so, push outward along ray
     const dx = sx - px, dy = sy - py;
     const d2 = dx*dx + dy*dy; const minD = 800;
     if (d2 < minD*minD) {
@@ -4255,6 +4264,86 @@ export class EnemyManager {
       const enemy = this.enemies[i];
       if (!enemy.active) continue;
       this.activeEnemies.push(enemy);
+      // Last Stand anti-stall: if an enemy stays outside FoW visibility for too long, relocate it into the corridor
+      // within the core’s visibility circle so it can re-engage (prevents waves from hanging on hidden/stuck enemies).
+      try {
+        const gi: any = (window as any).__gameInstance;
+        if (gi && gi.gameMode === 'LAST_STAND') {
+          const anyE: any = enemy as any;
+          // Cheap visibility probe (reuses LS cache when available)
+          const visible = this.isVisibleInLastStand(enemy.x, enemy.y);
+          const nowT = performance.now();
+          if (!visible) {
+            const since = anyE._lsInvisibleSinceMs || (anyE._lsInvisibleSinceMs = nowT);
+            const dwell = nowT - since;
+            // Threshold: normal 14s, but shorten a bit for small enemies (they should reach core faster)
+            const baseThresh = (enemy.type === 'small') ? 12000 : 14000;
+            // Allow 1 relocation per enemy (avoid ping-pong); store a small cooldown after a move
+            const movedCdUntil = anyE._lsRelocateCooldownUntil || 0;
+            if (dwell >= baseThresh && nowT >= movedCdUntil) {
+              // Find a safe spot inside corridor and inside FoW radius from the core
+              let placed = false;
+              try {
+                const core: any = (window as any).__lsCore;
+                const rm: any = (window as any).__roomManager;
+                const corrs = (rm && typeof rm.getCorridors === 'function') ? (rm.getCorridors() || []) : [];
+                // Choose corridor containing the core; fallback to widest
+                let corr: any = null;
+                for (let ci = 0; ci < corrs.length; ci++) {
+                  const c = corrs[ci]; if (!c) continue;
+                  const inside = core && (core.x >= c.x && core.x <= c.x + c.w && core.y >= c.y && core.y <= c.y + c.h);
+                  if (inside) { corr = c; break; }
+                  if (!corr || (c.w * c.h) > (corr.w * corr.h)) corr = c;
+                }
+                // Core FoW radius
+                let rPx = 640;
+                try {
+                  const tiles = typeof gi.getEffectiveFowRadiusTiles === 'function' ? gi.getEffectiveFowRadiusTiles() : 4;
+                  const ts = (typeof gi.fowTileSize === 'number') ? gi.fowTileSize : 160;
+                  rPx = Math.floor(tiles * ts * 0.95);
+                } catch { /* ignore */ }
+                if (core && corr) {
+                  const margin = 22;
+                  const left = corr.x + margin, right = corr.x + corr.w - margin;
+                  const top = corr.y + margin, bot = corr.y + corr.h - margin;
+                  // Place exactly on the FoW circle edge for the enemy's current Y (project to circle),
+                  // then clamp to corridor. This avoids teleporting them deeper ahead of the line.
+                  const rad = enemy.radius || 18;
+                  const epsilon = 10; // move slightly inward so not exactly on the rim
+                  const dy = Math.max(top, Math.min(bot, Math.floor(enemy.y))) - core.y;
+                  const dyAbs = Math.abs(dy);
+                  // If dy exceeds radius, circle doesn’t intersect; fallback to previous edgeIn along +X
+                  let targetX = Math.floor(core.x + Math.max(0, Math.sqrt(Math.max(0, rPx*rPx - dyAbs*dyAbs)) - rad - epsilon));
+                  // Clamp X, and keep the Y lane inside corridor
+                  let targetY = Math.max(top, Math.min(bot, Math.floor(enemy.y)));
+                  targetX = Math.max(left, Math.min(right, targetX));
+                  // Apply through RoomManager clamp to avoid embedding into blockers
+                  let nx = targetX, ny = targetY;
+                  try {
+                    if (rm && typeof rm.clampToWalkable === 'function') {
+                      const cl = rm.clampToWalkable(targetX, targetY, enemy.radius || 18);
+                      nx = cl.x; ny = cl.y;
+                    }
+                  } catch { /* ignore clamp errors */ }
+                  enemy.x = nx; enemy.y = ny;
+                  // Clear knockback to avoid odd motion on resume
+                  enemy.knockbackVx = 0; enemy.knockbackVy = 0; enemy.knockbackTimer = 0;
+                  anyE._lsInvisibleSinceMs = nowT; // reset dwell timer
+                  anyE._lsRelocateCooldownUntil = nowT + 6000; // 6s cooldown before considering another relocation
+                  placed = true;
+                }
+              } catch { /* ignore placement errors */ }
+              if (!placed) {
+                // If we couldn't place for any reason, just reset timer to retry later without spamming
+                anyE._lsInvisibleSinceMs = nowT + 2000;
+              }
+            }
+          } else {
+            // Visible: clear dwell timer
+            anyE._lsInvisibleSinceMs = 0;
+          }
+        }
+      } catch { /* ignore LS anti-stall */ }
       // Decay damage flash counter (ms-based) so hit highlight fades out
   // (damage flash removed)
   // Calculate distance to player for LOD/collision checks (screen relevance)
@@ -4378,10 +4467,51 @@ export class EnemyManager {
         enemy.knockbackVy = 0;
         enemy.knockbackTimer = 0;
         // Move toward player (with chase speed cap relative to player)
-        // Per-enemy chase target: elites chase the player; others chase core if provided
+        // Per-enemy chase target with LS smart aggro and gate-gap bias:
+        // - Elites always chase the player.
+        // - In Last Stand, normal enemies: aggro to player if within 100px; if player stays out of 100px for 3s, return focus to core.
+        // - When not aggroing player and before crossing the gate, bias pathing Y toward the gate gap center to pass smoothly.
         const isElite = !!((enemy as any)?._elite);
-        const tx = isElite ? playerChaseX : (coreChaseX ?? playerChaseX);
-        const ty = isElite ? playerChaseY : (coreChaseY ?? playerChaseY);
+        const giLS: boolean = ((window as any).__gameInstance?.gameMode === 'LAST_STAND');
+        const eLS: any = enemy as any;
+        let aggroPlayer = isElite; // elites: always true
+        if (giLS && !isElite) {
+          try {
+            const px = playerChaseX, py = playerChaseY;
+            const dxp = enemy.x - px, dyp = enemy.y - py;
+            const inRange = (dxp*dxp + dyp*dyp) <= (100*100);
+            const nowS = performance.now();
+            if (inRange) {
+              eLS._lsAggroPlayer = true;
+              eLS._lsAggroExpireAt = nowS + 3000; // 3s decay window
+            } else {
+              if (eLS._lsAggroExpireAt == null || nowS >= eLS._lsAggroExpireAt) eLS._lsAggroPlayer = false;
+            }
+            aggroPlayer = !!eLS._lsAggroPlayer;
+          } catch { /* ignore aggro calc */ }
+        }
+        let tx = aggroPlayer ? playerChaseX : (coreChaseX ?? playerChaseX);
+        let ty = aggroPlayer ? playerChaseY : (coreChaseY ?? playerChaseY);
+        // Gate gap bias: if chasing core and the gate is ahead, steer toward gap center to reduce snagging on holders
+        if (giLS && !aggroPlayer) {
+          try {
+            const g:any = (window as any).__lsGate;
+            if (g && g.active && g.hp > 0) {
+              // Consider bias while enemy is left of or inside the gate span (plus small margin)
+              const margin = 12;
+              if (enemy.x <= g.x + g.w + margin) {
+                const gapY = g.y + g.h * 0.5;
+                // Blend current target Y toward the gap center (stronger as we approach gate horizontally)
+                const dxGate = Math.max(1, Math.abs((g.x + g.w*0.5) - enemy.x));
+                const blend = dxGate < 220 ? 0.65 : dxGate < 420 ? 0.45 : 0.25; // closer → stronger bias
+                ty = ty * (1 - blend) + gapY * blend;
+                // Nudge target X at least to the gate center to avoid hugging holder edges
+                const minTx = g.x + Math.floor(g.w * 0.5);
+                if (tx < minTx) tx = minTx;
+              }
+            }
+          } catch { /* ignore gate bias */ }
+        }
         const dx = tx - enemy.x;
         const dy = ty - enemy.y;
         const dist = Math.hypot(dx, dy);
@@ -4398,8 +4528,39 @@ export class EnemyManager {
           const effSpeed = this.getEffectiveEnemySpeed(enemy, baseSpeed);
           const mvx = dx * inv * effSpeed * moveScale;
           const mvy = dy * inv * effSpeed * moveScale;
-          enemy.x += mvx;
-          enemy.y += mvy;
+          // Attempt movement with wall sliding if blocked
+          const ox = enemy.x, oy = enemy.y;
+          const nx = ox + mvx, ny = oy + mvy;
+          if (rm && typeof rm.clampToWalkable === 'function') {
+            const r = enemy.radius || 20;
+            const clBoth = rm.clampToWalkable(nx, ny, r);
+            // If clamped significantly, try axis‑separable slides and pick the better progress
+            const blocked = (Math.abs(clBoth.x - nx) + Math.abs(clBoth.y - ny)) > 0.25;
+            if (blocked) {
+              let bestX = clBoth.x, bestY = clBoth.y; let bestScore = -Infinity;
+              // Option A: X only
+              try {
+                const cX = rm.clampToWalkable(ox + mvx, oy, r);
+                const dx1 = cX.x - ox, dy1 = cX.y - oy; // dy1 should be ~0
+                // Score by displacement toward the chase target (tx,ty)
+                const prog1 = (tx - ox) * dx1 + (ty - oy) * dy1; // dot product
+                if (prog1 > bestScore && (Math.abs(dx1) + Math.abs(dy1)) > 0.01) { bestScore = prog1; bestX = cX.x; bestY = cX.y; }
+              } catch { /* ignore */ }
+              // Option B: Y only
+              try {
+                const cY = rm.clampToWalkable(ox, oy + mvy, r);
+                const dx2 = cY.x - ox, dy2 = cY.y - oy; // dx2 should be ~0
+                const prog2 = (tx - ox) * dx2 + (ty - oy) * dy2;
+                if (prog2 > bestScore && (Math.abs(dx2) + Math.abs(dy2)) > 0.01) { bestScore = prog2; bestX = cY.x; bestY = cY.y; }
+              } catch { /* ignore */ }
+              enemy.x = bestX; enemy.y = bestY;
+            } else {
+              enemy.x = clBoth.x; enemy.y = clBoth.y;
+            }
+          } else {
+            // Fallback: no clamp available
+            enemy.x = nx; enemy.y = ny;
+          }
           // Persist last horizontal movement direction for draw-time flip
           const eAny2: any = enemy as any;
           if (Math.abs(mvx) > 0.0001) eAny2._facingX = mvx < 0 ? -1 : 1;
@@ -4419,11 +4580,118 @@ export class EnemyManager {
           }
         }
       }
-      // After position changes, clamp to walkable (prevents embedding in walls via knockback)
-      if (rm && typeof rm.clampToWalkable === 'function') {
-        const clamped = rm.clampToWalkable(enemy.x, enemy.y, enemy.radius || 20);
-        enemy.x = clamped.x; enemy.y = clamped.y;
+  // After position changes, we already clamped/slid when moving; keep this for knockback path only above.
+      // Lightweight separation to reduce enemy stacking (runs after movement/knockback for this enemy only)
+      if (this.sepEnabled && enemy.hp > 0 && enemy.active) {
+        try {
+          const grid = this.enemySpatialGrid;
+          // Query a small radius around this enemy for candidates
+          const rA = enemy.radius || 18;
+          const qR = rA * 2.4; // modest search radius; we also cap pairs below
+          const neighbors = grid.query(enemy.x, enemy.y, qR);
+          let fixes = 0;
+          for (let ni = 0; ni < neighbors.length && fixes < this.sepPairsPerEnemy; ni++) {
+            const other = neighbors[ni];
+            if (!other || other === enemy || !other.active || other.hp <= 0) continue;
+            // Only resolve each pair once by index to avoid double work
+            if ((other as any)._id != null && (enemy as any)._id != null && (other as any)._id < (enemy as any)._id) continue;
+            const rB = other.radius || 18;
+            const dx = other.x - enemy.x;
+            const dy = other.y - enemy.y;
+            const d2 = dx*dx + dy*dy;
+            const need = (rA + rB) * this.sepPadding;
+            const need2 = need * need;
+            if (d2 > 0 && d2 < need2) {
+              const d = Math.sqrt(d2);
+              const nx = dx / d; const ny = dy / d;
+              let overlap = need - d;
+              // Cap total correction to avoid jitter; split evenly across both
+              const maxPer = this.sepMaxPushPerFrame * 0.5;
+              if (overlap * 0.5 > maxPer) overlap = maxPer * 2;
+              // Apply a smoothstep on overlap to further soften impulses at small penetrations
+              const t = Math.max(0, Math.min(1, overlap / (need * 0.5)));
+              const smooth = t * t * (3 - 2 * t);
+              const push = (overlap * 0.5) * (0.75 + 0.25 * smooth);
+              // Skip pushing elites as much to keep their behaviors assertive
+              const eliteA = !!((enemy as any)._elite);
+              const eliteB = !!((other as any)._elite);
+              const scaleA = eliteA ? 0.5 : 1;
+              const scaleB = eliteB ? 0.7 : 1;
+              let ax = enemy.x - nx * push * scaleA;
+              let ay = enemy.y - ny * push * scaleA;
+              let bx = other.x + nx * push * scaleB;
+              let by = other.y + ny * push * scaleB;
+              // Respect walkable geometry
+              try {
+                const rmAny: any = (window as any).__roomManager;
+                if (rmAny && typeof rmAny.clampToWalkable === 'function') {
+                  const ca = rmAny.clampToWalkable(ax, ay, rA);
+                  ax = ca.x; ay = ca.y;
+                  const cb = rmAny.clampToWalkable(bx, by, rB);
+                  bx = cb.x; by = cb.y;
+                }
+              } catch { /* ignore clamp errors */ }
+              enemy.x = ax; enemy.y = ay;
+              other.x = bx; other.y = by;
+              // Micro-damp knockback velocities on contact to avoid visible rebounds
+              const damp = 0.85;
+              if (typeof enemy.knockbackVx === 'number') enemy.knockbackVx *= damp;
+              if (typeof enemy.knockbackVy === 'number') enemy.knockbackVy *= damp;
+              if (typeof (other as any).knockbackVx === 'number') (other as any).knockbackVx *= damp;
+              if (typeof (other as any).knockbackVy === 'number') (other as any).knockbackVy *= damp;
+              fixes++;
+            }
+          }
+        } catch { /* ignore separation errors */ }
       }
+      // Last Stand wall-stall safety: if an enemy barely moves for several seconds (e.g., wedged on geometry),
+      // relocate it gently back into the corridor within the core FoW radius.
+      try {
+        const gi: any = (window as any).__gameInstance;
+        if (gi && gi.gameMode === 'LAST_STAND') {
+          const eAny4: any = enemy as any;
+          const nowS = performance.now();
+          const prevX = (eAny4._lsPrevX == null) ? (eAny4._lsPrevX = enemy.x) : eAny4._lsPrevX;
+          const prevY = (eAny4._lsPrevY == null) ? (eAny4._lsPrevY = enemy.y) : eAny4._lsPrevY;
+          const moved = Math.hypot(enemy.x - prevX, enemy.y - prevY);
+          if (moved > 0.5) {
+            eAny4._lsPrevX = enemy.x; eAny4._lsPrevY = enemy.y; eAny4._lsNoMoveSinceMs = nowS;
+          } else {
+            const since = eAny4._lsNoMoveSinceMs || (eAny4._lsNoMoveSinceMs = nowS);
+            const stallMs = (enemy.type === 'small') ? 3000 : 4000;
+            const cdUntil = eAny4._lsRelocateCooldownUntil || 0;
+            if ((nowS - since) >= stallMs && nowS >= cdUntil) {
+              // Reuse the corridor/FoW relocation approach
+              try {
+                const core: any = (window as any).__lsCore;
+                const rm2: any = (window as any).__roomManager;
+                const corrs = (rm2 && typeof rm2.getCorridors === 'function') ? (rm2.getCorridors() || []) : [];
+                let corr: any = null;
+                for (let ci = 0; ci < corrs.length; ci++) { const c = corrs[ci]; if (!c) continue; const inside = core && (core.x >= c.x && core.x <= c.x + c.w && core.y >= c.y && core.y <= c.y + c.h); if (inside) { corr = c; break; } if (!corr || (c.w*c.h) > (corr.w*corr.h)) corr = c; }
+                let rPx = 640; try { const tiles = typeof gi.getEffectiveFowRadiusTiles === 'function' ? gi.getEffectiveFowRadiusTiles() : 4; const ts = (typeof gi.fowTileSize === 'number') ? gi.fowTileSize : 160; rPx = Math.floor(tiles * ts * 0.95); } catch {}
+                if (core && corr) {
+                  const margin = 22;
+                  const left = corr.x + margin, right = corr.x + corr.w - margin;
+                  const top = corr.y + margin, bot = corr.y + corr.h - margin;
+                  // Place on the FoW circle edge for current Y; small inward epsilon to avoid exact rim.
+                  const rad = enemy.radius || 18;
+                  const epsilon = 10;
+                  const dy = Math.max(top, Math.min(bot, Math.floor(enemy.y))) - core.y;
+                  const dyAbs = Math.abs(dy);
+                  let tx = Math.floor(core.x + Math.max(0, Math.sqrt(Math.max(0, rPx*rPx - dyAbs*dyAbs)) - rad - epsilon));
+                  let ty = Math.max(top, Math.min(bot, Math.floor(enemy.y)));
+                  tx = Math.max(left, Math.min(right, tx));
+                  let nx = tx, ny = ty;
+                  try { if (rm2 && typeof rm2.clampToWalkable === 'function') { const cl2 = rm2.clampToWalkable(tx, ty, enemy.radius || 18); nx = cl2.x; ny = cl2.y; } } catch {}
+                  enemy.x = nx; enemy.y = ny;
+                  enemy.knockbackVx = 0; enemy.knockbackVy = 0; enemy.knockbackTimer = 0;
+                  eAny4._lsPrevX = nx; eAny4._lsPrevY = ny; eAny4._lsNoMoveSinceMs = nowS; eAny4._lsRelocateCooldownUntil = nowS + 5000;
+                }
+              } catch { /* ignore reloc errors */ }
+            }
+          }
+        }
+      } catch { /* ignore LS wall-stall safety */ }
       // Spectral Executioner: if a specter mark expired on a still-alive target, trigger execution now
       {
         const anyE: any = enemy as any;
@@ -5997,15 +6265,19 @@ export class EnemyManager {
           const margin = 28;
           const rightInner = corr.x + corr.w - margin;
           const leftInner = corr.x + margin;
-          // Place notably farther than regular enemy spawns (which are ~900–1400px from core)
-          const baseBehind = 1500; // ensure behind normal packs
-          const jitter = 120 + Math.random() * 160;
+          // Place closer than regular enemy spawns (~900–1300px) so elites engage sooner
+          // Target ~750–1050px ahead of the core inside corridor bounds
+          const baseBehind = 760;
+          const jitter = 100 + Math.random() * 200; // 100..300
           const rawX = core.x + baseBehind + jitter;
           x = Math.min(rightInner, Math.max(leftInner, Math.floor(rawX)));
-          // Distribute y within corridor and de-clump from existing elites
+          // Distribute y within a central band and de-clump from existing elites
           let bestScore = -Infinity; let bestY = core.y;
+          const centerY = core.y; const bandHalf = Math.min(110, Math.max(70, Math.floor(corr.h * 0.28)));
+          const topBand = Math.max(corr.y + margin, centerY - bandHalf);
+          const botBand = Math.min(corr.y + corr.h - margin, centerY + bandHalf);
           for (let t = 0; t < 4; t++) {
-            const cy = corr.y + margin + Math.random() * Math.max(10, (corr.h - margin*2));
+            const cy = topBand + Math.random() * Math.max(10, (botBand - topBand));
             let nearest = Infinity;
             for (let i = 0; i < this.activeEnemies.length; i++) {
               const e: any = this.activeEnemies[i];

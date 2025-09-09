@@ -616,8 +616,8 @@ export class BulletManager {
         const level = (b as any).level || 1;
         const scaled = specWeb?.getLevelStats ? specWeb.getLevelStats(level) : {};
         const playerRef = this.player;
-        // Moderate rotation speed, step by real time
-        const spinBase = 2.6;
+  // Faster, energetic rotation speed, step by real time
+  const spinBase = 3.4;
         const nowMs = performance.now();
         const lastT = (b as any)._lastOrbitTimeMs ?? nowMs;
         const dtMs = Math.min(Math.max(0, nowMs - lastT), 34);
@@ -683,11 +683,14 @@ export class BulletManager {
             } catch { /* ignore pulse errors */ }
           }
         }
-        const radius = (b.orbitRadiusBase != null ? b.orbitRadiusBase : (scaled.orbitRadius || 120));
+  // Add subtle bobbing to convey energy without causing motion sickness
+  const baseR = (b.orbitRadiusBase != null ? b.orbitRadiusBase : (scaled.orbitRadius || 120));
+  const bob = Math.sin(nowMs * 0.005 + (b.orbitIndex||0) * 1.2) * 4; // ±4px bob
+  const radius = baseR + bob;
         const angleTotal = b.orbitAngle;
         b.x = playerRef.x + Math.cos(angleTotal) * radius;
         b.y = playerRef.y + Math.sin(angleTotal) * radius;
-        b.radius = (specWeb?.projectileVisual?.size || 10);
+  b.radius = (specWeb?.projectileVisual?.size || 8);
         // Lattice tint for web orb visual
         try {
           const meter: any = (this.player as any)?.getWeaverLatticeMeter?.();
@@ -860,8 +863,9 @@ export class BulletManager {
               if (wave && wave.projectileVisual) {
                 // Minor visual trim for readability
                 const vis: any = { ...(wave.projectileVisual as any) };
-                if (vis.thickness != null) vis.thickness = Math.max(8, Math.round(vis.thickness * 0.9));
+                if (vis.thickness != null) vis.thickness = Math.max(7, Math.round(vis.thickness * 0.85));
                 vis.glowRadius = Math.max((vis.glowRadius || 24) * 0.9, 18);
+                if (vis.trailLength != null) vis.trailLength = Math.min(64, Math.round((vis.trailLength || 40) * 1.1));
                 // Lattice tint for wave
                 try { const meter2: any = (this.player as any)?.getWeaverLatticeMeter?.(); if (meter2 && meter2.active) { vis.color = '#6B1FB3'; vis.glowColor = '#B37DFF'; vis.glowRadius = Math.max(vis.glowRadius, 26); } } catch {}
                 wave.projectileVisual = vis;

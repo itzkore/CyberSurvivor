@@ -37,6 +37,13 @@ export class LastStandGameMode {
   private holderUiFor: {x:number;y:number;w:number;h:number; turretId?:string; level?:number; turretRef?: any} | null = null;
   private hasFlashlight: boolean = false;
   private skipRect: { x:number; y:number; w:number; h:number } | null = null;
+  // Enemy-only blockers (yellow no-pass and Gate)
+  private enemyBlocks: Array<{ x:number; y:number; w:number; h:number }>=[];
+  private gate: { x:number; y:number; w:number; h:number; hp:number; maxHp:number; level:number; active:boolean } | null = null;
+  private towerPlusPurchases = 0; // number of Tower+ buys so far (max 4)
+  // Throttled HUD refresh for enemies left
+  private enemiesLeftNextUpdateAtMs = 0;
+  private enemiesLeftLast = -1;
   // Event handlers so we can clean up on dispose
   private placeTurretHandler?: (e: Event) => void;
   private keydownHandler?: (e: KeyboardEvent) => void;
@@ -119,9 +126,48 @@ export class LastStandGameMode {
   // Expose geometry for renderer (read-only)
   public get palisadesGeom(){ return this.palisades; }
   public get holdersGeom(){ return this.holders; }
+  // Keep existing getters (palisadesGeom/holdersGeom/padsGeom) — no duplicates needed
+  // Pricing helpers for Shop injection
+  public getTowerPlusNextCost(): number {
+    // Pricing: 150, 300, 450, 600 (up to four buys)
+    const prices = [150, 300, 450, 600];
+    return this.towerPlusPurchases < prices.length ? prices[this.towerPlusPurchases] : 0;
+  }
+  public getGateNextCost(): number {
+    // Pricing: 250 initial, then 300, 450, 600 upgrades; cap at 4 levels
+    const lvl = this.gate ? this.gate.level : 0;
+    const prices = [250, 300, 450, 600];
+    return lvl < prices.length ? prices[lvl] : 0;
+  }
+  // Grant effects from Shop
+  public grantTowerPlus(){ this.addTowerPlusSlot(); }
+  public upgradeGate(){ this.ensureOrUpgradeGate(); }
   public get padsGeom(){ return this.pads; }
   public getFlashlight(){ return this.hasFlashlight; }
+  public getGate(){ return this.gate; }
   public getSkipRect(){ return this.skipRect; }
+
+  /** Compute repair price based on missing HP (rounded). */
+  public getGateRepairCost(): number {
+    const g = this.gate; if (!g || !g.active || g.hp >= g.maxHp) return 0;
+    const missing = Math.max(0, g.maxHp - g.hp);
+  // 10x cheaper: 1 scrap per 20 HP missing (rounded up), min 1
+  return Math.max(1, Math.ceil(missing / 20));
+  }
+  /** Repair gate by paying scrap; returns true if repaired. */
+  public tryRepairGate(currency?: import('./currency-system').CurrencySystem): boolean {
+    const g = this.gate; if (!g || !g.active || g.hp >= g.maxHp) return false;
+    const cost = this.getGateRepairCost();
+    try {
+      const cur = currency || (this.currency as any);
+      if (!cur || typeof cur.getBalance !== 'function' || typeof cur.spend !== 'function') return false;
+      if (cur.getBalance() < cost) return false;
+      if (!cur.spend(cost)) return false;
+      g.hp = g.maxHp; // full repair for now
+      try { window.dispatchEvent(new CustomEvent('upgradeNotice', { detail: { type: 'gate-repair', message: `Gate repaired for ${cost} scrap.` } })); } catch {}
+      return true;
+    } catch { return false; }
+  }
   /** Waves reached so far (current wave number). Used for LS leaderboards. */
   public getWavesReached(): number { return this.wave.getCurrentWaveNumber(); }
   /** External click handler: returns true if the click triggered a shop skip. */
@@ -331,6 +377,26 @@ export class LastStandGameMode {
         }
       }
     } catch { /* ignore */ }
+    // Throttled HUD: keep "Enemies Left" accurate in COMBAT by polling wave + elites
+    try {
+      if (this.phase === 'COMBAT') {
+        const now = performance.now();
+        if (now >= this.enemiesLeftNextUpdateAtMs) {
+          let eliteAlive = 0;
+          try {
+            const EM: any = this.game.getEnemyManager?.();
+            if (EM && typeof EM.getEnemies === 'function') {
+              const arr = EM.getEnemies();
+              for (let i = 0; i < arr.length; i++) { const e: any = arr[i]; if (e && e.active && e.hp > 0 && e._elite && e._elite.kind) eliteAlive++; }
+            }
+          } catch { /* ignore */ }
+          const rem = Math.max(0, this.wave.getEnemiesRemaining()) + eliteAlive;
+          if (rem !== this.enemiesLeftLast) { this.hud.setEnemiesLeft(rem); this.enemiesLeftLast = rem; }
+          // Update ~5 times per second to avoid DOM churn
+          this.enemiesLeftNextUpdateAtMs = now + 200;
+        }
+      }
+    } catch { /* ignore HUD update errors */ }
   }
 
   private startCombatPhase(first=false){
@@ -356,8 +422,12 @@ export class LastStandGameMode {
   const core = this.core;
       this.wave.startNextWave(EM, this.game.player, {
         spawnPositionFn: (_i,_t) => {
-          const margin = 40;
-          const y = cor.y + margin + Math.random()*(cor.h - margin*2);
+          // Prefer a central lane band to avoid top/bottom wall spawns
+          const centerY = core.y;
+          const bandHalf = Math.min(110, Math.max(70, Math.floor(cor.h * 0.28)));
+          const top = Math.max(cor.y + 28, centerY - bandHalf);
+          const bot = Math.min(cor.y + cor.h - 28, centerY + bandHalf);
+          const y = Math.floor(top + Math.random() * Math.max(1, (bot - top)));
           // IMPORTANT: World is huge; corridor width ~80% of world (tens of thousands px).
           // Spawning "near corridor right edge" makes enemies minutes away. Instead, place
           // them at a fixed offset from the core to target ~5–10s arrival.
@@ -380,9 +450,20 @@ export class LastStandGameMode {
   } catch {}
   // Boss appears much later to keep early waves elite-focused
   if (this.isBossWave(nextWave) && bm && typeof bm['spawnBoss'] === 'function') {
-      const margin = 60;
-      const bx = cor.x + cor.w - margin - 200; // a bit inward
-      const by = cor.y + cor.h/2;
+      // Fair spawn: inside corridor near the gate gap and within FoW radius so it's visible
+      const wallX = this.holders?.[0]?.x ?? (cor.x + Math.floor(cor.w * 0.35));
+      const holdW = this.holders?.[0]?.w ?? 36;
+      const nearGateX = wallX + holdW + 180; // ~180px to the right of gate for a fair entrance
+      const cache: any = (window as any).__lsAimCache;
+      const cx = (cache && typeof cache.cx === 'number') ? cache.cx : core.x;
+      const r = (cache && typeof cache.r2 === 'number') ? Math.sqrt(Math.max(0, cache.r2)) : 600;
+      // Favor a spot near the FoW edge ahead of the core but not too far
+      const visAheadX = Math.floor(cx + Math.min(520, Math.max(260, r * 0.78)));
+      // Clamp fully inside corridor with some margins
+      const leftBound = cor.x + 40;
+      const rightBound = cor.x + cor.w - 120;
+      const bx = Math.min(rightBound, Math.max(leftBound, Math.max(nearGateX, visAheadX)));
+      const by = core.y; // gap center
       bm['spawnBoss']({ cinematic: false, x: bx, y: by });
     } else {
       // Promote a few elites mid‑wave for pressure (if EnemyManager exposes API)
@@ -582,17 +663,21 @@ export class LastStandGameMode {
     try {
       const rm:any = (window as any).__roomManager;
       if (!rm) return;
+  const allHolders = [...(this.holders||[])];
   // Replace any existing Last Stand blockers to avoid duplicates
   if (typeof rm.clearBlockRects === 'function') rm.clearBlockRects();
+  if (typeof rm.clearEnemyBlockRects === 'function') rm.clearEnemyBlockRects();
       if (typeof rm.addBlockRects === 'function') {
         // Core as a solid blocker (approximate circle with square)
         if (this.core) {
           const r = Math.max(8, Math.floor(this.core.radius * 0.95));
           rm.addBlockRects([{ x: Math.round(this.core.x - r), y: Math.round(this.core.y - r), w: Math.round(r*2), h: Math.round(r*2) }]);
         }
-        if (this.palisades?.length) rm.addBlockRects(this.palisades.map(ps => ({ x: Math.round(ps.x), y: Math.round(ps.y), w: Math.round(ps.w), h: Math.round(ps.h) })));
-        if (this.holders?.length) rm.addBlockRects(this.holders.map(h => ({ x: Math.round(h.x), y: Math.round(h.y), w: Math.round(h.w), h: Math.round(h.h) })));
+  if (this.palisades?.length) rm.addBlockRects(this.palisades.map(ps => ({ x: Math.round(ps.x), y: Math.round(ps.y), w: Math.round(ps.w), h: Math.round(ps.h) })));
+  if (allHolders?.length) rm.addBlockRects(allHolders.map(h => ({ x: Math.round(h.x), y: Math.round(h.y), w: Math.round(h.w), h: Math.round(h.h) })));
         if (this.skipRect) rm.addBlockRects([{ x: Math.round(this.skipRect.x), y: Math.round(this.skipRect.y), w: Math.round(this.skipRect.w), h: Math.round(this.skipRect.h) }]);
+        // Enemy-only blockers (yellow lanes and gate)
+        if (typeof rm.addEnemyBlockRects === 'function' && this.enemyBlocks?.length) rm.addEnemyBlockRects(this.enemyBlocks.map(b => ({ x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) })));
       } else {
         // Fallback: stash into first room's doorRects
         const rooms:any = rm?.getRooms?.();
@@ -603,7 +688,7 @@ export class LastStandGameMode {
             room.doorRects.push({ x: Math.round(this.core.x - r), y: Math.round(this.core.y - r), w: Math.round(r*2), h: Math.round(r*2) });
           }
           for (const ps of this.palisades) room.doorRects.push({ x: Math.round(ps.x), y: Math.round(ps.y), w: Math.round(ps.w), h: Math.round(ps.h) });
-          for (const hld of this.holders) room.doorRects.push({ x: Math.round(hld.x), y: Math.round(hld.y), w: Math.round(hld.w), h: Math.round(hld.h) });
+          for (const hld of allHolders) room.doorRects.push({ x: Math.round(hld.x), y: Math.round(hld.y), w: Math.round(hld.w), h: Math.round(hld.h) });
           if (this.skipRect) room.doorRects.push({ x: Math.round(this.skipRect.x), y: Math.round(this.skipRect.y), w: Math.round(this.skipRect.w), h: Math.round(this.skipRect.h) });
         }
       }
@@ -659,13 +744,14 @@ export class LastStandGameMode {
     let bot1 = Math.min(cor.y + cor.h - margin - (holdH*2 + spacing), gapBot + 6);
     const botY3 = bot1;
     const botY4 = bot1 + holdH + spacing;
-    this.holders = [
+  this.holders = [
       { x: wallX, y: topY1, w: holdW, h: holdH },
       { x: wallX, y: topY2, w: holdW, h: holdH },
       // central wide gap here (walkable)
       { x: wallX, y: botY3, w: holdW, h: holdH },
       { x: wallX, y: botY4, w: holdW, h: holdH }
     ];
+  // Extra holders will be appended into this.holders when purchased
     // Palisades: exactly 4 posts, spaced across a forward band, keeping central lane clear
     const palW = 10, palL = 72; // slimmer posts
     const bandX1 = wallX + holdW + 40;
@@ -682,10 +768,12 @@ export class LastStandGameMode {
       const py = Math.floor((yMin + yMax) / 2);
       if (yMax > yMin) this.palisades.push({ x: px, y: py, w: palW, h: palL });
     }
-  // Register blockers (includes palisades, holders, and the persistent skip rect)
+  // Establish initial enemy-only blockers (yellow zones) and register
+  this.setupEnemyOnlyNoPassZones();
+  // Register blockers (includes palisades, holders, enemy-only, and the persistent skip rect)
   this.registerBlockers();
 
-    // Interaction: press F near a holder to open turret shop
+  // Interaction: press F near a holder to open turret shop; press F near Gate to repair if damaged
     this.keydownHandler = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== 'f') return;
       const p = this.game.player; if (!p) return;
@@ -703,19 +791,118 @@ export class LastStandGameMode {
           return;
         }
       }
-      let best: any = null; let bd2 = Infinity;
-      for (const h of this.holders){
-        // Compute rect distance
-        const cx = Math.max(h.x, Math.min(px, h.x + h.w));
-        const cy = Math.max(h.y, Math.min(py, h.y + h.h));
-        const dx = px - cx, dy = py - cy; const d2 = dx*dx + dy*dy;
-        if (d2 < bd2) { bd2 = d2; best = h; }
-      }
-      if (best && bd2 <= ( (pr+36)*(pr+36) )) {
-        this.showTurretHolderShop(best);
+      // Compute nearest interactable among: gate (if damaged) and all holders
+      let pickType: 'gate'|'holder'|null = null;
+      let pickHolder: any = null;
+      let bestD2 = Infinity;
+      const thresh2 = (pr + 36) * (pr + 36);
+      try {
+        const g = this.gate; if (g && g.active && g.hp > 0 && g.hp < g.maxHp) {
+          const cx = Math.max(g.x, Math.min(px, g.x + g.w));
+          const cy = Math.max(g.y, Math.min(py, g.y + g.h));
+          const dx = px - cx, dy = py - cy; const d2 = dx*dx + dy*dy;
+          if (d2 <= thresh2 && d2 < bestD2) { bestD2 = d2; pickType = 'gate'; pickHolder = null; }
+        }
+      } catch { /* ignore */ }
+      try {
+        for (let i=0;i<this.holders.length;i++){
+          const h = this.holders[i];
+          const cx = Math.max(h.x, Math.min(px, h.x + h.w));
+          const cy = Math.max(h.y, Math.min(py, h.y + h.h));
+          const dx = px - cx, dy = py - cy; const d2 = dx*dx + dy*dy;
+          if (d2 <= thresh2 && d2 < bestD2) { bestD2 = d2; pickType = 'holder'; pickHolder = h; }
+        }
+      } catch { /* ignore */ }
+      if (pickType === 'gate') {
+        const ok = this.tryRepairGate(this.currency);
+        if (ok) { e.preventDefault(); return; }
+      } else if (pickType === 'holder' && pickHolder) {
+        this.showTurretHolderShop(pickHolder);
+        e.preventDefault(); return;
       }
     };
     window.addEventListener('keydown', this.keydownHandler);
+  }
+
+  /** Define the yellow "no-pass" zones for enemies and initial gate geometry (inactive until bought). */
+  private setupEnemyOnlyNoPassZones(){
+    try {
+      const cor = this.corridor!; const core = this.core; if (!cor || !core) return;
+      this.enemyBlocks = [];
+      // Yellow areas: thin strips hugging the corridor walls and between adjacent holders to stop threading
+      const pad = 4;
+      const stripW = 16; // thickness of wall-adjacent strip
+      // Top wall-adjacent strip
+      this.enemyBlocks.push({ x: cor.x + pad, y: cor.y + pad, w: cor.w - pad*2, h: stripW });
+      // Bottom wall-adjacent strip
+      this.enemyBlocks.push({ x: cor.x + pad, y: cor.y + cor.h - pad - stripW, w: cor.w - pad*2, h: stripW });
+      // Between-holder micro-blockers: ensure no enemy can squeeze between turrets or holders
+  const allH = this.holders;
+      for (let i=0;i<allH.length;i++){
+        const h = allH[i];
+        // Add tiny extensions on left/right to reduce diagonal squeezing
+        const ext = 6;
+        this.enemyBlocks.push({ x: h.x - ext, y: h.y, w: ext, h: h.h });
+        this.enemyBlocks.push({ x: h.x + h.w, y: h.y, w: ext, h: h.h });
+      }
+      // Prepare inactive gate rect at the central gap; it only becomes active when purchased
+      const gapTop = core.y - Math.floor(Math.min(220, Math.max(140, Math.floor(cor.h * 0.42))) / 2);
+      const gapBot = core.y + Math.floor(Math.min(220, Math.max(140, Math.floor(cor.h * 0.42))) / 2);
+      const wallX = this.holders[0]?.x || (cor.x + Math.floor(cor.w * 0.35));
+      const gw = 22; const gh = Math.max(48, Math.min(96, gapBot - gapTop - 24));
+      const gy = Math.floor((gapTop + gapBot) / 2 - gh/2);
+      this.gate = { x: wallX + Math.floor((this.holders[0]?.w||36)/2 - gw/2), y: gy, w: gw, h: gh, hp: 0, maxHp: 0, level: 0, active: false };
+    } catch { /* ignore */ }
+  }
+
+  /** Add one extra Tower+ holder slot up to 4 total purchases. */
+  private addTowerPlusSlot(){
+    if (this.towerPlusPurchases >= 4) return;
+    const cor = this.corridor!; const core = this.core; if (!cor || !core) return;
+  // New rule: Tower+ blocks should be right behind palisades
+  const holdW = 36, holdH = 56;
+  // Reconstruct palisade band from setupCorridorAndCore() logic
+  const padDX = 140; // same constant used above
+  const wallX = core.x + Math.floor(padDX * 2.2) - Math.floor(holdW/2);
+  const palBandStart = wallX + holdW + 40;
+  // Place holder just behind the band (to the left of palisades), stagger to avoid overlap when buying multiple
+  // Position: flush just left of palisade band start, tight gap (6px)
+  const x = Math.max(cor.x + 12, palBandStart - (holdW + 6));
+  // Align Y exactly to just above and just below the central gap
+  const margin = 12;
+  const gap = Math.min(220, Math.max(140, Math.floor(cor.h * 0.42)));
+  const gapTop = core.y - Math.floor(gap/2);
+  const gapBot = core.y + Math.floor(gap/2);
+  const placeTop = (this.towerPlusPurchases % 2 === 0);
+  const yTop = Math.max(cor.y + margin, gapTop - holdH - 6);
+  const yBot = Math.min(cor.y + cor.h - margin - holdH, gapBot + 6);
+  const y = placeTop ? yTop : yBot;
+  this.holders.push({ x, y, w: holdW, h: holdH });
+    this.towerPlusPurchases++;
+    // Rebuild enemy-only blockers with new geometry and register
+    this.setupEnemyOnlyNoPassZones();
+    this.registerBlockers();
+  }
+
+  /** Ensure a Gate exists; if already present, upgrade HP and extend height slightly. */
+  private ensureOrUpgradeGate(){
+    const cor = this.corridor!; const core = this.core; if (!cor || !core) return;
+    if (!this.gate) this.setupEnemyOnlyNoPassZones();
+    if (!this.gate) return;
+    const hpTiers = [600, 1100, 1800, 2600];
+    const lvl = Math.min(3, this.gate.level);
+    const nextLvl = Math.min(3, lvl + 1);
+    this.gate.level = nextLvl;
+    this.gate.maxHp = hpTiers[nextLvl];
+    this.gate.hp = this.gate.maxHp;
+    this.gate.active = true;
+  try { (window as any).__lsGate = this.gate; } catch {}
+    // Slightly grow gate height on upgrades (visual feedback and tighter seal)
+    this.gate.h = Math.min(this.gate.h + 6, Math.floor(cor.h * 0.5));
+    // Add/update enemy-only blocker to include gate rect so enemies cannot pass through
+    const idx = this.enemyBlocks.findIndex(b => Math.abs(b.x - this.gate!.x) < 2 && Math.abs(b.y - this.gate!.y) < 2 && Math.abs(b.w - this.gate!.w) < 2 && Math.abs(b.h - this.gate!.h) < 2);
+    if (idx === -1) this.enemyBlocks.push({ x: this.gate.x, y: this.gate.y, w: this.gate.w, h: this.gate.h });
+    this.registerBlockers();
   }
 
   /** Tear down LS UI and listeners so returning to main menu doesn't leave UI visible. */
@@ -765,6 +952,29 @@ export class LastStandGameMode {
               const r2 = (core.radius + 18) * (core.radius + 18);
               for (let i=0;i<enemies.length;i++){
                 const e = enemies[i]; if (!e || !e.active || e.hp <= 0) continue;
+                // Gate contact: if gate is active and enemy overlaps gate rect, damage the gate and push enemy back
+                try {
+                  const g:any = (self as any).gate;
+                  if (g && g.active && g.hp > 0) {
+                    const rx = Math.max(g.x, Math.min(e.x, g.x + g.w));
+                    const ry = Math.max(g.y, Math.min(e.y, g.y + g.h));
+                    const dxg = e.x - rx, dyg = e.y - ry; const rad = e.radius || 18;
+                    if (dxg*dxg + dyg*dyg <= rad*rad) {
+                      // Rate limit per enemy
+                      if (!e._lsNextGateHitMs || now >= e._lsNextGateHitMs) {
+                        // Gate damage scales with enemy size
+                        const scale = (e.type==='small'? 6 : e.type==='medium'? 10 : 16);
+                        g.hp = Math.max(0, g.hp - scale);
+                        e._lsNextGateHitMs = now + 450;
+                        // Visual cue
+                        try { window.dispatchEvent(new CustomEvent('screenShake', { detail: { durationMs: 60, intensity: 1.2 } })); } catch {}
+                      }
+                      // Push enemy away along shortest axis
+                      const ax = (dxg !== 0 || dyg !== 0) ? Math.atan2(dyg, dxg) : 0;
+                      const push = 6; e.x += Math.cos(ax) * push; e.y += Math.sin(ax) * push;
+                    }
+                  }
+                } catch { /* ignore gate contact errors */ }
                 const dx = e.x - core.x; const dy = e.y - core.y; if (dx*dx + dy*dy <= r2) {
                   // Deal contact damage to core and apply small pushback to enemy
                   const dmg = Math.max(1, Math.round((e.damage||1) * (e.type==='small'?1: e.type==='medium'?2:3)));
@@ -776,6 +986,17 @@ export class LastStandGameMode {
                   const d = Math.hypot(dx, dy) || 1; e.x += (dx/d) * 6; e.y += (dy/d) * 6;
                 }
               }
+              // If gate has been destroyed, deactivate and remove its blocker
+              try {
+                const g:any = (self as any).gate;
+                if (g && g.active && g.hp <= 0) {
+                  g.active = false; g.level = Math.max(0, g.level); // keep level for pricing if desired
+                  (self as any).enemyBlocks = (self as any).enemyBlocks.filter((b:any) => !(Math.abs(b.x - g.x)<2 && Math.abs(b.y - g.y)<2 && Math.abs(b.w - g.w)<2 && Math.abs(b.h - g.h)<2));
+                  (self as any).registerBlockers();
+                  try { (window as any).__lsGate = null; } catch {}
+                  try { window.dispatchEvent(new CustomEvent('upgradeNotice', { detail: { type: 'gate-broken', message: 'Gate destroyed!' } })); } catch {}
+                }
+              } catch { /* ignore gate cleanup */ }
             }
           } catch {/* ignore */}
           // Update HUD core HP if available

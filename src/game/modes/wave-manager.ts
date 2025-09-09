@@ -16,12 +16,24 @@ export class WaveManager {
       const url = lastStandData.waves();
       const json = await loadJSON<{ waves: WaveDef[] }>(url);
       this.waves = json?.waves || [];
+      // If LS provided waves, lightly bias the first few toward more small enemies
+      try {
+        for (let i = 0; i < Math.min(3, this.waves.length); i++) {
+          const w = this.waves[i]; if (!w) continue;
+          // Find small spawn and bump it by +25% (rounded), or add one if absent
+          const small = w.spawns.find(s => s.type === 'small');
+          if (small) small.count = Math.max(1, Math.round(small.count * 1.25));
+          else w.spawns.unshift({ type: 'small', count: 8 });
+        }
+      } catch { /* non-fatal */ }
     } catch {
       // Fallback: simple procedural waves
       this.waves = [];
       for (let i=0;i<12;i++) {
         const base = 10 + i * 4;
-        this.waves.push({ id: i+1, spawns: [ { type:'small', count: base }, { type:'medium', count: Math.floor(base*0.4) } ], boss: (i+1)%5===0 });
+        // Heavier small presence in the first waves to keep early action lively
+        const smallCount = i < 3 ? Math.round(base * 1.35) : base;
+        this.waves.push({ id: i+1, spawns: [ { type:'small', count: smallCount }, { type:'medium', count: Math.floor(base*0.4) } ], boss: (i+1)%5===0 });
       }
     }
   }
@@ -39,6 +51,15 @@ export class WaveManager {
   this.waveToken++;
   const token = this.waveToken;
     const wave = this.waves[this.waveIndex] || { id: this.waveIndex+1, spawns:[{type:'small',count:12+(this.waveIndex*5)}], boss: ((this.waveIndex+1)%5)===0 };
+    // If running in Last Stand mode, ensure early waves (1-3) skew toward more small enemies
+    try {
+      const gi:any = (window as any).__gameInstance;
+      if (gi && gi.gameMode === 'LAST_STAND' && (this.waveIndex+1) <= 3) {
+        const small = wave.spawns.find(s => s.type==='small');
+        if (small) small.count = Math.max(1, Math.round(small.count * 1.25));
+        else wave.spawns.unshift({ type:'small', count: 10 });
+      }
+    } catch { /* ignore */ }
   // Wave-based speed multiplier: Wave 1 = 2.0x, rises gently, and reaches its maximum at Wave 30
   // New curve: linear ramp from 2.0x at Wave 1 to 2.4x at Wave 30; clamped beyond 30
   // This tones down late-wave movement speeds (esp. beyond Wave 10) while preserving early urgency.

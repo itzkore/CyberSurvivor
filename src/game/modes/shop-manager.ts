@@ -12,8 +12,7 @@ export class ShopManager {
 
   /** Limit weapon offers to the provided list (by WeaponType). Pass null to allow all. */
   public setAllowedWeapons(list: WeaponType[] | null | undefined) {
-    if (!list || list.length === 0) { this.allowedWeapons = null; return; }
-    // Normalize and store in a Set for O(1) checks
+    if (!list || list?.length === 0) { this.allowedWeapons = null; return; }
     const norm: WeaponType[] = list.filter(v => typeof v === 'number') as WeaponType[];
     this.allowedWeapons = new Set(norm);
   }
@@ -23,12 +22,10 @@ export class ShopManager {
       const url = lastStandData.items();
       const json = await loadJSON<{ items: Item[] }>(url);
       this.items = json?.items || [];
-      // Ensure flashlight bonus exists (append if missing)
       if (!this.items.some(i => i.id === 'bonus_flashlight')) {
         this.items.push({ id:'bonus_flashlight', kind:'bonus', price:70, weight: 0.9, data:{ name:'Flashlight' } });
       }
     } catch {
-      // Fallback minimal offer list
       this.items = [
         { id:'w_railgun', kind:'weapon', price:120, data:{ weaponType: WeaponType.RAILGUN }, weight: 1 },
         { id:'w_mortar', kind:'weapon', price:120, data:{ weaponType: WeaponType.MECH_MORTAR }, weight: 1 },
@@ -39,14 +36,11 @@ export class ShopManager {
     }
   }
 
-  rollOffers(count = 6, seed?: number): Item[] {
+  rollOffers(count = 8, seed?: number): Item[] {
     const r = this.rng(seed);
-    // Detect loadout state to bias/limit offers when capped
     let ownedWeaponTypes = new Set<number>();
     let ownedPassiveNames = new Set<string>();
-    // Selected class weapon (default weapon for operative)
     let classWeaponType: number | null = null;
-    // Track weapon levels for evolution gating (best-effort)
     const weaponLevels: Record<number, number> = Object.create(null);
     try {
       const g:any = (window as any).__gameInstance || (window as any).game || {};
@@ -62,25 +56,18 @@ export class ShopManager {
     } catch { /* ignore */ }
     const weaponCapReached = ownedWeaponTypes.size >= 3;
     const passiveCapReached = ownedPassiveNames.size >= 3;
-    // Build weighted pool with soft class filtering: allowed weapons are favored; others still possible at reduced weight
     type WItem = { item: Item; weight: number };
     const basePool: WItem[] = [];
     const perkPool: WItem[] = [];
     for (let i=0;i<this.items.length;i++) {
       const it = this.items[i];
-  // Exclude turret items entirely (turrets sold via holders)
-  if (it.kind === 'turret') continue;
-  // Bonus items like Flashlight are allowed regardless of caps
-      // Only include weapons that match the allowed class kit; if none configured, suppress weapons
+      if (it.kind === 'turret') continue;
       if (it.kind === 'weapon') {
         const wt = it.data?.weaponType as WeaponType | undefined;
         if (!this.allowedWeapons || wt === undefined || !this.allowedWeapons.has(wt)) continue;
-        // If at weapon cap, only allow upgrades of already owned weapons
         if (weaponCapReached) {
-          if (!ownedWeaponTypes.has(wt as any)) continue; // block new unlocks
+          if (!ownedWeaponTypes.has(wt as any)) continue;
         }
-        // Evolution gating: don't offer evolved weapons (e.g., Dual Pistols) unless base is level 7 and required passive is owned
-        // Known evolved examples in this project: DUAL_PISTOLS (from PISTOL + Crit), RUNIC_ENGINE (from DATA_SIGIL + Area Up)
         const isEvolved = (wt === WeaponType.DUAL_PISTOLS) || (wt === WeaponType.RUNIC_ENGINE);
         if (isEvolved) {
           let base: number | null = null; let passive: string | null = null;
@@ -89,31 +76,26 @@ export class ShopManager {
           if (base != null) {
             const lvl = weaponLevels[base] || 0;
             const hasPassive = passive ? ownedPassiveNames.has(passive) : true;
-            if (!(lvl >= 7 && hasPassive)) continue; // block evolved until prerequisites
+            if (!(lvl >= 7 && hasPassive)) continue;
           }
         }
       }
       let w = it.weight ?? 1;
-      // Slightly favor passives to lean into upgrades
       if (it.kind === 'passive') {
-        // If at passive cap, only allow upgrades of already owned passives
         const name = it.data?.passiveName as string | undefined;
-        if (passiveCapReached && name && !ownedPassiveNames.has(name)) {
-          continue; // block new passive unlocks
-        }
+        if (passiveCapReached && name && !ownedPassiveNames.has(name)) continue;
         w *= 1.25;
       }
       if (it.kind === 'perk') {
         if (w > 0) perkPool.push({ item: it, weight: w });
       } else if (it.kind === 'bonus') {
-        if (w > 0) perkPool.push({ item: it, weight: w * 0.9 }); // treat bonus like perk for filler
+        if (w > 0) perkPool.push({ item: it, weight: w * 0.9 });
       } else {
         if (w > 0) basePool.push({ item: it, weight: w });
       }
     }
     let pool: WItem[] = basePool.slice();
     const out: Item[] = [];
-    // Light guarantees: try to include at least two weapons and two passives when available
     const pickOneByKind = (kind: Item['kind']) => {
       const candidates = pool.filter(p => p.item.kind === kind);
       if (!candidates.length) return false;
@@ -132,7 +114,6 @@ export class ShopManager {
       pickOneByKind('passive');
       pickOneByKind('passive');
     }
-    // Fill with weighted random without replacement; no refills to avoid duplicates
     while (out.length < count && pool.length) {
       const total = pool.reduce((s,p)=> s + p.weight, 0);
       let pick = r()*total; let idx = 0;
@@ -141,7 +122,6 @@ export class ShopManager {
       out.push(chosen.item);
       pool.splice(idx,1);
     }
-    // If not enough items to reach count, use unique perks as a fallback to fill up to count
     while (out.length < count && perkPool.length) {
       const total = perkPool.reduce((s,p)=> s + p.weight, 0);
       let pick = r()*total; let idx = 0;
@@ -150,7 +130,6 @@ export class ShopManager {
       out.push(chosen.item);
       perkPool.splice(idx,1);
     }
-    // Guarantee: Always include the class weapon as an offer (expensive), preferably as an upgrade.
     try {
       const gm = (window as any).__gameInstance?.gameMode;
       const isLS = gm === 'LAST_STAND';
@@ -159,20 +138,13 @@ export class ShopManager {
         const allowed = !this.allowedWeapons || this.allowedWeapons.has(wt);
         const owned = ownedWeaponTypes.has(wt);
         const atCap = ownedWeaponTypes.size >= 3;
-        // If we're at weapon cap and don't own the class weapon, don't add an unlock we can't buy.
         if (allowed && (!atCap || owned)) {
-          // If already present, mark it expensive; else inject and keep total at 'count'.
           let existing = out.find(i => i.kind === 'weapon' && i.data?.weaponType === wt);
           const level = (weaponLevels[wt] || 0) | 0;
-          const price = Math.max(120, (owned ? (220 + 60 * level) : 260)); // expensive baseline
-          if (existing) {
-            existing.price = price;
-          } else {
+          const price = Math.max(120, (owned ? (220 + 60 * level) : 260));
+          if (existing) existing.price = price; else {
             const guaranteed: Item = { id: `w_class_${wt}`, kind: 'weapon', price, data: { weaponType: wt }, weight: 0.01 };
-            if (out.length < count) {
-              out.push(guaranteed);
-            } else {
-              // Replace a non-weapon first; prefer perk, then passive; else last slot
+            if (out.length < count) out.push(guaranteed); else {
               let repIdx = out.findIndex(i => i.kind === 'perk');
               if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'bonus');
               if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'passive');
@@ -182,12 +154,53 @@ export class ShopManager {
           }
         }
       }
-    } catch { /* ignore guarantee errors */ }
+    } catch {}
+    try {
+      const gi: any = (window as any).__gameInstance;
+      if (gi && gi.gameMode === 'LAST_STAND') {
+        const ls: any = gi.lastStand || (gi as any).getLastStand?.();
+        if (ls) {
+          try {
+            const next = typeof ls.getTowerPlusNextCost === 'function' ? (ls.getTowerPlusNextCost() as number) : 0;
+            const card: Item = { id: 'ls_tower_plus', kind: 'bonus', price: next, weight: 0.01, data: { name: 'Tower+' } };
+            if (out.length < count) out.push(card); else {
+              let repIdx = out.findIndex(i => i.kind === 'perk');
+              if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'bonus' && i.id !== 'ls_gate' && i.id !== 'ls_tower_plus');
+              if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'passive');
+              if (repIdx < 0) {
+                for (let k = out.length - 1; k >= 0; k--) {
+                  const it = out[k];
+                  if (!(it.kind === 'bonus' && (it.id === 'ls_gate' || it.id === 'ls_tower_plus'))) { repIdx = k; break; }
+                }
+                if (repIdx < 0) repIdx = out.length - 1;
+              }
+              out[repIdx] = card;
+            }
+          } catch {}
+          try {
+            const nextG = typeof ls.getGateNextCost === 'function' ? (ls.getGateNextCost() as number) : 0;
+            const card: Item = { id: 'ls_gate', kind: 'bonus', price: nextG, weight: 0.01, data: { name: 'Gate' } };
+            if (out.length < count) out.push(card); else {
+              let repIdx = out.findIndex(i => i.kind === 'perk');
+              if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'bonus' && i.id !== 'ls_gate' && i.id !== 'ls_tower_plus');
+              if (repIdx < 0) repIdx = out.findIndex(i => i.kind === 'passive');
+              if (repIdx < 0) {
+                for (let k = out.length - 1; k >= 0; k--) {
+                  const it = out[k];
+                  if (!(it.kind === 'bonus' && (it.id === 'ls_gate' || it.id === 'ls_tower_plus'))) { repIdx = k; break; }
+                }
+                if (repIdx < 0) repIdx = out.length - 1;
+              }
+              out[repIdx] = card;
+            }
+          } catch {}
+        }
+      }
+    } catch {}
     return out;
   }
 
   purchase(item: Item, game: any, currency: CurrencySystem, useFree: boolean = false): boolean {
-    // Enforce Last Stand specific caps: max 3 weapons, max 3 passives
     try {
       const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
       if (isLastStand) {
@@ -199,7 +212,6 @@ export class ShopManager {
             return false;
           }
         } else if (item.kind === 'passive') {
-          // Count unique passives (not levels)
           const ownedP = (Array.isArray(game?.player?.activePassives) ? game.player.activePassives.length : 0) as number;
           const already = (() => { try { const n = item.data?.passiveName; return !!game?.player?.activePassives?.find((p:any)=>p.type===n); } catch { return false; } })();
           if (!already && ownedP >= 3) {
@@ -209,13 +221,11 @@ export class ShopManager {
         }
       }
     } catch { /* ignore */ }
-    // Support free-upgrade token
     if (useFree && currency.hasFreeUpgrade()) {
       currency.consumeFreeUpgrade();
     } else {
       if (!currency.spend(item.price)) return false;
     }
-    // Route purchase to systems
     try {
       switch (item.kind) {
         case 'weapon': {
@@ -226,6 +236,10 @@ export class ShopManager {
         case 'bonus': {
           if (item.id === 'bonus_flashlight') {
             try { (game?.lastStand || (window as any).__gameInstance?.lastStand)?.grantFlashlight?.(); } catch {}
+          } else if (item.id === 'ls_tower_plus') {
+            try { (game?.lastStand || (window as any).__gameInstance?.lastStand)?.grantTowerPlus?.(); } catch {}
+          } else if (item.id === 'ls_gate') {
+            try { (game?.lastStand || (window as any).__gameInstance?.lastStand)?.upgradeGate?.(); } catch {}
           }
           break;
         }
@@ -235,13 +249,11 @@ export class ShopManager {
           break;
         }
         case 'perk': {
-          // Simple stat perks
           const hp = item.data?.hp as number | undefined;
           if (hp) game.player.maxHp += hp, game.player.hp += hp;
           break;
         }
         case 'turret': {
-          // Placement performed by UI/LastStand controller via event
           window.dispatchEvent(new CustomEvent('laststand:placeTurret', { detail: { turretId: item.id } }));
           break;
         }

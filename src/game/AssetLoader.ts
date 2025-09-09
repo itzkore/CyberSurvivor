@@ -146,10 +146,10 @@ export class AssetLoader {
     else {
       if (location.protocol === 'file:') attempts.push('./assets/manifest.json');
       else {
-        // Always try absolute root assets first in dev
+        // Prefer detected basePrefix first (when hosted under a subfolder)
+        if (AssetLoader.basePrefix) attempts.push(AssetLoader.basePrefix + '/assets/manifest.json');
+        // Root absolute as secondary (useful in dev at site root)
         attempts.push('/assets/manifest.json');
-        // Detected basePrefix ('' or '/subfolder')
-        attempts.push(AssetLoader.basePrefix + '/assets/manifest.json');
         // If basePrefix empty, enqueue known fallback subfolder
         if (!AssetLoader.basePrefix) attempts.push('/cybersurvivor/assets/manifest.json');
       }
@@ -192,10 +192,12 @@ export class AssetLoader {
     const candidates: string[] = [];
     const pushUnique = (p: string) => { if (p && !candidates.includes(p)) candidates.push(p); };
     pushUnique(normalized);
-  // Variant: ensure single leading slash (for dev server publicDir)
-  pushUnique('/' + normalized.replace(/^\.*\//, '').replace(/^\/+/, ''));
-    // Variant: without leading slash (relative)
-    pushUnique(normalized.replace(/^\/+/, ''));
+    // Variant: ensure single leading slash (for dev server publicDir)
+    pushUnique('/' + normalized.replace(/^\.*\//, '').replace(/^\/+/, ''));
+    // Variant: without leading slash (relative) — only if not already base-prefixed to avoid '/sub/sub/...'
+    if (!(AssetLoader.basePrefix && normalized.startsWith(AssetLoader.basePrefix + '/'))) {
+      pushUnique(normalized.replace(/^\/+/, ''));
+    }
     // Variant: remove basePrefix if present
     if (AssetLoader.basePrefix) {
       pushUnique(normalized.replace(AssetLoader.basePrefix, ''));
@@ -263,12 +265,16 @@ export class AssetLoader {
       if (p.startsWith('data/')) return './' + p; // 'data/x' -> './data/x'
       return p;
     }
-    // http(s) hosting – inject basePrefix if path starts at root /assets
-    // Apply the same logic for JSON/config under /data
-    if (p.startsWith('/assets/')) return AssetLoader.basePrefix + p; // '' or '/cs' prefix
-    if (p.startsWith('assets/')) return AssetLoader.basePrefix + '/' + p; // relative form
-    if (p.startsWith('/data/')) return AssetLoader.basePrefix + p;
-    if (p.startsWith('data/')) return AssetLoader.basePrefix + '/' + p;
+    // http(s) hosting – inject basePrefix if path starts at root /assets or /data
+    // Avoid double-prefixing if p already begins with the discovered basePrefix
+    const bp = AssetLoader.basePrefix || '';
+    const alreadyPrefixed = bp && (p.startsWith(bp + '/assets/') || p.startsWith(bp + '/data/'));
+    if (!alreadyPrefixed) {
+      if (p.startsWith('/assets/')) return bp + p; // '' or '/subfolder' prefix
+      if (p.startsWith('assets/')) return (bp ? (bp + '/') : '') + p; // relative form
+      if (p.startsWith('/data/')) return bp + p;
+      if (p.startsWith('data/')) return (bp ? (bp + '/') : '') + p;
+    }
     return p;
   }
 
