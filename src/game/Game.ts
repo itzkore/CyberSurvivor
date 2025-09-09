@@ -24,6 +24,9 @@ import { DebugOverlay } from '../ui/DebugOverlay';
 import { FogOfWarSystem } from '../systems/FogOfWarSystem';
 import { LastStandGameMode } from './modes/last-stand';
 import { lastStandData, loadJSON } from './modes/config-loader';
+import { HackingSystem, screenToWorld } from './HackingSystem';
+import { keyState } from './keyState';
+import { getHealEfficiency } from './Balance';
 
 export class Game {
   /**
@@ -136,6 +139,8 @@ export class Game {
   private showRoomDebug: boolean = false;
   public gameMode: 'SHOWDOWN' | 'DUNGEON' | 'SANDBOX' | 'LAST_STAND' = 'LAST_STAND'; // default to Last Stand (main menu)
   private lastStand?: LastStandGameMode;
+  // Manual mouse hacking (Rogue Hacker experimental system)
+  private hacking?: HackingSystem;
   // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
@@ -342,6 +347,9 @@ export class Game {
   // Provide global game instance reference (used by EnemyManager passive AoE)
   try { (window as any).__gameInstance = this; } catch {}
     this.initInput();
+  // Instantiate hacking system (disabled by default unless class is rogue_hacker)
+  // Removed unsupported paralyzeMs option to satisfy HackingSystemOptions type.
+  this.hacking = new HackingSystem({ radius: 200, minChargeMs: 260, fullChargeMs: 1000, cooldownMs: 4000 });
   // (Electron auto lowFX removed)
     // Removed frame pulse overlay (F9 toggle)
   this.gameLoop = new GameLoop(this.update.bind(this), this.render.bind(this));
@@ -385,6 +393,13 @@ export class Game {
       // Add a quick faint second ring for readability
       try { this.explosionManager?.triggerShockwave(d.x, d.y, Math.max(1, Math.round(d.damage*0.2)), Math.round(d.radius*0.65), '#FFD199'); } catch {}
       this.startScreenShake(100, 4);
+    });
+    // Scavenger Pulse visualization (dual warm rings + sparks)
+    window.addEventListener('scrapPulse', (e: Event) => {
+      const d = (e as CustomEvent).detail || {}; const x = d.x, y = d.y; const r = d.r || 160;
+      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r*0.75), '#FFB347'); } catch {}
+      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r*1.05), '#FFE6C2'); } catch {}
+  try { this.particleManager.spawn(x, y, 14, '#FF9B2A', { sizeMin:2,sizeMax:4,lifeMs:420,speedMin:0.5,speedMax:2.0 }); } catch {}
     });
     // Listen for enemyDeathExplosion event
     window.addEventListener('enemyDeathExplosion', (e: Event) => this.handleEnemyDeathExplosion(e as CustomEvent));
@@ -1032,6 +1047,242 @@ export class Game {
       });
     }
   this.particleManager.update(deltaTime);
+  // Manual hacking update (only when Rogue Hacker class active)
+  if (this.hacking) {
+    try {
+      const cid: string | undefined = (this.player as any)?.characterData?.id;
+      const enabled = (cid === 'rogue_hacker');
+      this.hacking.setEnabled(!!enabled);
+      if (enabled) {
+        // Translate screen mouse to world coordinates
+        const mx = (window as any).__mouseX || 0;
+        const my = (window as any).__mouseY || 0;
+        const world = screenToWorld(mx, my, this.camX, this.camY);
+        const enemies = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
+        // Right button state (fallback to mouseState if not tracked globally)
+        const rDown = !!((window as any).__mouseRightDown);
+        this.hacking.update(performance.now(), deltaTime, enemies || [], world.x, world.y, rDown);
+      }
+    } catch { /* ignore hacking errors */ }
+  }
+  // Wasteland Scavenger special mouse ability: redirect active Scrap Lash blade toward click location then force return.
+  try {
+    const cid: string | undefined = (this.player as any)?.characterData?.id;
+    if (cid === 'wasteland_scavenger') {
+      // Edge-detect a right click; each click appends a waypoint for the active Scrap Lash.
+      const rDown = !!((window as any).__mouseRightDown);
+      if (!(this as any)._lastWSClick) (this as any)._lastWSClick = false;
+      const prev = (this as any)._lastWSClick;
+  // Treat both edge click and sustained hold for second stage (jump)
+  if (rDown && !prev) {
+        const mx = (window as any).__mouseX || 0; const my = (window as any).__mouseY || 0;
+        const world = screenToWorld(mx, my, this.camX, this.camY);
+        const bullets = this.bulletManager.bullets;
+        for (let i=0;i<bullets.length;i++) {
+          const bb:any = bullets[i]; if (!bb || !bb.active) continue;
+          if (bb.weaponType === (window as any).WeaponType?.SCRAP_LASH || bb.weaponType === (typeof WeaponType !== 'undefined' ? (WeaponType as any).SCRAP_LASH : bb.weaponType)) {
+            // Init waypoint queue
+            if (!bb._lashWaypoints) bb._lashWaypoints = [];
+            bb._lashWaypoints.push({ x: world.x, y: world.y });
+            // If not currently redirecting, start immediately
+            if (!bb._lashRedirectActive && (bb._lashPhase === 'OUT' || bb._lashPhase === 'RETURN')) {
+              const next = bb._lashWaypoints.shift();
+              if (next) {
+                bb._lashRedirectActive = true;
+                bb._lashRedirectX = next.x; bb._lashRedirectY = next.y;
+                bb._lashPhase = 'REDIRECT';
+                bb._lastRedirectDist = undefined;
+              }
+            }
+            // If already REDIRECT, we just queued it; processing happens on arrival.
+            break; // one blade only
+          }
+        }
+      }
+      (this as any)._lastWSClick = rDown;
+
+      // Space key pulse ability: damage enemies around current Scrap Lash blade & add scrap stacks.
+      if (!(this as any)._wsSpacePrev) (this as any)._wsSpacePrev = false;
+      const spaceDown = !!keyState[' ']; // space stored as ' ' (space character) or 'spacebar'? fallback below
+      const spaceAlt = !!keyState['space']; // some browsers report 'space'
+      const spacePressed = (spaceDown || spaceAlt);
+      const prevSpace = (this as any)._wsSpacePrev;
+      if (spacePressed && !prevSpace) {
+        const nowMs = performance.now();
+        const pulseCdUntil = (this as any)._wsPulseCdUntil || 0;
+        if (nowMs < pulseCdUntil) {
+          // on cooldown skip
+        } else {
+        const bullets = this.bulletManager.bullets;
+        let lash:any = null;
+        for (let i=0;i<bullets.length;i++) { const bb:any = bullets[i]; if (bb && bb.active && bb.weaponType === WeaponType.SCRAP_LASH) { lash = bb; break; } }
+        const pulseX = lash ? lash.x : this.player.x;
+        const pulseY = lash ? lash.y : this.player.y;
+        if (lash || true) { // allow pulse even if no blade (center on player)
+          const radius = Math.max(140, (lash.radius||18) * 6); // generous pulse radius for impact
+          const enemies = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
+          const hitIds: any[] = [];
+          let hits = 0;
+          const dmgBase = (lash?.damage || 30);
+          for (let i=0;i<enemies.length;i++) {
+            const e:any = enemies[i]; if (!e || !e.active || e.hp<=0) continue;
+            const dx = e.x - pulseX; const dy = e.y - pulseY; if (dx*dx + dy*dy > radius*radius) continue;
+            // Apply classic lash damage; reuse crit logic simplified (no crit for pulse for consistency) or optionally crit? Keep no crit.
+            this.enemyManager.takeDamage(e, dmgBase, false, false, WeaponType.SCRAP_LASH, pulseX, pulseY, (lash?.level||1), false, 'PLAYER');
+            hitIds.push(e);
+            hits++;
+          }
+          if (hits>0) {
+            const p:any = this.player;
+            if (p && p.addScrapHits) {
+              const trig = p.addScrapHits(hits);
+              if (trig) {
+                // replicate explosion & heal logic from BulletManager lash hit
+                try {
+                  const pl: any = this.player;
+                  const reach2 = 120;
+                  const radius2 = Math.max(220, Math.round(reach2 * 1.6));
+                  const gdm = (p.getGlobalDamageMultiplier?.() ?? (p.globalDamageMultiplier ?? 1));
+                  const dmgRef = Math.round((dmgBase) * 1.25 * (gdm || 1));
+                  window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: pl.x, y: pl.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } }));
+                  const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+                  const eff = getHealEfficiency(timeSec);
+                  const amt = 5 * eff;
+                  p.hp = Math.min(p.maxHp || p.hp, p.hp + amt);
+                } catch { /* ignore */ }
+              }
+            }
+            // Simple pulse VFX event
+            try { window.dispatchEvent(new CustomEvent('scrapPulse', { detail: { x: pulseX, y: pulseY, r: radius } })); } catch {}
+          }
+          (this as any)._wsPulseCdUntil = nowMs + 10000; // 10s cooldown
+        }
+        }
+      }
+      (this as any)._wsSpacePrev = spacePressed;
+
+      // Expose meter providers for HUD (created lazily once)
+      const selfRef:any = this;
+      if (!(this.player as any).getScavengerRedirect) {
+        (this.player as any).getScavengerRedirect = function(){
+          const now = performance.now();
+          const max = 3000; const until = selfRef._wsRedirectCdUntil||0; const remain = Math.max(0, until - now);
+          return { value: (max - remain), max, ready: remain<=0 };
+        };
+      }
+      if (!(this.player as any).getScavengerPulse) {
+        (this.player as any).getScavengerPulse = function(){
+          const now = performance.now();
+          const max = 10000; const until = selfRef._wsPulseCdUntil||0; const remain = Math.max(0, until - now);
+          return { value: (max - remain), max, ready: remain<=0 };
+        };
+      }
+    }
+    if (cid === 'tech_warrior') {
+      // RMB kinetic anchor ability
+      const rDown = !!((window as any).__mouseRightDown);
+      if (!(this as any)._lastTWClick) (this as any)._lastTWClick = false;
+      if ((this as any)._twAnchorCdUntil == null) (this as any)._twAnchorCdUntil = 0;
+      const prev = (this as any)._lastTWClick;
+      const nowMs = performance.now();
+      const cdUntil = (this as any)._twAnchorCdUntil || 0;
+  let anchor:any = (this as any)._twAnchor || null; // {x,y,arm,spawnTime}
+      if (rDown && !prev) {
+        const mx = (window as any).__mouseX || 0; const my = (window as any).__mouseY || 0;
+        const world = screenToWorld(mx, my, this.camX, this.camY);
+  if (anchor && nowMs >= (anchor.arm||0)) {
+          // Start / progress smooth jump
+          if (!(this as any)._twJump) {
+            (this as any)._twJump = { sx: this.player.x, sy: this.player.y, ex: anchor.x, ey: anchor.y, start: nowMs, dur: 300, done:false };
+          }
+          const j = (this as any)._twJump;
+          const tRaw = (nowMs - j.start) / j.dur;
+          const t = Math.min(1, Math.max(0, tRaw));
+          const ease = t * t * (3 - 2 * t);
+          const arc = Math.sin(Math.PI * t) * 42; // vertical arc lift
+          this.player.x = j.sx + (j.ex - j.sx) * ease;
+          this.player.y = j.sy + (j.ey - j.sy) * ease - arc;
+          // Mid-air trail (throttled randomly)
+          if (Math.random() < 0.28) { try { this.particleManager.spawn(this.player.x, this.player.y + 8, 1, '#FFB066'); } catch {} }
+          if (t >= 1 && !j.done) {
+            j.done = true;
+            // Pre-land crowd displacement so player isn't body-blocked: push enemies outward first
+            try {
+              const pushR = 120; // tighter inner push radius
+              const pushR2 = pushR * pushR;
+              const enemies = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
+              if (enemies) {
+                for (let i=0;i<enemies.length;i++) {
+                  const e:any = enemies[i]; if (!e || !e.active || e.hp<=0) continue;
+                  const dx = e.x - j.ex; const dy = e.y - j.ey; const d2 = dx*dx + dy*dy; if (d2 > pushR2) continue;
+                  const d = Math.sqrt(d2) || 1;
+                  const nx = dx / d; const ny = dy / d;
+                  // Displacement strength tapers with distance so inner enemies get shoved more
+                  const strength = 140 * (1 - d / pushR); // up to 140px at center → 0 at edge
+                  e.x = j.ex + nx * (d + Math.max(12, strength));
+                  e.y = j.ey + ny * (d + Math.max(12, strength));
+                  // Optional light stun/slow window flag (short) for feel
+                  try { e._staggerUntil = Math.max(e._staggerUntil||0, performance.now() + 180); } catch {}
+                }
+              }
+            } catch { /* ignore push errors */ }
+
+            // Detonation damage (after displacement)
+            const radius = 210;
+            const enemies = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
+            if (enemies) {
+              const baseD = Math.round(((this.player as any)?.baseDamage || 24) * 1.15);
+              for (let i=0;i<enemies.length;i++) { const e:any = enemies[i]; if (!e || !e.active || e.hp<=0) continue; const dx=e.x-j.ex; const dy=e.y-j.ey; if (dx*dx+dy*dy <= radius*radius) {
+                  this.enemyManager.takeDamage(e, baseD, false, true, undefined, j.ex, j.ey, (this.player as any)?.weaponLevel||1, true, 'PLAYER');
+                  try { this.particleManager.spawn(e.x, e.y, 3, '#FF9F4B'); } catch {}
+              }}
+            }
+            try { this.startScreenShake(160, 3); } catch {}
+            try { window.dispatchEvent(new CustomEvent('scrapPulse', { detail: { x: j.ex, y: j.ey, color:'#FFA95F' } })); } catch {}
+            (this as any)._twAnchor = null;
+            (this as any)._twAnchorCdUntil = nowMs + 15000; // 15s full cooldown after landing
+          }
+          if (t >= 1.05) { (this as any)._twJump = null; }
+        } else if (nowMs >= cdUntil) {
+          // Place anchor (persists until used). Short arming (200ms) allowing faster jump; holding RMB will auto-jump once armed.
+          (this as any)._twAnchor = { x: world.x, y: world.y, arm: nowMs + 200, spawnTime: nowMs, _drawCount:0 };
+          try { window.dispatchEvent(new CustomEvent('scrapPulse', { detail: { x: world.x, y: world.y, color:'#FF9F4B', r:140 } })); } catch {}
+          (this as any)._twAnchorCdUntil = nowMs + 200; // short arming lockout
+        }
+      } else if (rDown) {
+        // Allow continuous press to trigger jump immediately once armed (no need to re-click)
+        const anchorHold:any = (this as any)._twAnchor;
+        if (anchorHold && nowMs >= (anchorHold.arm||0) && !(this as any)._twJump) {
+          (this as any)._lastTWClick = false; // force edge-like behavior
+          // Synthesize edge trigger
+          const mx = (window as any).__mouseX || 0; const my = (window as any).__mouseY || 0;
+          const world = screenToWorld(mx, my, this.camX, this.camY); // not strictly needed
+          // Start jump immediately
+          (this as any)._twJump = { sx: this.player.x, sy: this.player.y, ex: anchorHold.x, ey: anchorHold.y, start: nowMs, dur: 300, done:false };
+        }
+      }
+      (this as any)._lastTWClick = rDown;
+  // Anchor persists indefinitely until jumped to (no natural expiration)
+  anchor = (this as any)._twAnchor;
+      // HUD meter provider (cooldown progress)
+      const selfRef:any = this;
+      if (!(this.player as any).getTechAnchor) {
+  (this.player as any).getTechAnchor = function(){
+    const n = performance.now();
+    const max = 15000;
+    const until = selfRef._twAnchorCdUntil || 0;
+    const remain = Math.max(0, until - n);
+    const anchorObj:any = selfRef._twAnchor;
+    const placed = !!anchorObj;
+    const armAt = anchorObj?.arm || 0;
+    const armed = placed && n >= armAt;
+    const armRemain = placed && !armed ? Math.max(0, armAt - n) : 0;
+    const ready = armed || (!placed && remain<=0);
+    return { value:(max-remain), max, ready, placed, armed, armRemain, label:'Anchor' };
+  };
+      }
+    }
+  } catch { /* ignore scavenger redirect errors */ }
   // Update environment (biome cycle)
   this.environment.update(this.gameTime);
   this.damageTextManager.update();
@@ -1273,6 +1524,46 @@ export class Game {
     this.ctx.fillStyle = g;
     this.ctx.fillRect(0,0,this.canvas.width,this.canvas.height);
     this.ctx.restore();
+  }
+  // Draw manual hacking reticle & charge arc (screen-space overlay after world draw, before HUD)
+  if (this.hacking) {
+    try {
+  const v = this.hacking.getVisual();
+  if (v && v.state !== 'COOLDOWN') {
+        // Recompute reticle center from current mouse each render to avoid laggy interpolation.
+        const rawMx = (window as any).__mouseX ?? 0;
+        const rawMy = (window as any).__mouseY ?? 0;
+        // Convert screen -> world using current camera; Game stores camX/camY as world origin offset.
+        const worldX = rawMx + this.camX;
+        const worldY = rawMy + this.camY;
+        const sx = worldX - this.camX; // simplifies to rawMx but keeps semantics
+        const sy = worldY - this.camY;
+        // Only draw if inside viewport bounds (quick reject)
+        if (sx >= -20 && sy >= -20 && sx <= this.canvas.width + 20 && sy <= this.canvas.height + 20) {
+          this.ctx.save();
+          this.ctx.lineWidth = 2;
+          const base = v.state === 'CHARGING' ? '#FFAA33' : '#888';
+          this.ctx.strokeStyle = base;
+          this.ctx.globalAlpha = 0.9;
+          this.ctx.beginPath(); this.ctx.arc(sx, sy, v.radius, 0, Math.PI*2); this.ctx.stroke();
+          if (v.state === 'CHARGING') {
+            // Charge arc
+            const a = Math.max(0.05, v.chargeFrac) * Math.PI * 2;
+            this.ctx.strokeStyle = '#FFD580';
+            this.ctx.beginPath(); this.ctx.arc(sx, sy, v.radius+4, -Math.PI/2, -Math.PI/2 + a); this.ctx.stroke();
+          }
+          // Target highlight
+            if (v.target) {
+              const tx = v.target.x - this.camX; const ty = v.target.y - this.camY;
+              this.ctx.strokeStyle = '#FF5533';
+              this.ctx.lineWidth = 3;
+              const r = (v.target as any).radius || 18;
+              this.ctx.beginPath(); this.ctx.arc(tx, ty, r + 6, 0, Math.PI*2); this.ctx.stroke();
+            }
+          this.ctx.restore();
+        }
+  }
+    } catch { /* ignore reticle draw errors */ }
   }
   // Light biome pocket tint overlay (not part of debug) for visual variety
   if (!this.showRoomDebug) {
@@ -2038,6 +2329,236 @@ export class Game {
             this.ctx.restore();
           }
         }
+        // Tech Warrior anchor visual (world space)
+        try {
+          const cidVis: string | undefined = (this.player as any)?.characterData?.id;
+          const anchor:any = (this as any)._twAnchor;
+          if (cidVis === 'tech_warrior' && anchor) {
+            try { anchor._drawCount = (anchor._drawCount||0)+1; } catch {}
+            const age = performance.now() - (anchor.spawnTime || (anchor.spawnTime = performance.now()));
+            // Anchor no longer expires; keep pulse dynamics deterministic
+            const frac = 1; // always fully "alive"
+            const baseR = 22;
+            const pulse = 3 + Math.sin(age / 220) * 3;
+            const r = baseR + pulse;
+            const sx = (anchor.x - this.camX) * this.renderScale;
+            const sy = (anchor.y - this.camY) * this.renderScale;
+            this.ctx.save();
+            this.ctx.translate(sx, sy);
+            // Immediate fallback marker so anchor is ALWAYS visible even if later drawing errors
+            try {
+              this.ctx.save();
+              this.ctx.globalCompositeOperation = 'source-over';
+              // Solid core
+              this.ctx.fillStyle = 'rgba(0,255,255,0.55)';
+              this.ctx.beginPath();
+              this.ctx.arc(0,0, 16 * this.renderScale, 0, Math.PI*2);
+              this.ctx.fill();
+              // Bold outline
+              this.ctx.strokeStyle = 'rgba(0,255,255,0.9)';
+              this.ctx.lineWidth = 4 * this.renderScale;
+              this.ctx.beginPath();
+              this.ctx.arc(0,0, 22 * this.renderScale, 0, Math.PI*2);
+              this.ctx.stroke();
+              // Vertical line
+              this.ctx.strokeStyle = 'rgba(0,200,255,0.85)';
+              this.ctx.lineWidth = 3 * this.renderScale;
+              this.ctx.beginPath();
+              this.ctx.moveTo(0, -40 * this.renderScale);
+              this.ctx.lineTo(0, 40 * this.renderScale);
+              this.ctx.stroke();
+              this.ctx.restore();
+            } catch {}
+            // === KINETIC ANCHOR VISUAL (HIGH VISIBILITY) ===
+            // Outer fading ring (cyan presence aura + vertical beam)
+            const ringR = r * this.renderScale;
+            const g = this.ctx.createRadialGradient(0,0, ringR*0.15, 0,0, ringR);
+            g.addColorStop(0, `rgba(170,255,255,0.55)`);
+            g.addColorStop(0.5, `rgba(90,200,255,0.28)`);
+            g.addColorStop(1, 'rgba(40,120,200,0)');
+            this.ctx.fillStyle = g;
+            this.ctx.beginPath();
+            this.ctx.arc(0,0, ringR, 0, Math.PI*2);
+            this.ctx.fill();
+            // Vertical beam core for visibility (strong initial flash first 150ms)
+            this.ctx.save();
+            this.ctx.globalCompositeOperation = 'lighter';
+            const beamH = 120 * this.renderScale;
+            const beamW = 18 * this.renderScale;
+            const beamGrad = this.ctx.createLinearGradient(0, -beamH*0.6, 0, beamH*0.4);
+            beamGrad.addColorStop(0, 'rgba(160,240,255,0)');
+            const flashBoost = age < 150 ? (1 - age/150) : 0;
+            beamGrad.addColorStop(0.32, `rgba(160,240,255,${0.25+0.35*flashBoost})`);
+            beamGrad.addColorStop(0.55, `rgba(200,255,255,${0.38+0.42*flashBoost})`);
+            beamGrad.addColorStop(0.8, `rgba(120,220,255,${0.18+0.25*flashBoost})`);
+            beamGrad.addColorStop(1, 'rgba(0,140,255,0)');
+            this.ctx.fillStyle = beamGrad;
+            this.ctx.beginPath();
+            this.ctx.ellipse(0, -beamH*0.1, beamW*0.55, beamH*0.55, 0, 0, Math.PI*2);
+            this.ctx.fill();
+            this.ctx.restore();
+            // Base hex ring (gives crisp anchor base)
+            this.ctx.save();
+            this.ctx.globalCompositeOperation = 'screen';
+            const hexR = 26 * this.renderScale;
+            const hexA = 0.6 + Math.sin(age/400)*0.3;
+            this.ctx.strokeStyle = `rgba(120,240,255,${hexA.toFixed(3)})`;
+            this.ctx.lineWidth = 3 * this.renderScale;
+            this.ctx.beginPath();
+            for (let i=0;i<6;i++) {
+              const a = Math.PI/3 * i + age/900; // slow rotation
+              const x = Math.cos(a) * hexR;
+              const y = Math.sin(a) * hexR * 0.9; // slight vertical flatten for perspective
+              if (i===0) this.ctx.moveTo(x,y); else this.ctx.lineTo(x,y);
+            }
+            this.ctx.closePath();
+            this.ctx.stroke();
+            this.ctx.restore();
+            if (this.lowFX) {
+              this.ctx.fillStyle = 'rgba(120,220,255,0.65)';
+              this.ctx.fillRect(-3*this.renderScale, -52*this.renderScale, 6*this.renderScale, 52*this.renderScale);
+            }
+            // Landing circle (detonation radius indicator) – stronger styling
+            const landR = 210 * this.renderScale; // matches detonation radius in jump code
+            this.ctx.save();
+            this.ctx.globalCompositeOperation = 'screen';
+            const lrPulse = 0.55 + Math.sin(age/600)*0.15;
+            // Solid inner ring
+            this.ctx.strokeStyle = `rgba(180,255,255,${(0.18 + 0.15*lrPulse).toFixed(3)})`;
+            this.ctx.lineWidth = 3 * this.renderScale;
+            this.ctx.beginPath();
+            this.ctx.arc(0,0, landR, 0, Math.PI*2);
+            this.ctx.stroke();
+            // Dashed outer ring
+            const landR2 = landR + 10 * this.renderScale;
+            this.ctx.setLineDash([12 * this.renderScale, 9 * this.renderScale]);
+            this.ctx.lineDashOffset = (age/120) % (21 * this.renderScale);
+            this.ctx.strokeStyle = `rgba(120,220,255,${(0.22 + 0.12*lrPulse).toFixed(3)})`;
+            this.ctx.lineWidth = 2 * this.renderScale;
+            this.ctx.beginPath();
+            this.ctx.arc(0,0, landR2, 0, Math.PI*2);
+            this.ctx.stroke();
+            // Soft fill pulse
+            const lf = (Math.sin(age/700)+1)/2; // 0..1
+            const fillA = 0.06 + lf * 0.06;
+            const fillGrad = this.ctx.createRadialGradient(0,0, landR*0.15, 0,0, landR);
+            fillGrad.addColorStop(0, `rgba(120,220,255,${fillA.toFixed(3)})`);
+            fillGrad.addColorStop(1, 'rgba(40,120,180,0)');
+            this.ctx.fillStyle = fillGrad;
+            this.ctx.beginPath();
+            this.ctx.arc(0,0, landR, 0, Math.PI*2);
+            this.ctx.fill();
+            this.ctx.restore();
+            // Tachyon spear (replaces banner): cyan/white energy lance embedded in ground
+            const spearH = 90 * this.renderScale; // taller for readability
+            const shaftW = 10 * this.renderScale; // thicker for visibility
+            const tipH = 14 * this.renderScale;
+            // Shaft gradient (vertical energy core)
+            const shaftGrad = this.ctx.createLinearGradient(0, -spearH, 0, 0);
+            shaftGrad.addColorStop(0, 'rgba(255,255,255,0.9)');
+            shaftGrad.addColorStop(0.2, 'rgba(180,255,255,0.85)');
+            shaftGrad.addColorStop(0.7, 'rgba(40,200,255,0.75)');
+            shaftGrad.addColorStop(1, 'rgba(0,140,255,0.4)');
+            this.ctx.fillStyle = shaftGrad;
+            this.ctx.beginPath();
+            this.ctx.roundRect?.(-shaftW/2, -spearH, shaftW, spearH, 2*this.renderScale);
+            if (!this.ctx.roundRect) this.ctx.rect(-shaftW/2, -spearH, shaftW, spearH);
+            this.ctx.fill();
+            // Inner core filament (pulses)
+            const corePulse = 0.45 + Math.sin(age/180)*0.25;
+            this.ctx.fillStyle = `rgba(255,255,255,${(0.55 + 0.25*corePulse).toFixed(3)})`;
+            this.ctx.fillRect(-1.5 * this.renderScale, -spearH, 3 * this.renderScale, spearH * 0.9);
+            // Tip diamond
+            this.ctx.save();
+            this.ctx.translate(0, -spearH);
+            const tipGrad = this.ctx.createRadialGradient(0, -tipH*0.25, 0, 0, -tipH*0.25, tipH*1.4);
+            tipGrad.addColorStop(0, 'rgba(255,255,255,1)');
+            tipGrad.addColorStop(0.28, 'rgba(200,255,255,0.95)');
+            tipGrad.addColorStop(0.6, 'rgba(120,230,255,0.35)');
+            tipGrad.addColorStop(1, 'rgba(0,140,255,0)');
+            this.ctx.fillStyle = tipGrad;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, -tipH); // top
+            this.ctx.lineTo(shaftW*0.85, tipH*0.15);
+            this.ctx.lineTo(0, tipH*0.55);
+            this.ctx.lineTo(-shaftW*0.85, tipH*0.15);
+            this.ctx.closePath();
+            this.ctx.fill();
+            // Edge outline (subtle)
+            this.ctx.strokeStyle = 'rgba(200,255,255,0.5)';
+            this.ctx.lineWidth = 1 * this.renderScale;
+            this.ctx.stroke();
+            this.ctx.restore();
+            // Ground embed scorch & glow
+            this.ctx.save();
+            this.ctx.globalCompositeOperation = 'lighter';
+            const scorchR = 30 * this.renderScale;
+            const scorch = this.ctx.createRadialGradient(0,0,0,0,0,scorchR);
+            scorch.addColorStop(0, 'rgba(160,255,255,0.55)');
+            scorch.addColorStop(0.45, 'rgba(40,180,255,0.32)');
+            scorch.addColorStop(1, 'rgba(0,100,200,0)');
+            this.ctx.fillStyle = scorch;
+            this.ctx.beginPath();
+            this.ctx.arc(0,0, scorchR, 0, Math.PI*2);
+            this.ctx.fill();
+            // Embedded ellipse shadow (gives depth)
+            this.ctx.globalCompositeOperation = 'multiply';
+            this.ctx.fillStyle = 'rgba(10,25,35,0.35)';
+            this.ctx.beginPath();
+            this.ctx.ellipse(0, 0, scorchR*0.55, scorchR*0.22, 0, 0, Math.PI*2);
+            this.ctx.fill();
+            this.ctx.restore();
+            // Subtle periodic pulse rings (tech energy) – skip if low FX
+            if (!this.lowFX) {
+              const pulseT = (age % 900) / 900; // 0..1
+              const ringA = (1 - pulseT) * 0.5;
+              const ringR = (12 + pulseT * 34) * this.renderScale;
+              this.ctx.save();
+              this.ctx.globalCompositeOperation = 'screen';
+              this.ctx.strokeStyle = `rgba(120,220,255,${ringA.toFixed(3)})`;
+              this.ctx.lineWidth = 2.5 * (1 - pulseT) * this.renderScale;
+              this.ctx.beginPath();
+              this.ctx.arc(0,0, ringR, 0, Math.PI*2);
+              this.ctx.stroke();
+              this.ctx.restore();
+            }
+            // Fallback marker if anything failed (drawn last, overwriting minimal)
+            try { if (!(anchor._seenOnce)) { anchor._seenOnce = true; } } catch {}
+            if (!anchor._seenOnce) {
+              this.ctx.save();
+              this.ctx.fillStyle = 'rgba(0,200,255,0.8)';
+              this.ctx.beginPath();
+              this.ctx.arc(0,0, 18 * this.renderScale, 0, Math.PI*2);
+              this.ctx.fill();
+              this.ctx.restore();
+            }
+            // Temporary debug label (can be removed later)
+            if (!(this.lowFX)) {
+              this.ctx.save();
+              this.ctx.font = `${12 * this.renderScale}px sans-serif`;
+              this.ctx.fillStyle = 'rgba(255,255,255,0.8)';
+              this.ctx.textAlign = 'center';
+              this.ctx.fillText('ANCHOR', 0, - (100 * this.renderScale));
+              this.ctx.restore();
+            }
+            // Spawn pulse wave only first 400ms
+            if (!anchor._spawnPulseDone) {
+              const t = age / 400;
+              if (t < 1) {
+                const pr = (r + 70 * t) * this.renderScale;
+                this.ctx.globalCompositeOperation = 'lighter';
+                this.ctx.strokeStyle = `rgba(140,240,255,${(1-t)*0.55})`;
+                this.ctx.lineWidth = 4 * (1-t);
+                this.ctx.beginPath();
+                this.ctx.arc(0,0, pr, 0, Math.PI*2);
+                this.ctx.stroke();
+              } else {
+                anchor._spawnPulseDone = true;
+              }
+            }
+            this.ctx.restore();
+          }
+        } catch { /* ignore anchor render errors */ }
         this.player.draw(this.ctx);
         this.particleManager.draw(this.ctx);
         this.explosionManager?.draw(this.ctx);
@@ -2121,6 +2642,51 @@ export class Game {
   // Do not mark explored along the flashlight path to avoid flicker and unintended memory reveal
       }
     } catch { /* ignore */ }
+    // Post-fog anchor overlay (ensures visibility even outside vision)
+    try {
+      const cidAO: string | undefined = (this.player as any)?.characterData?.id;
+      const anchorAO: any = (this as any)._twAnchor;
+      if (cidAO === 'tech_warrior' && anchorAO) {
+        const ax = (anchorAO.x - this.camX) * this.renderScale;
+        const ay = (anchorAO.y - this.camY) * this.renderScale;
+        const w = this.designWidth * this.renderScale;
+        const h = this.designHeight * this.renderScale;
+        const inside = ax >= 0 && ay >= 0 && ax <= w && ay <= h;
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'screen';
+        if (inside) {
+          this.ctx.strokeStyle = 'rgba(0,255,255,0.95)';
+          this.ctx.lineWidth = 3 * this.renderScale;
+          this.ctx.beginPath();
+          this.ctx.arc(ax, ay, 20 * this.renderScale, 0, Math.PI*2);
+          this.ctx.stroke();
+          this.ctx.fillStyle = 'rgba(0,160,255,0.22)';
+          this.ctx.beginPath();
+          this.ctx.arc(ax, ay, 12 * this.renderScale, 0, Math.PI*2);
+          this.ctx.fill();
+        } else {
+          // Offscreen directional indicator
+          const cx = w/2, cy = h/2;
+          let dx = ax - cx, dy = ay - cy; const dist = Math.max(0.001, Math.hypot(dx,dy)); dx/=dist; dy/=dist;
+          const margin = 24 * this.renderScale; const halfW = w/2 - margin; const halfH = h/2 - margin;
+          const t = Math.min(Math.abs(halfW/dx)||9999, Math.abs(halfH/dy)||9999);
+          const px = cx + dx * t; const py = cy + dy * t;
+          this.ctx.translate(px, py);
+          const ang = Math.atan2(dy, dx);
+          this.ctx.rotate(ang);
+          const s = 16 * this.renderScale;
+          this.ctx.fillStyle = 'rgba(0,220,255,0.9)';
+          this.ctx.beginPath();
+          this.ctx.moveTo(s,0);
+          this.ctx.lineTo(-s*0.6, s*0.6);
+          this.ctx.lineTo(-s*0.3,0);
+          this.ctx.lineTo(-s*0.6,-s*0.6);
+          this.ctx.closePath();
+          this.ctx.fill();
+        }
+        this.ctx.restore();
+      }
+    } catch { /* ignore anchor overlay errors */ }
   }
   // Draw visual red skip button (holder-like) near core during Last Stand. Visible and interactive only in SHOP.
   try {

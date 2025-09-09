@@ -297,6 +297,25 @@ export class UpgradePanel {
             }
           }
 
+          // Last Stand fallback: ensure evolution tooltip always present for base weapons
+          if (this.game && this.game.gameMode === 'LAST_STAND' && !isEvolvedCard && spec.evolution) {
+            const already = infoParts.some(p => p.includes('<strong>Evolve:</strong>'));
+            if (!already) {
+              try {
+                const evo = spec.evolution;
+                const evoSpec = WEAPON_SPECS[evo.evolvedWeaponType];
+                const reqPassive = evo.requiredPassive;
+                const atMax = ownedLv >= (spec.maxLevel || 1);
+                const passiveOwned = this.player.activePassives.find(p => p.type === reqPassive);
+                const hasPassive = !!passiveOwned && passiveOwned.level >= (evo.minPassiveLevel || 1);
+                const ready = hasPassive && atMax;
+                const status = ready ? `<span style=\"color:#57ffb0\">Ready</span>`
+                                     : `<span style=\"color:#ffd166\">Needs ${reqPassive} Lv.${evo.minPassiveLevel||1}${atMax ? '' : ' + Max Lv.'}</span>`;
+                infoParts.push(`<div class=\"upgrade-info\" style=\"opacity:.9\"><strong>Evolve:</strong> ${evoSpec?.name || 'Evolution'} — ${status}</div>`);
+              } catch { /* ignore */ }
+            }
+          }
+
           // Evolved weapon: show combo tip
           if (isEvolvedCard) {
             const parent = Object.values(WEAPON_SPECS).find(s => s.evolution && s.evolution.evolvedWeaponType === spec.id);

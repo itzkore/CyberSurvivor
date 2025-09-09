@@ -16,7 +16,12 @@ if (typeof window !== 'undefined' && window.addEventListener) {
   window.addEventListener('mousemove', (e) => {
     mouseState.x = e.clientX;
     mouseState.y = e.clientY;
+  try { (window as any).__mouseX = e.clientX; (window as any).__mouseY = e.clientY; } catch {}
   });
-  window.addEventListener('mousedown', () => (mouseState.down = true));
-  window.addEventListener('mouseup', () => (mouseState.down = false));
+  window.addEventListener('mousedown', (e) => { mouseState.down = true; if (e.button === 2) { try { (window as any).__mouseRightDown = true; } catch {} } });
+  window.addEventListener('mouseup', (e) => { mouseState.down = false; if (e.button === 2) { try { (window as any).__mouseRightDown = false; } catch {} } });
+  window.addEventListener('contextmenu', (e) => { // prevent default right-click menu for game canvas
+    const el = e.target as HTMLElement | null;
+    if (el && el.tagName === 'CANVAS') { e.preventDefault(); }
+  });
 }

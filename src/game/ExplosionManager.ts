@@ -66,6 +66,7 @@ export class ExplosionManager {
         const r2T = scaledRadius * scaledRadius;
         for (let i = 0; i < treasures.length; i++) {
           const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+          try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') continue; } catch {}
           const dxT = t.x - x; const dyT = t.y - y;
           if (dxT*dxT + dyT*dyT <= r2T && typeof emAny.damageTreasure === 'function') {
             emAny.damageTreasure(t, scaledDamage);
@@ -126,6 +127,7 @@ export class ExplosionManager {
         const r2T = radius * radius;
         for (let i = 0; i < treasures.length; i++) {
           const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+          try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') continue; } catch {}
           const dxT = t.x - x; const dyT = t.y - y;
           if (dxT*dxT + dyT*dyT <= r2T && typeof emAny.damageTreasure === 'function') {
             emAny.damageTreasure(t, scaledDamage);
@@ -260,6 +262,7 @@ export class ExplosionManager {
         const r2T = finalRadius * finalRadius;
         for (let i = 0; i < treasures.length; i++) {
           const t = treasures[i]; if (!t || !t.active || (t as any).hp <= 0) continue;
+          try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') continue; } catch {}
           const dxT = t.x - x; const dyT = t.y - y;
           if (dxT*dxT + dyT*dyT <= r2T && typeof emAny.damageTreasure === 'function') {
             emAny.damageTreasure(t, damage);

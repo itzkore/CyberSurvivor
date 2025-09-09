@@ -1838,7 +1838,9 @@ export class Player {
     let treasures: Array<{ x:number; y:number; active:boolean; hp:number; maxHp?:number }> = [];
     let chests: Array<{ x:number; y:number; active:boolean }> = [];
     try {
-      if (includeTreasures && em && typeof em.getTreasures === 'function') treasures = em.getTreasures() || [];
+      if (includeTreasures && em && typeof em.getTreasures === 'function') {
+        try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') { /* skip treasures */ } else { treasures = em.getTreasures() || []; } } catch { treasures = em.getTreasures() || []; }
+      }
       if (includeChests && em && typeof em.getChests === 'function') chests = em.getChests() || [];
     } catch { /* ignore */ }
 

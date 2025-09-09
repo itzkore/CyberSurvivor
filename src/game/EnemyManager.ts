@@ -64,7 +64,18 @@ export class EnemyManager {
   private assetLoader: AssetLoader | null = null;
   // legacy waves removed
   private dynamicWaveAccumulator: number = 0; // ms accumulator for dynamic spawner
+  // Wave system (replaces/on-demand dynamic spawning)
+  private enableDynamicSpawning: boolean = false; // legacy dynamic toggle (off by default now)
+  private waveNumber: number = 0;
+  private nextWaveAtSec: number = 5; // first wave at 5s
+  private waveIntervalBaseSec: number = 22; // base gap
+  private waveIntervalDecay: number = 0.15; // how quickly interval shrinks toward a floor
+  private waveIntervalFloorSec: number = 8; // minimum gap
+  private lastWaveSpawnMs: number = 0;
+  private pendingWaveSpawn: boolean = false;
   private pressureBaseline: number = 100; // grows over time
+  // Internal override used by spawnEnemyAt so we can reuse spawnEnemy logic without duplicating it.
+  private forceSpawnOverride: { x:number; y:number } | null = null;
   private adaptiveGemBonus: number = 0; // multiplicative bonus for higher tier chance
   private bulletSpatialGrid: SpatialGrid<Bullet>; // Spatial grid for bullets
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid for enemies (optimization for zone queries)
@@ -601,6 +612,9 @@ export class EnemyManager {
   this.preallocateSpecialItems();
   this.preallocateTreasures();
   // legacy waves removed; dynamic system takes over
+  // Reintroduce structured waves: start countdown now
+  this.waveNumber = 0;
+  this.nextWaveAtSec = 5; // first wave quickly to start action
     // Initialize Black Sun dedicated zone manager
     this.blackSunZones = new BlackSunZoneManager(this, this.player);
     // Freeze spawns and clear enemies on boss spawn (15s calm before the storm)
@@ -630,7 +644,7 @@ export class EnemyManager {
     });
     window.addEventListener('bossGemVacuum', () => this.vacuumGemsToPlayer());
     // Listen for explicit spawns of special items and treasures
-    window.addEventListener('spawnSpecialItem', (e: Event) => {
+  window.addEventListener('spawnSpecialItem', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
       // Suppress special item spawns entirely in Last Stand
       try {
@@ -639,7 +653,7 @@ export class EnemyManager {
       } catch {}
       this.spawnSpecialItem(d.x ?? this.player.x, d.y ?? this.player.y, d.type as SpecialItem['type'] | undefined);
     });
-    window.addEventListener('spawnTreasure', (e: Event) => {
+  window.addEventListener('spawnTreasure', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
       try {
         const gm = (window as any).__gameInstance?.gameMode;
@@ -964,9 +978,11 @@ export class EnemyManager {
       const px = this.player.x, py = this.player.y;
       const dist = 320; // place slightly away from player
       // small (up), medium (right), large (down)
-      this.spawnEnemyAt(px, py - dist, { type: 'small' });
-      this.spawnEnemyAt(px + dist, py, { type: 'medium' });
-      this.spawnEnemyAt(px, py + dist, { type: 'large' });
+  // Use existing spawnEnemy, then reposition (sandbox convenience only)
+  const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+  const eSmall = this.spawnEnemy('small', timeSec, 'normal'); eSmall.x = px; eSmall.y = py - dist;
+  const eMed = this.spawnEnemy('medium', timeSec, 'normal'); eMed.x = px + dist; eMed.y = py;
+  const eLarge = this.spawnEnemy('large', timeSec, 'normal'); eLarge.x = px; eLarge.y = py + dist;
     });
     // Spawn a specific Elite near the player (Sandbox)
     window.addEventListener('sandboxSpawnElite', (e: Event) => {
@@ -1191,6 +1207,18 @@ export class EnemyManager {
     // Rogue Hacker paralysis: hard stop while active
     const nowPar = performance.now();
     if (eAny._paralyzedUntil && eAny._paralyzedUntil > nowPar) return 0;
+    // Mind control: allow movement (slightly boosted) so dominated unit can fight
+    if (eAny._mindControlledUntil && eAny._mindControlledUntil > nowPar) {
+      // Mind-controlled: type-tuned absolute movement speed (px/sec) for ally usefulness.
+      // Medium felt sluggish at 200, so increase tiers: small 200, medium 320, large 260.
+      let perSec = 200;
+      switch (e.type) {
+        case 'medium': perSec = 320; break;
+        case 'large': perSec = 260; break;
+        default: perSec = 200; break;
+      }
+      baseSpeed = perSec / 60; // convert to per-frame scalar (assuming 60fps baseline)
+    }
     if (eAny._poisonStacks) slow = Math.max(slow, Math.min(this.poisonSlowCap, (eAny._poisonStacks | 0) * this.poisonSlowPerStack));
     // Evolved Bio (Living Sludge): guarantee a slimy minimum 20% slow while poisoned or standing in sludge
     try {
@@ -1241,6 +1269,107 @@ export class EnemyManager {
     return baseSpeed * (1 - slow);
   }
 
+  /** Return a temporary combat target (another enemy) for a mind-controlled unit. */
+  private getMindControlTarget(src: Enemy): Enemy | null {
+    const sAny: any = src as any; const now = performance.now();
+    if (!sAny._mindControlledUntil || sAny._mindControlledUntil <= now) return null;
+    // Reuse cached target briefly to reduce churn
+    if (sAny._mcCachedTarget && sAny._mcCachedTarget.active && (sAny._mcCachedTarget.hp > 0)) {
+      const tAny: any = sAny._mcCachedTarget; if (!tAny._mindControlledUntil || tAny._mindControlledUntil <= now) return sAny._mcCachedTarget; // ensure not another dominated unit
+    }
+    let best: Enemy | null = null; let bestD2 = 0;
+    const sx = src.x, sy = src.y;
+    // Query spatial grid for locality if available else fallback to activeEnemies
+    const candidates = this.enemySpatialGrid ? this.enemySpatialGrid.query(sx, sy, 900) : this.activeEnemies;
+    for (let i = 0; i < candidates.length; i++) {
+      const e = candidates[i]; if (e === src || !e.active || e.hp <= 0) continue;
+      const anyE: any = e as any; if (anyE._mindControlledUntil && anyE._mindControlledUntil > now) continue; // don't target allies
+      const dx = e.x - sx, dy = e.y - sy; const d2 = dx*dx + dy*dy; if (d2 > 900*900) continue;
+      if (!best || d2 < bestD2) { best = e; bestD2 = d2; }
+    }
+    sAny._mcCachedTarget = best; return best;
+  }
+
+  /** Apply mind control combat logic: reroute dominated enemy AI toward hostile targets. */
+  private updateMindControlledBehavior(deltaTime: number){
+    const now = performance.now();
+    if (this.activeEnemies.length === 0) return;
+    const dtSec = deltaTime / 1000;
+    for (let i=0;i<this.activeEnemies.length;i++) {
+      const e = this.activeEnemies[i]; const anyE:any = e as any;
+      const until = anyE._mindControlledUntil || 0; if (until <= now) continue;
+  // Initialize internal MC combat timers
+  if (anyE._mcNextAttackAt === undefined) anyE._mcNextAttackAt = now;
+      // Periodic pulse damage to nearby hostiles (already scheduled via _mindControlNextPulse if present)
+      if (anyE._mindControlNextPulse !== undefined) {
+        if (now >= anyE._mindControlNextPulse) {
+          // Deal light AOE to enemies (excluding allies) in small radius
+          const pulseR = 160; const pr2 = pulseR * pulseR;
+          const ex = e.x, ey = e.y;
+          // Next pulse every 2s
+          anyE._mindControlNextPulse = now + 2000;
+          const dmg = Math.max(1, Math.round((anyE.damage || 4) * 0.6));
+          const candidates = this.enemySpatialGrid.query(ex, ey, pulseR + 32);
+          for (let k=0;k<candidates.length;k++) {
+            const t = candidates[k]; if (t === e || !t.active || t.hp <= 0) continue;
+            const tA:any = t as any; if (tA._mindControlledUntil && tA._mindControlledUntil > now) continue; // skip allies
+            const dx = t.x - ex, dy = t.y - ey; const d2 = dx*dx + dy*dy; if (d2 > pr2) continue;
+            t.hp -= dmg; if (t.hp <= 0) { t.active = false; this.enemyPool.push(t); this.killCount++; }
+          }
+        }
+      }
+      // Reroute movement toward closest hostile instead of player/core.
+      let target = this.getMindControlTarget(e);
+      // Fallback: if no target, try quick nearest scan within large radius; if still none, drift slowly forward (do nothing else)
+      if (!target) {
+        const cand = this.enemySpatialGrid.query(e.x, e.y, 1000);
+        let best: Enemy|null = null; let bestD2 = Infinity;
+        for (let k=0;k<cand.length;k++) {
+          const t = cand[k]; if (t===e || !t.active || t.hp<=0) continue; const ta:any = t as any; if (ta._mindControlledUntil && ta._mindControlledUntil > now) continue;
+          const dx0 = t.x - e.x, dy0 = t.y - e.y; const d20 = dx0*dx0 + dy0*dy0; if (d20 < bestD2) { bestD2 = d20; best = t; }
+        }
+        target = best;
+      }
+      if (target) {
+        const dx = target.x - e.x; const dy = target.y - e.y; const d = Math.sqrt(dx*dx + dy*dy) || 1;
+        // Simple steering toward target; reuse existing speed computation (includes MC haste)
+        const speed = this.getEffectiveEnemySpeed(e, e.speed);
+        const step = speed * dtSec;
+        // Maintain small personal space so they don't perfectly overlap; stop just inside attack radius
+        const desiredStop = (e.radius + (target.radius||24)) * 0.75;
+        if (d > desiredStop) {
+          e.x += (dx / d) * step;
+          e.y += (dy / d) * step;
+        }
+        // Attack cadence: every 0.6s baseline (faster for small, slower for large)
+        // Faster cadence: small 220ms, medium 320ms, large 460ms baseline
+        let baseCadence = e.type === 'small' ? 220 : (e.type === 'medium' ? 320 : 460); // ms
+        // Scale slightly with remaining control duration (more frantic early): interpolate +25% speed at start -> normal at end
+        try {
+          const rem = Math.max(0, until - now); const frac = Math.min(1, rem / 10000); // control duration ~10s
+          const haste = 1 - 0.25 * frac; // 0.75 .. 1.0 multiplier to cadence time
+          baseCadence = Math.max(90, Math.round(baseCadence * haste));
+        } catch { /* ignore */ }
+        if (now >= anyE._mcNextAttackAt) {
+          // In-range check
+            const atkRange = (e.radius + (target.radius||24)) * 1.05;
+            if (d <= atkRange) {
+              // Damage scales: +50% mind-control bonus
+              const dmg = Math.max(1, Math.round((e.damage || 4) * 1.5));
+              target.hp -= dmg;
+              if (target.hp <= 0) { target.active = false; this.enemyPool.push(target); this.killCount++; }
+              // (No knockback: hacked allies should not displace enemy formations)
+              // Minor refund to accelerate next swing chain for small units (combo feel)
+              if (e.type === 'small') anyE._mcNextAttackAt = Math.min(anyE._mcNextAttackAt, now + Math.floor(baseCadence * 0.45));
+            }
+          anyE._mcNextAttackAt = now + baseCadence;
+        }
+        // Prevent default chase logic from re-applying this frame (mark flag)
+        anyE._mcMoved = true;
+      }
+    }
+  }
+
   /** Pre-render circle enemies (normal + flash variant) to cut per-frame path & stroke cost. */
   private preRenderEnemySprites() {
     const defs: Array<{type: Enemy['type']; radius: number; color: string; flashColor: string}> = [
@@ -1248,6 +1377,7 @@ export class EnemyManager {
       { type: 'medium', radius: 28, color: '#d40000', flashColor: '#ff9090' },
       { type: 'large', radius: 36, color: '#b00000', flashColor: '#ff9999' }
     ];
+  // Note: Mind-controlled enemies are scaled up at draw time (no new sprite variants needed).
     // Helper: build a tinted single-channel ghost canvas (simulate RGB split) once per type
     const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
       const cv = document.createElement('canvas');
@@ -1679,7 +1809,11 @@ export class EnemyManager {
     return this.chests.filter(c => c.active);
   }
   public getSpecialItems() { return this.specialItems.filter(i => i.active); }
-  public getTreasures() { return this.treasures.filter(t => t.active); }
+  public getTreasures() {
+    // Suppress treasures entirely in Last Stand mode
+    try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') return []; } catch {}
+    return this.treasures.filter(t => t.active);
+  }
 
   /** Schedule the next random special spawn window. */
   private scheduleNextSpecialSpawn() {
@@ -1721,11 +1855,9 @@ export class EnemyManager {
 
   /** Try to spawn a random treasure or special item in non-sandbox modes on schedule. */
   private tryScheduledSpecialSpawns(nowMs: number) {
-    // Only in real gameplay (SHOWDOWN/DUNGEON)
+    // Only in real gameplay (SHOWDOWN/DUNGEON) – skip entirely for Last Stand & Sandbox
     const gm = (window as any).__gameInstance?.gameMode;
-  if (gm === 'SANDBOX') return;
-  // In Last Stand, suppress all scheduled special spawns (items and treasures)
-  if (gm === 'LAST_STAND') return;
+    if (gm === 'SANDBOX' || gm === 'LAST_STAND') return;
     if (!this.nextSpecialSpawnAtMs) this.scheduleNextSpecialSpawn();
     if (nowMs < this.nextSpecialSpawnAtMs) return;
     // Capacity checks
@@ -1737,16 +1869,13 @@ export class EnemyManager {
     }
     // Choose spawn type: 60% direct item, 40% treasure (if capacity allows)
     const roll = Math.random();
-  const canItem = activeItems < this.maxActiveSpecialItems;
-  // In non-LS modes, allow treasures if under cap
-  const canTreasure = (activeTreasures < this.maxActiveTreasures);
+    const canItem = activeItems < this.maxActiveSpecialItems;
+    const canTreasure = (activeTreasures < this.maxActiveTreasures);
     const spawnTreasure = canTreasure && (!canItem ? true : roll >= 0.60);
     const pos = this.pickSpecialSpawnPoint();
     if (spawnTreasure) {
-      // Scaled HP mildly over time could be added later; keep flat for now
       this.spawnTreasure(pos.x, pos.y, 220);
     } else if (canItem) {
-      // Random type; slight bias toward MAGNET for fun: H:30%, M:40%, N:30%
       const r = Math.random();
       const t = (r < 0.30) ? 'HEAL' : (r < 0.70) ? 'MAGNET' : 'NUKE';
       this.spawnSpecialItem(pos.x, pos.y, t as SpecialItem['type']);
@@ -1903,6 +2032,7 @@ export class EnemyManager {
   if (sourceWeaponType === WeaponType.SCRAP_LASH && amount > 0) {
         const now = performance.now();
         anyE._armorShredExpire = now + 600;
+  try { (window as any).__lastScrapLashHitTime = now; } catch {}
       }
       // --- Knockback logic ---
       /**
@@ -3568,7 +3698,27 @@ export class EnemyManager {
   const stepOffsetY = (walkFlip ? -0.3 : 0.3);
   const drawX = enemy.x + shakeX + stepOffsetX - size/2;
   const drawY = enemy.y + shakeY + stepOffsetY - size/2;
-  ctx.drawImage(baseImg, drawX, drawY, size, size);
+  // Mind-controlled visual enlargement & glow
+  if (eAny._mindControlledUntil && eAny._mindControlledUntil > now) {
+    const scale = 1.5; // 50% larger
+    const w = size * scale; const h = size * scale;
+    const dxS = enemy.x + shakeX + stepOffsetX - w/2;
+    const dyS = enemy.y + shakeY + stepOffsetY - h/2;
+    ctx.save();
+    ctx.drawImage(baseImg, dxS, dyS, w, h);
+    // Cyan/red mixed pulse outline for hacked ally clarity
+    try {
+      const pulse = 0.5 + 0.5 * Math.sin(now / 160);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.35 + 0.25 * pulse;
+      ctx.strokeStyle = '#ff3d3d';
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(enemy.x + shakeX, enemy.y + shakeY, (enemy.radius || 20) * 1.55, 0, Math.PI*2); ctx.stroke();
+    } catch { /* ignore */ }
+    ctx.restore();
+  } else {
+    ctx.drawImage(baseImg, drawX, drawY, size, size);
+  }
         // Blocker: draw a front-facing riot shield plate held ahead of the body
         if (eliteKind === 'BLOCKER') {
           try {
@@ -3620,6 +3770,28 @@ export class EnemyManager {
             ctx.beginPath();
             ctx.moveTo(hx - 6, hy - 4); ctx.lineTo(hx + 6, hy + 4);
             ctx.moveTo(hx + 6, hy - 4); ctx.lineTo(hx - 6, hy + 4);
+            ctx.stroke();
+            ctx.restore();
+          }
+          // Mind control indicator: halo + tether glyph
+          const mcUntil = anyE._mindControlledUntil || 0;
+          if (mcUntil > now) {
+            const tLeft = Math.max(0, Math.min(1, (mcUntil - now) / 10000));
+            const cx = enemy.x; const cy = enemy.y - enemy.radius - 10;
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = 0.65 + 0.25 * (Math.sin(now/160) * 0.5 + 0.5);
+            const grd = ctx.createRadialGradient(cx, cy, 2, cx, cy, 14);
+            grd.addColorStop(0, '#33FFC6');
+            grd.addColorStop(1, '#00806000');
+            ctx.fillStyle = grd;
+            ctx.beginPath(); ctx.arc(cx, cy, 14, 0, Math.PI*2); ctx.fill();
+            // Inner rotating tick
+            ctx.strokeStyle = '#2CFFD9';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            const a0 = (now/420) % (Math.PI*2);
+            ctx.arc(cx, cy, 10, a0, a0 + Math.PI * 1.15 * tLeft, false);
             ctx.stroke();
             ctx.restore();
           }
@@ -4051,18 +4223,21 @@ export class EnemyManager {
   const gm = (window as any).__gameInstance?.gameMode;
   const isSandbox = gm === 'SANDBOX';
   const isLastStand = gm === 'LAST_STAND';
-  if (!isSandbox && !isLastStand) {
-      // Skip dynamic spawns while a freeze window is active
+  // Wave system takes precedence; dynamic spawns optional if flag true.
+  // In Last Stand we rely on its dedicated WaveManager (LastStandGameMode) instead of the generic waves here.
+  if (!isLastStand) {
+    this.updateWaveSystem(gameTime, nowFrame, isLastStand);
+  }
+  if (!isSandbox && this.enableDynamicSpawning) {
       const nowMs = nowFrame;
       if (nowMs < this.spawnFreezeUntilMs) {
-        // Drain any accumulated budget to avoid post-freeze burst
         this.dynamicWaveAccumulator = 0;
       } else {
-      this.dynamicWaveAccumulator += deltaTime;
-      if (this.dynamicWaveAccumulator >= this.spawnIntervalDynamic) {
-        this.dynamicWaveAccumulator -= this.spawnIntervalDynamic;
-        this.runDynamicSpawner(gameTime);
-      }
+        this.dynamicWaveAccumulator += deltaTime;
+        if (this.dynamicWaveAccumulator >= this.spawnIntervalDynamic) {
+          this.dynamicWaveAccumulator -= this.spawnIntervalDynamic;
+          this.runDynamicSpawner(gameTime);
+        }
       }
   }
 
@@ -4157,6 +4332,8 @@ export class EnemyManager {
   } catch { /* ignore */ }
 
   // Update enemies
+  // Apply mind-controlled ally AI overrides before core movement resolution
+  try { this.updateMindControlledBehavior(deltaTime); } catch { /* ignore */ }
     // Determine per-role chase targets.
     // 1) Player chase point (respects Ghost cloak follow snapshot)
     let playerChaseX = this.player.x;
@@ -4466,6 +4643,11 @@ export class EnemyManager {
         enemy.knockbackVx = 0;
         enemy.knockbackVy = 0;
         enemy.knockbackTimer = 0;
+        // Mind-controlled enemies: skip default player/core chase (movement handled earlier in updateMindControlledBehavior)
+        const mcUntil = (enemy as any)._mindControlledUntil || 0;
+        if (mcUntil > nowFrame) {
+          continue; // skip normal chase logic
+        }
         // Move toward player (with chase speed cap relative to player)
         // Per-enemy chase target with LS smart aggro and gate-gap bias:
         // - Elites always chase the player.
@@ -4709,6 +4891,10 @@ export class EnemyManager {
   if (distPlayer < enemy.radius + this.player.radius) {
         const isDummy = (enemy as any)._isDummy === true;
         if (!isDummy) {
+  // Skip collision damage while enemy is mind controlled (acts as ally)
+  const mcUntil = (enemy as any)._mindControlledUntil || 0;
+  const nowMc = performance.now();
+  if (!(mcUntil > nowMc)) {
         // Hit cooldown: enemies can damage player at most once per second
         const now = performance.now();
         const lastHit = (enemy as any)._lastPlayerHitTime || 0;
@@ -4732,6 +4918,7 @@ export class EnemyManager {
             this.player.y += (kdy / kd) * kb;
           }
         }
+  }
         }
       }
   // Bullet collisions handled centrally in BulletManager.update now (removed duplicate per-enemy pass)
@@ -5442,88 +5629,35 @@ export class EnemyManager {
    */
   public ensureElitePresence(minCount: number, gameTime: number): number {
     if (!Number.isFinite(minCount) || minCount <= 0) return 0;
-    // Unlock elites if not already
+    // If elites not yet unlocked, unlock now so forced presence works immediately
     if (!this.elitesUnlocked) {
       this.elitesUnlocked = true;
-      if (!this.elitesUnlockedAtSec || this.elitesUnlockedAtSec === 0) this.elitesUnlockedAtSec = Math.max(0, gameTime|0);
+      if (!this.elitesUnlockedAtSec || this.elitesUnlockedAtSec === 0) {
+        this.elitesUnlockedAtSec = Math.max(0, gameTime | 0);
+      }
     }
-    // Allow immediate spawn
+    // Allow immediate spawn attempts (override cooldown for this enforcement pass)
     this.nextEliteSpawnAllowedAtSec = Math.min(this.nextEliteSpawnAllowedAtSec || 0, gameTime);
-    // Count current elites
+    // Count currently active elites
     const current = this.activeEnemies.reduce((n, e) => n + ((((e as any)?._elite)?.kind) ? 1 : 0), 0);
     let need = Math.max(0, Math.floor(minCount) - current);
+    if (need <= 0) return 0;
     let spawned = 0;
-    // Try a few times; honor caps and cooldowns inside the helper
+    // Guarded loop so we don't spin forever if perimeter spawn fails repeatedly
     let guard = Math.min(need + 2, 6);
     while (need > 0 && guard-- > 0) {
       if (this.trySpawnEliteNearPerimeter(gameTime)) {
         spawned++; need--;
-        // Small spacing between forced spawns
+        // Add small spacing so rapid forced spawns don't clump exactly
         this.nextEliteSpawnAllowedAtSec = gameTime + 1.2;
       } else {
-        break;
+        break; // perimeter attempt failed
       }
     }
     return spawned;
   }
 
-  /**
-   * Spawn a basic enemy of the given type at world coordinates.
-   * For Sandbox/testing use. HP can be overridden; other stats derive from type defaults.
-   */
-  public spawnEnemyAt(x: number, y: number, opts: { type: Enemy['type']; hp?: number }): Enemy {
-    let e = this.enemyPool.pop() as Enemy | undefined;
-    if (!e) e = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '' } as Enemy;
-    const enemy = e as Enemy;
-  // IMPORTANT: This is a normal enemy spawn. Ensure no elite flags/state leak from pooled objects.
-  const pooledAny: any = enemy as any;
-  if (pooledAny._elite) pooledAny._elite = undefined;
-  // Clear any elite-only AI/state remnants to avoid behavior leaks
-  pooledAny._blockerWall = undefined; pooledAny._suppressorState = undefined; pooledAny._dasherState = undefined; pooledAny._blinkerState = undefined; pooledAny._bomberState = undefined; pooledAny._gunnerState = undefined; pooledAny._siphonState = undefined;
-  // Also clear visual timers that differ for elites
-  pooledAny._walkFlipIntervalMs = undefined;
-    const type = opts.type;
-    enemy.type = type;
-    // Defaults match spawnEnemy type presets (early game values)
-  if (type === 'small') { enemy.radius = 20; enemy.speed = 0.30 * this.enemySpeedScale * this.lsSmallSpeedMul; enemy.damage = 4; enemy.hp = opts.hp ?? 100; }
-    else if (type === 'medium') { enemy.radius = 30; enemy.speed = 0.92 * 0.30 * this.enemySpeedScale; enemy.damage = 7; enemy.hp = opts.hp ?? 220; }
-    else { enemy.radius = 38; enemy.speed = 0.45 * 0.28 * this.enemySpeedScale; enemy.damage = 10; enemy.hp = opts.hp ?? 480; }
-  // Rebalanced LS speed profile: a small early boost, gentler late scaling, and hard caps per type
-    try {
-      const gi: any = (window as any).__gameInstance;
-      const tSec: number = (gi && typeof gi.getGameTime === 'function') ? (gi.getGameTime() || 0) : 0;
-      const minutes = Math.max(0, tSec / 60);
-      if (type === 'medium' || type === 'large') {
-        // Early assistance: up to +22% at t=0, fading linearly to 0 by 4 minutes
-        const earlyBoost = 1 + Math.max(0, 0.22 * (1 - Math.min(1, minutes / 4)));
-        enemy.speed *= earlyBoost;
-        // Gentler late ramp (previously too steep): medium <= +20%, large <= +28%
-        const lateMul = (type === 'medium')
-          ? (1 + Math.min(0.20, 0.015 * minutes))
-          : (1 + Math.min(0.28, 0.018 * minutes));
-        enemy.speed *= lateMul;
-        // Hard caps by type to avoid outpacing intended cadence even with buffs
-        const capMed = 0.34 * this.enemySpeedScale;   // medium cap
-        const capLg  = 0.26 * this.enemySpeedScale;   // large cap
-        const cap = type === 'medium' ? capMed : capLg;
-        if (enemy.speed > cap) enemy.speed = cap;
-      }
-  } catch { /* ignore */ }
-  // Clamp to per-type caps immediately upon spawn
-  try { const t: 'small'|'medium'|'large' = (type === 'small'||type==='medium')?type:'large'; enemy.speed = this.clampToTypeCaps(enemy.speed, t); } catch { /* ignore */ }
-    // Defensive global cap: no enemy should exceed Ghost Operative default movement speed
-    try {
-      const ghostCap = 9.0 * (window as any)?.SPEED_SCALE || 9.0 * 0.45; // fallback to 0.45
-      if (enemy.speed > ghostCap) enemy.speed = ghostCap;
-    } catch { /* ignore */ }
-    enemy.maxHp = enemy.hp; enemy.active = true; enemy.x = x; enemy.y = y; enemy.id = 'sb-' + Math.floor(Math.random() * 1e9);
-    // Clear status flags likely present on pooled instance
-    const anyE: any = enemy as any; anyE._isDummy = false; anyE._poisonStacks = 0; anyE._burnStacks = 0; anyE._poisonExpire = 0; anyE._burnExpire = 0; anyE._burnTickDamage = 0;
-    this.enemies.push(enemy);
-    return enemy;
-  }
-
-  private spawnEnemy(type: 'small' | 'medium' | 'large', gameTime: number, pattern: 'normal' | 'ring' | 'cone' | 'surge' = 'normal') {
+  private spawnEnemy(type: 'small' | 'medium' | 'large', gameTime: number, pattern: 'normal' | 'ring' | 'cone' | 'surge' = 'normal'): Enemy {
     let enemy = this.enemyPool.pop();
     if (!enemy) {
       enemy = { x: 0, y: 0, hp: 0, maxHp: 0, radius: 0, speed: 0, active: false, type: 'small', damage: 0, id: '', _lastHitByWeapon: undefined };
@@ -5659,6 +5793,11 @@ export class EnemyManager {
         break;
       }
     }
+    // If an explicit coordinate override is active (spawnEnemyAt), honor it.
+    if (this.forceSpawnOverride) {
+      spawnX = this.forceSpawnOverride.x;
+      spawnY = this.forceSpawnOverride.y;
+    }
     // Constrain spawn to walkable (rooms / corridors) via global roomManager if available
     const rm = (window as any).__roomManager;
     let finalX = spawnX, finalY = spawnY;
@@ -5681,16 +5820,92 @@ export class EnemyManager {
         finalX = reclamped.x; finalY = reclamped.y;
       }
     }
-    enemy.x = finalX;
-    enemy.y = finalY;
+  enemy.x = finalX;
+  enemy.y = finalY;
+  // Last Stand mode previously suppressed spawns entirely in some handlers; ensure core spawns allowed.
   // Clear transient status on spawn
   const eAny: any = enemy as any;
   eAny._poisonStacks = 0; eAny._poisonExpire = 0; eAny._poisonNextTick = 0;
   eAny._burnStacks = 0; eAny._burnExpire = 0; eAny._burnNextTick = 0; eAny._burnTickDamage = 0;
   // Ensure kb resist exists on newly spawned enemies even if gameTime was 0
   if ((eAny as any)._kbResist === undefined) (eAny as any)._kbResist = 0;
-    this.enemies.push(enemy);
-    this.enemySpatialGrid.insert(enemy); // Add to spatial grid for optimized zone queries
+  this.enemies.push(enemy);
+  this.enemySpatialGrid.insert(enemy); // Add to spatial grid for optimized zone queries
+  return enemy;
+  }
+
+  /** Wave system update: schedules and spawns structured enemy waves. */
+  private updateWaveSystem(gameTimeSec: number, nowMs: number, isLastStand: boolean) {
+    // Do not spawn waves during freeze
+    if (nowMs < this.spawnFreezeUntilMs) return;
+    if (gameTimeSec < this.nextWaveAtSec) return;
+    if (this.pendingWaveSpawn) return; // avoid double triggers in same frame
+    this.pendingWaveSpawn = true;
+    try {
+      this.waveNumber++;
+      const waveSizeScale = 1 + this.waveNumber * 0.08; // gentle growth
+      // Base counts
+      let smallCount = Math.round(6 * waveSizeScale);
+      let mediumCount = Math.round(2 * waveSizeScale);
+      let largeCount = Math.max(0, Math.round((this.waveNumber - 2) * 0.5));
+      if (isLastStand) {
+        // Last Stand: lean harder on smalls, delay larges slightly
+        smallCount = Math.round(8 * waveSizeScale);
+        mediumCount = Math.round(1.5 * waveSizeScale);
+        largeCount = Math.max(0, Math.round((this.waveNumber - 3) * 0.4));
+      }
+      // Cap to avoid massive burst
+      smallCount = Math.min(smallCount, 60);
+      mediumCount = Math.min(mediumCount, 28);
+      largeCount = Math.min(largeCount, 18);
+      // Spawn pattern selection for variety
+      const patterns: Array<'normal'|'ring'|'cone'|'surge'> = ['normal','ring','cone','surge'];
+      const pickPattern = () => patterns[(Math.random()*patterns.length)|0];
+      const tSec = gameTimeSec;
+      for (let i=0;i<smallCount;i++) this.spawnEnemy('small', tSec, pickPattern());
+      for (let i=0;i<mediumCount;i++) this.spawnEnemy('medium', tSec, pickPattern());
+      for (let i=0;i<largeCount;i++) this.spawnEnemy('large', tSec, pickPattern());
+      this.lastWaveSpawnMs = nowMs;
+      // Adaptive elite presence: ensure minimum elites after certain wave thresholds
+      if (this.waveNumber % 3 === 0) {
+        try { this.ensureElitePresence(1 + Math.floor(this.waveNumber/6), gameTimeSec); } catch {}
+      }
+      // Schedule next wave (interval shrinks toward floor)
+      const prevInterval = this.nextWaveAtSec - gameTimeSec;
+      let interval = this.waveIntervalBaseSec * Math.pow(1 - this.waveIntervalDecay, this.waveNumber);
+      interval = Math.max(this.waveIntervalFloorSec, interval);
+      // Smooth so it doesn't abruptly jump smaller than previous by huge margin
+      if (prevInterval > 0 && interval > prevInterval * 1.2) interval = prevInterval * 1.2;
+      this.nextWaveAtSec = gameTimeSec + interval;
+    } finally {
+      this.pendingWaveSpawn = false;
+    }
+  }
+
+  /**
+   * Spawn an enemy of a given type at exact world coordinates. Used by LastStand WaveManager.
+   * Public but narrow purpose: bypass random pattern placement while reusing spawnEnemy stats logic.
+   */
+  public spawnEnemyAt(x: number, y: number, opts: { type: 'small'|'medium'|'large' }): any {
+    if (!opts || (opts.type !== 'small' && opts.type !== 'medium' && opts.type !== 'large')) return null;
+    // Guard: don't fight the generic wave system's freeze if active (e.g., boss/shop phases will clear it explicitly)
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (now < this.spawnFreezeUntilMs) return null;
+    // Install override so spawnEnemy uses provided coords instead of pattern logic
+    this.forceSpawnOverride = { x, y };
+    try {
+      // Approximate current game time in seconds — EnemyManager doesn't own authoritative clock, so derive.
+      let tSec = 0;
+      try {
+        const gi:any = (window as any).__gameInstance;
+        if (gi && typeof gi.getGameTime === 'function') tSec = gi.getGameTime();
+      } catch { /* ignore */ }
+      const e = this.spawnEnemy(opts.type, tSec, 'normal');
+      return e;
+    } catch { return null; }
+    finally {
+      this.forceSpawnOverride = null;
+    }
   }
 
   /**
@@ -5781,7 +5996,14 @@ export class EnemyManager {
   // Last Stand: treasures hidden by FoW are immune
   try { if (!(this.isVisibleInLastStand(t.x, t.y))) return; } catch { /* ignore */ }
     t.hp -= amount;
-    if (this.particleManager) this.particleManager.spawn(t.x, t.y, 1, '#B3E5FF');
+    if (this.particleManager) {
+      this.particleManager.spawn(t.x, t.y, 1, '#B3E5FF');
+      // Extra sparks if recent source weapon was Scrap Lash (tracked via _lastHitByWeapon on an enemy context not treasure).
+      try { if ((t as any)._lastScrapSpark !== true && (window as any).__lastScrapLashHitTime && performance.now() - (window as any).__lastScrapLashHitTime < 120) {
+  this.particleManager.spawn(t.x, t.y, 12, '#FFE6A8', { sizeMin:1, sizeMax:2.2, lifeMs:300, speedMin:0.5, speedMax:2.4 });
+        (t as any)._lastScrapSpark = true;
+      } } catch {}
+    }
     if (t.hp <= 0) {
       t.active = false;
       this.treasurePool.push(t);
