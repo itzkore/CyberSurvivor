@@ -154,11 +154,32 @@ async function redis(cmd: string[], body?: string): Promise<any> {
   }
 }
 
+/**
+ * Map logical board id -> Redis key.
+ *
+ * IMPORTANT: Preserve any suffixes like ":mode:LAST_STAND" or ":op:shadow_operative" for
+ * period boards (daily/weekly/monthly). Previously we truncated after the date which caused
+ * different modes and per‑operative boards to collapse into the same ZSET, leaking entries
+ * across tabs. This function now retains the entire suffix after the date token.
+ */
 function boardKey(board: string) {
   if (!board || board === 'global') return 'lb:global';
-  if (board.startsWith('daily:')) return `lb:daily:${board.split(':')[1]}`;
-  if (board.startsWith('weekly:')) return `lb:weekly:${board.split(':')[1]}`;
-  if (board.startsWith('monthly:')) return `lb:monthly:${board.split(':')[1]}`;
+  // Keep everything after the first token (the period identifier) intact
+  if (board.startsWith('daily:')) {
+    // daily:YYYY-MM-DD[:...]
+    const rest = board.slice('daily:'.length); // YYYY-MM-DD[:...]
+    return `lb:daily:${rest}`; // lb:daily:YYYY-MM-DD[:...]
+  }
+  if (board.startsWith('weekly:')) {
+    // weekly:YYYY-Www[:...]
+    const rest = board.slice('weekly:'.length);
+    return `lb:weekly:${rest}`;
+  }
+  if (board.startsWith('monthly:')) {
+    // monthly:YYYY-MM[:...]
+    const rest = board.slice('monthly:'.length);
+    return `lb:monthly:${rest}`;
+  }
   return `lb:${board}`;
 }
 
@@ -401,6 +422,8 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
   const metaKey = `${key}:meta`;
   const isLastStand = /:mode:LAST_STAND/i.test(board);
   const isDungeon = /:mode:DUNGEON/i.test(board);
+  const modeMatch = /:mode:([A-Z_]+)/i.exec(board);
+  const boardMode = modeMatch ? modeMatch[1].toUpperCase() : undefined;
   // If this is a per‑operative board, capture operative id from board name (e.g., global:op:neural_nomad)
   const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
   const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
@@ -435,16 +458,19 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
       let level: number | undefined;
       let maxDps: number | undefined;
       let characterId: string | undefined;
+  let metaMode: string | undefined;
+      let wavesHint: number | undefined;
   let metaOk = !isLastStand; // default true for non-LS; LS requires strict match
       try {
         const metaStr = metas[k];
         if (metaStr) {
           const meta = JSON.parse(metaStr);
+          if (typeof meta.mode === 'string') metaMode = String(meta.mode).toUpperCase();
           const matches = isLastStand
             ? (typeof meta.waves === 'number' && meta.waves === timeSec)
             : (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
-          // If meta carries mode, require it to match Dungeon boards (prevents Showdown entries in DUNGEON periods)
-          const modeOk = isDungeon ? (meta.mode === 'DUNGEON') : true;
+          // If the board is mode‑scoped at all, require exact mode match across ALL modes.
+          const modeOk = boardMode ? (meta.mode === boardMode) : true;
           if (matches) {
             if (typeof meta.kills === 'number') kills = meta.kills;
             if (typeof meta.level === 'number') level = meta.level;
@@ -452,12 +478,17 @@ export async function fetchTop(board = 'global', limit = 10, offset = 0): Promis
             if (typeof meta.char === 'string') characterId = meta.char;
             metaOk = !!modeOk;
           }
+          // Even for legacy/unscoped boards, surface LS waves for UI display when tagged
+          if (!isLastStand && String(metaMode) === 'LAST_STAND' && typeof meta.waves === 'number' && isFinite(meta.waves)) {
+            wavesHint = Math.max(0, Math.floor(meta.waves));
+          }
         }
       } catch {/* ignore parse/meta errors */}
       const effectiveCharId = boardOpId || characterId;
-      const waves = isLastStand ? timeSec : undefined;
+      const waves = isLastStand ? timeSec : wavesHint;
   const entry: LeaderEntry = { rank: pageOffset + k + 1, playerId, name: String(name), timeSec, kills, level, maxDps, characterId: effectiveCharId, waves };
   (entry as any).__metaOk = metaOk;
+  if (metaMode) (entry as any).__metaMode = metaMode;
   page[k] = entry;
     }
     return page;
@@ -505,6 +536,8 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
   const metaKey = `${key}:meta`;
   const isLastStand = /:mode:LAST_STAND/i.test(board);
   const isDungeon = /:mode:DUNGEON/i.test(board);
+  const modeMatch = /:mode:([A-Z_]+)/i.exec(board);
+  const boardMode = modeMatch ? modeMatch[1].toUpperCase() : undefined;
   // If this is a per‑operative board, capture operative id from board name
   const boardOpMatch = /:op:([a-z0-9_\-]+)/i.exec(board);
   const boardOpId = boardOpMatch ? boardOpMatch[1] : undefined;
@@ -517,6 +550,7 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
   let name = playerId;
   let kills: number | undefined; let level: number | undefined; let maxDps: number | undefined; let characterId: string | undefined;
   let metaOk = !isLastStand; // LS requires waves match
+  let wavesHint: number | undefined;
     try {
   const fetchedName = await redis(['HGET', 'lb:names', playerId]).catch(()=>null) || await redis(['HGET', `name:${playerId}`, 'name']).catch(()=>null);
       if (fetchedName) name = fetchedName;
@@ -527,7 +561,7 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
         const matches = isLastStand
           ? (typeof meta.waves === 'number' && meta.waves === timeSec)
           : (typeof meta.timeSec === 'number' && meta.timeSec === timeSec);
-        const modeOk = isDungeon ? (meta.mode === 'DUNGEON') : true;
+        const modeOk = boardMode ? (meta.mode === boardMode) : true;
         if (matches) {
           if (typeof meta.kills === 'number') kills = meta.kills;
           if (typeof meta.level === 'number') level = meta.level;
@@ -535,13 +569,17 @@ export async function fetchPlayerEntry(board: string, playerId: string): Promise
           if (typeof meta.char === 'string') characterId = meta.char;
       metaOk = !!modeOk;
         }
+        if (!isLastStand && String(meta.mode).toUpperCase() === 'LAST_STAND' && typeof meta.waves === 'number' && isFinite(meta.waves)) {
+          wavesHint = Math.max(0, Math.floor(meta.waves));
+        }
       }
     } catch {/* ignore meta errors */}
   // Prefer board-derived operative id on per-operative boards to guarantee consistent labeling.
   const effectiveCharId = boardOpId || characterId;
-  const waves = isLastStand ? timeSec : undefined;
+  const waves = isLastStand ? timeSec : wavesHint;
   const entry: LeaderEntry = { rank: (rankIdx as number) + 1, playerId, name, timeSec, kills, level, maxDps, characterId: effectiveCharId, waves };
   (entry as any).__metaOk = metaOk;
+  if (boardMode) (entry as any).__metaMode = boardMode;
   return entry;
   } catch {
     return null;

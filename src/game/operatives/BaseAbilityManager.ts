@@ -35,6 +35,12 @@ export interface BaseAbilityManager {
   
   /** Cleanup when switching operatives */
   destroy(): void;
+
+  /**
+   * Called when the game resumes from an auto-pause/blur and absolute timers must be shifted forward by deltaMs.
+   * Implementations should update any internal `*Until`, `*At`, or scheduled timestamps so cooldowns/effects do not progress while unfocused.
+   */
+  onTimeShift?(deltaMs: number): void;
 }
 
 /**

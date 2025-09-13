@@ -3,6 +3,7 @@ import { Bullet } from './Bullet';
 import { Enemy } from './EnemyManager';
 import { WEAPON_SPECS } from './WeaponConfig';
 import { WeaponType } from './WeaponType';
+import { computeGhostRangeBonus } from './operatives/ghost_operative/RangePassive';
 import { PASSIVE_SPECS, applyPassive } from './PassiveConfig';
 import { SPEED_SCALE, EXP_BASE, EXP_LINEAR, EXP_QUAD, getHealEfficiency } from './Balance';
 import { Logger } from '../core/Logger';
@@ -104,7 +105,9 @@ export class Player {
   private applyNonClassWeaponBuff(spec: any, damage: number): number {
     try {
       const isClass = !!(spec && spec.isClassWeapon === true);
-      if (isClass) return damage;
+      // Global balance: nerf class weapons by 40%, lightly buff non-class by 15%
+      // This function now applies BOTH sides so callers get a single adjustment step.
+      if (isClass) return damage * 0.6;
       const mul = 1.15; // +15% damage for non-class weapons
       return damage * mul;
     } catch { return damage; }
@@ -531,9 +534,10 @@ export class Player {
     if (this.bladeCycloneSettleMs > 0) {
       this.bladeCycloneSettleMs = Math.max(0, this.bladeCycloneSettleMs - dt);
     }
-    // Movement (WASD/Arrows) — blocked while reviving
+    // Movement (WASD/Arrows) — blocked while reviving or operative lock (e.g., Ghost ult charge)
     let ax = 0, ay = 0;
-  if (!inputLocked) {
+    const inputMoveLocked = !!((this as any)._inputMoveLocked);
+    if (!inputLocked && !inputMoveLocked) {
     if (keyState['w'] || keyState['arrowup']) ay -= 1;
     if (keyState['s'] || keyState['arrowdown']) ay += 1;
     if (keyState['a'] || keyState['arrowleft']) ax -= 1;
@@ -564,8 +568,8 @@ export class Player {
       this.movementSlowUntil = 0; this.movementSlowFrac = 0;
     }
   } catch { /* ignore */ }
-  this.vx = inputLocked ? 0 : ax * this.speed * moveMul;
-  this.vy = inputLocked ? 0 : ay * this.speed * moveMul;
+  this.vx = (inputLocked || inputMoveLocked) ? 0 : ax * this.speed * moveMul;
+  this.vy = (inputLocked || inputMoveLocked) ? 0 : ay * this.speed * moveMul;
     this.x += this.vx * moveScale;
     this.y += this.vy * moveScale;
     // Walk-cycle flip while moving
@@ -989,8 +993,9 @@ export class Player {
         this.fortressStompAccMs = 0; this.fortressDidInitialStomp = false;
       }
     }
-    // Bio Engineer: Outbreak timers and input (Spacebar). 5s active, 15s cooldown.
-    if (this.characterData?.id === 'bio_engineer') {
+  // Bio Engineer: Outbreak timers and input (Spacebar). 5s active, 15s cooldown.
+  // Respect global input lock (e.g., revive cinematic) to avoid accidental activation.
+  if (!inputLocked && this.characterData?.id === 'bio_engineer') {
       if (this.bioOutbreakActive) {
         this.bioOutbreakActiveMs += dt;
         if (this.bioOutbreakActiveMs >= 5000) {
@@ -1172,6 +1177,15 @@ export class Player {
 
     // Immediate sniper charge start when stationary (Ghost/Shadow/Evolved), independent of cooldown
     if (target) {
+      // Do not allow starting sniper charge while Ghost ultimate RMB is charging (or forcing basic suppression)
+      const blockSniperCharge = !!((this as any)._ghostUltCharging) || !!((this as any)._basicFireSuppressed);
+      if (blockSniperCharge) {
+        // Cancel any in-progress charge immediately to avoid parallel state machines
+        (this as any)._sniperCharging = false;
+        (this as any)._sniperState = 'idle';
+        (this as any)._sniperChargeStart = undefined;
+        (this as any)._sniperChargeMax = 0;
+      } else {
       // Suppress sniper charge entirely during Ghost Protocol (Rogue Hacker)
       if (this.characterData?.id === 'rogue_hacker' && (this as any)._ghostProtocolActive) {
         // Cancel any in-progress charge
@@ -1296,12 +1310,17 @@ export class Player {
           }
         }
       }
+      }
     }
   }
 
   // Fire weapons when off cooldown. Most weapons require a target; Scrap-Saw and Drone can self-spawn.
   const isRogueHacker = this.characterData?.id === 'rogue_hacker';
-  const suppressFire = isRogueHacker && !!((this as any)._ghostProtocolActive);
+  const suppressFire =
+    (isRogueHacker && !!((this as any)._ghostProtocolActive)) ||
+    !!((this as any)._fireLocked) ||
+    !!((this as any)._ghostUltCharging) ||
+    !!((this as any)._basicFireSuppressed);
   if (!suppressFire) for (const [weaponType, level] of this.activeWeapons) {
   // Skip disabled or special-case managed weapons
   const specSkip = WEAPON_SPECS[weaponType as unknown as WeaponType] as any;
@@ -2060,6 +2079,8 @@ export class Player {
   }
 
   private shootAt(target: Enemy, weaponType: WeaponType) {
+    // Absolute suppression: never allow any fire while Ghost ult is charging or basic fire is suppressed
+    if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
     // Hard gate: never fire at targets hidden by Fog-of-War in Last Stand (final safety net)
     try {
       const gi: any = (window as any).__gameInstance;
@@ -2081,8 +2102,8 @@ export class Player {
   let baseAngle = Math.atan2(dy, dx);
         // Resolve per-level scaling (salvo, spread, damage). Speed handled in BulletManager.
         const weaponLevel = this.activeWeapons.get(weaponType) ?? 1;
-        let toShoot = spec.salvo;
-        let spread = spec.spread;
+    let toShoot = spec.salvo;
+    let spread = spec.spread;
     let bulletDamage = spec.damage;
         if (spec.getLevelStats) {
           const scaled = spec.getLevelStats(weaponLevel);
@@ -2090,8 +2111,8 @@ export class Player {
             if (scaled.spread != null) spread = scaled.spread;
       if (scaled.damage != null) bulletDamage = scaled.damage;
         }
-    // Buff non-class weapons slightly to match class weapon power levels
-    bulletDamage = this.applyNonClassWeaponBuff(spec, bulletDamage);
+        // Apply global class-vs-non-class adjustment in one step
+        bulletDamage = this.applyNonClassWeaponBuff(spec, bulletDamage);
         // Heavy Gunner: apply damage/spread boost pre-fire
         const isGunner = this.characterData?.id === 'heavy_gunner';
         if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
@@ -2129,6 +2150,8 @@ export class Player {
               // Queue delayed shots on next frames using requestAnimationFrame timing fallback to performance.now
               const start = performance.now();
               const schedule = () => {
+                // Abort if ult is charging or basic fire is suppressed NOW
+                if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
                 if (performance.now() - start >= delay) {
                   this.spawnSingleProjectile(bm, weaponType, bulletDamage, weaponLevel, baseAngle, i, toShoot, spread, target);
                 } else {
@@ -2152,6 +2175,8 @@ export class Player {
             } else {
               const start = performance.now();
               const schedule = () => {
+                // Abort if ult is charging or basic fire is suppressed NOW
+                if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
                 if (performance.now() - start >= delay) {
                   this.spawnSingleProjectile(bm, weaponType, bulletDamage, weaponLevel, baseAngle, i, toShoot, spread, target);
                 } else {
@@ -2295,7 +2320,8 @@ export class Player {
                 const sgSpec: any = (WEAPON_SPECS as any)[WeaponType.SINGULARITY_SPEAR];
                 const sgLvl = Math.max(1, Math.min(7, (this.activeWeapons.get(WeaponType.SINGULARITY_SPEAR) ?? weaponLevel)));
                 const scaled = sgSpec?.getLevelStats ? sgSpec.getLevelStats(sgLvl) : { damage: bulletDamage };
-                const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+                let baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+                try { baseDmgLeveled = this.applyNonClassWeaponBuff(sgSpec, baseDmgLeveled); } catch {}
                 const gdm = this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier || 1);
                 // Punchy but bounded: 1.6x per spear ×5 = ~8x burst
                 const dmgBase = Math.round(baseDmgLeveled * 1.6 * gdm);
@@ -2327,7 +2353,8 @@ export class Player {
                 const lvl = weaponLevel;
                 const tachSpec: any = (WEAPON_SPECS as any)[WeaponType.TACHYON_SPEAR];
                 const scaled = tachSpec?.getLevelStats ? tachSpec.getLevelStats(lvl) : { damage: bulletDamage };
-                const baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+                let baseDmgLeveled = (scaled?.damage != null ? scaled.damage : bulletDamage);
+                try { baseDmgLeveled = this.applyNonClassWeaponBuff(tachSpec, baseDmgLeveled); } catch {}
                 const dmgBase = Math.round(baseDmgLeveled * 2.0 * (this.getGlobalDamageMultiplier?.() ?? (this.globalDamageMultiplier || 1)));
                 const angles = [base - spreadAng, base, base + spreadAng];
                 for (let ai=0; ai<angles.length; ai++) {
@@ -2475,6 +2502,8 @@ export class Player {
     spread: number,
     target: Enemy
   ) {
+    // Absolute suppression at execution time for staggered/queued spawns
+    if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
     const angle = baseAngle + (index - (total - 1)) / 2 * spread;
     const baseCos = Math.cos(baseAngle);
     const baseSin = Math.sin(baseAngle);
@@ -2548,9 +2577,9 @@ export class Player {
         if (typeof a === 'number') finalAngle = a;
       }
     }
-  // Apply global damage multiplier (percent-based passive)
-  const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-  bulletDamage = Math.max(1, Math.round(bulletDamage * gdm));
+    // Apply global damage multiplier (percent-based passive). Class/non-class adjustment is done at the call site.
+    const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
+    bulletDamage = Math.max(1, Math.round(bulletDamage * gdm));
 
     if (weaponType === WeaponType.RAPID) {
       const arcSpread = 0.35;
@@ -2728,6 +2757,8 @@ export class Player {
 
   /** Railgun charge + beam fire sequence */
   private handleRailgunFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+    // Absolute suppression: do not start or continue while Ghost ult is charging
+    if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
     // Use a state flag on player to prevent re-entry during charge
     if ((this as any)._railgunCharging) return;
     (this as any)._railgunCharging = true;
@@ -2753,6 +2784,11 @@ export class Player {
 
   const chargeStep = () => {
       const now = performance.now();
+      // Abort mid-charge if ult begins charging
+      if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) {
+        (this as any)._railgunCharging = false;
+        return;
+      }
       const elapsed = now - startTime;
   // No mid-charge visuals; keep it minimal
       if (elapsed < chargeTimeMs) {
@@ -2899,6 +2935,8 @@ export class Player {
 
   /** Ghost Sniper and Spectral Executioner: charge, then fire a piercing beam. */
   private handleGhostSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number, weaponKind: WeaponType = WeaponType.GHOST_SNIPER) {
+    // Absolute suppression
+    if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
     if ((this as any)._sniperCharging) return;
     // Only allow starting charge if not moving
     const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
@@ -2930,6 +2968,13 @@ export class Player {
 
     const chargeStep = () => {
       const now = performance.now();
+      if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) {
+        (this as any)._sniperCharging = false;
+        (this as any)._sniperState = 'idle';
+        (this as any)._sniperChargeStart = undefined;
+        (this as any)._sniperChargeMax = 0;
+        return;
+      }
       // Subtle muzzle shimmer while steady-aiming
       if (pm && now - lastParticle > particleInterval) {
         lastParticle = now;
@@ -3031,11 +3076,22 @@ export class Player {
         for (let i = 0; i < picks.length; i++) {
           const e = picks[i];
           const ang = Math.atan2(e.y - originY, e.x - originX);
-          const dist = Math.hypot(e.x - originX, e.y - originY);
-          // Damage only the targeted enemy
-          const distCrit = dist > 600 ? 1.25 : 1.0;
-          game.enemyManager.takeDamage(e, perShot * distCrit, distCrit > 1.0, false, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel, false, 'PLAYER');
-          if (game && game.dpsHistory) game.dpsHistory.push({ time: performance.now(), damage: perShot * distCrit });
+          const dist = Math.hypot(e.x - originY, e.y - originY);
+          // Distance sweet-spot bonus (non-crit): apply as flat multiplier
+          const distBonus = computeGhostRangeBonus(dist);
+          // True crit roll from player stats/passives
+          const pAny: any = this as any;
+          const agi = this.agility || 0;
+          const luck = this.luck || 0;
+          const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+          const playerBonusPct = (typeof pAny.critBonus === 'number' && isFinite(pAny.critBonus) ? pAny.critBonus : 0) * 100;
+          const totalPct = Math.max(0, Math.min(100, basePct + playerBonusPct));
+          const critChance = totalPct / 100;
+          const isCritical = Math.random() < critChance;
+          const critMult = (typeof pAny.critMultiplier === 'number' && isFinite(pAny.critMultiplier)) ? pAny.critMultiplier : 2.0;
+          const dmgOut = (perShot * distBonus) * (isCritical ? critMult : 1);
+          game.enemyManager.takeDamage(e, dmgOut, isCritical, false, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel, false, 'PLAYER');
+          if (game && game.dpsHistory) game.dpsHistory.push({ time: performance.now(), damage: dmgOut });
           // Mark if survived and not in anti-repeat window
           try {
             const anyE: any = e as any; if (anyE.active && anyE.hp > 0) {
@@ -3058,8 +3114,17 @@ export class Player {
           const bx = boss.x ?? originX; const by = boss.y ?? originY;
           const ang = Math.atan2(by - originY, bx - originX);
           const dist = Math.hypot(bx - originX, by - originY);
-          const distCrit = dist > 600 ? 1.25 : 1.0;
-          (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, perShot * distCrit, distCrit > 1.0, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel, false, 'PLAYER');
+          const distBonus = computeGhostRangeBonus(dist);
+          const pAny: any = this as any;
+          const agi = this.agility || 0; const luck = this.luck || 0;
+          const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+          const playerBonusPct = (typeof pAny.critBonus === 'number' && isFinite(pAny.critBonus) ? pAny.critBonus : 0) * 100;
+          const totalPct = Math.max(0, Math.min(100, basePct + playerBonusPct));
+          const critChance = totalPct / 100;
+          const isCritical = Math.random() < critChance;
+          const critMult = (typeof pAny.critMultiplier === 'number' && isFinite(pAny.critMultiplier)) ? pAny.critMultiplier : 2.0;
+          const dmgOut = (perShot * distBonus) * (isCritical ? critMult : 1);
+          (this.gameContext as any)?.enemyManager?.takeBossDamage?.(boss, dmgOut, isCritical, WeaponType.SPECTRAL_EXECUTIONER, originX, originY, weaponLevel, false, 'PLAYER');
           // Mark boss if survived and not in anti-repeat
           try {
             const bAny: any = boss; if (bAny.active && bAny.hp > 0) {
@@ -3093,7 +3158,8 @@ export class Player {
       if (!fireTarget || !fireTarget.active || fireTarget.hp <= 0) return;
       const beamAngle = Math.atan2(fireTarget.y - originY, fireTarget.x - originX);
       const range = spec.range || 1200;
-  const baseDamage = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
+  let baseDamage = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).damage : spec.damage) || 100;
+  try { baseDamage = this.applyNonClassWeaponBuff(spec, baseDamage); } catch {}
   const gdmSN = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
       const heavyMult = 1.6; // toned down for DPS balance
   let remaining = baseDamage * heavyMult * gdmSN;
@@ -3136,11 +3202,20 @@ export class Player {
   let anyVisibleEffect = false;
   for (let i = 0; i < candidates.length && remaining > 0.5; i++) {
         const e = candidates[i].e;
-        // Long-range sweet spot crit: extra sting if shot traveled far (> 600px)
-  const distCrit = candidates[i].proj > 600 ? 1.25 : 1.0; // reduced long-shot bonus
-        const dmg = remaining * distCrit;
+    // Long-range sweet spot bonus (non-crit): extra sting if shot traveled far (> 600px)
+  const distBonus = computeGhostRangeBonus(candidates[i].proj); // reduced long-shot bonus
+    // True crit roll based on player stats/passives
+    const pAny: any = this as any;
+    const agi = this.agility || 0; const luck = this.luck || 0;
+    const basePct = Math.min(60, (agi * 0.8 + luck * 1.2) * 0.5);
+    const playerBonusPct = (typeof pAny.critBonus === 'number' && isFinite(pAny.critBonus) ? pAny.critBonus : 0) * 100;
+    const totalPct = Math.max(0, Math.min(100, basePct + playerBonusPct));
+    const critChance = totalPct / 100;
+    const isCritical = Math.random() < critChance;
+    const critMult = (typeof pAny.critMultiplier === 'number' && isFinite(pAny.critMultiplier)) ? pAny.critMultiplier : 2.0;
+    const dmg = (remaining * distBonus) * (isCritical ? critMult : 1);
   const wType = (this.activeWeapons.has(WeaponType.SPECTRAL_EXECUTIONER) ? WeaponType.SPECTRAL_EXECUTIONER : WeaponType.GHOST_SNIPER);
-  game.enemyManager.takeDamage(e, dmg, distCrit > 1.0, false, wType, originX, originY, weaponLevel, false, 'PLAYER');
+  game.enemyManager.takeDamage(e, dmg, isCritical, false, wType, originX, originY, weaponLevel, false, 'PLAYER');
         // bleed a bit of damage into damage history for HUD DPS
         if (game && game.dpsHistory) game.dpsHistory.push({ time: performance.now(), damage: dmg });
         remaining *= falloff;
@@ -3249,6 +3324,7 @@ export class Player {
 
   /** Void Sniper: identical to Ghost Sniper but applies DoT; when evolved to Black Sun, spawns seeds that slow, tick, then collapse. */
   private handleVoidSniperFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number, weaponKind: WeaponType = WeaponType.VOID_SNIPER) {
+    if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
     // Reuse charging gate: must be stationary during 1.5s aim
     if ((this as any)._sniperCharging) return;
     const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
@@ -3276,6 +3352,13 @@ export class Player {
 
     const chargeStep = () => {
       const now = performance.now();
+      if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) {
+        (this as any)._sniperCharging = false;
+        (this as any)._sniperState = 'idle';
+        (this as any)._sniperChargeStart = undefined;
+        (this as any)._sniperChargeMax = 0;
+        return;
+      }
       if (pm && now - lastParticle > particleInterval) {
         lastParticle = now;
         for (let i = 0; i < 3; i++) {
@@ -3317,7 +3400,8 @@ export class Player {
   const beamAngle = Math.atan2(target.y - originY, target.x - originX);
   const range = spec.range || 1200;
   const ghostSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
-  const baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
+  let baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
+  try { baseDamageGhost = this.applyNonClassWeaponBuff(ghostSpec, baseDamageGhost); } catch {}
   const gdmVS = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
   const perTick = 0.40 * baseDamageGhost * gdmVS;
   const ticks = (spec.getLevelStats ? spec.getLevelStats(weaponLevel).ticks : 3) || 3;
@@ -3509,6 +3593,7 @@ export class Player {
 
   /** Black Sun Sniper: fires 5 beams to 5 different targets; beams cannot layer; each beam deals Void Sniper L7 damage. */
   private handleBlackSunSniperMultiFire(baseAngle: number, target: Enemy, spec: any, weaponLevel: number) {
+    if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) return;
     // Charge gating: identical to Void/Ghost – must be nearly stationary
     if ((this as any)._sniperCharging) return;
     const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
@@ -3552,7 +3637,9 @@ export class Player {
       const vsSpec = WEAPON_SPECS[WeaponType.VOID_SNIPER] as any;
       const vsL7 = vsSpec?.getLevelStats ? vsSpec.getLevelStats(7) : { damage: vsSpec?.damage ?? 95 };
       const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-      const beamDamage = Math.max(1, Math.round((vsL7.damage || 95) * gdm));
+  let vsL7Damage = (vsL7.damage || 95);
+  try { vsL7Damage = this.applyNonClassWeaponBuff(vsSpec, vsL7Damage); } catch {}
+  const beamDamage = Math.max(1, Math.round(vsL7Damage * gdm));
   // DoT parameters: mirror Void Sniper per-tick profile at current weapon level
   const ghostSpec = WEAPON_SPECS[WeaponType.GHOST_SNIPER] as any;
   const baseDamageGhost = (ghostSpec.getLevelStats ? ghostSpec.getLevelStats(weaponLevel).damage : ghostSpec.damage) || 95;
@@ -3660,6 +3747,13 @@ export class Player {
     };
     const step = () => {
       const now = performance.now();
+      if (((this as any)._ghostUltCharging) || ((this as any)._basicFireSuppressed)) {
+        (this as any)._sniperCharging = false;
+        (this as any)._sniperState = 'idle';
+        (this as any)._sniperChargeStart = undefined;
+        (this as any)._sniperChargeMax = 0;
+        return;
+      }
       if (now - start < chargeTimeMs) { requestAnimationFrame(step); return; }
       finish();
     };
@@ -3737,7 +3831,9 @@ export class Player {
     const cdMs = (stats?.cooldownMs != null ? stats.cooldownMs : (stats?.cooldown || 5) * FRAME_MS);
     // Convert per-shot damage to per-second baseline, then apply gunner boost damage scaling
     const gdm = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
-    let perShot = Math.max(1, (stats?.damage ?? spec.damage ?? 6) * gdm);
+  let perShotBase = (stats?.damage ?? spec.damage ?? 6);
+  try { perShotBase = this.applyNonClassWeaponBuff(spec, perShotBase); } catch {}
+  let perShot = Math.max(1, perShotBase * gdm);
   // Use shaped curve for damage to feel more overpowered at higher heat
   perShot *= (1 + (this.gunnerBoostDamage - 1) * tPow);
     const dps = perShot * (1000 / Math.max(1, cdMs));
@@ -3882,6 +3978,11 @@ export class Player {
    */
   public applyCharacterData(data: any) {
     if (!data) return;
+    // Clear any stale crit fields from previous runs/characters to avoid UI showing incorrect 100%
+    try {
+      if (typeof (this as any).critBonus !== 'undefined' && !isFinite((this as any).critBonus)) delete (this as any).critBonus;
+      if (typeof (this as any).critMultiplier !== 'undefined' && !isFinite((this as any).critMultiplier)) delete (this as any).critMultiplier;
+    } catch {}
     if (data.defaultWeapon !== undefined) {
       this.classWeaponType = data.defaultWeapon;
     }

@@ -147,6 +147,7 @@ export class Game {
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
   private autoPaused: boolean = false; // track alt-tab auto pause
+  private autoPauseStartTs: number = 0; // record when auto-pause began (performance.now)
   private initialUpgradeOffered: boolean = false; // one free upgrade flag
   private debugOverlay: DebugOverlay = new DebugOverlay();
   // Fog of War
@@ -465,11 +466,18 @@ export class Game {
   if (this.state === 'GAME') {
         this.pause();
         this.autoPaused = true;
+        try { this.autoPauseStartTs = performance.now(); } catch { this.autoPauseStartTs = Date.now(); }
   window.dispatchEvent(new CustomEvent('showPauseOverlay', { detail: { auto: true } }));
       }
     });
     window.addEventListener('focus', () => {
       if (this.autoPaused && this.state === 'PAUSE') {
+        // Compute how long we were auto-paused and shift absolute timers forward so cooldowns/effects don't advance while unfocused.
+        let pausedDelta = 0;
+        try { pausedDelta = Math.max(0, (performance.now() - (this.autoPauseStartTs || performance.now()))); } catch { pausedDelta = 0; }
+        if (pausedDelta > 0) {
+          try { this.adjustTimeAfterPause(pausedDelta); } catch { /* best-effort */ }
+        }
         (this.gameLoop as any)?.resetTiming?.();
         this.resume();
         this.autoPaused = false;
@@ -944,6 +952,127 @@ export class Game {
   });
   }
 
+  /**
+   * Shift absolute timers by deltaMs so that auto-pause (blur) doesn't recharge abilities or expire effects.
+   * This adjusts common fields across Player, current AbilityManager instances (Weaver/Nomad), and a few globals.
+   */
+  private adjustTimeAfterPause(deltaMs: number) {
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const shiftIfTime = (obj: any, key: string) => {
+      try {
+        const v = obj?.[key];
+        if (typeof v === 'number' && isFinite(v)) {
+          // Only shift timestamps that are in the future relative to when pause began (tolerate small negatives)
+          obj[key] = v + deltaMs;
+        }
+      } catch {}
+    };
+
+    // Player-level timers (invuln, surges, etc.) — shift any numeric field ending with 'Until' or 'UntilMs'.
+    try {
+      const pAny: any = this.player as any;
+      for (const k in pAny) {
+        if (!Object.prototype.hasOwnProperty.call(pAny, k)) continue;
+        if ((/Until(Ms)?$/i).test(k) && typeof pAny[k] === 'number') {
+          shiftIfTime(pAny, k);
+        }
+      }
+      // Known nested state bags
+      const hg = pAny.__hgTurret; if (hg && typeof hg.cooldownUntil === 'number') shiftIfTime(hg, 'cooldownUntil');
+      const vb = pAny.__runnerVB; if (vb && typeof vb.meterCdUntil === 'number') shiftIfTime(vb, 'meterCdUntil');
+    } catch {}
+
+    // Current operative ability manager internals (generic hook + best-effort per-ability safety net)
+    try {
+      const am: any = (this.player as any).abilityManager;
+      if (am) {
+        const hasHook = typeof am.onTimeShift === 'function';
+        // Preferred: let the manager shift its own internal timers
+        if (hasHook) {
+          try { am.onTimeShift(deltaMs); } catch {}
+        }
+
+        // Safety net (only if manager doesn't provide a hook): known abilities with local timestamp fields
+        if (!hasHook) {
+          // Psionic Weaver
+          if (am.constructor?.name === 'PsionicWeaverAbilityManager') {
+            const st = am['stitch'];
+            if (st) {
+              shiftIfTime(st, 'cdUntil');
+              shiftIfTime(st, 'returnAt');
+              shiftIfTime(st, 'lingerUntil');
+              shiftIfTime(st, 'justTeleportedAt');
+              shiftIfTime(st, 'justReturnedAt');
+            }
+          }
+          // Neural Nomad
+          if (am.constructor?.name === 'NeuralNomadAbilityManager') {
+            const sw = am['swarm'];
+            if (sw) {
+              shiftIfTime(sw, 'cdUntil');
+              try {
+                const drones: any[] = sw['drones'];
+                if (Array.isArray(drones)) for (let i = 0; i < drones.length; i++) shiftIfTime(drones[i], 'next');
+              } catch {}
+            }
+          }
+          // Wasteland Scavenger (redirect + pulse)
+          if (am.constructor?.name === 'WastelandScavengerAbilityManager') {
+            const rd = am['redirect'];
+            if (rd) {
+              shiftIfTime(rd, 'redirectCdUntil');
+              shiftIfTime(rd, 'pulseCdUntil');
+            }
+          }
+          // Data Sorcerer (storm cd/active)
+          if (am.constructor?.name === 'DataSorcererAbilityManager') {
+            const st = am['storm'];
+            if (st) { shiftIfTime(st, 'cdUntil'); shiftIfTime(st, 'activeUntil'); }
+          }
+          // Tech Warrior (anchor substate bag)
+          if (am.constructor?.name === 'TechWarriorAbilityManager') {
+            const pAny: any = (this.player as any);
+            const tw = pAny.__techAnchor; if (tw) shiftIfTime(tw, 'cooldownUntil');
+          }
+          // Rogue Hacker manual hack controller (cooldown inside HackingSystem)
+          if (am.constructor?.name === 'RogueHackerAbilityManager') {
+            const hk = am['manualHack'] || am['hack'] || am['hacking'];
+            if (hk) shiftIfTime(hk, 'cooldownUntil');
+          }
+        }
+      }
+    } catch {}
+
+    // Active beams in Game (visual timers use start/duration)
+    try {
+      const beams: any[] = this._activeBeams as any[];
+      if (Array.isArray(beams)) {
+        for (let i = 0; i < beams.length; i++) {
+          const b = beams[i];
+          if (b && typeof b.start === 'number') b.start += deltaMs;
+          if (b && typeof b.end === 'number') b.end += deltaMs; // if present
+          if (b && typeof b.lastTick === 'number') b.lastTick += deltaMs;
+        }
+      }
+    } catch {}
+
+    // Global window markers used by overlays and class passives
+    try {
+      const w: any = window as any;
+      const globals = ['__weaverLatticeActiveUntil', '__overmindActiveUntil', '__bioBoostActiveUntil'];
+      for (let i = 0; i < globals.length; i++) { if (typeof w[globals[i]] === 'number') w[globals[i]] += deltaMs; }
+    } catch {}
+
+    // EnemyManager coarse timers (spawn freeze, outbreaks, cloak follows). Per-enemy debuffs are left as-is for performance.
+    try {
+      const emAny: any = this.enemyManager as any;
+      const keys = ['spawnFreezeUntilMs', 'bioOutbreakUntil', 'shadowSurgeUntilMs'];
+      for (let i = 0; i < keys.length; i++) { if (typeof emAny[keys[i]] === 'number') emAny[keys[i]] += deltaMs; }
+      if (emAny._ghostCloakFollow && typeof emAny._ghostCloakFollow.until === 'number') emAny._ghostCloakFollow.until += deltaMs;
+      if (typeof emAny.hackerAutoCooldownUntil === 'number') emAny.hackerAutoCooldownUntil += deltaMs;
+    } catch {}
+  }
+
   public showCharacterSelect() {
     // Minimal implementation: simply set state, UI panels are managed elsewhere.
     this.setState('CHARACTER_SELECT');
@@ -998,6 +1127,23 @@ export class Game {
     }
   // Always run gameLoop, and advance gameTime if in GAME state
   if (this.state === 'GAME') {
+  // Last Stand SHOP hard-freeze: keep only LS timers/UI alive; freeze player/enemies/bullets behind the overlay
+  try {
+    const lsAny: any = this.lastStand as any;
+    const isShop = !!(lsAny && lsAny.phase === 'SHOP');
+    if (isShop) {
+      // Advance only LS orchestrator so its countdown can end and close the shop
+      if (this.lastStand) this.lastStand.update(deltaTime);
+      // Maintain camera anchored to current player position without moving simulation
+      this.camX = this.player.x - this.designWidth / 2;
+      this.camY = this.player.y - this.designHeight / 2;
+      this.camX = Math.max(0, Math.min(this.camX, this.worldW - this.designWidth));
+      this.camY = Math.max(0, Math.min(this.camY, this.worldH - this.designHeight));
+      (window as any).__camX = this.camX; (window as any).__camY = this.camY;
+      // Skip updating the rest of the simulation while in SHOP
+      return;
+    }
+  } catch { /* ignore LS phase check */ }
   // One-time world expansion after first 10s of gameplay to keep early coordinates small
   if (!this.worldExpanded && this.gameTime > 10) {
     this.worldW = 4000 * 100;
@@ -1855,6 +2001,7 @@ export class Game {
             if (beam.type === 'sniper' || beam.type === 'sniper_exec' || beam.type === 'voidsniper' || beam.type === 'sniper_black_sun') {
               // Sniper: ultra-tight bright white core with faint cyan rim
               const fadeEase = fade * fade; // smoother tail
+              // Keep base thickness stable for special beams; pulsate only non-wedge beams
               const thickness = (beam.thickness || 10) * (0.9 + 0.1 * Math.sin(elapsed * 0.24)) * (0.85 + 0.15 * fadeEase);
               if (!this.lowFX && !debugNoAdd) {
                 const grad = this.ctx.createLinearGradient(0, 0, len, 0);

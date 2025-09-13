@@ -3946,6 +3946,12 @@ export class BulletManager {
   }
 
   public spawnBullet(x: number, y: number, targetX: number, targetY: number, weapon: WeaponType, damage: number, level: number = 1, origin?: 'PLAYER' | 'TURRET'): Bullet | undefined {
+    // Final safety: if the player is in a global suppression state (e.g., Ghost ult charging), block player-origin spawns
+    try {
+      if ((origin === undefined || origin === 'PLAYER') && this.player && ((this.player as any)._ghostUltCharging || (this.player as any)._basicFireSuppressed)) {
+        return undefined;
+      }
+    } catch { /* ignore */ }
     // Resonant Web is a persistent orbit system; do not spawn a standard projectile
     if (weapon === WeaponType.RESONANT_WEB) {
       // Ensure strands are created on demand this tick

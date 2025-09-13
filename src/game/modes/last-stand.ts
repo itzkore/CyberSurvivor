@@ -47,6 +47,10 @@ export class LastStandGameMode {
   // Event handlers so we can clean up on dispose
   private placeTurretHandler?: (e: Event) => void;
   private keydownHandler?: (e: KeyboardEvent) => void;
+  // Pause handling for SHOP timer when window loses focus
+  private blurAtMs: number | null = null;
+  private onBlurHandler?: (e: FocusEvent) => void;
+  private onFocusHandler?: (e: FocusEvent) => void;
 
   constructor(private game: any){
     // Do not show immediately; will be revealed smoothly after cinematic ends
@@ -99,6 +103,31 @@ export class LastStandGameMode {
     };
     window.addEventListener('laststand:placeTurret', this.placeTurretHandler);
   try { (this.game as any).lastStand = this; } catch {}
+    // Pause SHOP countdown while unfocused
+    this.onBlurHandler = () => {
+      if (this.phase === 'SHOP') this.blurAtMs = performance.now();
+    };
+    this.onFocusHandler = () => {
+      if (this.phase === 'SHOP' && this.blurAtMs != null) {
+        const delta = Math.max(0, performance.now() - this.blurAtMs);
+        this.blurAtMs = null;
+        // Extend shop deadline by the unfocused duration
+        this.shopEndsAtMs += delta;
+        try {
+          // Keep spawns frozen for the extended duration as well
+          const EM:any = this.game.getEnemyManager?.();
+          if (EM && typeof EM === 'object' && 'spawnFreezeUntilMs' in EM) {
+            (EM as any).spawnFreezeUntilMs = ((EM as any).spawnFreezeUntilMs || performance.now()) + delta;
+          }
+        } catch { /* ignore */ }
+        // Refresh HUD/overlay timers immediately
+        const remain = Math.max(0, Math.ceil((this.shopEndsAtMs - performance.now())/1000));
+        try { this.hud.setTimer(remain); } catch {}
+        try { this.overlay?.setTimer(remain); } catch {}
+      }
+    };
+    window.addEventListener('blur', this.onBlurHandler);
+    window.addEventListener('focus', this.onFocusHandler);
   }
 
   /** Preload Last Stand assets aggressively in the background. */
@@ -560,7 +589,11 @@ export class LastStandGameMode {
   this.phase = 'WARMUP';
   this.hud.setPhase('COMBAT'); // show combat HUD elements during warmup
   this.warmupEndsAtMs = performance.now() + this.postShopWarmupMs;
+  // Clear any pending blur timing
+  this.blurAtMs = null;
   }
+
+  // (dispose is defined later; blur/focus listener cleanup is handled there)
 
   /** Show a minimal turret shop at the nearest holder when pressing F */
   private showTurretHolderShop(holder: {x:number;y:number;w:number;h:number; turretId?:string; level?:number; turretRef?: any}){
@@ -921,6 +954,15 @@ export class LastStandGameMode {
     if (this.placeTurretHandler) {
       try { window.removeEventListener('laststand:placeTurret', this.placeTurretHandler); } catch {}
       this.placeTurretHandler = undefined;
+    }
+    // Remove blur/focus handlers
+    if (this.onBlurHandler) {
+      try { window.removeEventListener('blur', this.onBlurHandler); } catch {}
+      this.onBlurHandler = undefined;
+    }
+    if (this.onFocusHandler) {
+      try { window.removeEventListener('focus', this.onFocusHandler); } catch {}
+      this.onFocusHandler = undefined;
     }
     if (this.keydownHandler) {
       try { window.removeEventListener('keydown', this.keydownHandler); } catch {}

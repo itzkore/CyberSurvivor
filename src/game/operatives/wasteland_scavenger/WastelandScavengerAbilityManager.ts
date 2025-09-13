@@ -53,4 +53,12 @@ export class WastelandScavengerAbilityManager extends BaseAbilityManagerImpl {
   }
 
   handleKeyPress(_key: string, _keyState: any): boolean { return false; }
+
+  onTimeShift(deltaMs: number): void {
+    const r: any = this.redirect as any; if (!r) return;
+    try {
+      if (typeof r['redirectCdUntil'] === 'number') r['redirectCdUntil'] += deltaMs;
+      if (typeof r['pulseCdUntil'] === 'number') r['pulseCdUntil'] += deltaMs;
+    } catch {}
+  }
 }

@@ -460,7 +460,7 @@ export class CyberRunnerAbilityManager extends BaseAbilityManagerImpl {
   const isEvolved = !!((this.player as any)?.activeWeapons && (this.player as any).activeWeapons.has(WeaponType.RUNNER_OVERDRIVE));
   this.renderTrailOnly(ctx, S.trail, now, isEvolved);
 
-  // Boomerang body (bigger, with outline)
+  // Boomerang body (smaller visual silhouette)
     const ang = (now - S.t0) / 1000 * S.spin;
     
     ctx.save();
@@ -472,19 +472,20 @@ export class CyberRunnerAbilityManager extends BaseAbilityManagerImpl {
   const bodyStroke = isEvolved ? '#ffdede' : '#ffffff';
   ctx.fillStyle = bodyFill;
   ctx.strokeStyle = bodyStroke;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(26, 0);
-    ctx.lineTo(-10, 10);
-    ctx.lineTo(-8, 0);
-    ctx.lineTo(-10, -10);
+    // Scaled down ~60%
+    ctx.moveTo(16, 0);
+    ctx.lineTo(-6, 6);
+    ctx.lineTo(-5, 0);
+    ctx.lineTo(-6, -6);
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
     // Center glint
     ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.arc(0, 0, 3.5, 0, Math.PI * 2);
+    ctx.arc(0, 0, 2.0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
@@ -506,7 +507,8 @@ export class CyberRunnerAbilityManager extends BaseAbilityManagerImpl {
       if (along > 0.85) alpha *= 0.45;
       const tsx = b.x;
       const tsy = b.y;
-      const r = (14 + 16 * (1 - age)) * (along > 0.90 ? 0.7 : 1.0);
+      // Thinner puffs for a much smaller visual footprint (was ~14..30)
+      const r = (7 + 9 * (1 - age)) * (along > 0.90 ? 0.6 : 0.85);
       const grad = ctx.createRadialGradient(tsx, tsy, 0, tsx, tsy, r);
       if (evolved) {
         // Red theme for evolved Runner Gun

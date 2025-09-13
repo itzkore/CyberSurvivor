@@ -18,83 +18,114 @@ export class LastStandShopOverlay {
   private rerollCount = 0;
   private scrapSpan!: HTMLSpanElement;
   private freeSpan!: HTMLSpanElement;
-  // Track purchased offer ids for the current roll to enforce one-time purchase per card
+  // Track purchased offer ids for the current roll (one-time purchase per card)
   private purchasedIds: Set<string> = new Set();
 
-  constructor(private shop: ShopManager, private currency: CurrencySystem, private onPurchase:(offer:Offer, useFree?: boolean)=>void, private onExit:()=>void) {
+  constructor(
+    private shop: ShopManager,
+    private currency: CurrencySystem,
+    private onPurchase: (offer: Offer, useFree?: boolean) => void,
+    private onExit: () => void
+  ) {
     const root = document.createElement('div');
     root.className = 'ls-shop-overlay';
     Object.assign(root.style, {
-      position:'fixed', inset:'0', display:'none', zIndex:'60',
-      background:'radial-gradient(1200px 600px at 50% 10%, rgba(0,20,26,0.96), rgba(0,0,0,0.96))',
-      color:'#eaffff', font:'600 14px Orbitron, system-ui, Segoe UI, Roboto, sans-serif',
-      alignItems:'center', justifyContent:'center'
+      position: 'fixed', inset: '0', display: 'none', zIndex: '60',
+      background: 'radial-gradient(1200px 600px at 50% 10%, rgba(0,20,26,0.96), rgba(0,0,0,0.96))',
+      color: '#eaffff', font: '600 14px Orbitron, system-ui, Segoe UI, Roboto, sans-serif',
+      alignItems: 'center', justifyContent: 'center',
+      pointerEvents: 'auto'
     } as CSSStyleDeclaration);
 
     const panel = document.createElement('div');
     Object.assign(panel.style, {
-      minWidth:'820px', maxWidth:'1100px', border:'1px solid rgba(120,255,235,0.25)', padding:'18px 18px 14px 18px', borderRadius:'14px',
-      background:'linear-gradient(180deg, rgba(2,18,22,0.95), rgba(0,10,12,0.95))', boxShadow:'0 14px 60px rgba(0,255,220,0.20)',
-      backdropFilter:'blur(3px)'
+      width: '1280px', height: '680px',
+      border: '1px solid rgba(120,255,235,0.25)', borderRadius: '14px',
+      background: 'linear-gradient(180deg, rgba(2,18,22,0.95), rgba(0,10,12,0.95))', boxShadow: '0 24px 90px rgba(0,255,220,0.22)',
+      backdropFilter: 'blur(4px)',
+      display: 'grid', gridTemplateRows: 'auto auto 1fr auto', padding: '18px'
     } as CSSStyleDeclaration);
+
+    // Header
     const header = document.createElement('div');
     header.innerHTML = '<span style="color:#7dffea">ARMORY</span> · Last Stand';
-    Object.assign(header.style, { fontSize:'24px', marginBottom:'6px', color:'#a5fff5', letterSpacing:'0.8px', textShadow:'0 0 12px rgba(0,255,220,0.25)' } as CSSStyleDeclaration);
-  const sub = document.createElement('div');
-  const capNote = `<span style="opacity:.85;font-size:11px;color:#8cf6ff">(Max 3 weapons, 3 passives)</span>`;
-  sub.innerHTML = `Scrap <span id="ls-shop-scrap" style="color:#fff">${this.currency.getBalance()}</span> · <span style="opacity:.9">Shop closes in <span id="ls-shop-timer">30</span>s</span> ${capNote} <span id="ls-shop-free" style="margin-left:8px;color:#ffd36b;opacity:.95"></span>`;
-    Object.assign(sub.style, { fontSize:'12px', opacity:'0.95', marginBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' } as CSSStyleDeclaration);
-  this.timer = sub.querySelector('#ls-shop-timer') as HTMLSpanElement;
-  this.scrapSpan = sub.querySelector('#ls-shop-scrap') as HTMLSpanElement;
-  this.freeSpan = sub.querySelector('#ls-shop-free') as HTMLSpanElement;
-    const list = document.createElement('div'); this.list = list;
-    Object.assign(list.style, { display:'grid', gridTemplateColumns:'1fr 1fr', gap:'14px' } as CSSStyleDeclaration);
+    Object.assign(header.style, { fontSize: '24px', marginBottom: '6px', color: '#a5fff5', letterSpacing: '0.8px', textShadow: '0 0 12px rgba(0,255,220,0.25)' } as CSSStyleDeclaration);
+
+    // Sub-header (timer + caps note + currency/free tokens)
+    const sub = document.createElement('div');
+    sub.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="opacity:.9">Shop resets in</span>
+          <span id="ls-shop-timer" style="color:#fff">15</span>s
+          <span style="opacity:.85;font-size:11px;color:#8cf6ff">(Max 3 weapons, 3 passives)</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="opacity:.9">Scrap</span>
+          <span id="ls-shop-scrap" style="color:#fff;background:rgba(120,255,235,0.1);border:1px solid rgba(120,255,235,0.25);padding:4px 8px;border-radius:8px;">${this.currency.getBalance()}</span>
+          <span id="ls-shop-free" style="color:#fff;background:rgba(255,210,120,0.10);border:1px solid rgba(255,210,120,0.35);padding:4px 8px;border-radius:8px;">Free: ${this.currency.getFreeUpgradeTokens()}</span>
+        </div>
+      </div>`;
+    this.timer = sub.querySelector('#ls-shop-timer') as HTMLSpanElement;
+    this.scrapSpan = sub.querySelector('#ls-shop-scrap') as HTMLSpanElement;
+    this.freeSpan = sub.querySelector('#ls-shop-free') as HTMLSpanElement;
+
+    // List grid (4 columns)
+    const listWrap = document.createElement('div');
+    Object.assign(listWrap.style, { position: 'relative', overflow: 'hidden', paddingRight: '0' } as CSSStyleDeclaration);
+    const list = document.createElement('div');
+    this.list = list;
+  Object.assign(list.style, { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '18px', alignContent: 'start' } as CSSStyleDeclaration);
+    listWrap.appendChild(list);
+
+    // Footer actions
     const actions = document.createElement('div');
-    Object.assign(actions.style, { marginTop:'12px', display:'flex', gap:'8px', justifyContent:'space-between', alignItems:'center' } as CSSStyleDeclaration);
-  const reroll = document.createElement('button'); this.rerollBtn = reroll;
+    Object.assign(actions.style, { marginTop: '10px', display: 'flex', gap: '8px', justifyContent: 'space-between', alignItems: 'center' } as CSSStyleDeclaration);
+    const reroll = document.createElement('button');
+    this.rerollBtn = reroll;
     reroll.textContent = 'Reroll (20)  [R]';
-    const close = document.createElement('button'); this.closeBtn = close; close.textContent = 'Leave Shop  [Enter]';
-    Object.assign(reroll.style, { padding:'9px 14px', borderRadius:'9px', border:'1px solid #0aa', background:'linear-gradient(180deg,#07323a,#042126)', color:'#7dffea', cursor:'pointer' } as CSSStyleDeclaration);
-    Object.assign(close.style, { padding:'9px 14px', borderRadius:'9px', border:'1px solid rgba(0,170,170,0.65)', background:'linear-gradient(180deg,#0a2227,#051518)', color:'#bff', cursor:'pointer' } as CSSStyleDeclaration);
-    actions.appendChild(reroll); actions.appendChild(close);
-    panel.appendChild(header); panel.appendChild(sub); panel.appendChild(list); panel.appendChild(actions);
+    Object.assign(reroll.style, { padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(120,255,235,0.25)', background: 'rgba(120,255,235,0.10)', color: '#eaffff', cursor: 'pointer' } as CSSStyleDeclaration);
+    const close = document.createElement('button');
+    this.closeBtn = close;
+    close.textContent = 'Resume  [Enter]';
+    Object.assign(close.style, { padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(120,255,235,0.25)', background: 'rgba(120,255,235,0.10)', color: '#eaffff', cursor: 'pointer' } as CSSStyleDeclaration);
+    actions.appendChild(reroll);
+    actions.appendChild(close);
+
+    panel.appendChild(header);
+    panel.appendChild(sub);
+    panel.appendChild(listWrap);
+    panel.appendChild(actions);
     root.appendChild(panel);
     document.body.appendChild(root);
     this.root = root;
 
-    this.currency.onChange(v => {
-      const s = panel.querySelector('#ls-shop-scrap'); if (s) s.textContent = String(v);
-      if (this.freeSpan) {
-        const n = this.currency.getFreeUpgradeTokens();
-        this.freeSpan.textContent = n > 0 ? `• Free upgrade available: ${n}` : '';
-      }
+    // Currency updates
+    this.currency.onChange(() => {
+      if (this.scrapSpan) this.scrapSpan.textContent = String(this.currency.getBalance());
+      if (this.freeSpan) this.freeSpan.textContent = `Free: ${this.currency.getFreeUpgradeTokens()}`;
+      this.updateRerollUI();
     });
-  reroll.onclick = () => this.handleReroll();
+
+    // Actions
+    reroll.onclick = () => this.handleReroll();
     close.onclick = () => this.exit();
 
     // Keyboard shortcuts
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       if (!this.visible) return;
-  if (e.key.toLowerCase() === 'r') { this.handleReroll(); e.preventDefault(); }
-      if (e.key === 'Enter') { this.exit(); e.preventDefault(); }
-      const idx = parseInt(e.key, 10);
-      if (!isNaN(idx) && idx >= 1 && idx <= this.offers.length) {
-        const target = this.offers[idx-1];
-        if (this.purchasedIds.has(target.id)) return;
-        const capped = this.isOfferCapped(target);
-        const canUseFree = this.currency.hasFreeUpgrade();
-        const affordable = (!capped) && (this.currency.getBalance() >= target.price || canUseFree);
-        if (affordable) {
-          const useFree = canUseFree && this.currency.getBalance() < target.price; // auto-use when needed
-          this.onPurchase(target, useFree);
-          this.purchasedIds.add(target.id);
-          this.refreshOffers(false);
-        }
+      const k = e.key;
+      if (k === 'Enter' || k === 'Escape') { this.exit(); e.preventDefault(); return; }
+      if (k === 'r' || k === 'R') { this.handleReroll(); e.preventDefault(); return; }
+      const idx = parseInt(k, 10);
+      if (Number.isFinite(idx) && idx >= 1 && idx <= 8) {
+        const child = this.list.children[idx - 1] as HTMLElement | undefined;
+        if (child) { child.click(); e.preventDefault(); }
       }
     });
   }
 
-  setTimer(seconds:number){ this.timer.textContent = String(Math.max(0, Math.ceil(seconds))); }
+  setTimer(seconds: number) { this.timer.textContent = String(Math.max(0, Math.ceil(seconds))); }
 
   private isOfferCapped(off: Offer): boolean {
     const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
@@ -106,7 +137,7 @@ export class LastStandShopOverlay {
         const has = aw ? (aw as any).has(off.data?.weaponType) : false;
         return (!has && size >= 3);
       } else if (off.kind === 'passive') {
-        const ap: Array<{type:string,level:number}> | undefined = (window as any).__gameInstance?.player?.activePassives || (window as any).game?.player?.activePassives;
+        const ap: Array<{ type: string, level: number }> | undefined = (window as any).__gameInstance?.player?.activePassives || (window as any).game?.player?.activePassives;
         const count = Array.isArray(ap) ? ap.length : 0;
         const already = Array.isArray(ap) ? !!ap.find(p => p.type === off.data?.passiveName) : false;
         return (!already && count >= 3);
@@ -115,15 +146,17 @@ export class LastStandShopOverlay {
     return false;
   }
 
-  private renderOffers(){
+  private renderOffers() {
     this.list.innerHTML = '';
     // Discover player's default weapon to badge class items
     let playerDefault: WeaponType | undefined;
     try { playerDefault = ((window as any).__gameInstance || (window as any).game || {}).selectedCharacterData?.defaultWeapon; } catch {}
-    for (let i=0;i<this.offers.length;i++) {
+
+    for (let i = 0; i < this.offers.length; i++) {
       const off = this.offers[i];
       const kind = off.kind;
       const alreadyBought = this.purchasedIds.has(off.id);
+
       // Derive spec/name/icon for better presentation
       let displayName = off.id;
       let subtitle = '';
@@ -133,7 +166,7 @@ export class LastStandShopOverlay {
         const wt = off.data?.weaponType as WeaponType | undefined;
         const spec = (wt != null) ? WEAPON_SPECS[wt] : undefined;
         displayName = spec?.name || displayName;
-        subtitle = spec?.traits?.slice(0,3).join(' • ') || spec?.description || 'Weapon';
+        subtitle = spec?.traits?.slice(0, 3).join(' • ') || spec?.description || 'Weapon';
         const raw = (spec?.icon || spec?.projectileVisual?.sprite || '/assets/projectiles/bullet_cyan.png') as string;
         const norm = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(raw.startsWith('/') ? raw : ('/' + raw.replace(/^\.\//, ''))) : raw;
         iconUrl = norm;
@@ -146,7 +179,7 @@ export class LastStandShopOverlay {
         if (iconUrl) iconUrl = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(iconUrl) : iconUrl;
         accent = '#a5b7ff';
       } else if (kind === 'perk') {
-        displayName = displayName.replace(/^perk[_-]/,'').toUpperCase();
+        displayName = displayName.replace(/^perk[_-]/, '').toUpperCase();
         subtitle = 'Immediate stat boost';
         accent = '#ddb16f';
       } else if (kind === 'turret') {
@@ -157,95 +190,177 @@ export class LastStandShopOverlay {
         subtitle = 'Utility upgrade';
         accent = '#ffd36b';
       }
+
+      // Card container (clicking anywhere will attempt purchase)
       const card = document.createElement('button');
       card.type = 'button';
-      Object.assign(card.style, { border:`1px solid rgba(120,255,235,0.25)`, borderRadius:'12px', padding:'12px', background:'linear-gradient(180deg, rgba(2,22,26,0.95), rgba(0,12,14,0.92))', color:'#cffffa', textAlign:'left', cursor:'pointer', display:'grid', gridTemplateColumns:'64px 1fr auto', gap:'12px', alignItems:'center', transition:'transform 80ms ease-out, box-shadow 120ms ease-out', position:'relative', overflow:'hidden' } as CSSStyleDeclaration);
+      card.dataset.index = String(i + 1);
+      Object.assign(card.style, {
+        border: `1px solid rgba(120,255,235,0.25)`, borderRadius: '12px', padding: '14px',
+        background: 'linear-gradient(180deg, rgba(2,22,26,0.96), rgba(0,10,12,0.94))', color: '#cffffa', textAlign: 'left', cursor: 'pointer',
+        display: 'grid', gridTemplateRows: 'auto 1fr auto', gap: '10px', alignItems: 'stretch', boxSizing: 'border-box',
+        transition: 'transform 80ms ease-out, box-shadow 120ms ease-out', position: 'relative', overflow: 'hidden',
+        minHeight: '164px'
+      } as CSSStyleDeclaration);
       card.onmouseenter = () => { card.style.boxShadow = '0 0 24px rgba(0,255,220,0.18)'; card.style.transform = 'translateY(-1px)'; };
       card.onmouseleave = () => { card.style.boxShadow = 'none'; card.style.transform = 'none'; };
+
+      // HEADER: icon | (meta + title) | price pill
+      const header = document.createElement('div');
+      Object.assign(header.style, { display: 'grid', gridTemplateColumns: '64px 1fr auto', gap: '12px', alignItems: 'center' } as CSSStyleDeclaration);
       const icon = document.createElement('div');
-      Object.assign(icon.style, { width:'64px', height:'64px', borderRadius:'10px', background:'rgba(0,255,220,0.06)', display:'grid', placeItems:'center', fontSize:'22px', color:'#7dffea', overflow:'hidden', border:`1px solid rgba(120,255,235,0.15)` } as CSSStyleDeclaration);
+      Object.assign(icon.style, { width: '64px', height: '64px', borderRadius: '10px', background: 'rgba(0,255,220,0.06)', display: 'grid', placeItems: 'center', fontSize: '22px', color: '#7dffea', overflow: 'hidden', border: `1px solid rgba(120,255,235,0.15)` } as CSSStyleDeclaration);
       if (iconUrl) {
-        const img = document.createElement('img'); img.src = iconUrl; img.alt = displayName; Object.assign(img.style, { width:'100%', height:'100%', objectFit:'contain' } as CSSStyleDeclaration);
+        const img = document.createElement('img'); img.src = iconUrl; img.alt = displayName; Object.assign(img.style, { width: '100%', height: '100%', objectFit: 'contain' } as CSSStyleDeclaration);
         icon.appendChild(img);
       } else {
         icon.textContent = kind === 'passive' ? '▲' : kind === 'turret' ? '⛭' : '⨳';
       }
-      const body = document.createElement('div');
-      const title = document.createElement('div'); title.textContent = displayName; Object.assign(title.style, { color:accent, marginBottom:'4px', fontSize:'16px', letterSpacing:'0.2px' } as CSSStyleDeclaration);
-      const desc = document.createElement('div'); desc.textContent = subtitle || this.describe(off); Object.assign(desc.style, { fontSize:'12px', opacity:'0.92' } as CSSStyleDeclaration);
-      // Class badge
-      let titleNode: HTMLElement = title;
+
+      const headText = document.createElement('div');
+      Object.assign(headText.style, { display: 'grid', gridTemplateRows: '18px auto', alignContent: 'center' } as CSSStyleDeclaration);
+      // badges line
+      const meta = document.createElement('div');
+      Object.assign(meta.style, { display: 'flex', alignItems: 'center', gap: '6px' } as CSSStyleDeclaration);
+      const typeBadge = document.createElement('span');
+      typeBadge.textContent = kind.toUpperCase();
+      Object.assign(typeBadge.style, { fontSize: '10px', padding: '2px 6px', borderRadius: '6px', background: 'rgba(120,255,235,0.08)', color: accent, border: '1px solid rgba(120,255,235,0.25)' } as CSSStyleDeclaration);
+      meta.appendChild(typeBadge);
       if (kind === 'weapon' && playerDefault != null && off.data?.weaponType === playerDefault) {
-        const badge = document.createElement('span'); badge.textContent = 'CLASS'; Object.assign(badge.style, { marginLeft:'8px', fontSize:'10px', padding:'2px 6px', borderRadius:'6px', background:'#2dbd8b', color:'#012', border:'1px solid rgba(0,0,0,0.25)' } as CSSStyleDeclaration);
-        const wrap = document.createElement('div'); Object.assign(wrap.style, { display:'flex', alignItems:'center' } as CSSStyleDeclaration);
-        wrap.appendChild(title); wrap.appendChild(badge);
-        titleNode = wrap;
+        const classBadge = document.createElement('span'); classBadge.textContent = 'CLASS'; Object.assign(classBadge.style, { fontSize: '10px', padding: '2px 6px', borderRadius: '6px', background: '#2dbd8b', color: '#012', border: '1px solid rgba(0,0,0,0.25)' } as CSSStyleDeclaration);
+        meta.appendChild(classBadge);
       }
-      const buyWrap = document.createElement('div');
-      Object.assign(buyWrap.style, { display:'grid', gap:'6px', justifyItems:'end', alignContent:'center' } as CSSStyleDeclaration);
-  const price = document.createElement('div'); Object.assign(price.style, { fontSize:'15px', color:'#fff', textShadow:'0 0 10px rgba(120,255,235,0.25)' } as CSSStyleDeclaration);
-  const buyBtn = document.createElement('div'); Object.assign(buyBtn.style, { fontSize:'12px', color:'#012', background:accent, padding:'6px 10px', borderRadius:'8px', border:'1px solid rgba(0,0,0,0.2)' } as CSSStyleDeclaration);
-  const hasFree = this.currency.hasFreeUpgrade();
-  const showFree = hasFree && !alreadyBought;
-  price.textContent = showFree ? 'FREE' : `${off.price} Scrap`;
-  buyBtn.textContent = alreadyBought ? 'Purchased' : (showFree ? `Claim Free  [${i+1}]` : `Buy  [${i+1}]`);
-      const hint = document.createElement('div'); hint.textContent = `[#${i+1}]`; Object.assign(hint.style, { fontSize:'11px', opacity:'0.65', textAlign:'right' } as CSSStyleDeclaration);
-  body.appendChild(titleNode); body.appendChild(desc);
-      buyWrap.appendChild(price); buyWrap.appendChild(buyBtn);
-      card.appendChild(icon); card.appendChild(body); card.appendChild(buyWrap);
+      const title = document.createElement('div');
+      title.textContent = displayName;
+      Object.assign(title.style, { color: accent, fontSize: '17px', letterSpacing: '0.2px', lineHeight: '18px', maxHeight: '36px', overflow: 'hidden' } as CSSStyleDeclaration);
+      try { (title.style as any).display = '-webkit-box'; (title.style as any).webkitLineClamp = '2'; (title.style as any).webkitBoxOrient = 'vertical'; } catch { }
+      headText.appendChild(meta); headText.appendChild(title);
+      const pricePill = document.createElement('div');
+      Object.assign(pricePill.style, { fontSize: '14px', color: '#fff', padding: '6px 10px', borderRadius: '999px', border: '1px solid rgba(120,255,235,0.25)', background: 'rgba(120,255,235,0.10)', whiteSpace: 'nowrap' } as CSSStyleDeclaration);
+      const hasFree = this.currency.hasFreeUpgrade();
+      const showFree = hasFree && !alreadyBought;
+      pricePill.textContent = showFree ? 'FREE' : `${off.price} Scrap`;
+      if (showFree) { pricePill.style.background = 'rgba(255,210,120,0.12)'; pricePill.style.borderColor = 'rgba(255,210,120,0.45)'; pricePill.style.color = '#fff4ce'; }
+      header.appendChild(icon); header.appendChild(headText); header.appendChild(pricePill);
 
-      // Enforce UI disabling for caps in Last Stand (mirror of ShopManager.purchase guard)
+      // CONTENT: trait chips + description (3-line clamp)
+      const content = document.createElement('div');
+      Object.assign(content.style, { display: 'grid', gridTemplateRows: 'auto auto', rowGap: '6px' } as CSSStyleDeclaration);
+      const chips = document.createElement('div');
+      Object.assign(chips.style, { display: 'flex', flexWrap: 'wrap', gap: '6px' } as CSSStyleDeclaration);
+      if (kind === 'weapon') {
+        try {
+          const wt = off.data?.weaponType as WeaponType | undefined;
+          const spec = (wt != null) ? WEAPON_SPECS[wt] : undefined;
+          const traits: string[] = Array.isArray(spec?.traits) ? spec!.traits.slice(0, 4) : [];
+          for (let j = 0; j < traits.length; j++) {
+            const chip = document.createElement('span');
+            chip.textContent = traits[j];
+            // Use inline-flex + fixed height to ensure perfect vertical centering inside the pill
+            Object.assign(
+              chip.style,
+              {
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxSizing: 'border-box',
+                height: '22px',
+                lineHeight: '22px',
+                padding: '0 8px',
+                fontSize: '11px',
+                borderRadius: '999px',
+                background: 'rgba(120,255,235,0.08)',
+                color: '#aef7ee',
+                border: '1px solid rgba(120,255,235,0.25)'
+              } as CSSStyleDeclaration
+            );
+            chips.appendChild(chip);
+          }
+        } catch { }
+      }
+      const desc = document.createElement('div');
+      desc.textContent = subtitle || this.describe(off);
+      Object.assign(desc.style, { fontSize: '13px', opacity: '0.95', lineHeight: '18px', maxHeight: '54px', overflow: 'hidden' } as CSSStyleDeclaration);
+      try { (desc.style as any).webkitLineClamp = '3'; (desc.style as any).display = '-webkit-box'; (desc.style as any).webkitBoxOrient = 'vertical'; } catch { }
+      if (chips.childElementCount > 0) content.appendChild(chips);
+      content.appendChild(desc);
+
+      // ACTIONS: full-width Buy + hint below
+      const actions = document.createElement('div');
+  Object.assign(actions.style, { display: 'grid', gridTemplateRows: 'auto auto', gap: '6px' } as CSSStyleDeclaration);
+      const buyBtn = document.createElement('div');
+  Object.assign(buyBtn.style, { fontSize: '13px', color: '#012', background: accent, padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(0,0,0,0.2)', textAlign: 'center', width: '100%', transition: 'box-shadow 140ms ease, filter 140ms ease, transform 80ms ease', cursor: 'pointer', boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' } as CSSStyleDeclaration);
+      const hint = document.createElement('div'); hint.textContent = `[#${i + 1} or click]`; Object.assign(hint.style, { fontSize: '11px', opacity: '0.65', textAlign: 'right' } as CSSStyleDeclaration);
+
       const capped = this.isOfferCapped(off);
-      const affordable = (this.currency.getBalance() >= off.price || hasFree) && !capped && !alreadyBought;
-      if (!affordable) {
-        card.style.opacity = '0.8';
-        buyBtn.style.filter = 'grayscale(0.4)';
-        buyBtn.style.background = '#244a49';
-        if (alreadyBought) buyBtn.textContent = 'Purchased'; else buyBtn.textContent = 'Insufficient';
+      const canAffordPrice = this.currency.getBalance() >= off.price;
+      const hasFreeNow = this.currency.hasFreeUpgrade();
+      const showFreeNow = hasFreeNow && !alreadyBought;
+      const canBuy = ((canAffordPrice || hasFreeNow) && !capped && !alreadyBought);
+
+      const btnLabel = alreadyBought ? 'Purchased' : (capped ? 'Slot Full' : (showFreeNow ? `Claim Free  [${i + 1}]` : `Buy  [${i + 1}]`));
+      buyBtn.textContent = btnLabel;
+
+      if (!canBuy) {
+        buyBtn.style.background = 'linear-gradient(180deg, #233438, #1b2a2e)';
+        buyBtn.style.color = '#9bb';
+        buyBtn.style.cursor = 'default';
+        buyBtn.style.filter = 'grayscale(0.3)';
+      } else {
+        buyBtn.onmouseenter = () => { buyBtn.style.boxShadow = '0 0 18px rgba(120,255,235,0.45), 0 0 6px rgba(120,255,235,0.35)'; buyBtn.style.transform = 'translateY(-1px)'; };
+        buyBtn.onmouseleave = () => { buyBtn.style.boxShadow = 'none'; buyBtn.style.transform = 'none'; };
       }
 
-      card.onclick = () => {
-        if (!affordable) return;
+      const attemptPurchase = () => {
+        if (!canBuy) return;
         const useFree = this.currency.hasFreeUpgrade() && this.currency.getBalance() < off.price;
         this.onPurchase(off, useFree);
         this.purchasedIds.add(off.id);
         this.refreshOffers(false);
       };
+
+      buyBtn.onclick = (ev) => { ev.stopPropagation(); attemptPurchase(); };
+      card.onclick = () => { attemptPurchase(); };
+
+      actions.appendChild(buyBtn);
+      actions.appendChild(hint);
+      card.appendChild(header);
+      card.appendChild(content);
+      card.appendChild(actions);
+
       this.list.appendChild(card);
     }
   }
 
-  private refreshOffers(newRoll = true){
-  if (newRoll) this.offers = this.shop.rollOffers(8);
+  private refreshOffers(newRoll = true) {
+    if (newRoll) { this.offers = this.shop.rollOffers(8); this.purchasedIds.clear(); }
     this.renderOffers();
     this.updateRerollUI();
   }
 
-  show(){ this.visible = true; this.root.style.display = 'flex'; this.purchasedIds.clear(); this.refreshOffers(); }
-  hide(){ this.visible = false; this.root.style.display = 'none'; }
-  isVisible(){ return this.visible; }
-  exit(){ this.hide(); this.onExit(); }
+  show() { this.visible = true; this.root.style.display = 'flex'; this.purchasedIds.clear(); this.refreshOffers(); }
+  hide() { this.visible = false; this.root.style.display = 'none'; }
+  isVisible() { return this.visible; }
+  exit() { this.hide(); this.onExit(); }
 
-  private handleReroll(){
+  private handleReroll() {
     const price = this.currentRerollPrice();
-    // Only proceed if we can afford the reroll
     if (this.currency.getBalance() >= price && this.currency.spend(price)) {
       this.rerollCount++;
-      this.refreshOffers();
-      this.updateRerollUI();
+      this.refreshOffers(true);
     }
   }
 
-  private currentRerollPrice(){ return this.rerollBase + Math.floor(this.rerollCount * 10); }
-  private updateRerollUI(){
+  private currentRerollPrice() { return this.rerollBase + Math.floor(this.rerollCount * 10); }
+  private updateRerollUI() {
     const price = this.currentRerollPrice();
     this.rerollBtn.textContent = `Reroll (${price})  [R]`;
     const canAfford = this.currency.getBalance() >= price;
     this.rerollBtn.disabled = !canAfford;
-    // Subtle visual when disabled
     this.rerollBtn.style.opacity = canAfford ? '1' : '0.75';
     this.rerollBtn.style.filter = canAfford ? 'none' : 'grayscale(0.4)';
     if (this.scrapSpan) this.scrapSpan.textContent = String(this.currency.getBalance());
+    if (this.freeSpan) this.freeSpan.textContent = `Free: ${this.currency.getFreeUpgradeTokens()}`;
   }
 
   private describe(off: Offer): string {

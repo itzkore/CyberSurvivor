@@ -88,9 +88,23 @@ export const TechAnchorRMB: AbilityDescriptor = {
       
       if (rightPressed && now >= S.cooldownUntil) {
         if (!S.anchor || !S.anchor.active) {
-          // Spawn new anchor at player position (safer fallback)
-          const worldX = p.x;
-          const worldY = p.y;
+          // Spawn new anchor at mouse world position (fallback to player pos), clamped to walkable
+          let worldX = p.x;
+          let worldY = p.y;
+          try {
+            const ms: any = (window as any).mouseState;
+            if (ms && typeof ms.worldX === 'number' && typeof ms.worldY === 'number') {
+              worldX = ms.worldX; worldY = ms.worldY;
+            }
+            const rm: any = g?.roomManager || (window as any).__roomManager;
+            if (rm && typeof rm.clampToWalkable === 'function') {
+              const rad = (p as any)?.radius ?? 16;
+              const clamped = rm.clampToWalkable(worldX, worldY, rad, 'player');
+              if (clamped && typeof clamped.x === 'number' && typeof clamped.y === 'number') {
+                worldX = clamped.x; worldY = clamped.y;
+              }
+            }
+          } catch {}
           
           S.anchor = {
             x: worldX,

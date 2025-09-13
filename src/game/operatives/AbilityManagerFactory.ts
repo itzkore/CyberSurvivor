@@ -3,6 +3,11 @@ import { TechWarriorAbilityManager } from './tech_warrior/TechWarriorAbilityMana
 import { CyberRunnerAbilityManager } from './cyber_runner/CyberRunnerAbilityManager';
 import { HeavyGunnerAbilityManager } from './heavy_gunner/HeavyGunnerAbilityManager';
 import { WastelandScavengerAbilityManager } from './wasteland_scavenger/WastelandScavengerAbilityManager';
+import { BioEngineerAbilityManager } from './bio_engineer/BioEngineerAbilityManager';
+import { DataSorcererAbilityManager } from './data_sorcerer/DataSorcererAbilityManager';
+import { GhostOperativeAbilityManager } from './ghost_operative/GhostOperativeAbilityManager';
+import { NeuralNomadAbilityManager } from './neural_nomad/NeuralNomadAbilityManager';
+import { PsionicWeaverAbilityManager } from './psionic_weaver/PsionicWeaverAbilityManager';
 
 /**
  * Factory for creating ability managers based on operative ID
@@ -21,6 +26,16 @@ export class AbilityManagerFactory {
       
       case 'wasteland_scavenger':
         return new WastelandScavengerAbilityManager();
+      case 'bio_engineer':
+        return new BioEngineerAbilityManager();
+      case 'data_sorcerer':
+        return new DataSorcererAbilityManager();
+      case 'ghost_operative':
+        return new GhostOperativeAbilityManager();
+      case 'neural_nomad':
+        return new NeuralNomadAbilityManager();
+      case 'psionic_weaver':
+        return new PsionicWeaverAbilityManager();
       
       // TODO: Add other operatives as they are refactored
       default:

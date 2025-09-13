@@ -1598,9 +1598,25 @@ export class MainMenu {
       sorted = legacySorted;
     }
   }
-  // For Last Stand/Dungeon: only show entries that passed strict meta validation
+  // For Last Stand/Dungeon: if empty, try legacy (unscoped) period boards and filter by meta.mode
+  if ((!sorted || sorted.length === 0) && (mode === 'LAST_STAND' || mode === 'DUNGEON')) {
+    const legacyBase = board; // no :mode suffix
+    const legacyFinal = selectedOp ? `${legacyBase}:op:${selectedOp}` : legacyBase;
+    const legacySorted = await fetchTop(legacyFinal, 10, 0).catch(()=>fetchTop(legacyBase,10,0));
+    if (legacySorted && legacySorted.length) {
+      // Filter legacy entries to those tagged with the desired mode in per-board meta
+      const filteredLegacy = legacySorted.filter(e => ((e as any).__metaMode || '').toUpperCase() === mode);
+      if (filteredLegacy.length) {
+        usingLegacy = true;
+        baseBoard = legacyBase;
+        finalBoard = legacyFinal;
+        sorted = filteredLegacy;
+      }
+    }
+  }
+  // For Last Stand/Dungeon: only show entries that passed strict meta validation (when available)
   if (mode === 'LAST_STAND' || mode === 'DUNGEON') {
-    const filtered = (sorted || []).filter(e => (e as any).__metaOk === true);
+    const filtered = (sorted || []).filter(e => (e as any).__metaOk === true || ((e as any).__metaMode || '').toUpperCase() === mode);
     sorted = filtered.length ? filtered : [];
   }
   // Try to complete missing run details by probing exact per-operative boards for the same time

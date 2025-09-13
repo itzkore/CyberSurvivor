@@ -39,6 +39,9 @@ export class FogOfWarSystem {
   // We generate a medium-resolution texture and scale it to the requested radius at draw time.
   private circleSprite: OffscreenCanvas | HTMLCanvasElement | null = null;
   private circleSpriteBaseSize = 512; // px, tuned for balance of quality/perf
+  // Pre-baked monochrome noise sprite for subtle edge dithering
+  private noiseSprite: OffscreenCanvas | HTMLCanvasElement | null = null;
+  private noiseSpriteSize = 128;
 
   /** Configure grid metadata. For sparse mode only tileSize is required. */
   public setGrid(cols: number | undefined, rows: number | undefined, tileSize: number) {
@@ -106,12 +109,23 @@ export class FogOfWarSystem {
       enable?: boolean;
       exploredAlpha?: number;
       darkAlpha?: number;
+      /** Optional darkness fill color; use a very dark blue-gray to feel more natural than pure black. */
+      darkColor?: string;
       visibleCenterX?: number; // world coords (player.x)
       visibleCenterY?: number; // world coords (player.y)
       visibleRadiusPx?: number; // override radius in pixels (fallback = lastRadiusTiles * tileSize)
   visibleRects?: Array<{ x:number; y:number; w:number; h:number }>; // extra clear rects in world coords
   /** Optional: clip the circular reveal to these rects (world coords). Useful to restrict visibility outside corridors. */
   circleClipRects?: Array<{ x:number; y:number; w:number; h:number }>;
+      /** Enable subtle edge dithering to break up the reveal line (default true). */
+      edgeNoise?: boolean;
+      /** Strength of the edge noise (0..0.3 recommended). Default 0.06 */
+      edgeNoiseStrength?: number;
+      /** Fractional inner/outer radii for the soft edge band used by noise (relative to visibleRadius). */
+      edgeNoiseBand?: { inner: number; outer: number };
+      /** A soft penumbra outside the main reveal radius to eliminate any perceived hard line into darkness. */
+      penumbraScale?: number; // default 1.30 (relative to visible radius)
+      penumbraAlpha?: number; // default 0.08 (0..1), strength of soft lightening
     }
   ) {
     if (opts && opts.enable === false) return; // disabled
@@ -120,11 +134,11 @@ export class FogOfWarSystem {
     if (!this.maskCtx || !this.maskCanvas) return;
 
   const mctx = this.maskCtx as CanvasRenderingContext2D;
-    // Fill darkness
-  const darkAlpha = Math.max(0.25, Math.min(1, (opts?.darkAlpha ?? 0.95))); // slightly lighter by default to reduce perceived banding
+    // Fill darkness – use a tinted near-black to feel less artificial than pure #000
+  const darkAlpha = Math.max(0.25, Math.min(1, (opts?.darkAlpha ?? 0.88)));
     mctx.globalCompositeOperation = 'source-over';
     mctx.globalAlpha = darkAlpha;
-    mctx.fillStyle = '#000';
+    mctx.fillStyle = opts?.darkColor || '#05080d';
     mctx.fillRect(0, 0, this.maskW, this.maskH);
 
   // 1) Continuous visible circle centered on player (smooth falloff)
@@ -138,6 +152,9 @@ export class FogOfWarSystem {
   if (!isFinite(vR) || vR <= 0) vR = Math.max(64, Math.floor(this.tileSize * Math.max(1, this.lastRadiusTiles)));
   // Ensure cached circle sprite exists (alpha falloff baked once)
   this.ensureCircleSprite();
+  // Ensure noise sprite for edge dithering if needed
+  const useNoise = (opts?.edgeNoise ?? true) === true;
+  if (useNoise) this.ensureNoiseSprite();
   // If circleClipRects provided, constrain the circle reveal to their union
   const hasClipRects = !!(opts?.circleClipRects && opts.circleClipRects.length);
   if (hasClipRects) {
@@ -159,6 +176,21 @@ export class FogOfWarSystem {
     mctx.drawImage(this.circleSprite as any, Math.round(vcx - vR), Math.round(vcy - vR), Math.round(d), Math.round(d));
   }
 
+  // 1a) Soft penumbra beyond the reveal edge – lightly lifts darkness in a wider circle
+  {
+    // Make the outside band darker by default: narrower and weaker penumbra lighten
+    const penScale = Math.max(1.0, Math.min(2.5, opts?.penumbraScale ?? 1.18));
+    const penAlpha = Math.max(0, Math.min(0.4, opts?.penumbraAlpha ?? 0.04));
+    if (penAlpha > 0 && penScale > 1.0) {
+      const r2 = Math.floor(vR * penScale);
+      const d2 = r2 * 2;
+      mctx.globalCompositeOperation = 'destination-out';
+      mctx.globalAlpha = penAlpha;
+      mctx.drawImage(this.circleSprite as any, Math.round(vcx - r2), Math.round(vcy - r2), Math.round(d2), Math.round(d2));
+      mctx.globalAlpha = 1;
+    }
+  }
+
   // 1b) Additional clear rectangles (e.g., corridor road) in world coords
   if (opts?.visibleRects && opts.visibleRects.length) {
     mctx.globalCompositeOperation = 'destination-out';
@@ -169,6 +201,26 @@ export class FogOfWarSystem {
       const ry = r.y - camera.y;
       mctx.fillRect(Math.round(rx), Math.round(ry), Math.round(r.w), Math.round(r.h));
     }
+  }
+
+  // 1c) Subtle noise dithering on the reveal edge to break a perfect line
+  if (useNoise && this.noiseSprite) {
+    // Clip to an annulus band [inner, outer] of the visible circle
+  // Constrain noise band to be mostly inside the visible radius so we don't lighten outside
+  const band = opts?.edgeNoiseBand || { inner: 0.82, outer: 0.98 };
+    const innerR = Math.max(8, Math.floor(vR * Math.max(0, Math.min(band.inner, 1.5))));
+    const outerR = Math.max(innerR+1, Math.floor(vR * Math.max(0, Math.min(band.outer, 2.0))));
+    mctx.save();
+    mctx.beginPath();
+    mctx.arc(Math.round(vcx), Math.round(vcy), outerR, 0, Math.PI * 2);
+    mctx.arc(Math.round(vcx), Math.round(vcy), innerR, 0, Math.PI * 2, true);
+    mctx.clip();
+    // Use destination-out to subtract a tiny irregular amount from darkness (lighten)
+    mctx.globalCompositeOperation = 'destination-out';
+  mctx.globalAlpha = Math.max(0, Math.min(0.3, opts?.edgeNoiseStrength ?? 0.05));
+    // Tile/stretch once to cover the mask; scale keeps it cheap
+    mctx.drawImage(this.noiseSprite as any, 0, 0, this.maskW, this.maskH);
+    mctx.restore();
   }
 
   // 2) Explored memory: visual only, no transparency punch-out
@@ -214,15 +266,41 @@ export class FogOfWarSystem {
     const c = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(sz, sz) : (() => { const el = document.createElement('canvas'); el.width = sz; el.height = sz; return el; })();
     const g = (c as any).getContext ? (c as HTMLCanvasElement).getContext('2d')! : (c as OffscreenCanvas).getContext('2d')!;
     const r = sz / 2;
-  // Softer feather profile: longer transition from full to edge to avoid harsh edge against black
+  // Softer feather profile: widen transition and make outermost alpha exactly 0
+  // to avoid any hard ring at the boundary. Stops approximate a smoothstep curve.
     const grad = g.createRadialGradient(r, r, 0, r, r, r);
   grad.addColorStop(0.00, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.74, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.90, 'rgba(255,255,255,0.55)');
-  grad.addColorStop(1.00, 'rgba(255,255,255,0.28)');
+  grad.addColorStop(0.58, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.76, 'rgba(255,255,255,0.60)');
+  grad.addColorStop(0.88, 'rgba(255,255,255,0.30)');
+  grad.addColorStop(0.96, 'rgba(255,255,255,0.12)');
+  grad.addColorStop(1.00, 'rgba(255,255,255,0.00)');
     g.fillStyle = grad;
     g.fillRect(0, 0, sz, sz);
     this.circleSprite = c;
+  }
+
+  /** Build once a small monochrome noise sprite for edge dithering. */
+  private ensureNoiseSprite() {
+    if (this.noiseSprite) return;
+    const sz = this.noiseSpriteSize;
+    const c = (typeof OffscreenCanvas !== 'undefined') ? new OffscreenCanvas(sz, sz) : (() => { const el = document.createElement('canvas'); el.width = sz; el.height = sz; return el; })();
+    const g = (c as any).getContext ? (c as HTMLCanvasElement).getContext('2d')! : (c as OffscreenCanvas).getContext('2d')!;
+    const img = g.createImageData(sz, sz);
+    // Precompute noise – keep it sparse and stable; quantize to 3 levels to avoid banding
+    const data = img.data;
+    for (let i = 0, p = 0; i < sz * sz; i++, p += 4) {
+      // xorshift-like LCG on index for deterministic flicker-free pattern
+      let v = (i * 1664525 + 1013904223) >>> 0;
+      v ^= v << 13; v ^= v >>> 17; v ^= v << 5;
+      const n = (v & 0xff);
+      // quantize: 0, 128, 255
+      const q = (n < 85) ? 0 : (n < 170 ? 128 : 255);
+      data[p] = data[p+1] = data[p+2] = q;
+      data[p+3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+    this.noiseSprite = c;
   }
 
   private makeRadialHoleSprite(diameter: number, innerAlpha: number): OffscreenCanvas | HTMLCanvasElement {

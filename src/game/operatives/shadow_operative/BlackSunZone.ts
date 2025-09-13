@@ -1,4 +1,4 @@
-import type { Player } from './Player';
+import type { Player } from '../../Player';
 
 export type BlackSunSeedParams = {
   fuseMs: number;
@@ -30,12 +30,12 @@ export class BlackSunZoneManager {
     this.player = player;
   }
 
-  spawn(x:number, y:number, params: BlackSunSeedParams): void {
+  spawn(_x:number, _y:number, _params: BlackSunSeedParams): void {
     // No-op: zones are disabled
     return;
   }
 
-  isPointWithinAny(x:number, y:number, expand:number = 0): boolean {
+  isPointWithinAny(_x:number, _y:number, _expand:number = 0): boolean {
     return false;
   }
 
@@ -46,18 +46,18 @@ export class BlackSunZoneManager {
    */
   shouldSuppressKnockbackAt(_x:number, _y:number): boolean { return false; }
 
-  update(deltaMs:number): void {
+  update(_deltaMs:number): void {
     // No-op: zones are disabled
     return;
   }
 
-  draw(ctx: CanvasRenderingContext2D): void {
+  draw(_ctx: CanvasRenderingContext2D): void {
     // No-op visuals; zones are removed
     return;
   }
 
   /** Returns true if a point lies within any short-lived spawn-suppression ring. */
-  public isWithinSpawnSuppress(x:number, y:number): boolean {
+  public isWithinSpawnSuppress(_x:number, _y:number): boolean {
     return false;
   }
 }

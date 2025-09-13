@@ -260,6 +260,12 @@ export class TechWarriorAbilityManager extends BaseAbilityManagerImpl {
     }
   }
 
+  /**
+   * Handle Tech Warrior RMB Anchor ability.
+   * - First press: place an anchor at mouse world position, clamped to walkable space.
+   * - Second press: teleport to the anchor and trigger effects.
+   * Ensures anchor is only placed on valid walkable terrain using RoomManager.clampToWalkable.
+   */
   private updateAnchorAbility(dt: number, keyState: any, inputLocked: boolean): void {
   // DEBUG: Log anchor state on RMB
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -294,6 +300,19 @@ export class TechWarriorAbilityManager extends BaseAbilityManagerImpl {
             anchorX = mouseState.worldX;
             anchorY = mouseState.worldY;
           }
+          // Clamp intended anchor position to nearest walkable point (player group)
+          try {
+            const gameInstance: any = (this.player as any).gameContext || (window as any).__gameInstance;
+            const roomManager: any = gameInstance?.roomManager || (window as any).__roomManager;
+            if (roomManager && typeof roomManager.clampToWalkable === 'function') {
+              const rad = (this.player as any)?.radius ?? 16;
+              const clamped = roomManager.clampToWalkable(anchorX, anchorY, rad, 'player');
+              if (clamped && typeof clamped.x === 'number' && typeof clamped.y === 'number') {
+                anchorX = clamped.x;
+                anchorY = clamped.y;
+              }
+            }
+          } catch {}
           
           this.anchorX = anchorX;
           this.anchorY = anchorY;

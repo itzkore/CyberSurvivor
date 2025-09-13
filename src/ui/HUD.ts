@@ -81,6 +81,10 @@ export class HUD {
   if (classId === 'neural_nomad') {
     classAccent = '#26ffe9'; // Nomad teal
   }
+  // Ghost Operative: use neutral steel grey accent instead of purple
+  if (classId === 'ghost_operative') {
+    classAccent = '#9aa5ad';
+  }
   // Lattice-active theme override for Psionic Weaver: dark purple accent on stats panel
   try {
     if (classId === 'psionic_weaver' && (this.player as any)?.getWeaverLatticeMeter) {
@@ -245,8 +249,16 @@ export class HUD {
         const m: any = (this.player as any).getSorcererSigilMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
         const label = m.ready ? 'SIGIL READY (Spacebar)' : `SIGIL ${Math.ceil((m.max - m.value)/1000)}s`;
-  // Golden theme for Sorcerer
-  this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ffd700', '#332600', '#ffe066', label);
+        // Golden theme for Sorcerer (primary bar: Space ability)
+        this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ffd700', '#332600', '#ffe066', label);
+        // Second bar: Data Storm RMB cooldown/active state
+        const stormGetter = (this.player as any).getSorcererStormMeter;
+        if (stormGetter) {
+          const sm: any = stormGetter();
+          const ratio2 = sm.max > 0 ? sm.value / sm.max : 0;
+          const label2 = sm.active ? 'DATA STORM ACTIVE' : (sm.ready ? 'DATA STORM READY (RMB)' : `DATA STORM ${Math.ceil((sm.max - sm.value)/1000)}s`);
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#ffd36b', '#3a2a00', '#ffe499', label2);
+        }
       } else if (id === 'ghost_operative' && (this.player as any).getGhostSniperCharge) {
         const s: any = (this.player as any).getGhostSniperCharge();
         let ratio = 0;
@@ -267,6 +279,13 @@ export class HUD {
           const label2 = cm.active ? 'CLOAK ACTIVE' : (cm.ready ? 'CLOAK READY (Spacebar)' : `CLOAK ${Math.ceil((cm.max - cm.value)/1000)}s`);
           // Place directly above the sniper bar with same width
           this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#8cf6ff', '#0e2a33', '#00d2ff', label2);
+        }
+        // Third bar: Ult RMB meter (charge progress or cooldown)
+        if ((this.player as any).getGhostUltMeter) {
+          const um: any = (this.player as any).getGhostUltMeter();
+          const ratio3 = um.max > 0 ? um.value / um.max : 0;
+          const label3 = um.active && um.max === 3000 ? 'ULT CHARGING (RMB)' : (um.ready ? 'ULT READY (RMB)' : `ULT ${Math.ceil((um.max - um.value)/1000)}s`);
+          this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, ratio3, '#e0f7ff', '#0b1a22', '#c9ecff', label3);
         }
       } else if (id === 'shadow_operative' && (this.player as any).getVoidSniperCharge) {
         const s: any = (this.player as any).getVoidSniperCharge();
@@ -291,11 +310,22 @@ export class HUD {
           this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#8c3cff', '#1a0830', '#bb88ff', label2);
         }
       } else if (id === 'neural_nomad' && (this.player as any).getOvermindMeter) {
+        // Primary class bar: Overmind (Space)
         const m: any = (this.player as any).getOvermindMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
         const label = m.active ? 'OVERMIND ACTIVE' : (m.ready ? 'OVERMIND READY (Spacebar)' : `OVERMIND ${Math.ceil((m.max - m.value)/1000)}s`);
         // Teal theme for Nomad
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#26ffe9', '#07333a', '#00b3a3', label);
+        // Second bar: Brainstorm Swarm RMB cooldown/active
+        try {
+          const sm: any = (this.player as any).getNomadSwarmMeter ? (this.player as any).getNomadSwarmMeter() : null;
+          if (sm) {
+            const ratio2 = sm.max > 0 ? sm.value / sm.max : 0;
+            const label2 = sm.active ? 'SWARM ACTIVE' : (sm.ready ? 'SWARM READY (RMB)' : `SWARM ${Math.ceil((sm.max - sm.value)/1000)}s`);
+            // Lighter ice‑teal accents to differentiate from Overmind
+            this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#9ff7ff', '#0a2a30', '#6be8ff', label2);
+          }
+        } catch { /* ignore */ }
       } else if (id === 'bio_engineer' && (this.player as any).getBioOutbreakMeter) {
         const m: any = (this.player as any).getBioOutbreakMeter();
         const ratio = m.max > 0 ? m.value / m.max : 0;
@@ -309,6 +339,14 @@ export class HUD {
           const label2 = bm.active ? 'BIO BOOST ACTIVE' : (bm.ready ? 'BIO BOOST READY (Shift)' : `BIO BOOST ${Math.ceil((bm.max - bm.value)/1000)}s`);
           // Place directly above Outbreak bar with neon toxic theme
           this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#b6ff00', '#1a3300', '#73ff00', label2);
+        }
+        // Third bar: Mycelial Network RMB cooldown/ready
+        if ((this.player as any).getBioNetworkMeter) {
+          const nm: any = (this.player as any).getBioNetworkMeter();
+          const ratio3 = nm.max > 0 ? nm.value / nm.max : 0;
+          const label3 = nm.ready ? 'MYCELIAL READY (RMB)' : `MYCELIAL ${Math.ceil((nm.max - nm.value)/1000)}s`;
+          // Toxic ribbon theme: lime to pale yellow
+          this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, ratio3, '#9CFF2E', '#103300', '#E6FF66', label3);
         }
         // Tiny biohazard icon hint centered in the gap between HP and class bars (no overlap)
         try {
@@ -348,6 +386,13 @@ export class HUD {
           this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#6B1FB3', '#200a38', '#B37DFF', label);
         } else {
           this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#ff4de3', '#2a0b28', '#ff94f0', label);
+        }
+        // RMB: Phase Stitch meter (sits above Lattice)
+        if ((this.player as any).getWeaverStitchMeter) {
+          const rm: any = (this.player as any).getWeaverStitchMeter();
+          const rRatio = rm.max > 0 ? rm.value / rm.max : 0;
+          const rLabel = rm.active ? 'PHASE STITCH AIMING' : (rm.ready ? 'PHASE STITCH READY (RMB)' : `STITCH ${Math.ceil((rm.max - rm.value)/1000)}s`);
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, rRatio, '#ff4de3', '#2a0b28', '#ff94f0', rLabel);
         }
   } else if (id === 'rogue_hacker' && (this.player as any).getHackerHackMeter) {
         // Detect evolution ownership for theming
@@ -1130,11 +1175,13 @@ export class HUD {
     const agility = this.player.agility || 0;
     const luck = this.player.luck || 0;
     let basePct = Math.min(60, (agility * 0.8 + luck * 1.2) * 0.5); // percent (0..60)
-    const bonus = (this.player as any).critBonus;
-    if (typeof bonus === 'number') {
-      basePct += bonus * 100; // convert 0..0.5 to 0..50%
-    }
-    return Math.min(100, basePct);
+    // Defensive: coerce critBonus to a finite number and clamp to a sane range (0..0.6)
+    const rawBonus = (this.player as any).critBonus;
+    const bonusNum = typeof rawBonus === 'number' && isFinite(rawBonus) ? rawBonus : 0;
+    const clampedBonus = Math.max(0, Math.min(0.6, bonusNum));
+    basePct += clampedBonus * 100; // convert 0..0.6 -> 0..60%
+    // Cap display at 60% baseline + 60% bonus = 100% max
+    return Math.max(0, Math.min(100, basePct));
   }
 
   private computePowerScore(): number {

@@ -1090,11 +1090,24 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       return { cooldown, damage, anchors, threadLifeMs, pulseIntervalMs, pulsePct, detonateFrac } as any;
     }
   },
-  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 92, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 102, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], evolution: { evolvedWeaponType: WeaponType.SPECTRAL_EXECUTIONER, requiredPassive: 'Vision' }, usageTips: [
+  [WeaponType.GHOST_SNIPER]: { id: WeaponType.GHOST_SNIPER, name: 'Ghost Sniper', icon: AssetLoader.normalizePath('/assets/projectiles/bullet_laserblaster.png'), cooldown: 60, salvo: 1, spread: 0, projectile: 'sniper_white', speed: 22.4, range: 1200, maxLevel: 7, damage: 50, projectileVisual: { type: 'laser', color: '#FFFFFF', thickness: 2, length: 140, glowColor: '#FFFFFF', glowRadius: 18 }, traits: ['Laser','Armor Pierce','Scaling'], evolution: { evolvedWeaponType: WeaponType.SPECTRAL_EXECUTIONER, requiredPassive: 'Vision' }, usageTips: [
     'Take longer lines of sight—shots pierce and reward straight lanes.',
     'Weave between shots; high alpha damage favors deliberate pacing.',
     'Prioritize elites and bosses—armor pierce makes headway through tanks.'
-  ], isClassWeapon: true, getLevelStats(level:number){ const baseDamage=106, baseCooldown=90, mult=8.4; const dmg=Math.round(baseDamage*(1+(level-1)*(mult-1)/6)); const cd=Math.round(baseCooldown*(1-(level-1)*0.40/6)); return {damage:dmg, cooldown:cd}; } },
+  ], isClassWeapon: true, getLevelStats(level:number){
+      // Target explicit single-target DPS milestones AFTER global class 0.6x:
+      // L1=50 DPS, L7=700 DPS. Because class weapons are multiplied by 0.6 at runtime,
+      // we set pre-multiplier targets = desired / 0.6 (≈1.6667×) here.
+      const lvl = Math.max(1, Math.min(7, level));
+      const cdTable =    [60, 58, 56, 54, 52, 50, 48]; // frames
+      // Pre-multiplier DPS to achieve 50/700 after 0.6x: scale former rails by 1/0.6
+      const dpsTargets = [83,183,350,600,867,1033,1167]; // ≈ (50..700)/0.6
+      const cd = cdTable[lvl-1];
+      const damage = Math.max(1, Math.round(dpsTargets[lvl-1] * cd / 60));
+      // Slight range/speed polish with level (cosmetic)
+      const speed = 22.4 + (lvl-1) * 0.3;
+      return { damage, cooldown: cd, speed } as any;
+    } },
   /** Spectral Executioner — Evolution of Ghost Sniper: Marks targets; on mark expiry or death triggers an on‑target execution pulse that can chain. */
   [WeaponType.SPECTRAL_EXECUTIONER]: {
     id: WeaponType.SPECTRAL_EXECUTIONER,
@@ -1106,7 +1119,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
       'Marks can chain to nearby marked targets as smaller pulses. Focus fire to set up multi-kills.',
   'Crit as the gate synergizes—stack crit to amplify execute windows.'
     ],
-    cooldown: 100, // slightly higher than base to pay for execute
+  cooldown: 50, // faster cadence to meet single-target DPS goal
     salvo: 1,
     spread: 0,
     projectile: 'sniper_white',
@@ -1118,19 +1131,17 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     traits: ['Laser','Mark','Execute','Chain','Pierces','Evolution'],
     isClassWeapon: true,
     getLevelStats(level:number){
-      // Rebuff from low result to reach PF band safely
-      const base = (WEAPON_SPECS as any)[WeaponType.GHOST_SNIPER];
-      const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 220, cooldown: 60 } as any;
-      const baseDpsL7 = (s.damage * 60) / Math.max(1, (s.cooldown || 60));
-  const targetDps = baseDpsL7 * 1.30; // gentle bump to raise toward ~1500 PF
-      const cooldown = 100;
-      const damage = Math.max(1, Math.round((targetDps * cooldown) / 60 * 0.48));
-      // Execution parameters
-      const markMs = 1200; // mark duration
-      const execMult = 1.45;
-      const chainCount = 2; // max extra marked targets
-      const chainMult = 0.48;
-      return { cooldown, damage, markMs, execMult, chainCount, chainMult } as any;
+      // Evolved single-target DPS target: 1200 DPS AFTER 0.6x class nerf.
+      // Set pre-multiplier target to 1200 / 0.6 = 2000 DPS.
+      const targetDps = 2000;
+      const cooldown = 50; // frames
+      const baseDamage = Math.max(1, Math.round((targetDps * cooldown) / 60));
+      // Execution parameters balanced around single-target budget; AoE/chain is gravy not primary DPS.
+      const markMs = 900;
+      const execMult = 1.25;
+      const chainCount = 1; // limit chaining so single-target stays primary
+      const chainMult = 0.40;
+      return { cooldown, damage: baseDamage, markMs, execMult, chainCount, chainMult } as any;
     }
   },
   /** Void Sniper: Shadow Operative variant of Ghost Sniper. Deals damage over time only. */

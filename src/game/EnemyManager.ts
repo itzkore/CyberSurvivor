@@ -24,7 +24,8 @@ import { AssetLoader } from './AssetLoader';
 import { Logger } from '../core/Logger';
 import { eventBus } from '../core/EventBus';
 import { WEAPON_SPECS } from './WeaponConfig';
-import { BlackSunZoneManager } from './BlackSunZone';
+import { BlackSunZoneManager } from './operatives/shadow_operative/BlackSunZone';
+import { DataTornadoZoneManager } from './operatives/data_sorcerer/DataTornadoZone';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
 import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS, getHealEfficiency } from './Balance';
 // Elite behaviors
@@ -85,6 +86,8 @@ export class EnemyManager {
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid for enemies (optimization for zone queries)
   private spawnBudgetCarry: number = 0; // carry fractional spawn budget between ticks so early game spawns occur
   private enemySpeedScale: number = 0.55; // further reduced global speed scaler to keep mobs slower overall
+  // Bio Engineer RMB: Mycelial Network zones (toxic ribbon segments)
+  private mycelialZones: Array<{ x1:number; y1:number; x2:number; y2:number; width:number; created:number; lifeMs:number; active:boolean; seed:number } > = [];
   // Last Stand tuning: global multiplier to enemy knockback resistance when applying knockback (1 = unchanged)
   private lsKbResistMul: number = 1;
   // Last Stand: optional speed boost for 'small' enemies to ensure they lead the charge
@@ -140,6 +143,8 @@ export class EnemyManager {
   private _ghostCloakFollow: { active: boolean; x: number; y: number; until: number } = { active: false, x: 0, y: 0, until: 0 };
   // Data Sigils: planted glyphs that pulse AoE damage
   private dataSigils: { x:number; y:number; radius:number; pulsesLeft:number; pulseDamage:number; nextPulseAt:number; active:boolean; spin:number; created:number; follow?: boolean; cadenceMs?: number }[] = [];
+  // Data Tornado: moved to dedicated manager to reduce EnemyManager size
+  private dataTornadoZones: DataTornadoZoneManager;
   // Black Sun seeds (Shadow Operative evolve): dim void orbs that slow/tick, then collapse
   private blackSunSeeds: { x:number; y:number; created:number; active:boolean; fuseMs:number; pullRadius:number; pullStrength:number; collapseRadius:number; slowPct:number; tickIntervalMs:number; tickNext:number; ticksLeft:number; tickDmg:number; collapseDmg:number }[] = [];
   // Dedicated Black Sun zone manager (replaces legacy blackSunSeeds lifecycle)
@@ -362,6 +367,14 @@ export class EnemyManager {
       if (d <= (r + Math.max(3, w.w || 4))) return true;
     }
     return false;
+  }
+  // Helper: Test if point is within a capsule/ribbon around a segment
+  private isPointOnRibbon(px: number, py: number, x1: number, y1: number, x2: number, y2: number, halfWidth: number): boolean {
+    const vx = x2 - x1, vy = y2 - y1; const wx = px - x1, wy = py - y1;
+    const vv = vx*vx + vy*vy; if (vv <= 1e-6) return (wx*wx + wy*wy) <= halfWidth*halfWidth;
+    let t = (wx*vx + wy*vy) / vv; if (t < 0) t = 0; else if (t > 1) t = 1;
+    const cx = x1 + vx * t, cy = y1 + vy * t; const dx = px - cx, dy = py - cy;
+    return (dx*dx + dy*dy) <= halfWidth*halfWidth;
   }
   /**
    * Return the first hit distance along a ray if it intersects any blocker wall within thickness padding.
@@ -620,7 +633,8 @@ export class EnemyManager {
   this.waveNumber = 0;
   this.nextWaveAtSec = 5; // first wave quickly to start action
     // Initialize Black Sun dedicated zone manager
-    this.blackSunZones = new BlackSunZoneManager(this, this.player);
+  this.blackSunZones = new BlackSunZoneManager(this, this.player);
+  this.dataTornadoZones = new DataTornadoZoneManager(this, this.player);
     // Freeze spawns and clear enemies on boss spawn (15s calm before the storm)
     window.addEventListener('bossSpawn', () => {
       const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
@@ -1164,6 +1178,16 @@ export class EnemyManager {
     this.dataSigils.length = w + (this.dataSigils.length - w); // keep length unchanged to preserve pools
   }
 
+  /** Spawn a single Data Tornado (delegated to DataTornadoZoneManager). */
+  public spawnDataTornado(x:number, y:number, params?: { radius?:number; dmg?:number; tickMs?:number; speed?:number; chaseRadius?:number; lifeMs?:number }): void {
+    this.dataTornadoZones.spawn(x, y, params);
+  }
+
+  /** Update Data Tornado (delegated). */
+  private updateDataTornado(deltaMs: number): void {
+    this.dataTornadoZones.update(deltaMs);
+  }
+
   // Black Sun lifecycle temporarily stubbed for parser isolation
   public spawnBlackSunSeed(x: number, y: number, params: { fuseMs:number; pullRadius:number; pullStrength:number; collapseRadius:number; slowPct:number; tickIntervalMs:number; ticks:number; tickDmg:number; collapseDmg:number }): void {
     // Route to dedicated zone manager; legacy array no longer used
@@ -1233,6 +1257,24 @@ export class EnemyManager {
           slow = Math.max(slow, 0.20);
         }
       }
+    } catch { /* ignore */ }
+    // Mycelial Network slow: strong slow while standing on the ribbon
+    try {
+      if (this.mycelialZones && this.mycelialZones.length) {
+        const nowZ = performance.now();
+        const ex = e.x, ey = e.y;
+        for (let i = 0; i < this.mycelialZones.length; i++) {
+          const z = this.mycelialZones[i];
+          if (!z.active) continue;
+          if (nowZ - z.created > z.lifeMs) { z.active = false; continue; }
+          if (this.isPointOnRibbon(ex, ey, z.x1, z.y1, z.x2, z.y2, z.width * 0.5)) { slow = Math.max(slow, 0.55); break; }
+        }
+      }
+    } catch { /* ignore */ }
+    // Linger a brief slow after stepping out of the ribbon for better feel
+    try {
+      const eAny2: any = e as any; const nowL = performance.now();
+      if (eAny2._mycoLingerUntil && eAny2._mycoLingerUntil > nowL) slow = Math.max(slow, 0.55);
     } catch { /* ignore */ }
     // Psionic mark slow: flat 28% while active (buffed)
     const now = performance.now();
@@ -2582,6 +2624,63 @@ export class EnemyManager {
         } catch { /* ignore */ }
       }
     }
+    // Mycelial Network: on-contact poison application and tick acceleration while standing on the ribbon
+    try {
+      if (this.mycelialZones && this.mycelialZones.length) {
+        const contactIntervalMs = 1000; // apply 1 stack/sec on contact
+        for (let i = 0; i < this.activeEnemies.length; i++) {
+          const e: any = this.activeEnemies[i]; if (!e || !e.active || e.hp <= 0) continue;
+          const ex = e.x, ey = e.y; const nowZ = now;
+          for (let j = 0; j < this.mycelialZones.length; j++) {
+            const z = this.mycelialZones[j]; if (!z.active) continue; if (nowZ - z.created > z.lifeMs) { z.active = false; continue; }
+            if (this.isPointOnRibbon(ex, ey, z.x1, z.y1, z.x2, z.y2, z.width * 0.5)) {
+              // Mark linger slow shortly after exiting
+              e._mycoLingerUntil = now + 300;
+              // Apply contact poison periodically (adds stacks even if previously unpoisoned)
+              if (e._mycoNextContactAt == null) e._mycoNextContactAt = now;
+              if (now >= e._mycoNextContactAt) {
+                this.applyPoison(e as Enemy, 1);
+                e._mycoNextContactAt = now + contactIntervalMs;
+              }
+              // If already poisoned, accelerate next tick (~2x)
+              if (typeof e._poisonNextTick === 'number' && (e._poisonStacks|0) > 0) {
+                const half = this.poisonTickIntervalMs * 0.5;
+                e._poisonNextTick = Math.min(e._poisonNextTick, now + Math.max(30, half));
+              }
+              break;
+            }
+          }
+        }
+        // Boss parity: poison-on-contact and tick acceleration for boss while in ribbon
+        try {
+          const bm: any = (window as any).__bossManager;
+          const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
+          if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {
+            const bAny: any = boss as any;
+            const bx = boss.x, by = boss.y;
+            for (let j = 0; j < this.mycelialZones.length; j++) {
+              const z = this.mycelialZones[j]; if (!z.active) continue; if (now - z.created > z.lifeMs) { z.active = false; continue; }
+              if (this.isPointOnRibbon(bx, by, z.x1, z.y1, z.x2, z.y2, z.width * 0.5 + (boss.radius||0))) {
+                // Linger flag (not currently used elsewhere, but consistent)
+                bAny._mycoLingerUntil = now + 300;
+                // Contact poison for boss
+                if (bAny._mycoNextContactAt == null) bAny._mycoNextContactAt = now;
+                if (now >= bAny._mycoNextContactAt) {
+                  this.applyBossPoison(boss, 1);
+                  bAny._mycoNextContactAt = now + contactIntervalMs;
+                }
+                // Accelerate next boss poison tick if poisoned
+                if (typeof bAny._poisonNextTick === 'number' && (bAny._poisonStacks|0) > 0) {
+                  const half = this.poisonTickIntervalMs * 0.5;
+                  bAny._poisonNextTick = Math.min(bAny._poisonNextTick, now + Math.max(30, half));
+                }
+                break;
+              }
+            }
+          }
+        } catch { /* ignore boss mycelial effects */ }
+      }
+    } catch { /* ignore accel */ }
   }
 
   /** Apply or refresh a burn stack (max 3).
@@ -3067,6 +3166,94 @@ export class EnemyManager {
   } catch { /* ignore */ }
   // Draw Black Sun zones via dedicated manager (replaces legacy seed draw)
   try { this.blackSunZones.draw(ctx); } catch {}
+  // Draw Bio Engineer Mycelial Network ribbons beneath enemies for clarity
+  try {
+    const nowZ = performance.now();
+    const low = (this.avgFrameMs || 16) > 40 || !!(window as any).__vfxLowMode;
+    for (let i = 0; i < this.mycelialZones.length; i++) {
+      const z = this.mycelialZones[i]; if (!z || !z.active) continue;
+      const age = nowZ - z.created; if (age > z.lifeMs) continue;
+      // Cull if fully off-screen
+      const minX2 = minX - 50, maxX2 = maxX + 50, minY2 = minY - 50, maxY2 = maxY + 50;
+      if ((z.x1 < minX2 && z.x2 < minX2) || (z.x1 > maxX2 && z.x2 > maxX2) || (z.y1 < minY2 && z.y2 < minY2) || (z.y1 > maxY2 && z.y2 > maxY2)) continue;
+      const gx1 = z.x1, gy1 = z.y1, gx2 = z.x2, gy2 = z.y2;
+      const dx = gx2 - gx1, dy = gy2 - gy1; const len = Math.max(1, Math.hypot(dx, dy));
+      const nx = -dy / len, ny = dx / len; // normal vector
+      const pulse = 1 + Math.sin(nowZ * 0.009 + (z.seed||0)) * 0.06;
+      // Low-FX: simple soft ribbon
+      if (low) {
+        const w = Math.max(2, (z.width * 0.5) * 0.85 * pulse);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.14;
+        const grad = ctx.createLinearGradient(gx1, gy1, gx2, gy2);
+        grad.addColorStop(0, '#73FF00'); grad.addColorStop(1, '#ADFF2F');
+        ctx.strokeStyle = grad; ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(gx1, gy1); ctx.lineTo(gx2, gy2); ctx.stroke();
+        ctx.restore();
+      } else {
+        // DNA double-helix slimy visual
+        const cycles = Math.max(2, Math.floor(len / 70));
+        const amp = Math.min(z.width * 0.35, 18) * pulse;
+        const steps = cycles * 14; // sampling along the strand
+        const phi = ((z.seed || 0) % 360) * Math.PI / 180;
+        const colA = '#66FF6A'; // neon green
+        const colB = '#E0FF66'; // pale yellow-green
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        // Draw faint base slime fill under helix
+        ctx.globalAlpha = 0.10;
+        ctx.strokeStyle = '#7BFF4D';
+        ctx.lineWidth = Math.max(2, (z.width * 0.45) * 0.9);
+        ctx.shadowColor = '#7BFF4D'; ctx.shadowBlur = 12;
+        ctx.beginPath(); ctx.moveTo(gx1, gy1); ctx.lineTo(gx2, gy2); ctx.stroke();
+        // Strands
+        const lw = Math.max(1.6, Math.min(3.2, z.width * 0.12));
+        // Strand 1
+        ctx.shadowBlur = 18; ctx.globalAlpha = 0.9; ctx.strokeStyle = colA; ctx.lineWidth = lw;
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps; const cx = gx1 + dx * t, cy = gy1 + dy * t;
+          const off = Math.sin((t * cycles * Math.PI * 2) + phi) * amp;
+          const x = cx + nx * off, y = cy + ny * off;
+          if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        // Strand 2 (phase-shifted by PI)
+        ctx.shadowBlur = 16; ctx.globalAlpha = 0.9; ctx.strokeStyle = colB; ctx.lineWidth = lw;
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps; const cx = gx1 + dx * t, cy = gy1 + dy * t;
+          const off = Math.sin((t * cycles * Math.PI * 2) + phi + Math.PI) * amp;
+          const x = cx + nx * off, y = cy + ny * off;
+          if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        // Rungs connecting strands at intervals
+        ctx.shadowBlur = 10; ctx.globalAlpha = 0.8; ctx.strokeStyle = '#CFFF5A'; ctx.lineWidth = Math.max(1.2, lw * 0.9);
+        const rungCount = cycles * 6;
+        for (let r = 0; r <= rungCount; r++) {
+          const t = r / rungCount; const cx = gx1 + dx * t, cy = gy1 + dy * t;
+          const off = Math.sin((t * cycles * Math.PI * 2) + phi) * amp;
+          const ax = cx + nx * off, ay = cy + ny * off;
+          const bx = cx - nx * off, by = cy - ny * off;
+          ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+        }
+        // Gooey droplets along the helix
+        ctx.globalAlpha = 0.65; ctx.fillStyle = '#A8FF5A'; ctx.shadowColor = '#A8FF5A'; ctx.shadowBlur = 8;
+        const drops = Math.min(14, Math.max(6, Math.floor(len / 120)));
+        for (let d = 0; d < drops; d++) {
+          const t = ((d + (z.seed % 5) * 0.13) / drops);
+          const cx = gx1 + dx * t, cy = gy1 + dy * t;
+          const off = Math.sin((t * cycles * Math.PI * 2) + phi) * (amp * 0.6);
+          const x = cx + nx * off, y = cy + ny * off;
+          const r = 1.5 + Math.abs(Math.sin((t + nowZ * 0.0007) * 13.37)) * 2.2;
+          ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.restore();
+      }
+    }
+  } catch { /* ignore mycelial draw */ }
   // Draw enemy projectiles (below enemies)
   try {
     const w = (ctx.canvas as HTMLCanvasElement).width, h = (ctx.canvas as HTMLCanvasElement).height;
@@ -3301,7 +3488,9 @@ export class EnemyManager {
       ctx.restore();
     }
   } catch { /* ignore suppressor ring draw */ }
-  // Draw Data Sigils below enemies (divine golden laser-tech look)
+  // Draw Data Sigils below enemies (divine golden laser-tech look) with LOD
+  const vfxMed = (this.avgFrameMs || 16) > 22;
+  const vfxLowGlobal = (this.avgFrameMs || 16) > 28 || !!(window as any).__vfxLowMode;
   for (let i=0;i<this.dataSigils.length;i++){
     const s = this.dataSigils[i]; if (!s.active) continue;
     if (s.x < minX || s.x > maxX || s.y < minY || s.y > maxY) continue;
@@ -3310,50 +3499,55 @@ export class EnemyManager {
     // Base rings: layered divine gold with additive blend
     ctx.globalCompositeOperation = 'screen';
     // Outer soft halo
-    ctx.globalAlpha = 0.16;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 1.04, 0, Math.PI*2); ctx.strokeStyle = '#FFF6C2'; ctx.lineWidth = 4; ctx.shadowColor = '#FFF6C2'; ctx.shadowBlur = 18; ctx.stroke();
+    if (!vfxLowGlobal) { ctx.globalAlpha = 0.16; ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 1.04, 0, Math.PI*2); ctx.strokeStyle = '#FFF6C2'; ctx.lineWidth = 4; ctx.shadowColor = '#FFF6C2'; ctx.shadowBlur = 18; ctx.stroke(); }
     // Main ring
     ctx.globalAlpha = 0.22;
     ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI*2); ctx.strokeStyle = '#FFEFA8'; ctx.lineWidth = 3; ctx.shadowColor = '#FFE066'; ctx.shadowBlur = 14; ctx.stroke();
     // Inner glow ring
-    ctx.globalAlpha = 0.2;
-    ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 0.94, 0, Math.PI*2); ctx.strokeStyle = '#FFD977'; ctx.lineWidth = 2; ctx.shadowColor = '#FFD977'; ctx.shadowBlur = 8; ctx.stroke();
+    if (!vfxMed) { ctx.globalAlpha = 0.2; ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 0.94, 0, Math.PI*2); ctx.strokeStyle = '#FFD977'; ctx.lineWidth = 2; ctx.shadowColor = '#FFD977'; ctx.shadowBlur = 8; ctx.stroke(); }
     // Laser spokes: crisp beams emanating from inner ring
-    ctx.globalAlpha = 0.34;
-    const spokes = 8; const inner = s.radius * 0.22; const len = s.radius * 0.96;
-    for (let k=0;k<spokes;k++){
-      const ang = s.spin + (Math.PI*2*k/spokes);
-      const sx = s.x + Math.cos(ang) * inner; const sy = s.y + Math.sin(ang) * inner;
-      const ex = s.x + Math.cos(ang) * len;   const ey = s.y + Math.sin(ang) * len;
-      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey);
-      ctx.strokeStyle = '#FFF2B3'; ctx.lineWidth = 2; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 10; ctx.stroke();
+    if (!vfxMed) {
+      ctx.globalAlpha = 0.34;
+      const spokes = 6; const inner = s.radius * 0.24; const len = s.radius * 0.96;
+      for (let k=0;k<spokes;k++){
+        const ang = s.spin + (Math.PI*2*k/spokes);
+        const sx = s.x + Math.cos(ang) * inner; const sy = s.y + Math.sin(ang) * inner;
+        const ex = s.x + Math.cos(ang) * len;   const ey = s.y + Math.sin(ang) * len;
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey);
+        ctx.strokeStyle = '#FFF2B3'; ctx.lineWidth = 2; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 6; ctx.stroke();
+      }
     }
     // Rotating rune arcs along the perimeter (techy feel)
-    ctx.globalAlpha = 0.26;
-    const arcCount = 5;
-    for (let a=0;a<arcCount;a++){
-      const base = s.spin * 0.8 + a * (Math.PI * 2 / arcCount);
-      const sweep = Math.PI * 0.18;
-      ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 0.85, base, base + sweep);
-      ctx.strokeStyle = '#FFF8D1'; ctx.lineWidth = 2; ctx.stroke();
+    if (!vfxMed) {
+      ctx.globalAlpha = 0.22;
+      const arcCount = 4;
+      for (let a=0;a<arcCount;a++){
+        const base = s.spin * 0.8 + a * (Math.PI * 2 / arcCount);
+        const sweep = Math.PI * 0.16;
+        ctx.beginPath(); ctx.arc(s.x, s.y, s.radius * 0.85, base, base + sweep);
+        ctx.strokeStyle = '#FFF8D1'; ctx.lineWidth = 2; ctx.stroke();
+      }
     }
     // Pulse wave: expanding ring synced to nextPulseAt
     const phase = Math.max(0, 1 - (s.nextPulseAt - performance.now())/((s as any).cadenceMs ?? 420));
-    ctx.globalAlpha = 0.28 * phase;
-    ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(6, s.radius * phase), 0, Math.PI*2); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 3; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 16; ctx.stroke();
+    if (!vfxLowGlobal) { ctx.globalAlpha = 0.24 * phase; ctx.beginPath(); ctx.arc(s.x, s.y, Math.max(6, s.radius * phase), 0, Math.PI*2); ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2; ctx.shadowColor = '#FFEFA8'; ctx.shadowBlur = 12; ctx.stroke(); }
     // Floating crosses: minimal count for performance
-    ctx.globalAlpha = 0.28;
-    const marks = 4;
-    for (let m=0;m<marks;m++){
-      const ang = s.spin*1.4 + m * (Math.PI*2/marks);
-      const rad = s.radius * (0.42 + 0.46 * ((m%2)?1:0.85));
-      const mx = s.x + Math.cos(ang)*rad; const my = s.y + Math.sin(ang)*rad;
-      ctx.strokeStyle = '#FFFCE6'; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(mx-3, my); ctx.lineTo(mx+3, my); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(mx, my-3); ctx.lineTo(mx, my+3); ctx.stroke();
+    if (!vfxMed) {
+      ctx.globalAlpha = 0.24;
+      const marks = 3;
+      for (let m=0;m<marks;m++){
+        const ang = s.spin*1.2 + m * (Math.PI*2/marks);
+        const rad = s.radius * (0.46 + 0.42 * ((m%2)?1:0.85));
+        const mx = s.x + Math.cos(ang)*rad; const my = s.y + Math.sin(ang)*rad;
+        ctx.strokeStyle = '#FFFCE6'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(mx-3, my); ctx.lineTo(mx+3, my); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(mx, my-3); ctx.lineTo(mx, my+3); ctx.stroke();
+      }
     }
     ctx.restore();
   }
+  // Draw Data Tornado via manager
+  try { this.dataTornadoZones.draw(ctx, minX, maxX, minY, maxY); } catch {}
   // Draw Rogue Hacker zones (techno ring under enemies) — optimized sprite path
   const isBackdoor = (() => { try { const aw = (this.player as any)?.activeWeapons as Map<number, number> | undefined; return !!(aw && aw.has(WeaponType.HACKER_BACKDOOR)); } catch { return false; } })();
   const lowFxZones = (this.avgFrameMs || 16) > 28 || !!(window as any).__vfxLowMode;
@@ -4703,7 +4897,9 @@ export class EnemyManager {
             const t: 'small'|'medium'|'large' = (enemy.type === 'small' || enemy.type === 'medium') ? enemy.type : 'large';
             baseSpeed = this.clampToTypeCaps(baseSpeed, t);
           } catch { /* ignore */ }
-          const effSpeed = this.getEffectiveEnemySpeed(enemy, baseSpeed);
+          let effSpeed = this.getEffectiveEnemySpeed(enemy, baseSpeed);
+          // Absolute cap: never exceed chaseCap even after buffs (wave escalations, elites, surge)
+          if (effSpeed > chaseCap) effSpeed = chaseCap;
           const mvx = dx * inv * effSpeed * moveScale;
           const mvy = dy * inv * effSpeed * moveScale;
           // Attempt movement with wall sliding if blocked
@@ -4954,12 +5150,12 @@ export class EnemyManager {
         enemy.active = false;
         // Skip on dummy targets
   if (!isDummy) {
-          // Poison contagion: on death with significant stacks, spread a portion to nearby enemies
+          // Poison contagion: on death with significant stacks, spread only a single basic stack to nearby enemies
         const eAny: any = enemy as any;
   const stacks = eAny._poisonStacks | 0;
   if (stacks >= 3) {
           const spreadRadius = 180;
-          const addStacks = Math.min(5, Math.ceil(stacks * 0.5));
+          const addStacks = 1; // design: only seed 1 base stack on contagion
           for (let j = 0; j < this.enemies.length; j++) {
             const o = this.enemies[j];
             if (!o.active || o.hp <= 0 || o === enemy) continue;
@@ -5587,11 +5783,14 @@ export class EnemyManager {
   this.updatePoisons();
   // Data Sigils updates
   this.updateDataSigils(deltaTime);
+  // Data Tornado update
+  this.updateDataTornado(deltaTime);
   // Update Black Sun zones (pull/slow/tick/collapse)
   try { this.blackSunZones.update(deltaTime); } catch {}
   // Update enemy projectiles (elites)
   this.updateEnemyProjectiles(deltaTime);
 }
+
   /** Clear all currently active enemies immediately (used on boss spawn). */
   private clearAllEnemies() {
     for (let i = 0; i < this.enemies.length; i++) {
@@ -5605,6 +5804,29 @@ export class EnemyManager {
   }
   /** Total enemies killed this run. */
   public getKillCount() { return this.killCount; }
+
+  /** Spawn a Bio Engineer Mycelial Network ribbon between two world points. */
+  public spawnMycelialNetwork(x1: number, y1: number, x2: number, y2: number, width: number = 60, lifeMs: number = 6000): void {
+    try {
+      // Cap ribbon length to avoid unlimited range; scale with global Area multiplier
+      const pAny: any = this.player as any;
+      const areaMul = pAny?.getGlobalAreaMultiplier?.() ?? (pAny?.globalAreaMultiplier ?? 1);
+      const baseMaxLen = 700; // px baseline
+      const maxLen = Math.max(260, Math.min(1200, baseMaxLen * (areaMul || 1)));
+      const dx = x2 - x1, dy = y2 - y1; const d = Math.hypot(dx, dy);
+      if (d > maxLen && d > 0.0001) {
+        const s = maxLen / d; x2 = x1 + dx * s; y2 = y1 + dy * s;
+      }
+      const now = performance.now();
+      let z = this.mycelialZones.find(z => !z.active);
+      if (!z) {
+        z = { x1, y1, x2, y2, width: Math.max(10, width), created: now, lifeMs: Math.max(500, lifeMs), active: true, seed: Math.floor(Math.random()*1e6) };
+        this.mycelialZones.push(z);
+      } else {
+        z.x1 = x1; z.y1 = y1; z.x2 = x2; z.y2 = y2; z.width = Math.max(10, width); z.created = now; z.lifeMs = Math.max(500, lifeMs); z.active = true; z.seed = Math.floor(Math.random()*1e6);
+      }
+    } catch { /* ignore spawn errors */ }
+  }
 
   /** Last Stand only: multiply enemy knockback resistance during knockback application. */
   public setLastStandEnemyKbResistMultiplier(multiplier: number) {
