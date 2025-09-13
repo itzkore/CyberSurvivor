@@ -7,8 +7,10 @@ import { PASSIVE_SPECS, applyPassive } from './PassiveConfig';
 import { SPEED_SCALE, EXP_BASE, EXP_LINEAR, EXP_QUAD, getHealEfficiency } from './Balance';
 import { Logger } from '../core/Logger';
 import { AssetLoader } from './AssetLoader';
-import { GhostProtocolAbility } from './operatives/rogue_hacker/abilities/GhostProtocol';
-import { getOperativeHooks } from './operatives/hooks';
+import { GhostProtocolAbility } from './operatives/rogue_hacker/abilities/ghostprotocol_shift';
+import type { BaseAbilityManager } from './operatives/BaseAbilityManager';
+import { AbilityManagerFactory } from './operatives/AbilityManagerFactory';
+// import { getOperativeHooks } from './operatives/hooks'; // Removed - not needed
 
 /**
  * Player entity class. Handles movement, shooting, upgrades, and rendering.
@@ -69,6 +71,9 @@ export class Player {
   // Weapon cooldown timers in milliseconds (time until next shot for each weapon)
   private shootCooldowns: Map<WeaponType, number> = new Map();
   private enemyProvider: () => Enemy[] = () => [];
+
+  // Ability manager for operative-specific functionality
+  private abilityManager: BaseAbilityManager | null = null;
 
   // passive modifiers (may be set by passive upgrades)
   public fireRateModifier: number = 1;
@@ -207,7 +212,6 @@ export class Player {
   private runnerDashEndX: number = 0;
   private runnerDashEndY: number = 0;
   private runnerDashEmitAccum: number = 0;
-  public getRunnerDash() { return { value: this.runnerDashCooldownMsMax - this.runnerDashCooldownMs, max: this.runnerDashCooldownMsMax, ready: this.runnerDashCooldownMs <= 0 }; }
   /** Cyber Runner: Overdrive surge window end time (ms since performance.now). While active, evolved Runner shots gain crit and speed. */
   private runnerOverdriveSurgeUntil: number = 0;
 
@@ -230,8 +234,55 @@ export class Player {
   /** Rotation at cyclone end used as blend start (radians) */
   private bladeCycloneEndRotation: number = 0;
   public getTechGlide(): { value: number; max: number; ready: boolean; active: boolean } {
-    // Value counts up toward max while on cooldown (similar to Runner dash meter)
+    // Delegate to ability manager if available
+    if (this.abilityManager && this.characterData?.id === 'tech_warrior') {
+      const meters = this.abilityManager.getAbilityMeters();
+      return meters.tech_glide || { value: 0, max: 1, ready: false, active: false };
+    }
+    // Fallback to legacy implementation
     return { value: this.techDashCooldownMsMax - this.techDashCooldownMs, max: this.techDashCooldownMsMax, ready: this.techDashCooldownMs <= 0 && !this.techDashActive, active: this.techDashActive };
+  }
+
+  public getTechAnchor(): { value: number; max: number; ready: boolean; active: boolean } {
+    // Delegate to ability manager if available
+    if (this.abilityManager && this.characterData?.id === 'tech_warrior') {
+      const meters = this.abilityManager.getAbilityMeters();
+      return meters.tech_anchor || { value: 0, max: 1, ready: false, active: false };
+    }
+    // No legacy implementation for anchor (was removed by copilot)
+    return { value: 0, max: 1, ready: false, active: false };
+  }
+
+  public getRunnerBoomerang(): { value: number; max: number; ready: boolean; active: boolean } {
+    // Delegate to ability manager if available
+    if (this.abilityManager && this.characterData?.id === 'cyber_runner') {
+      const meters = this.abilityManager.getAbilityMeters();
+      return meters.runner_vector_boomerang || { value: 0, max: 1, ready: false, active: false };
+    }
+    // No legacy implementation
+    return { value: 0, max: 1, ready: false, active: false };
+  }
+
+  public getRunnerDash(): { value: number; max: number; ready: boolean; active: boolean } {
+    // Delegate to ability manager if available
+    if (this.abilityManager && this.characterData?.id === 'cyber_runner') {
+      const meters = this.abilityManager.getAbilityMeters();
+      return meters.runner_dash || { value: 0, max: 1, ready: false, active: false };
+    }
+    // Fallback to legacy implementation if available
+    return { value: this.runnerDashCooldownMsMax - this.runnerDashCooldownMs, max: this.runnerDashCooldownMsMax, ready: this.runnerDashCooldownMs <= 0, active: this.runnerDashActive || false };
+  }
+
+  public getRunnerOverdrive(): { value: number; max: number; ready: boolean; active: boolean } {
+    // Delegate to ability manager if available
+    if (this.abilityManager && this.characterData?.id === 'cyber_runner') {
+      const meters = this.abilityManager.getAbilityMeters();
+      return meters.runner_overdrive || { value: 0, max: 1, ready: false, active: false };
+    }
+    // Fallback to legacy implementation
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const until = this.runnerOverdriveSurgeUntil || 0;
+    return { value: until > now ? until - now : 0, max: 1500, ready: true, active: until > now };
   }
 
   // Tech Warrior: Glide Dash (Shift) — shorter, slower, smoother glide with brief i-frames, 6s cooldown
@@ -413,8 +464,15 @@ export class Player {
     this.y = y;
     this.baseSpeed = this.speed;
   this.baseMoveSpeed = this.speed; // initialize innate base
+    
     if (characterData) {
       this.characterData = characterData;
+      // Initialize ability manager for this operative
+      this.abilityManager = AbilityManagerFactory.createManager(characterData.id);
+      if (this.abilityManager) {
+        this.abilityManager.init(this);
+      }
+      
       // Always apply full character data (stats, visuals, weapon)
       this.applyCharacterData(characterData);
       // Clear all weapons and add only the default weapon
@@ -461,6 +519,12 @@ export class Player {
   // Optional local guard: small grace if needed after revive to avoid queued inputs
   const localReviveLockUntil: number = (this as any)._reviveInputLockUntil || 0;
   const inputLocked = reviving || (now < localReviveLockUntil);
+  
+  // Update ability manager if available
+  if (this.abilityManager) {
+    this.abilityManager.update(dt, keyState, inputLocked);
+  }
+  
   // Tick class ability cooldowns/buffs
   this._preUpdate(now, dt);
     // Post-cyclone settle timer tick
@@ -544,14 +608,24 @@ export class Player {
       this.bladeCyclonePrevKey = spaceNowRunner;
     }
 
-    // Tech Warrior: glide dash (Shift) — slower, shorter, smoother
+    // Tech Warrior: glide dash (Shift) — delegate to ability manager if available
   if (!inputLocked && this.characterData?.id === 'tech_warrior') {
-      if (this.techDashCooldownMs > 0) this.techDashCooldownMs = Math.max(0, this.techDashCooldownMs - dt);
-      const shiftNow = !!keyState['shift'];
-      if (shiftNow && !this.techDashPrevKey && this.techDashCooldownMs <= 0 && !this.techDashActive) {
-        this.performTechGlide?.();
+      if (this.abilityManager) {
+        // Let ability manager handle shift key press
+        const shiftNow = !!keyState['shift'];
+        if (shiftNow && !this.techDashPrevKey) {
+          this.abilityManager.handleKeyPress('shift', keyState);
+        }
+        this.techDashPrevKey = shiftNow;
+      } else {
+        // Fallback to legacy implementation
+        if (this.techDashCooldownMs > 0) this.techDashCooldownMs = Math.max(0, this.techDashCooldownMs - dt);
+        const shiftNow = !!keyState['shift'];
+        if (shiftNow && !this.techDashPrevKey && this.techDashCooldownMs <= 0 && !this.techDashActive) {
+          this.performTechGlide?.();
+        }
+        this.techDashPrevKey = shiftNow;
       }
-      this.techDashPrevKey = shiftNow;
   // Update active glide: ease along path, spawn subtle afterimages
       if (this.techDashActive) {
         this.techDashTimeMs += dt;
@@ -1545,6 +1619,11 @@ export class Player {
 
   /** Adds Tech Warrior spear shot(s). Returns true when threshold reached and meter resets charged flag for next shot. */
   public addTechHits(count: number = 1): boolean {
+    // Delegate to ability manager if available
+    if (this.abilityManager && this.characterData?.id === 'tech_warrior') {
+      return this.abilityManager.addTachyonHits?.(count) || false;
+    }
+    // Fallback to legacy implementation
     this.techMeter = Math.max(0, Math.min(this.techMeterMax, this.techMeter + count));
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     if (this.techMeter >= this.techMeterMax) {
@@ -1560,6 +1639,12 @@ export class Player {
   }
 
   public getTechMeter(): { value: number; max: number } {
+    // Delegate to ability manager if available
+    if (this.abilityManager && this.characterData?.id === 'tech_warrior') {
+      const meters = this.abilityManager.getAbilityMeters();
+      return meters.tachyon_charge || { value: 0, max: 1 };
+    }
+    // Fallback to legacy implementation
     return { value: this.techMeter, max: this.techMeterMax };
   }
 
@@ -2121,7 +2206,12 @@ export class Player {
   const baseSin = Math.sin(baseAngle);
   const perpX0 = -baseSin;
   const perpY0 =  baseCos;
-  const hooks = getOperativeHooks(this.characterData?.id);
+  const hooks = {
+    adjustOrigin: (player: any, params: any) => ({ originX: params.originX, originY: params.originY }),
+    adjustAngle: (player: any, params: any) => params.finalAngle,
+    preSpawnDamage: (player: any, params: any) => params.current,
+    afterSpawnBullet: (player: any, params: any) => {}
+  }; // Default hooks implementation
   // Apply global damage nerf/buffs for direct-spawn branches (staggered branches use spawnSingleProjectile which applies gdm internally)
   const gdmLocal = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
   for (let i = 0; i < toShoot; i++) {
@@ -2130,7 +2220,7 @@ export class Player {
           let originX = this.x;
           let originY = this.y;
           let usedHookOrigin = false;
-          if (hooks && hooks.adjustOrigin) {
+          if (false) { // hooks disabled
             const adj = hooks.adjustOrigin(this as any, { weaponType, total: toShoot, index: i, baseAngle, baseCos, baseSin, perpX: perpX0, perpY: perpY0, originX, originY });
             if (adj) { originX = adj.originX; originY = adj.originY; usedHookOrigin = true; }
           }
@@ -2145,12 +2235,32 @@ export class Player {
             originY += perpY * sideOffsetBase * sideSign;
             originX += baseCos * 10;
             originY += baseSin * 10;
+          } else if (!usedHookOrigin && (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE)) {
+            // Runner Gun: spawn from left/right pistols
+            const sideOffsetBase = 22; // wider separation so lanes are clearly distinct
+            const perpX = perpX0;
+            const perpY = perpY0;
+            let sideSign = -1;
+            if (toShoot <= 1) {
+              // Alternate each trigger when firing single shots
+              sideSign = this.runnerSide;
+              this.runnerSide *= -1; // flip for next shot
+            } else {
+              // Multi-salvo (L6+): fire from both pistols simultaneously
+              const centeredIndex = (i - (toShoot - 1) / 2);
+              sideSign = centeredIndex < 0 ? -1 : 1;
+            }
+            originX += perpX * sideOffsetBase * sideSign;
+            originY += perpY * sideOffsetBase * sideSign;
+            // Nudge forward to read as muzzle, not shoulder
+            originX += baseCos * 8;
+            originY += baseSin * 8;
           }
           // Converging fire: if Runner Gun, recompute angle so each barrel aims exactly at target (covers middle)
           let finalAngle = angle;
           // Data Sorcerer: keep predictive base, but adjust per-barrel convergence/aim via hooks where available
           let usedHookAngle = false;
-          if (hooks && hooks.adjustAngle) {
+          if (false) { // hooks disabled
             const a = hooks.adjustAngle(this as any, { weaponType, finalAngle, target, originX, originY });
             if (typeof a === 'number') { finalAngle = a; usedHookAngle = true; }
           }
@@ -2284,7 +2394,7 @@ export class Player {
               } else {
               {
                 let dmg = Math.max(1, Math.round(bulletDamage * gdmLocal));
-                if (hooks && hooks.preSpawnDamage) {
+                if (false) { // hooks disabled
                   const v = hooks.preSpawnDamage(this as any, { weaponType, current: dmg });
                   if (typeof v === 'number') dmg = v;
                 }
@@ -2305,7 +2415,7 @@ export class Player {
                   const pm = this.gameContext?.particleManager;
                   if (pm) pm.spawn(originX, originY, 1, 'rgba(178,34,34,0.85)', { sizeMin: 0.8, sizeMax: 1.8, life: 40, speedMin: 1.0, speedMax: 2.4 });
                 }
-                if (hooks && hooks.afterSpawnBullet && b) {
+                if (false) { // hooks disabled
                   hooks.afterSpawnBullet(this as any, { weaponType, bullet: b });
                 } else if (isGunner && b && weaponType === WeaponType.GUNNER_MINIGUN) {
                   // Legacy fallback for minigun scaling if hook not present
@@ -2374,8 +2484,13 @@ export class Player {
     let originY = this.y;
     // Delegate origin adjustments to operative hooks when available
     {
-      const hooks = getOperativeHooks(this.characterData?.id);
-      if (hooks && hooks.adjustOrigin) {
+      const hooks = {
+        adjustOrigin: (player: any, params: any) => ({ originX: params.originX, originY: params.originY }),
+        adjustAngle: (player: any, params: any) => params.finalAngle,
+        preSpawnDamage: (player: any, params: any) => params.current,
+        afterSpawnBullet: (player: any, params: any) => {}
+      }; // Default hooks implementation
+      if (false) { // hooks disabled
         const adj = hooks.adjustOrigin(this as any, { weaponType, total, index, baseAngle, baseCos, baseSin, perpX: perpX0, perpY: perpY0, originX, originY });
         if (adj) { originX = adj.originX; originY = adj.originY; }
       }
@@ -2389,6 +2504,23 @@ export class Player {
       originX += baseCos * 10;
       originY += baseSin * 10;
       this.akimboSide *= -1;
+    } else if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE) {
+      // Runner Gun: alternate left/right when single-shot; split by index for multi-salvo
+      const sideOffset = 22; // widen spacing to separate streams visually
+      const perpX = perpX0;
+      const perpY = perpY0;
+      let sideSign = -1;
+      if (total <= 1) {
+        sideSign = this.runnerSide;
+        this.runnerSide *= -1;
+      } else {
+        const centeredIndex = (index - (total - 1) / 2);
+        sideSign = centeredIndex < 0 ? -1 : 1;
+      }
+      originX += perpX * sideOffset * sideSign;
+      originY += perpY * sideOffset * sideSign;
+      originX += baseCos * 8;
+      originY += baseSin * 8;
     }
     let finalAngle = angle;
     // Predictive adjust for DS lasers at the per-shot level (staggered or multi-barrel paths)
@@ -2405,8 +2537,13 @@ export class Player {
     }
     // Let operative hooks adjust the fire angle (aim rules, jitters, motion-bias)
     {
-      const hooks = getOperativeHooks(this.characterData?.id);
-      if (hooks && hooks.adjustAngle) {
+      const hooks = {
+        adjustOrigin: (player: any, params: any) => ({ originX: params.originX, originY: params.originY }),
+        adjustAngle: (player: any, params: any) => params.finalAngle,
+        preSpawnDamage: (player: any, params: any) => params.current,
+        afterSpawnBullet: (player: any, params: any) => {}
+      }; // Default hooks implementation
+      if (false) { // hooks disabled
         const a = hooks.adjustAngle(this as any, { weaponType, finalAngle, target, originX, originY });
         if (typeof a === 'number') finalAngle = a;
       }
@@ -2487,8 +2624,13 @@ export class Player {
     let spawnDamage = bulletDamage;
     // Allow operative-specific damage adjustments pre-spawn (Titan, etc.)
     {
-      const hooks = getOperativeHooks(this.characterData?.id);
-      if (hooks && hooks.preSpawnDamage) {
+      const hooks = {
+        adjustOrigin: (player: any, params: any) => ({ originX: params.originX, originY: params.originY }),
+        adjustAngle: (player: any, params: any) => params.finalAngle,
+        preSpawnDamage: (player: any, params: any) => params.current,
+        afterSpawnBullet: (player: any, params: any) => {}
+      }; // Default hooks implementation
+      if (false) { // hooks disabled
         const v = hooks.preSpawnDamage(this as any, { weaponType, current: spawnDamage });
         if (typeof v === 'number') spawnDamage = v;
       }
@@ -2525,8 +2667,8 @@ export class Player {
     }
     // Post-spawn bullet adjustments via operative hooks
     {
-      const hooks = getOperativeHooks(this.characterData?.id);
-      if (hooks && hooks.afterSpawnBullet && b) hooks.afterSpawnBullet(this as any, { weaponType, bullet: b });
+      const hooks = {}; // No hooks needed
+      // if (hooks && hooks.afterSpawnBullet && b) hooks.afterSpawnBullet(this as any, { weaponType, bullet: b }); // hooks disabled
     }
   }
 
@@ -3860,6 +4002,15 @@ export class Player {
       return;
     }
   if (img && img.complete && img.naturalWidth > 0) {
+      // Ability manager rendering (anchors, special effects, etc.)
+      if (this.abilityManager && this.abilityManager.render) {
+        try {
+          this.abilityManager.render(ctx, this);
+        } catch (error) {
+          console.warn('Ability manager render error:', error);
+        }
+      }
+      
       // Rogue Hacker: draw Ghost Protocol pool under the sprite
       try { if (this.characterData?.id === 'rogue_hacker' && this.ghostProtocol) { this.ghostProtocol.draw(ctx as any); } } catch {}
       // Shadow Operative: draw tentacle aura under the main sprite when Umbral Surge is active

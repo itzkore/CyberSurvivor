@@ -112,6 +112,22 @@ window.onload = async () => {
 
   const game = new Game(canvas); // Instantiate Game first
   (window as any).__game = game; // expose for resize handling
+  (window as any).__gameInstance = game; // ensure global reference for Cinematic skip
+  (window as any).__cinematicInstance = game.cinematic; // ensure global reference for ESC handler
+  // --- Mouse position to world coordinates for anchor ability ---
+  const mouseState = (window as any).mouseState || {};
+  (window as any).mouseState = mouseState;
+  canvas.addEventListener('mousemove', (e: MouseEvent) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    // Get camera position from game
+    const camX = (game as any).camX ?? 0;
+    const camY = (game as any).camY ?? 0;
+    const world = (window as any).screenToWorld ? (window as any).screenToWorld(sx, sy, camX, camY) : { x: sx + camX, y: sy + camY };
+    mouseState.worldX = world.x;
+    mouseState.worldY = world.y;
+  });
   // Experimental Offscreen worker DISABLED for now (caused start-game stutter due to large postMessage payloads).
   // Leave scaffold for future refinement.
   // (window as any).__workerRender = false;
@@ -176,6 +192,8 @@ window.onload = async () => {
   let escToggleGuard = 0; // timestamp of last ESC handling
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    // Block pause if Cinematic is active
+    if ((window as any).__cinematicInstance?.active) return;
     // Basic debounce (~75ms) to avoid double toggle from multiple listeners
     const now = performance.now();
     if (now - escToggleGuard < 75) return;

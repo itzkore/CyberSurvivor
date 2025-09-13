@@ -50,8 +50,9 @@ export class HUD {
     ctx.imageSmoothingEnabled = true;
 
     // --- TIMER (center top) --- (hidden in Last Stand; LS HUD box shows mode-specific info)
-    const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
-    if (!isLastStand) {
+  const isLastStand = ((window as any).__gameInstance?.gameMode) === 'LAST_STAND';
+  const isCinematic = !!((window as any).__cinematicInstance?.active);
+  if (!isLastStand || isCinematic) {
       const minutes = Math.floor(gameTime / 60).toString().padStart(2, '0');
       const seconds = Math.floor(gameTime % 60).toString().padStart(2, '0');
       ctx.font = FONT_TITLE;
@@ -138,10 +139,25 @@ export class HUD {
       const classX = 20 + hpBarWidth + 16;
       const maxW = Math.min(280, Math.max(120, width - (classX + 40)));
       if (id === 'wasteland_scavenger' && (this.player as any).getScrapMeter) {
+        // Primary: Scrap meter
         const meter: any = (this.player as any).getScrapMeter();
         const ratio = meter.max > 0 ? meter.value / meter.max : 0;
         const label = `SCRAP ${meter.value}/${meter.max}`;
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#f0b400', '#3a2a00', '#ffaa00', label);
+        // Secondary: Redirect cooldown (RMB)
+        if ((this.player as any).getScavengerRedirect) {
+          const rm: any = (this.player as any).getScavengerRedirect();
+          const rRatio = rm.max > 0 ? rm.value / rm.max : 0;
+          const rLabel = rm.ready ? 'REDIRECT READY (RMB)' : `REDIRECT ${Math.ceil((rm.max - rm.value)/1000)}s`;
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, rRatio, '#ffd36b', '#3a2a00', '#ffe499', rLabel);
+        }
+        // Tertiary: Pulse cooldown (Space)
+        if ((this.player as any).getScavengerPulse) {
+          const pm: any = (this.player as any).getScavengerPulse();
+          const pRatio = pm.max > 0 ? pm.value / pm.max : 0;
+          const pLabel = pm.ready ? 'PULSE READY (Space)' : `PULSE ${Math.ceil((pm.max - pm.value)/1000)}s`;
+          this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, pRatio, '#ffa94d', '#3a1f00', '#ffc177', pLabel);
+        }
       } else if (id === 'tech_warrior' && (this.player as any).getTechMeter) {
         const meter: any = (this.player as any).getTechMeter();
         const ratio = meter.max > 0 ? meter.value / meter.max : 0;
@@ -155,6 +171,14 @@ export class HUD {
           const label2 = gm.active ? 'GLIDE ACTIVE' : (gm.ready ? 'GLIDE READY (Shift)' : `GLIDE ${Math.ceil((gm.max - gm.value)/1000)}s`);
           // Place directly above the tachyon bar with a violet tech theme
           this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#a86bff', '#200a38', '#c59bff', label2);
+        }
+        // Third bar: Anchor RMB cooldown/active state
+        if ((this.player as any).getTechAnchor) {
+          const am: any = (this.player as any).getTechAnchor();
+          const ratio3 = am.max > 0 ? am.value / am.max : 0;
+          const label3 = am.active ? 'ANCHOR ACTIVE' : (am.ready ? 'ANCHOR READY (RMB)' : `ANCHOR ${Math.ceil((am.max - am.value)/1000)}s`);
+          // Place above glide bar with blue tech theme
+          this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, ratio3, '#4169E1', '#001a38', '#87CEEB', label3);
         }
       } else if (id === 'heavy_gunner' && (this.player as any).getGunnerHeat) {
         const g: any = (this.player as any).getGunnerHeat();

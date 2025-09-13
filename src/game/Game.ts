@@ -118,7 +118,7 @@ export class Game {
   private camLerp = 0.12;
   private brightenMode: boolean = true;
   // Abilities system
-  private _abilities: import('./operatives/ability-types').AbilityDescriptor[] = [];
+  private _abilities: any[] = [];
   private lowFX: boolean = false; // legacy low FX toggle (was auto-set in Electron; now manual)
   // Dynamic resolution scaling removed with Electron support
   private designWidth: number; // logical width baseline
@@ -728,15 +728,8 @@ export class Game {
   }
 
   // Reset managers with new player reference
-    // Initialize abilities for the selected operative
-    try {
-      const cid: string | undefined = (this.player as any)?.characterData?.id;
-      const { getOperativeAbilities } = require('./operatives/ability-resolver');
-      const pack = getOperativeAbilities(cid);
-      this._abilities = (pack?.abilities || []) as any;
-    } catch {
-      this._abilities = [];
-    }
+    // Abilities are now handled by operative-specific AbilityManagers
+    this._abilities = [];
     this.enemySpatialGrid.clear(); // Clear grid on reset
     this.bulletSpatialGrid.clear(); // Clear grid on reset
   this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
@@ -933,7 +926,12 @@ export class Game {
     })();
     this.cinematic.start('LAST_STAND', () => {
       // If preload still running, delay transition a tick to avoid first-frame jank
-      const go = () => { this.setState('GAME'); if (this.lastStand && typeof this.lastStand.init === 'function') this.lastStand.init(); };
+      const go = () => {
+        this.setState('GAME');
+        if (this.lastStand && typeof this.lastStand.init === 'function') this.lastStand.init();
+        // Smoothly reveal the LS HUD only after cinematic completes
+        try { (this.lastStand as any).hud?.showSmooth?.(); } catch {}
+      };
       if ((window as any).__cinSkipLocked) { setTimeout(go, 50); } else { go(); }
     });
     return;

@@ -16,6 +16,9 @@ export const mouseState = { x: 0, y: 0, down: false, left: false, right: false, 
 // WHAT: Guard browser-specific event bindings.
 // WHY: Allows importing this module in Node test environment (Vitest) without ReferenceError.
 if (typeof window !== 'undefined' && window.addEventListener) {
+  // Make mouseState globally accessible
+  (window as any).mouseState = mouseState;
+  
   window.addEventListener('keydown', (e) => {
     keyState[e.key.toLowerCase()] = true;
   });

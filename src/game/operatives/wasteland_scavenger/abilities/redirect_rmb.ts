@@ -1,6 +1,7 @@
 
-import { screenToWorld } from '../../../core/coords';
-import { WeaponType } from '../../WeaponType';
+import { screenToWorld } from '../../../../core/coords';
+import { keyState } from '../../../../game/keyState';
+import { WeaponType } from '../../../WeaponType';
 
 /** Wasteland Scavenger RMB: Redirect Scrap Lash and Space Pulse (per-operative). */
 export class ScavengerRedirectRMB {
@@ -11,14 +12,22 @@ export class ScavengerRedirectRMB {
   constructor(game: any) { this.game = game; }
 
   update(nowMs: number, _deltaMs: number, rDown: boolean, edge: boolean, camX: number, camY: number) {
-    if (edge) {
-      const mx = (window as any).__mouseX || 0; const my = (window as any).__mouseY || 0; const world = screenToWorld(mx, my, camX, camY);
+    if (edge && nowMs >= this.redirectCdUntil) {
+      // Prefer precomputed world-space mouse from main.ts; fallback to screenToWorld
+      const ms: any = (window as any).mouseState;
+      let worldX = 0, worldY = 0;
+      if (ms && typeof ms.worldX === 'number' && typeof ms.worldY === 'number') {
+        worldX = ms.worldX; worldY = ms.worldY;
+      } else {
+        const mx = (window as any).__mouseX || 0; const my = (window as any).__mouseY || 0;
+        const w = screenToWorld(mx, my, camX, camY); worldX = w.x; worldY = w.y;
+      }
       const bullets = this.game.bulletManager.bullets;
       for (let i=0;i<bullets.length;i++) {
         const bb:any = bullets[i]; if (!bb || !bb.active) continue;
         if (bb.weaponType === (window as any).WeaponType?.SCRAP_LASH || bb.weaponType === (typeof WeaponType !== 'undefined' ? (WeaponType as any).SCRAP_LASH : bb.weaponType)) {
           if (!bb._lashWaypoints) bb._lashWaypoints = [];
-          bb._lashWaypoints.push({ x: world.x, y: world.y });
+          bb._lashWaypoints.push({ x: worldX, y: worldY });
           if (!bb._lashRedirectActive && (bb._lashPhase === 'OUT' || bb._lashPhase === 'RETURN')) {
             const next = bb._lashWaypoints.shift();
             if (next) { bb._lashRedirectActive = true; bb._lashRedirectX = next.x; bb._lashRedirectY = next.y; bb._lashPhase = 'REDIRECT'; bb._lastRedirectDist = undefined; }
@@ -29,7 +38,8 @@ export class ScavengerRedirectRMB {
       this.redirectCdUntil = nowMs + 3000;
     }
 
-    const spaceDown = !!(this.game as any).keyState?.[' '] || !!(this.game as any).keyState?.['space'] || !!(window as any).keyState?.[' '] || !!(window as any).keyState?.['space'];
+  // Use unified keyState import (space aliases supported)
+  const spaceDown = !!(keyState[' '] || (keyState as any)['space'] || (keyState as any)['spacebar']);
     const prevSpace = (this as any)._prevSpace || false;
     if (spaceDown && !prevSpace) {
       if (nowMs >= this.pulseCdUntil) {

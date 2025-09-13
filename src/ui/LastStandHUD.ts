@@ -18,7 +18,8 @@ export class LastStandHUD {
   color:'#dff', font:'600 13px Orbitron, monospace', zIndex:'140',
   textShadow:'0 0 8px #19f0e6', background:'linear-gradient(180deg, rgba(0,16,20,0.72), rgba(0,10,12,0.62))', padding:'10px 14px', borderRadius:'14px',
   border:'1.5px solid rgba(32,255,233,0.85)', boxShadow:'0 0 24px rgba(32,255,233,0.35), inset 0 0 12px rgba(32,255,233,0.12)',
-  width:'min(48vw, 640px)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center'
+  width:'min(48vw, 640px)', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center',
+  transition:'opacity 260ms ease, transform 260ms ease'
   } as CSSStyleDeclaration);
   this.el.innerHTML = `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:center;white-space:nowrap;letter-spacing:.4px;margin:0 auto;max-width:96%">Wave <span id="ls-wave">1</span> · Enemies <span id="ls-left">--</span> · Scrap <span id="ls-scrap">0</span> · <span id="ls-phase">COMBAT</span> · <span id="ls-timer">--</span></div>`;
   // Core HP bar container
@@ -48,6 +49,23 @@ export class LastStandHUD {
 
   show(){ this.el.style.display='block'; this.visible = true; }
   hide(){ this.el.style.display='none'; this.visible = false; }
+
+  /** Smoothly reveal the HUD (used after cinematic). */
+  showSmooth(){
+    // Start hidden but mounted
+    this.el.style.display = 'block';
+    this.el.style.opacity = '0';
+    // Nudge upward slightly for a subtle slide-in
+    this.el.style.transform = 'translateX(-50%) translateY(-12px)';
+    this.visible = true;
+    // Next frame: animate to final
+    requestAnimationFrame(() => {
+      // force style application before transition
+      void (this.el as any).offsetHeight;
+      this.el.style.opacity = '1';
+      this.el.style.transform = 'translateX(-50%) translateY(0)';
+    });
+  }
 
   setWave(n:number){ this.waveSpan.textContent = String(n); }
   setScrap(v:number){ this.scrapSpan.textContent = String(v); }

@@ -1,5 +1,6 @@
 import type { AbilityDescriptor } from '../../ability-types';
 import type { Player } from '../../../Player';
+import { mouseState } from '../../../keyState';
 import { WeaponType } from '../../../WeaponType';
 
 type VBState = {
@@ -36,8 +37,8 @@ export const VectorBoomerangRMB: AbilityDescriptor = {
 		// HUD getter
 		if (!p.getRunnerBoomerang) p.getRunnerBoomerang = function(){ const max=CD_MS; const remain=Math.max(0, S.meterCdUntil - (typeof performance!=='undefined'?performance.now():Date.now())); return { value:(max-remain), max, ready: remain<=0, active: !!S.active }; };
 
-		// Input edge for RMB
-		const ms = require('../../../keyState'); const mouse = ms.mouseState; const rDown = !!mouse.right; const edge = (()=>{ const prev=(p as any).__runPrevR||false; (p as any).__runPrevR=rDown; return rDown && !prev; })();
+		// Input edge for RMB (ESM import)
+		const mouse = mouseState; const rDown = !!mouse.right; const edge = (()=>{ const prev=(p as any).__runPrevR||false; (p as any).__runPrevR=rDown; return rDown && !prev; })();
 		if (edge && !S.active && now >= S.meterCdUntil) {
 			// Unlimited range: aim at mouse world point, then generate initial interesting curve outbound
 			const camX=g.camX||0, camY=g.camY||0; const mx = mouse.x||0, my=mouse.y||0; const tx = mx+camX, ty = my+camY;
@@ -103,7 +104,7 @@ export const VectorBoomerangRMB: AbilityDescriptor = {
 			}
 		} catch {}
 	},
-	drawWorld: (p: Player & any, ctx: CanvasRenderingContext2D) => {
+	render: (p: Player & any, ctx: CanvasRenderingContext2D) => {
 		const g:any = (p as any).gameContext || (window as any).__gameInstance; const S = (p as any).__runnerVB as VBState | undefined; if (!S || !S.active) return;
 		const rs = g.renderScale||1, camX=g.camX||0, camY=g.camY||0;
 		// Trail: blue flame wisps
@@ -119,20 +120,6 @@ export const VectorBoomerangRMB: AbilityDescriptor = {
 		ctx.save(); ctx.translate(sx, sy); ctx.rotate(ang);
 		try { ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = '#3bd1ff'; ctx.beginPath(); ctx.moveTo(20*rs,0); ctx.lineTo(-8*rs, 8*rs); ctx.lineTo(-6*rs,0); ctx.lineTo(-8*rs,-8*rs); ctx.closePath(); ctx.fill(); ctx.fillStyle='#ffffff'; ctx.fillRect(-2*rs,-2*rs,4*rs,4*rs); } catch {}
 		ctx.restore();
-	},
-	drawOverlay: (p: Player & any, ctx: CanvasRenderingContext2D) => {
-		const g:any = (p as any).gameContext || (window as any).__gameInstance; const S = (p as any).__runnerVB as VBState | undefined; if (!S) return; const now = (typeof performance!=='undefined'?performance.now():Date.now());
-		// Cooldown arc
-		const remain = Math.max(0, (S.meterCdUntil||0) - now); const frac = 1 - Math.min(1, remain / CD_MS);
-		const camX=g.camX||0, camY=g.camY||0, rs=g.renderScale||1; const sx = (p.x - camX) * rs, sy = (p.y - camY) * rs;
-		ctx.save(); ctx.lineWidth = 3*rs; ctx.strokeStyle = remain<=0 ? '#33d1ff' : '#99ecff'; ctx.beginPath(); ctx.arc(sx, sy, 24*rs, -Math.PI/2, -Math.PI/2 + frac * Math.PI*2); ctx.stroke(); ctx.restore();
-		// Offscreen indicator for boomerang
-		if (S.active) {
-			const bx = (S.x - camX) * rs, by = (S.y - camY) * rs; const W=(g.canvas?.width||g.designWidth||1280)*rs, H=(g.canvas?.height||g.designHeight||720)*rs; const inside = bx>=0&&by>=0&&bx<=W&&by<=H; ctx.save(); ctx.globalCompositeOperation='screen';
-			if (inside) { ctx.strokeStyle='rgba(80,220,255,0.95)'; ctx.lineWidth=2*rs; ctx.beginPath(); ctx.arc(bx,by,14*rs,0,Math.PI*2); ctx.stroke(); }
-			else { const cx=W/2, cy=H/2; let dx=bx-cx, dy=by-cy; const d=Math.max(0.001, Math.hypot(dx,dy)); dx/=d; dy/=d; const margin=22*rs; const halfW=cx-margin, halfH=cy-margin; const t=Math.min(Math.abs(halfW/dx)||9999, Math.abs(halfH/dy)||9999); const px=cx+dx*t, py=cy+dy*t; ctx.translate(px,py); const a=Math.atan2(dy,dx); ctx.rotate(a); const s=14*rs; ctx.fillStyle='rgba(80,220,255,0.95)'; ctx.beginPath(); ctx.moveTo(s,0); ctx.lineTo(-s*0.6,s*0.6); ctx.lineTo(-s*0.3,0); ctx.lineTo(-s*0.6,-s*0.6); ctx.closePath(); ctx.fill(); }
-			ctx.restore();
-		}
 	}
 };
 

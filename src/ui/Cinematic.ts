@@ -94,11 +94,11 @@ export class Cinematic {
     const escHandler = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && this.active) {
         if ((window as any).__cinSkipLocked) { e.preventDefault(); return; }
-        this.active = false;
-        if (this.onComplete) this.onComplete();
-        window.removeEventListener('keydown', escHandler);
+        this.skip();
       }
     };
+    // Store handler reference for robust removal
+    (this as any)._escHandler = escHandler;
     window.addEventListener('keydown', escHandler);
   }
 
@@ -281,6 +281,18 @@ export class Cinematic {
   private skip() {
     if (!this.active) return;
     this.active = false;
+    // Remove ESC handler if present
+    if ((this as any)._escHandler) {
+      window.removeEventListener('keydown', (this as any)._escHandler);
+      (this as any)._escHandler = null;
+    }
+    // Switch game state to GAME if possible
+    try {
+      const game = (window as any).__gameInstance;
+      if (game && typeof game.setState === 'function') {
+        game.setState('GAME');
+      }
+    } catch {}
     if (this.onComplete) this.onComplete();
   }
 }

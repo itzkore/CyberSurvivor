@@ -175,6 +175,12 @@ export class BulletManager {
   (b as any)._srcX = undefined;
   (b as any)._srcY = undefined;
   (b as any)._spin = undefined;
+  // Scrap Lash redirect path state
+  (b as any)._lashWaypoints = undefined;
+  (b as any)._lashRedirectX = undefined;
+  (b as any)._lashRedirectY = undefined;
+  (b as any)._lashRedirectActive = undefined;
+  (b as any)._lastRedirectDist = undefined;
   // Per-throw scrap credit gating (Scrap Lash): clear so next throw can award again
   (b as any)._scrapCredited = undefined;
   (b as any).lastX = undefined;
@@ -1105,6 +1111,39 @@ export class BulletManager {
         if ((b as any)._lashPhase === 'OUT' && b.maxDistanceSq !== undefined && b.startX !== undefined && b.startY !== undefined) {
           const dxR = b.x - b.startX; const dyR = b.y - b.startY;
           if ((dxR*dxR + dyR*dyR) >= b.maxDistanceSq) (b as any)._lashPhase = 'RETURN';
+        }
+        // RMB redirect steering toward queued waypoints
+        if ((b as any)._lashPhase === 'REDIRECT') {
+          const base = (b as any)._lashBaseSpeed ?? (Math.hypot(b.vx, b.vy) || 8);
+          // Slightly reduced speed for controllability while redirecting
+          const speed = base * 0.8;
+          const tx = (b as any)._lashRedirectX;
+          const ty = (b as any)._lashRedirectY;
+          if (typeof tx === 'number' && typeof ty === 'number') {
+            const dxT = tx - b.x; const dyT = ty - b.y; const distT = Math.hypot(dxT, dyT) || 1;
+            b.vx = (dxT / distT) * speed;
+            b.vy = (dyT / distT) * speed;
+            // Arrival threshold accounts for blade size
+            const arrive = Math.max(16, (b.radius || 10) * 1.2);
+            if (distT <= arrive) {
+              // Consume next waypoint if any; otherwise fall back to RETURN to player
+              const wp = (b as any)._lashWaypoints && (b as any)._lashWaypoints.length ? (b as any)._lashWaypoints.shift() : undefined;
+              if (wp) {
+                (b as any)._lashRedirectX = wp.x;
+                (b as any)._lashRedirectY = wp.y;
+                (b as any)._lashPhase = 'REDIRECT';
+              } else {
+                (b as any)._lashPhase = 'RETURN';
+                // Clear redirect flags so future throws start clean
+                (b as any)._lashRedirectX = undefined;
+                (b as any)._lashRedirectY = undefined;
+                (b as any)._lashRedirectActive = false;
+              }
+            }
+          } else {
+            // Safety: if redirect target missing, return to player
+            (b as any)._lashPhase = 'RETURN';
+          }
         }
         if ((b as any)._lashPhase === 'RETURN' && pl) {
           const dx = pl.x - b.x; const dy = pl.y - b.y; const dist = Math.hypot(dx, dy) || 1;

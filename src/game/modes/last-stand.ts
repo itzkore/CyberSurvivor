@@ -49,7 +49,8 @@ export class LastStandGameMode {
   private keydownHandler?: (e: KeyboardEvent) => void;
 
   constructor(private game: any){
-    this.hud.show(); this.hud.setPhase('COMBAT');
+    // Do not show immediately; will be revealed smoothly after cinematic ends
+    this.hud.setPhase('COMBAT');
     this.currency.onChange(v => this.hud.setScrap(v));
     // Keep HUD "enemies left" accurate by including alive elites in the count
     const updateEnemiesLeftDisplay = () => {
@@ -200,7 +201,7 @@ export class LastStandGameMode {
     } catch { /* ignore: proceed with fallbacks */ }
     // Restrict shop weapons to this operative's kit (class + compatible types)
     try {
-      const char = (this.game as any).selectedCharacterData as { defaultWeapon?: number; weaponTypes?: number[] } | undefined;
+      const char = (this.game as any).selectedCharacterData as { id?: string; defaultWeapon?: number; weaponTypes?: number[] } | undefined;
       const def = char?.defaultWeapon;
       const list = Array.from(new Set([ ...(char?.weaponTypes || []), ...(typeof def === 'number' ? [def] : []) ])) as number[];
       // Also always include currently owned weapon types so upgrades can appear
@@ -215,7 +216,12 @@ export class LastStandGameMode {
     WeaponType.RICOCHET,
     WeaponType.LASER
   ] as number[];
-  const allow = Array.from(new Set<number>([ ...list, ...owned, ...classics ])) as number[];
+  let allow = Array.from(new Set<number>([ ...list, ...owned, ...classics ])) as number[];
+      // Hard guard: Never offer Titan‑exclusive artillery to non‑Titan classes in Last Stand
+      // (user report: Titan Mech weapon offered to Heavy Gunner — disallow MECH_MORTAR/SIEGE_HOWITZER unless playing Titan Mech)
+      if (char?.id !== 'titan_mech') {
+        allow = allow.filter(wt => wt !== WeaponType.MECH_MORTAR && wt !== (WeaponType as any).SIEGE_HOWITZER);
+      }
       (this.shop as any).setAllowedWeapons(allow as any);
     } catch { /* ignore */ }
     // Configure a simple horizontal corridor and a defense core on the left

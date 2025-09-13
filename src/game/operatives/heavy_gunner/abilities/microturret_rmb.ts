@@ -1,10 +1,13 @@
 import type { AbilityDescriptor } from '../../ability-types';
 import type { Player } from '../../../Player';
+import { mouseState } from '../../../keyState';
+import { WeaponType } from '../../../WeaponType';
+import { WEAPON_SPECS } from '../../../WeaponConfig';
 
-type TurretState = { x:number;y:number;spawn:number;ttl:number;next:number;range:number;level:number;faceA:number } | null;
+type TurretState = { x:number;y:number;spawn:number;next:number;range:number;level:number;faceA:number; side:number } | null;
 
 const COOLDOWN_MS = 20000;
-const TTL_MS = 8000;
+const RELOCATE_COOLDOWN_MS = 5000; // After initial placement, RMB can relocate only after 5s
 const RANGE = 520;
 
 function ensureHudGetter(p: any, getRemain: () => number, isActive: () => boolean) {
@@ -29,29 +32,58 @@ export const MicroTurretRMB: AbilityDescriptor = {
     if (!(p as any).__hgTurret) { (p as any).__hgTurret = { turret: null as TurretState, cooldownUntil: 0, periodMs: 160, image: undefined as HTMLImageElement|undefined }; }
     const S = (p as any).__hgTurret as { turret: TurretState; cooldownUntil:number; periodMs:number; image?:HTMLImageElement };
 
-    // preload image once
-    try { if (!S.image && g.assetLoader?.loadImage) { g.assetLoader.loadImage('assets/turrets/turret_gunner.png').then((img:HTMLImageElement)=>S.image=img).catch(()=>{}); } } catch {}
+    // preload image once (normalized path)
+    try {
+      if (!S.image && g.assetLoader?.loadImage) {
+        const AL = (window as any).AssetLoader;
+        const raw = '/assets/turrets/turret_gunner.png';
+        const path = AL ? AL.normalizePath(raw) : raw;
+        g.assetLoader.loadImage(path).then((img:HTMLImageElement)=>S.image=img).catch(()=>{});
+      }
+    } catch {}
 
     // bind HUD getter
     ensureHudGetter(p, () => Math.max(0, S.cooldownUntil - now), () => !!S.turret);
 
     // Input sampling
-  const ms = require('../../../keyState');
-  const mouse = ms.mouseState; const rDown = !!mouse.right;
+  const mouse = mouseState; const rDown = !!mouse.right;
     const edge = (()=>{ const prev = (p as any).__hgPrevR || false; (p as any).__hgPrevR = rDown; return rDown && !prev; })();
     const rawMx = mouse.x || 0, rawMy = mouse.y || 0; const camX = g.camX || 0, camY = g.camY || 0; const worldX = rawMx + camX, worldY = rawMy + camY;
+    // Helper: clamp target to walkable interior to avoid placing on palisades/holders/etc.
+    const clampToWalkable = (x:number, y:number) => {
+      try {
+        const rm:any = g.roomManager || (window as any).__roomManager;
+        if (rm && typeof rm.clampToWalkable === 'function') {
+          const c = rm.clampToWalkable(x, y, 14, 'player');
+          return { x: c.x, y: c.y };
+        }
+      } catch {}
+      return { x, y };
+    };
 
-    // place
-    if (edge && now >= S.cooldownUntil) {
-      const level = (()=>{ try { return p.weaponLevels?.GUNNER_MINIGUN || p.weaponLevel || 1; } catch { return 1; } })();
-      S.periodMs = resolveMinigunPeriod(level);
-      (S as any).turret = { x: worldX, y: worldY, spawn: now, ttl: TTL_MS, next: now + 200, range: RANGE, level, faceA: 0 };
-      S.cooldownUntil = now + COOLDOWN_MS;
-      try { window.dispatchEvent(new CustomEvent('scrapPulse', { detail: { x: worldX, y: worldY, color:'#FF8C3B', r:120 } })); } catch {}
+    // RMB behavior: place or relocate
+    if (edge) {
+      const hasTurret = !!S.turret;
+      const canPlace = now >= S.cooldownUntil;
+      const canRelocate = hasTurret && (now - (S.turret as any).spawn) >= RELOCATE_COOLDOWN_MS;
+      if (!hasTurret && canPlace) {
+        const level = (()=>{ try { return p.weaponLevels?.GUNNER_MINIGUN || p.weaponLevel || 1; } catch { return 1; } })();
+        S.periodMs = resolveMinigunPeriod(level);
+        // Initialize turret with alternating muzzle side (-1 left, +1 right)
+        const pos = clampToWalkable(worldX, worldY);
+        (S as any).turret = { x: pos.x, y: pos.y, spawn: now, next: now + 200, range: RANGE, level, faceA: 0, side: -1 };
+        S.cooldownUntil = now + COOLDOWN_MS;
+        try { window.dispatchEvent(new CustomEvent('scrapPulse', { detail: { x: pos.x, y: pos.y, color:'#FF8C3B', r:120 } })); } catch {}
+      } else if (canRelocate) {
+        const t = S.turret as any; if (t) {
+          const pos = clampToWalkable(worldX, worldY);
+          t.x = pos.x; t.y = pos.y; t.spawn = now; t.next = now + 120; // small settle time before next shot
+          try { window.dispatchEvent(new CustomEvent('scrapPulse', { detail: { x: pos.x, y: pos.y, color:'#FF8C3B', r:120 } })); } catch {}
+        }
+      }
     }
 
-    const t = S.turret as any; if (!t) return;
-    if (now - t.spawn >= t.ttl) { S.turret = null; return; }
+  const t = S.turret as any; if (!t) return;
     if (now >= t.next) {
       t.next = now + getAdjustedPeriodMs(p, S.periodMs);
       const em:any = g.enemyManager; const list = (typeof em.queryEnemies === 'function') ? em.queryEnemies(t.x, t.y, t.range) : (em.getEnemies?.() || []);
@@ -66,12 +98,19 @@ export const MicroTurretRMB: AbilityDescriptor = {
   },
   drawWorld: (p: Player & any, ctx: CanvasRenderingContext2D) => {
     const S = (p as any).__hgTurret as { turret: TurretState; image?:HTMLImageElement } | undefined; if (!S || !S.turret) return;
-    const g: any = (p as any).gameContext || (window as any).__gameInstance; const t:any = S.turret;
-    const camX = g.camX||0, camY=g.camY||0, rs = g.renderScale||1;
-    const sx = (t.x - camX) * rs; const sy = (t.y - camY) * rs;
-    ctx.save(); ctx.translate(sx, sy); ctx.scale(rs, rs);
-    try { ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = 'rgba(255,160,80,0.25)'; ctx.beginPath(); ctx.ellipse(0,0, 16, 7, 0, 0, Math.PI*2); ctx.fill(); ctx.restore(); } catch {}
-    if (S.image) { const sz = 36; ctx.save(); ctx.rotate(t.faceA); ctx.drawImage(S.image, -sz/2, -sz/2, sz, sz); ctx.restore(); }
+    const t:any = S.turret;
+    // World-space context: Game.ts already applied scale and -cam translation.
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    // Removed temporary ground shadow per request
+    if (S.image) {
+      const sz = 36;
+      ctx.save();
+      // PNG needs +90° clockwise rotation to align with facing
+      ctx.rotate(t.faceA + Math.PI/2);
+      ctx.drawImage(S.image, -sz/2, -sz/2, sz, sz);
+      ctx.restore();
+    }
     else { ctx.fillStyle = '#AA6633'; ctx.beginPath(); ctx.arc(0,0, 14, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = '#FFD199'; ctx.lineWidth = 2; ctx.stroke(); ctx.save(); ctx.rotate(t.faceA); ctx.fillStyle = '#663300'; ctx.fillRect(0, -3, 18, 6); ctx.restore(); }
     try { ctx.globalAlpha = 0.08; ctx.strokeStyle = '#FFAA66'; ctx.beginPath(); ctx.arc(0,0, RANGE, 0, Math.PI*2); ctx.stroke(); } catch {}
     ctx.restore();
@@ -111,18 +150,44 @@ function resolveMinigunPeriod(level:number): number { const base = 160; return M
 function fireAt(g:any, p:any, S:any, tx:number, ty:number) {
   const t = S.turret; if (!t) return;
   try {
-    const WT:any = (window as any).WeaponType; const WeaponType = WT || require('../../WeaponType').WeaponType;
+    const WT:any = (window as any).WeaponType;
     const wType = WT?.GUNNER_MINIGUN ?? WeaponType.GUNNER_MINIGUN;
-    let dmg = Math.max(1, Math.round((p.baseDamage || 10) * 0.6));
+    // Base turret damage: exactly half of the minigun's per-shot damage at current level
+    let dmg = 1;
+    try {
+      const lvl = Math.max(1, Math.min(7, (t.level || 1)));
+      const spec = WEAPON_SPECS[wType as WeaponType];
+      const basePerShot = (() => {
+        if (spec?.getLevelStats) {
+          const stats = spec.getLevelStats(lvl) as any;
+          if (stats && typeof stats.damage === 'number') return stats.damage as number;
+        }
+        return (spec?.damage ?? 12) as number;
+      })();
+      dmg = Math.max(1, Math.round(basePerShot * 0.5));
+    } catch {}
     try {
       const gh = p?.getGunnerHeat?.(); if (gh?.active && typeof p.getGunnerPowerT === 'function') { const tPow = p.getGunnerPowerT(); dmg = Math.round(dmg * (1 + (p.gunnerBoostDamage - 1) * tPow)); }
     } catch {}
-    const b = g.bulletManager?.spawnBullet?.(t.x, t.y, tx, ty, wType, dmg, t.level, 'TURRET');
+    // Compute alternating left/right muzzle offset relative to aim
+    const ang = Math.atan2(ty - t.y, tx - t.x);
+    t.faceA = ang;
+    // Ensure side toggle exists
+    if ((t as any).side !== 1 && (t as any).side !== -1) (t as any).side = -1;
+    const baseCos = Math.cos(ang), baseSin = Math.sin(ang);
+    const perpX = -baseSin, perpY = baseCos;
+    const sideOffset = 12; // visual barrel separation for turret
+    const forwardNudge = 8; // small forward muzzle nudge
+    const originX = t.x + perpX * sideOffset * (t as any).side + baseCos * forwardNudge;
+    const originY = t.y + perpY * sideOffset * (t as any).side + baseSin * forwardNudge;
+    const b = g.bulletManager?.spawnBullet?.(originX, originY, tx, ty, wType, dmg, t.level, 'TURRET');
     if (b) {
       try { const vis:any = (b as any).projectileVisual || {}; const size = vis.size || (vis.thickness || 6); if (typeof size === 'number') vis.size = Math.max(1, Math.round(size * 0.7)); (b as any).projectileVisual = vis; } catch {}
       const sp = Math.max(0.0001, Math.hypot((b as any).vx||0, (b as any).vy||0));
       try { const gh = p?.getGunnerHeat?.(); let extra = 0; if (gh?.active && typeof p.getGunnerPowerT === 'function') { const tPow = p.getGunnerPowerT(); extra = (p.gunnerBoostRange - 1) * tPow; } const reach = t.range * (1 + extra); const ttlMs = Math.round(1000 * (reach / sp)); (b as any).ttl = Math.min((b as any).ttl || ttlMs, ttlMs); } catch {}
     }
+    // Flip side for next shot
+    (t as any).side *= -1;
   } catch {}
 }
 
