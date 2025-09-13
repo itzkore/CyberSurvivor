@@ -7,7 +7,8 @@ import { PASSIVE_SPECS, applyPassive } from './PassiveConfig';
 import { SPEED_SCALE, EXP_BASE, EXP_LINEAR, EXP_QUAD, getHealEfficiency } from './Balance';
 import { Logger } from '../core/Logger';
 import { AssetLoader } from './AssetLoader';
-import { GhostProtocolAbility } from './abilities/GhostProtocol';
+import { GhostProtocolAbility } from './operatives/rogue_hacker/abilities/GhostProtocol';
+import { getOperativeHooks } from './operatives/hooks';
 
 /**
  * Player entity class. Handles movement, shooting, upgrades, and rendering.
@@ -2120,29 +2121,20 @@ export class Player {
   const baseSin = Math.sin(baseAngle);
   const perpX0 = -baseSin;
   const perpY0 =  baseCos;
+  const hooks = getOperativeHooks(this.characterData?.id);
   // Apply global damage nerf/buffs for direct-spawn branches (staggered branches use spawnSingleProjectile which applies gdm internally)
   const gdmLocal = (this as any).getGlobalDamageMultiplier?.() ?? ((this as any).globalDamageMultiplier ?? 1);
   for (let i = 0; i < toShoot; i++) {
           const angle = baseAngle + (i - (toShoot - 1) / 2) * spread;
-          // For Runner Gun: spawn from left/right gun barrels instead of exact center
+          // Compute origin and allow operative hooks to adjust first
           let originX = this.x;
           let originY = this.y;
-          if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE) {
-            const sideOffsetBase = 22; // pixel distance from center to each gun barrel
-            // Alternate barrels when firing a single shot per trigger; for multi-shot, use index-based sides
-            let sideSign: number;
-            if (toShoot <= 1) {
-              sideSign = this.runnerSide;
-              this.runnerSide *= -1; // flip for next shot
-            } else {
-              // Index centered around 0: for 2-shot salvo -> -0.5, +0.5
-              const centeredIndex = (i - (toShoot - 1) / 2);
-              // Convert to sign (-1 or 1) to anchor fully at each side
-              sideSign = centeredIndex < 0 ? -1 : 1;
-            }
-            originX += perpX0 * sideOffsetBase * sideSign;
-            originY += perpY0 * sideOffsetBase * sideSign;
-          } else if (weaponType === WeaponType.DUAL_PISTOLS) {
+          let usedHookOrigin = false;
+          if (hooks && hooks.adjustOrigin) {
+            const adj = hooks.adjustOrigin(this as any, { weaponType, total: toShoot, index: i, baseAngle, baseCos, baseSin, perpX: perpX0, perpY: perpY0, originX, originY });
+            if (adj) { originX = adj.originX; originY = adj.originY; usedHookOrigin = true; }
+          }
+          if (!usedHookOrigin && weaponType === WeaponType.DUAL_PISTOLS) {
             // Akimbo Deagle: two barrels left/right simultaneously (no zig-zag across bursts)
             const sideOffsetBase = 18;
             const perpX = perpX0;
@@ -2153,43 +2145,25 @@ export class Player {
             originY += perpY * sideOffsetBase * sideSign;
             originX += baseCos * 10;
             originY += baseSin * 10;
-          } else if ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech') {
-            // Titan Mech dual heavy cannons: alternate each shot left/right
-            // Determine perpendicular to firing direction
-            const perpX = perpX0;
-            const perpY = perpY0;
-            const barrelOffset = 30; // distance from center to each cannon
-            originX += perpX * barrelOffset * this.mechMortarSide;
-            originY += perpY * barrelOffset * this.mechMortarSide;
-            // Slight forward offset to place at muzzle tip
-            originX += baseCos * 18;
-            originY += baseSin * 18;
-            // Flip for next shot
-            this.mechMortarSide *= -1;
           }
           // Converging fire: if Runner Gun, recompute angle so each barrel aims exactly at target (covers middle)
           let finalAngle = angle;
-          // Data Sorcerer: keep predictive base, but adjust per-barrel convergence only for non-DS weapons
-          if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE) {
-            const tdx = target.x - originX;
-            const tdy = target.y - originY;
-            finalAngle = Math.atan2(tdy, tdx);
-          } else if (weaponType === WeaponType.DUAL_PISTOLS) {
-            // Converging aim per barrel (like Runner Gun) for Akimbo
-            const tdx = target.x - originX;
-            const tdy = target.y - originY;
-            finalAngle = Math.atan2(tdy, tdx);
-          } else if ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech') {
-            // Ensure each mortar shell aims from its barrel directly toward target center
-            const tdx = target.x - originX;
-            const tdy = target.y - originY;
-            finalAngle = Math.atan2(tdy, tdx);
+          // Data Sorcerer: keep predictive base, but adjust per-barrel convergence/aim via hooks where available
+          let usedHookAngle = false;
+          if (hooks && hooks.adjustAngle) {
+            const a = hooks.adjustAngle(this as any, { weaponType, finalAngle, target, originX, originY });
+            if (typeof a === 'number') { finalAngle = a; usedHookAngle = true; }
           }
-          if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
-            const t = this.getGunnerBoostT();
-            const j = this.gunnerBoostJitter * t;
-            // uniform in [-j, j]
-            finalAngle += (Math.random() * 2 - 1) * j;
+          if (!usedHookAngle) {
+            if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE || weaponType === WeaponType.DUAL_PISTOLS || ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech')) {
+              const tdx = target.x - originX; const tdy = target.y - originY;
+              finalAngle = Math.atan2(tdy, tdx);
+            }
+            if (isGunner && weaponType === WeaponType.GUNNER_MINIGUN) {
+              const t = this.getGunnerBoostT();
+              const j = this.gunnerBoostJitter * t;
+              finalAngle += (Math.random() * 2 - 1) * j;
+            }
           }
           // Smart Rifle: inject artificial arc spread before homing correction so they visibly curve in
       if (weaponType === WeaponType.RAPID) {
@@ -2309,7 +2283,11 @@ export class Player {
                 }
               } else {
               {
-                const dmg = Math.max(1, Math.round(bulletDamage * gdmLocal));
+                let dmg = Math.max(1, Math.round(bulletDamage * gdmLocal));
+                if (hooks && hooks.preSpawnDamage) {
+                  const v = hooks.preSpawnDamage(this as any, { weaponType, current: dmg });
+                  if (typeof v === 'number') dmg = v;
+                }
                 const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, dmg, weaponLevel);
                 // Living Sludge: make adjacent globs slower with shorter range to form a puddle arrow
                 if (weaponType === WeaponType.LIVING_SLUDGE && b && toShoot > 1) {
@@ -2327,13 +2305,15 @@ export class Player {
                   const pm = this.gameContext?.particleManager;
                   if (pm) pm.spawn(originX, originY, 1, 'rgba(178,34,34,0.85)', { sizeMin: 0.8, sizeMax: 1.8, life: 40, speedMin: 1.0, speedMax: 2.4 });
                 }
-                if (isGunner && b && weaponType === WeaponType.GUNNER_MINIGUN) {
+                if (hooks && hooks.afterSpawnBullet && b) {
+                  hooks.afterSpawnBullet(this as any, { weaponType, bullet: b });
+                } else if (isGunner && b && weaponType === WeaponType.GUNNER_MINIGUN) {
+                  // Legacy fallback for minigun scaling if hook not present
                   const t = this.getGunnerBoostT();
                   const rMul = 1 + (this.gunnerBoostRange - 1) * t;
                   const tPow = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : t;
                   if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul*rMul);
                   if (b.life != null) b.life = Math.round(b.life * rMul);
-                  // Safety: if minigun, reassert 2x damage on the spawned bullet to ensure doubling sticks
                   const dmgMul = (1 + (this.gunnerBoostDamage - 1) * tPow);
                   b.damage = (b.damage ?? bulletDamage) * dmgMul;
                 }
@@ -2392,21 +2372,15 @@ export class Player {
     const perpY0 =  baseCos;
     let originX = this.x;
     let originY = this.y;
-  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE) {
-      const sideOffsetBase = 22;
-      const perpX = perpX0;
-      const perpY = perpY0;
-      let sideSign: number;
-      if (total <= 1) {
-        sideSign = this.runnerSide;
-        this.runnerSide *= -1;
-      } else {
-        const centeredIndex = (index - (total - 1) / 2);
-        sideSign = centeredIndex < 0 ? -1 : 1;
+    // Delegate origin adjustments to operative hooks when available
+    {
+      const hooks = getOperativeHooks(this.characterData?.id);
+      if (hooks && hooks.adjustOrigin) {
+        const adj = hooks.adjustOrigin(this as any, { weaponType, total, index, baseAngle, baseCos, baseSin, perpX: perpX0, perpY: perpY0, originX, originY });
+        if (adj) { originX = adj.originX; originY = adj.originY; }
       }
-      originX += perpX * sideOffsetBase * sideSign;
-      originY += perpY * sideOffsetBase * sideSign;
-    } else if (weaponType === WeaponType.DUAL_PISTOLS) {
+    }
+    if (weaponType === WeaponType.DUAL_PISTOLS) {
       const sideOffset = 18;
       const perpX = perpX0;
       const perpY = perpY0;
@@ -2415,15 +2389,6 @@ export class Player {
       originX += baseCos * 10;
       originY += baseSin * 10;
       this.akimboSide *= -1;
-  } else if ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech') {
-      const perpX = perpX0;
-      const perpY = perpY0;
-      const barrelOffset = 30;
-      originX += perpX * barrelOffset * this.mechMortarSide;
-      originY += perpY * barrelOffset * this.mechMortarSide;
-      originX += baseCos * 18;
-      originY += baseSin * 18;
-      this.mechMortarSide *= -1;
     }
     let finalAngle = angle;
     // Predictive adjust for DS lasers at the per-shot level (staggered or multi-barrel paths)
@@ -2438,33 +2403,12 @@ export class Player {
         if (a != null) finalAngle = a;
       } catch { /* ignore */ }
     }
-  if (weaponType === WeaponType.RUNNER_GUN || weaponType === WeaponType.RUNNER_OVERDRIVE || weaponType === WeaponType.DUAL_PISTOLS || ((weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER) && this.characterData?.id === 'titan_mech')) {
-      const tdx = target.x - originX;
-      const tdy = target.y - originY;
-      finalAngle = Math.atan2(tdy, tdx);
-    }
-    // Runner Overdrive: motion-biased aim — when moving fast, nudge aim toward movement vector (lane bias)
-    if (weaponType === WeaponType.RUNNER_OVERDRIVE) {
-      const moveMag = Math.hypot(this.vx || 0, this.vy || 0);
-      const base = this.baseMoveSpeed || this.speed || 1;
-      // Start biasing at 60% base speed; fully applied at 100%+
-      const t = Math.max(0, Math.min(1, (moveMag - 0.6 * base) / Math.max(1e-6, 0.4 * base)));
-      if (t > 0) {
-        const moveAngle = Math.atan2(this.vy || 0, this.vx || 0);
-        // Shortest angular difference and blend up to 6 degrees
-        let d = ((moveAngle - finalAngle + Math.PI) % (Math.PI * 2));
-        if (d < 0) d += Math.PI * 2;
-        d -= Math.PI;
-        const maxBias = (6 * Math.PI) / 180; // 6°
-        finalAngle = finalAngle + Math.max(-maxBias, Math.min(maxBias, d)) * t;
-      }
-    }
-    // Heavy Gunner: extra jitter on minigun while boosting, scales with heat t
-    if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN) {
-      const t = this.getGunnerBoostT();
-      if (t > 0) {
-        const j = this.gunnerBoostJitter * t;
-        finalAngle += (Math.random() * 2 - 1) * j;
+    // Let operative hooks adjust the fire angle (aim rules, jitters, motion-bias)
+    {
+      const hooks = getOperativeHooks(this.characterData?.id);
+      if (hooks && hooks.adjustAngle) {
+        const a = hooks.adjustAngle(this as any, { weaponType, finalAngle, target, originX, originY });
+        if (typeof a === 'number') finalAngle = a;
       }
     }
   // Apply global damage multiplier (percent-based passive)
@@ -2541,14 +2485,12 @@ export class Player {
 
     // Default single projectile spawn
     let spawnDamage = bulletDamage;
-    if (this.characterData?.id === 'titan_mech') {
-      const isTitanHeavy = weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER;
-      if (isTitanHeavy) {
-        // Apply Titan-only nerf, then a small extra mortar-specific trim to curb overkill
-        spawnDamage = Math.max(1, Math.round(spawnDamage * this.getTitanOnlyDamageNerf()));
-        // Extra trim (keeps other Titan weapons unchanged). If Fortress is active, this offsets part of the +50% damage.
-        const extraTrim = (this as any).fortressActive ? 0.75 : 0.75; // same factor both states for simplicity
-        spawnDamage = Math.max(1, Math.round(spawnDamage * extraTrim));
+    // Allow operative-specific damage adjustments pre-spawn (Titan, etc.)
+    {
+      const hooks = getOperativeHooks(this.characterData?.id);
+      if (hooks && hooks.preSpawnDamage) {
+        const v = hooks.preSpawnDamage(this as any, { weaponType, current: spawnDamage });
+        if (typeof v === 'number') spawnDamage = v;
       }
     }
     const b = bm.spawnBullet(originX, originY, originX + Math.cos(finalAngle) * 100, originY + Math.sin(finalAngle) * 100, weaponType, spawnDamage, weaponLevel);
@@ -2581,20 +2523,10 @@ export class Player {
         }
       }
     }
-    if (this.characterData?.id === 'heavy_gunner' && weaponType === WeaponType.GUNNER_MINIGUN && b) {
-      const t = this.getGunnerBoostT();
-      const tPow = (this as any).getGunnerPowerT ? (this as any).getGunnerPowerT() : t;
-      if (t > 0) {
-        const rMul = 1 + (this.gunnerBoostRange - 1) * t;
-        if ((b as any).maxDistanceSq != null) (b as any).maxDistanceSq *= (rMul * rMul);
-        if (b.life != null) b.life = Math.round(b.life * rMul);
-        const dmgMul = 1 + (this.gunnerBoostDamage - 1) * tPow;
-        b.damage = (b.damage ?? bulletDamage) * dmgMul;
-  // Add temporary piercing +2 during boost
-  const addPierce = 2;
-  if ((b as any).pierceRemaining == null) (b as any).pierceRemaining = 0;
-  (b as any).pierceRemaining += addPierce;
-      }
+    // Post-spawn bullet adjustments via operative hooks
+    {
+      const hooks = getOperativeHooks(this.characterData?.id);
+      if (hooks && hooks.afterSpawnBullet && b) hooks.afterSpawnBullet(this as any, { weaponType, bullet: b });
     }
   }
 

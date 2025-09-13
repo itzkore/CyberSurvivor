@@ -138,25 +138,10 @@ export class HUD {
       const classX = 20 + hpBarWidth + 16;
       const maxW = Math.min(280, Math.max(120, width - (classX + 40)));
       if (id === 'wasteland_scavenger' && (this.player as any).getScrapMeter) {
-        // Base scrap meter at bottom
         const meter: any = (this.player as any).getScrapMeter();
         const ratio = meter.max > 0 ? meter.value / meter.max : 0;
         const label = `SCRAP ${meter.value}/${meter.max}`;
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, '#f0b400', '#3a2a00', '#ffaa00', label);
-        // Redirect (RMB) cooldown bar above
-        if ((this.player as any).getScavengerRedirect) {
-          const rd: any = (this.player as any).getScavengerRedirect();
-          const rRatio = rd.max > 0 ? rd.value / rd.max : 0;
-            const rLabel = rd.ready ? 'REDIRECT READY (RMB)' : `REDIRECT ${Math.ceil((rd.max - rd.value)/1000)}s`;
-          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, rRatio, '#ff9b2a', '#3a1600', '#ffbd73', rLabel);
-        }
-        // Pulse (Space) cooldown bar at top
-        if ((this.player as any).getScavengerPulse) {
-          const pl: any = (this.player as any).getScavengerPulse();
-          const pRatio = pl.max > 0 ? pl.value / pl.max : 0;
-          const pLabel = pl.ready ? 'PULSE READY (Space)' : `PULSE ${Math.ceil((pl.max - pl.value)/1000)}s`;
-          this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, pRatio, '#ff4d2a', '#3a0400', '#ff8b73', pLabel);
-        }
       } else if (id === 'tech_warrior' && (this.player as any).getTechMeter) {
         const meter: any = (this.player as any).getTechMeter();
         const ratio = meter.max > 0 ? meter.value / meter.max : 0;
@@ -170,24 +155,6 @@ export class HUD {
           const label2 = gm.active ? 'GLIDE ACTIVE' : (gm.ready ? 'GLIDE READY (Shift)' : `GLIDE ${Math.ceil((gm.max - gm.value)/1000)}s`);
           // Place directly above the tachyon bar with a violet tech theme
           this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#a86bff', '#200a38', '#c59bff', label2);
-        }
-        // Anchor ability (RMB) cooldown bar at top (third bar) if provider exists
-        if ((this.player as any).getTechAnchor) {
-          const an: any = (this.player as any).getTechAnchor();
-          const aRatio = an.max > 0 ? an.value / an.max : 0;
-          const remainMs = an.max - an.value;
-          let aLabel: string;
-          if (an.placed && !an.armed) {
-            if (an.armRemain && an.armRemain < 1000) aLabel = `ANCHOR ARM ${Math.ceil(an.armRemain)}ms`; else aLabel = 'ANCHOR ARMING...';
-          }
-          else if (an.placed && an.armed) aLabel = 'ANCHOR READY (RMB)';
-          else if (an.ready) aLabel = 'ANCHOR READY (RMB)';
-          else aLabel = `ANCHOR ${Math.ceil(remainMs/1000)}s`;
-          // Color shifts: armed/ready -> cyan theme, arming -> amber, cooling -> muted
-          const fg = an.placed ? (an.armed ? '#3bd8ff' : '#ffb05a') : (an.ready ? '#3bd8ff' : '#b5742a');
-          const bg = an.placed ? (an.armed ? '#00303a' : '#3a1e00') : (an.ready ? '#002e33' : '#2a1400');
-          const accent = an.placed ? (an.armed ? '#6be9ff' : '#ffc27a') : (an.ready ? '#6be9ff' : '#dd8b40');
-          this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, aRatio, fg, bg, accent, aLabel);
         }
       } else if (id === 'heavy_gunner' && (this.player as any).getGunnerHeat) {
         const g: any = (this.player as any).getGunnerHeat();
@@ -211,6 +178,14 @@ export class HUD {
           ctx.strokeRect(classX + 0.5, hpBarY + 0.5, maxW - 1, 22 - 1);
           ctx.restore();
         }
+        // Secondary bar: Micro Turret Pod cooldown / active state
+        if ((this.player as any).getGunnerTurret) {
+          const tm: any = (this.player as any).getGunnerTurret();
+          const ratio2 = tm.max > 0 ? tm.value / tm.max : 0;
+          const label2 = tm.active ? 'TURRET ACTIVE' : (tm.ready ? 'TURRET READY (RMB)' : `TURRET ${Math.ceil((tm.max - tm.value)/1000)}s`);
+          // Place directly above the overheat bar with orange theme matching turret overlay
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#ff8c3b', '#331a08', '#ffb673', label2);
+        }
       } else if (id === 'titan_mech' && (this.player as any).getFortressMeter) {
         const fm: any = (this.player as any).getFortressMeter();
         const ratio = fm.max > 0 ? fm.value / fm.max : 0;
@@ -220,7 +195,7 @@ export class HUD {
         const bg = fm.active ? '#2a0004' : '#220a33';
         const accent = fm.active ? '#ff1a1a' : '#d5a6ff';
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, fg, bg, accent, label);
-      } else if (id === 'cyber_runner' && (this.player as any).getRunnerDash) {
+  } else if (id === 'cyber_runner' && (this.player as any).getRunnerDash) {
         // Dash cooldown: show time until ready (fills up as it recharges)
         const d: any = (this.player as any).getRunnerDash();
         const ratio = d.max > 0 ? d.value / d.max : 0; // value counts up toward max
@@ -234,6 +209,13 @@ export class HUD {
           const label2 = bc.active ? 'CYCLONE ACTIVE' : (bc.ready ? 'CYCLONE READY (Spacebar)' : `CYCLONE ${Math.ceil((bc.max - bc.value)/1000)}s`);
           // Place directly above the dash bar with neon cyan theme
           this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#26ffe9', '#07333a', '#00b3a3', label2);
+        }
+        // Third bar: Vector Boomerang RMB
+        if ((this.player as any).getRunnerBoomerang) {
+          const vb: any = (this.player as any).getRunnerBoomerang();
+          const ratio3 = vb.max > 0 ? vb.value / vb.max : 0;
+          const label3 = vb.active ? 'BOOMERANG ACTIVE' : (vb.ready ? 'BOOMERANG READY (RMB)' : `BOOMERANG ${Math.ceil((vb.max - vb.value)/1000)}s`);
+          this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, ratio3, '#33d1ff', '#062a33', '#6fe4ff', label3);
         }
       } else if (id === 'data_sorcerer' && (this.player as any).getSorcererSigilMeter) {
         const m: any = (this.player as any).getSorcererSigilMeter();
@@ -347,49 +329,24 @@ export class HUD {
         // Detect evolution ownership for theming
         let evolved = false;
         try { const aw = (this.player as any).activeWeapons as Map<number, number> | undefined; evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR)); } catch {}
-        // Acquire meters
+        // Dedicated class bar: Ghost Protocol (Shift) — draw ABOVE System Hack
         const gp = (this.player as any).getGhostProtocolMeter ? (this.player as any).getGhostProtocolMeter() : null;
-        const sysHack: any = (this.player as any).getHackerHackMeter();
-        // Manual hack meter from hacking system (global instance)
-        let manualMeter: any = null;
-        try { const game: any = (window as any).__gameInstance; const hs = game?.hacking; if (hs?.getMeter) manualMeter = hs.getMeter(); } catch {}
-        // Determine vertical stacking within LEFT class bar column.
-        // Base anchor: System Hack at hpBarY.
-        let sysHackY = hpBarY;
-        let gpY = hpBarY - 26; // one row above system hack
-        let manualY = gp ? (hpBarY - 52) : (hpBarY - 26); // if GP missing, manual sits directly above System Hack
-        // Draw Manual Hack first (topmost)
-        if (manualMeter) {
-          const rH = manualMeter.max > 0 ? manualMeter.value / manualMeter.max : 0;
-          const readyH = manualMeter.ready;
-          const labelH = readyH ? 'MANUAL HACK READY (RMB)' : `MANUAL HACK ${Math.ceil((manualMeter.max - manualMeter.value)/1000)}s`;
-          this.drawThemedBar(ctx, classX, manualY, maxW, 22, rH, '#ff2a2a', '#2a0505', '#ff7b7b', labelH);
-          if (readyH) {
-            const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-            const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.012);
-            ctx.save();
-            ctx.strokeStyle = `rgba(255,60,60,${(0.25 + 0.35 * pulse).toFixed(3)})`;
-            ctx.lineWidth = 2;
-            ctx.shadowColor = 'rgba(255,60,60,0.65)';
-            ctx.shadowBlur = 12 + 18 * pulse;
-            ctx.strokeRect(classX + 0.5, manualY + 0.5, maxW - 1, 22 - 1);
-            ctx.restore();
-          }
-        }
-        // Draw Ghost Protocol (if exists)
         if (gp) {
           const ratioGP = gp.max > 0 ? gp.value / gp.max : 0;
           const labelGP = gp.active ? 'GHOST PROTOCOL ACTIVE' : (gp.ready ? 'GHOST PROTOCOL READY (Shift)' : `GHOST PROTOCOL ${Math.ceil((gp.max - gp.value)/1000)}s`);
-          if (evolved) this.drawThemedBar(ctx, classX, gpY, maxW, 22, ratioGP, '#FF1333', '#1a0006', '#FF667F', labelGP);
-          else this.drawThemedBar(ctx, classX, gpY, maxW, 22, ratioGP, '#cc6d00', '#1a0c00', '#ffae55', labelGP);
+      // Orange base; dark neon red if evolved. Draw above System Hack to avoid XP overlap
+      const gpY = hpBarY - 26;
+      if (evolved) this.drawThemedBar(ctx, classX, gpY, maxW, 22, ratioGP, '#FF1333', '#1a0006', '#FF667F', labelGP);
+      else this.drawThemedBar(ctx, classX, gpY, maxW, 22, ratioGP, '#cc6d00', '#1a0c00', '#ffae55', labelGP);
         }
-        // Draw System Hack
-        if (sysHack) {
-          const ratioSys = sysHack.max > 0 ? sysHack.value / sysHack.max : 0;
-          const label = sysHack.ready ? 'SYSTEM HACK READY (Spacebar)' : `SYSTEM HACK ${Math.ceil((sysHack.max - sysHack.value)/1000)}s`;
-          if (evolved) this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratioSys, '#FF1333', '#2a0008', '#FF667F', label);
-          else this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratioSys, '#ffa500', '#2a1400', '#ffd280', label);
-        }
+        // Primary class bar: System Hack (Spacebar) — now BELOW GP (or at top if GP missing)
+        const m: any = (this.player as any).getHackerHackMeter();
+        const ratio = m.max > 0 ? m.value / m.max : 0;
+  const label = m.ready ? 'SYSTEM HACK READY (Spacebar)' : `SYSTEM HACK ${Math.ceil((m.max - m.value)/1000)}s`;
+    // Keep System Hack anchored at hpBarY; GP sits above when present
+    const sysHackY = hpBarY;
+  if (evolved) this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratio, '#FF1333', '#2a0008', '#FF667F', label);
+  else this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratio, '#ffa500', '#2a1400', '#ffd280', label);
       }
 
       // Revive cooldown bar (right-aligned), visible if Revive passive is owned
@@ -507,7 +464,7 @@ export class HUD {
       this.drawThemedBar(ctx, x, y, barW, h, eff, fg, bg, accent, label);
     } catch { /* ignore */ }
 
-  // Auto-aim toggle indicator (right-anchored, near class bars) — ensure visible during active gameplay for all operatives
+    // Auto-aim toggle indicator (right-anchored, near class bars) — ensure visible during active gameplay for all operatives
     try {
       // Derive game state robustly (player.game may be undefined). Prefer global __game reference.
       const g: any = (window as any).__game;
@@ -532,37 +489,6 @@ export class HUD {
         ctx.font = '9px Orbitron, sans-serif'; ctx.textAlign = 'right'; ctx.fillStyle = COLOR_TEXT_DIM;
         ctx.fillText('Toggle (C)', x + boxW - 6, y + boxH + 10);
         ctx.restore();
-      }
-    } catch { /* ignore */ }
-
-    // Manual Hacking mouse overlay (small status badge near cursor)
-    try {
-      const game: any = (window as any).__gameInstance;
-      const hacking = game?.hacking;
-      if (hacking && game?.player?.characterData?.id === 'rogue_hacker') {
-        const v = hacking.getVisual?.();
-        // Show HK cursor badge ONLY when ability is ready (IDLE state) and mouse directly over an enemy.
-        if (v && v.state === 'IDLE' && v.hovered) {
-          const camX = (window as any).__camX || 0;
-          const camY = (window as any).__camY || 0;
-          const sx = v.cx - camX;
-          const sy = v.cy - camY;
-          if (sx >= -30 && sy >= -30 && sx <= width + 30 && sy <= height + 30) {
-            ctx.save();
-            ctx.translate(sx + 26, sy + 26); // offset so reticle isn't obscured
-            const r = 18;
-            ctx.globalAlpha = 0.9;
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = '#2a0505';
-            ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
-            // No progress arcs when simply indicating readiness.
-            ctx.font = 'bold 9px Orbitron, sans-serif';
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillStyle = '#ff5555';
-            ctx.fillText('HK',0,0);
-            ctx.restore();
-          }
-        }
       }
     } catch { /* ignore */ }
 
@@ -803,9 +729,8 @@ export class HUD {
     // Special item markers (Heal/Magnet/Nuke) and Treasures
     try {
       const em: any = (window as any).__gameInstance?.getEnemyManager?.();
-  const items = em?.getSpecialItems ? em.getSpecialItems() : [];
-  let treasures = em?.getTreasures ? em.getTreasures() : [];
-  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') treasures = []; } catch {}
+      const items = em?.getSpecialItems ? em.getSpecialItems() : [];
+      const treasures = em?.getTreasures ? em.getTreasures() : [];
       // Draw items with TTL-based flicker/pulse (last 10s)
       for (let i = 0; i < items.length; i++) {
         const it = items[i]; if (!it?.active) continue;

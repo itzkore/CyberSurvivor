@@ -37,6 +37,10 @@ import { updateEliteBlocker } from './elites/EliteBlocker';
 import { updateEliteSiphon } from './elites/EliteSiphon';
 import type { EliteRuntime, EliteKind } from './elites/types';
 import { ELITE_BASE_RADIUS, ELITE_SOFT_CAP, ELITE_SCHEDULE } from '../config/elites';
+import { ENEMY_SPRITE_DEFS, ENEMY_RADIUS_DEFS } from './enemies/archetypes';
+import { configureSmallSpawn } from './enemies/Small';
+import { configureMediumSpawn } from './enemies/Medium';
+import { configureLargeSpawn } from './enemies/Large';
 
 type SpawnPattern = 'normal' | 'ring' | 'cone' | 'surge';
 
@@ -1372,11 +1376,7 @@ export class EnemyManager {
 
   /** Pre-render circle enemies (normal + flash variant) to cut per-frame path & stroke cost. */
   private preRenderEnemySprites() {
-    const defs: Array<{type: Enemy['type']; radius: number; color: string; flashColor: string}> = [
-      { type: 'small', radius: 20, color: '#f00', flashColor: '#ff8080' },
-      { type: 'medium', radius: 28, color: '#d40000', flashColor: '#ff9090' },
-      { type: 'large', radius: 36, color: '#b00000', flashColor: '#ff9999' }
-    ];
+    const defs: Array<{type: Enemy['type']; radius: number; color: string; flashColor: string}> = ENEMY_SPRITE_DEFS as any;
   // Note: Mind-controlled enemies are scaled up at draw time (no new sprite variants needed).
     // Helper: build a tinted single-channel ghost canvas (simulate RGB split) once per type
     const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
@@ -1432,11 +1432,7 @@ export class EnemyManager {
     const path = AssetLoader.normalizePath('/assets/enemies/enemy_default.png');
     const img = new Image();
     img.onload = () => {
-      const defs: Array<{type: Enemy['type']; radius: number}> = [
-        { type: 'small', radius: 20 },
-        { type: 'medium', radius: 28 },
-        { type: 'large', radius: 36 }
-      ];
+  const defs: Array<{type: Enemy['type']; radius: number}> = ENEMY_RADIUS_DEFS as any;
       // Helper for ghosts
       const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
         const cv = document.createElement('canvas');
@@ -5673,91 +5669,11 @@ export class EnemyManager {
     enemy.type = type;
     enemy.id = `enemy-${Date.now()}-${Math.random().toFixed(4)}`; // Assign unique ID
   // (damage flash removed)
-  switch (type) {
-        case 'small': {
-          const late = gameTime >= 180;
-          enemy.hp = late ? 160 : 100;
-          enemy.maxHp = enemy.hp;
-          enemy.radius = 20;
-          // Make smalls slower baseline; they should no longer outpace the player
-          enemy.speed = (late ? 0.90 : 1.05) * 0.30 * this.enemySpeedScale * this.lsSmallSpeedMul; // LS can scale this up to ensure smalls lead
-          enemy.damage = 4; // within 1-10
-          break;
-        }
-        case 'medium': {
-          const late = gameTime >= 180;
-          enemy.hp = late ? 380 : 220;
-          enemy.maxHp = enemy.hp;
-          enemy.radius = 30;
-          // Raise baseline medium speed to avoid early-wave stall
-          enemy.speed = 0.92 * 0.30 * this.enemySpeedScale; // was 0.65; ~+41% baseline
-          enemy.damage = 7; // within 1-10
-          break;
-        }
-        case 'large': {
-          const late = gameTime >= 180;
-          enemy.hp = late ? 900 : 480;
-          enemy.maxHp = enemy.hp;
-          enemy.radius = 38;
-          // Very small bump to keep packs cohesive behind mediums
-          enemy.speed = 0.45 * 0.28 * this.enemySpeedScale; // was 0.42
-          enemy.damage = 10; // cap at 10
-          break;
-        }
-    }
-    // Defensive global cap: clamp base speed before progression ramps are applied further down
-    try {
-      const ghostCap = 9.0 * (window as any)?.SPEED_SCALE || 9.0 * 0.45;
-      if ((enemy as any).speed > ghostCap) (enemy as any).speed = ghostCap;
-    } catch { /* ignore */ }
-    // Emphasize HP/damage/knockback resistance growth over time; keep speed balanced:
-    // - Early: medium/large get a temporary boost (so waves don't stall)
-    // - Late: gentler ramp so enemies don't become too fast
-  {
-      const minutes = Math.max(0, gameTime / 60);
-      // HP grows strongly into late game; tuned to ~6x at 10m
-      const hpMul = 1 + 0.20 * minutes + 0.03 * minutes * minutes;
-      // Damage grows modestly; tuned to ~2.6x at 10m
-      const dmgMul = 1 + 0.06 * minutes + 0.01 * minutes * minutes;
-      // Knockback resistance ramps up; add type-based floor early to prevent ragdolling
-      const kbFloor = enemy.type === 'medium' ? 0.35 : (enemy.type === 'large' ? 0.50 : 0.00);
-      const kbResist = Math.min(0.75, kbFloor + 0.05 * minutes + 0.008 * minutes * minutes);
-      enemy.hp = Math.max(1, Math.round(enemy.hp * hpMul));
-      enemy.maxHp = enemy.hp;
-      enemy.damage = Math.max(1, Math.round(enemy.damage * dmgMul));
-      (enemy as any)._kbResist = kbResist;
-
-  // Speed profile rebalanced
-      if (enemy.type === 'small') {
-        // Keep smalls almost flat; tiny late uptick only
-        const smMul = 1 + Math.min(0.04, 0.004 * minutes);
-        enemy.speed *= smMul;
-      } else {
-        // Early assistance: up to +35% at t=0, fades to 0 by 3 minutes
-        const earlyBoost = 1 + Math.max(0, 0.35 * (1 - Math.min(1, minutes / 3)));
-        enemy.speed *= earlyBoost;
-        // Gentler late ramp
-        const lateMul = enemy.type === 'medium'
-          ? (1 + Math.min(0.12, 0.010 * minutes))
-          : (1 + Math.min(0.12, 0.010 * minutes));
-        enemy.speed *= lateMul;
-        // Absolute caps per type (defensive; normally not hit with the gentler ramps)
-        try {
-          // In this branch, enemy.type is guaranteed not to be 'small'
-          const t: 'medium'|'large' = (enemy.type === 'medium') ? 'medium' : 'large';
-          enemy.speed = this.clampToTypeCaps(enemy.speed, t);
-        } catch { /* ignore */ }
-        // Global absolute clamp versus Ghost Operative default speed (after all ramps)
-        try {
-          const ghostCap = 9.0 * (window as any)?.SPEED_SCALE || 9.0 * 0.45;
-          if (enemy.speed > ghostCap) enemy.speed = ghostCap;
-        } catch { /* ignore */ }
-        // Briefly suppress knockback on fresh spawns in the first minute to avoid boring push-loops
-        if (minutes < 1.0) {
-          const eAny: any = enemy as any;
-          eAny._kbSuppressUntil = (performance.now ? performance.now() : Date.now()) + 550;
-        }
-      }
+  // Delegate per-type configuration
+    switch (type) {
+      case 'small': configureSmallSpawn(this as any, enemy, gameTime); break;
+      case 'medium': configureMediumSpawn(this as any, enemy, gameTime); break;
+      case 'large': configureLargeSpawn(this as any, enemy, gameTime); break;
     }
   // Spawn placement with safe distance logic
   const minSafeDist = 520; // do not spawn closer than this to player

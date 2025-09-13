@@ -650,11 +650,10 @@ export class BulletManager {
                   if (this.particleManager) this.particleManager.spawn(e.x, e.y, 1, '#FF99FF');
                 }
               }
-              // Also damage treasures within pulse radius (no mark amplification) – disabled in Last Stand
+              // Also damage treasures within pulse radius (no mark amplification)
               try {
                 const emAny: any = this.enemyManager as any;
                 if (emAny && typeof emAny.getTreasures === 'function') {
-                  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') { /* skip treasures in LS */ throw new Error('skip'); } } catch { /* swallow */ }
                   const treasures = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number;radius:number }>;
                   for (let ti = 0; ti < treasures.length; ti++) {
                     const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
@@ -746,11 +745,10 @@ export class BulletManager {
                   const dxB = boss.x - pxG; const dyB = boss.y - pyG; if (dxB*dxB + dyB*dyB <= 800*800) hasEnemyNearPlayer = true;
                 }
               }
-              // Consider treasures near the player as valid fire gate as well (not in Last Stand)
+              // Consider treasures near the player as valid fire gate as well
               if (!hasEnemyNearPlayer) {
                 const emAny: any = this.enemyManager as any;
                 if (emAny && typeof emAny.getTreasures === 'function') {
-                  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') { /* skip LS */ throw new Error('skip'); } } catch { /* swallow */ }
                   const ts = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number }>;
                   for (let ti = 0; ti < ts.length; ti++) {
                     const t = ts[ti]; if (!t || !t.active || (t as any).hp <= 0) continue; if (!isVisibleLSNear(t.x, t.y)) continue;
@@ -805,12 +803,11 @@ export class BulletManager {
                 if (d2B <= searchR*searchR) { bossCand = boss; bossD2 = d2B; bossMarked = ((boss as any)._psionicMarkUntil || 0) > nowM; }
               }
             } catch { /* ignore */ }
-            // Add treasures as candidate targets (prefer nearest when no marked target) – disabled in Last Stand
+            // Add treasures as candidate targets (prefer nearest when no marked target)
             let bestTreasure: any = null; let bestTreasureD2 = Infinity;
             try {
               const emAny: any = this.enemyManager as any;
               if (emAny && typeof emAny.getTreasures === 'function') {
-                try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') { /* skip */ throw new Error('skip'); } } catch { /* swallow */ }
                 const treasures = emAny.getTreasures() as Array<{ x:number;y:number;active:boolean;hp:number }>;
                 for (let ti = 0; ti < treasures.length; ti++) {
                   const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue; if (!isVisibleLS(t.x, t.y)) continue;
@@ -1109,43 +1106,6 @@ export class BulletManager {
           const dxR = b.x - b.startX; const dyR = b.y - b.startY;
           if ((dxR*dxR + dyR*dyR) >= b.maxDistanceSq) (b as any)._lashPhase = 'RETURN';
         }
-        // Mid-flight redirect handling: if player targeted a point, fly there then return
-        if ((b as any)._lashRedirectActive) {
-          if ((b as any)._lashPhase === 'OUT' || (b as any)._lashPhase === 'RETURN') {
-            (b as any)._lashPhase = 'REDIRECT';
-          }
-          if ((b as any)._lashPhase === 'REDIRECT') {
-              const tx = (b as any)._lashRedirectX; const ty = (b as any)._lashRedirectY;
-            if (typeof tx === 'number' && typeof ty === 'number') {
-              const dxT = tx - b.x; const dyT = ty - b.y; const distT = Math.hypot(dxT, dyT) || 1;
-              const base = (b as any)._lashBaseSpeed ?? (Math.hypot(b.vx, b.vy) || 8);
-              b.vx = (dxT / distT) * base; b.vy = (dyT / distT) * base;
-              // Close enough => switch to RETURN phase (or if overshoot would occur this frame)
-                if (distT < Math.max(18, (b.radius||10)*1.1) || ((b as any)._lastRedirectDist && distT > (b as any)._lastRedirectDist + 8)) {
-                  // Arrived at this waypoint
-                  (b as any)._lashRedirectActive = false;
-                  // If there are queued waypoints, pop next and continue redirecting
-                  const q = (b as any)._lashWaypoints;
-                  if (q && q.length > 0) {
-                    const next = q.shift();
-                    if (next) {
-                      (b as any)._lashRedirectActive = true;
-                      (b as any)._lashRedirectX = next.x; (b as any)._lashRedirectY = next.y;
-                      (b as any)._lastRedirectDist = undefined;
-                    }
-                  }
-                  if (!(b as any)._lashRedirectActive) {
-                    (b as any)._lashPhase = 'RETURN';
-                  }
-              }
-              (b as any)._lastRedirectDist = distT;
-            } else {
-              // Invalid target fallback
-              (b as any)._lashPhase = 'RETURN';
-              (b as any)._lashRedirectActive = false;
-            }
-          }
-        }
         if ((b as any)._lashPhase === 'RETURN' && pl) {
           const dx = pl.x - b.x; const dy = pl.y - b.y; const dist = Math.hypot(dx, dy) || 1;
           // Return at half the base throw speed
@@ -1204,13 +1164,6 @@ export class BulletManager {
             const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
             const dmg = (b.damage||28) * (isCrit?critMult:1);
             this.enemyManager.takeDamage(e, dmg, isCrit, false, b.weaponType, b.x, b.y, (b as any).level||1, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
-            // Impact sparks (Scrap Lash): differentiate elite vs normal
-            try {
-              const isElite = !!(e as any)._elite;
-              const col = isElite ? '#FF7AF6' : '#FFC766';
-              const count = isElite ? 16 : 10;
-              this.particleManager?.spawn(e.x, e.y, count, col, { sizeMin:1, sizeMax: (isElite?3.2:2.4), lifeMs: isElite?340:260, speedMin:0.6, speedMax: (isElite?3.2:2.6), drag:0.90 } as any);
-            } catch {}
             // Increment scrap meter and trigger class explosion on threshold
             // Constraints:
             // - Per shot: only 1 stack per enemy (covers both outbound and return hits)
@@ -1258,7 +1211,6 @@ export class BulletManager {
                 const isCrit = Math.random() < critChance; const critMult = (p?.critMultiplier)||2.0;
                 const dmg = (b.damage||28) * (isCrit?critMult:1);
                 (this.enemyManager as any).takeBossDamage?.(boss, dmg, isCrit, WeaponType.SCRAP_LASH, b.x, b.y, (b as any).level||1, false, (b as any).origin === 'TURRET' ? 'TURRET' : 'PLAYER');
-                try { this.particleManager?.spawn(boss.x, boss.y, 14, '#FFDE88', { sizeMin:1.2, sizeMax:2.8, lifeMs:300, speedMin:0.7, speedMax:3.0, drag:0.90 } as any); } catch {}
                 (b as any).contactCooldownMap[key] = nowB + 500; // 0.5s per-boss hit cooldown
                 if (this.particleManager) this.particleManager.spawn(boss.x, boss.y, 1, '#F6E27F');
                 // Lash also contributes to scrap meter on boss hit

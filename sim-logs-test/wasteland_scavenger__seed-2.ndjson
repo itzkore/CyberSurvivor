@@ -1,7 +1,0 @@
-{"t":0,"type":"start","data":{"id":"wasteland_scavenger","name":"Wasteland Scavenger","seed":2,"durationSec":10,"difficulty":1}}
-{"t":1.0000020000000007,"type":"tick","data":{"level":1,"hp":100,"enemies":1,"kills":0}}
-{"t":3.000006000000005,"type":"tick","data":{"level":1,"hp":100,"enemies":10,"kills":0}}
-{"t":5.0000100000000085,"type":"tick","data":{"level":1,"hp":100,"enemies":12,"kills":0}}
-{"t":7.000014000000013,"type":"tick","data":{"level":1,"hp":100,"enemies":16,"kills":0}}
-{"t":9.000018000000017,"type":"tick","data":{"level":1,"hp":100,"enemies":20,"kills":0}}
-{"t":10.000020000000019,"type":"end","data":{"kills":0,"level":1,"damageTaken":0,"xpOrbsCollected":0,"peakEnemies":22}}
