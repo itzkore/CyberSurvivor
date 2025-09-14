@@ -31,6 +31,13 @@ export class HackingSystem {
 		this.visual.radius = Math.max(40, opts.radius);
 	}
 
+	/** Update the effective hack radius (for level-based scaling). */
+	setRadius(r: number) {
+		const rr = Math.max(40, Math.min(1200, r|0));
+		this.opts.radius = rr;
+		this.visual.radius = rr;
+	}
+
 	setEnabled(v: boolean) {
 		this.enabled = !!v;
 		if (!this.enabled) {
@@ -69,9 +76,9 @@ export class HackingSystem {
 			this.state = 'CHARGING';
 			this.visual.state = 'CHARGING';
 			const elapsed = now - this.chargeStart;
-			const min = this.opts.minChargeMs;
 			const full = this.opts.fullChargeMs;
-			const frac = Math.max(0, Math.min(1, (elapsed - min) / Math.max(1, full - min)));
+			// Visual telegraph fills uniformly from 0..360° over fullChargeMs
+			const frac = Math.max(0, Math.min(1, elapsed / Math.max(1, full)));
 			this.visual.chargeFrac = Number.isFinite(frac) ? frac : 0;
 			// Track nearest target for feedback only
 			this.visual.target = this.findNearest(enemies, wx, wy, this.opts.radius);
@@ -105,6 +112,9 @@ export class HackingSystem {
 	getVisual(): HackVisual {
 		return this.visual;
 	}
+
+	/** Expose immutable charge spec for UI/meters. */
+	getSpec() { return { radius: this.opts.radius, minChargeMs: this.opts.minChargeMs, fullChargeMs: this.opts.fullChargeMs, cooldownMs: this.opts.cooldownMs }; }
 
 	private findNearest<T extends {x:number;y:number;radius?:number;active?:boolean;hp?:number}>(list: T[], x: number, y: number, radius: number): T | null {
 		const r2 = radius*radius; let best: T | null = null; let bd2 = Infinity;

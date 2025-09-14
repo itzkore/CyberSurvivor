@@ -1,1 +1,2 @@
-// Deprecated aggregator; use abilities_registry.ts instead.
+// Deprecated aggregator; intentionally left blank. Abilities are wired via Player and Ability Managers.
+export {};

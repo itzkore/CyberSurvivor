@@ -96,10 +96,14 @@ export class Codex {
     },
     rogue_hacker: {
       title: 'System Hack',
-      summary: 'EMP‑like hack: damages in a large radius and briefly paralyzes enemies.',
-      effects: ['Large AoE damage pulse', 'Short paralysis / disable on affected enemies'],
-      scaling: ['Area', 'Cooldown', 'Duration'],
-      tips: ['Use as a panic button or to start boss burst windows', 'Follow up with high‑DPS weapons during the stun']
+      summary: 'Manual Hack creates a zone that briefly converts enemies to your side. Bosses are immune.',
+      effects: [
+        'RMB: hold 2s to cast a conversion zone at the cursor (visible telegraph)',
+        'Converts up to (2 × Hacker Virus level) enemies for 10s; if evolved (Backdoor), cap is 20',
+        'Zone radius scales with global Area and weapon level; placement clamps to walkable terrain'
+      ],
+      scaling: ['Area (radius)', 'Cooldown', 'Duration (conversion time)'],
+      tips: ['Cast into dense packs ahead of your path', 'Prioritize elites in the zone—converted elites are potent']
     },
     shadow_operative: {
       title: 'Ebon Bleed',

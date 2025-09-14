@@ -68,6 +68,11 @@ export class PsionicWeaverAbilityManager extends BaseAbilityManagerImpl {
     try { this.stitch?.render(ctx, player); } catch {}
   }
 
+  // Ensure aiming telegraph renders after Fog-of-War so it remains visible
+  renderPostFog(ctx: CanvasRenderingContext2D, player: any): void {
+    try { this.stitch?.render(ctx, player); } catch {}
+  }
+
   /** Shift internal timers when resuming from auto-pause. */
   onTimeShift(deltaMs: number): void {
     const s: any = this.stitch as any; if (!s) return;

@@ -977,6 +977,16 @@ export class Game {
           shiftIfTime(pAny, k);
         }
       }
+      // Rogue Hacker: Ghost Protocol ability stores its own absolute timestamps; shift them too
+      try {
+        const gp: any = pAny.ghostProtocol;
+        if (gp) {
+          shiftIfTime(gp, 'start');
+          shiftIfTime(gp, 'end');
+          shiftIfTime(gp, 'nextTick');
+          shiftIfTime(gp, '_ghostProtocolCdUntil');
+        }
+      } catch {}
       // Known nested state bags
       const hg = pAny.__hgTurret; if (hg && typeof hg.cooldownUntil === 'number') shiftIfTime(hg, 'cooldownUntil');
       const vb = pAny.__runnerVB; if (vb && typeof vb.meterCdUntil === 'number') shiftIfTime(vb, 'meterCdUntil');
@@ -1034,11 +1044,7 @@ export class Game {
             const pAny: any = (this.player as any);
             const tw = pAny.__techAnchor; if (tw) shiftIfTime(tw, 'cooldownUntil');
           }
-          // Rogue Hacker manual hack controller (cooldown inside HackingSystem)
-          if (am.constructor?.name === 'RogueHackerAbilityManager') {
-            const hk = am['manualHack'] || am['hack'] || am['hacking'];
-            if (hk) shiftIfTime(hk, 'cooldownUntil');
-          }
+          // Rogue Hacker manual hack previously used a per-operative controller; removed in favor of centralized logic.
         }
       }
     } catch {}
@@ -2327,6 +2333,13 @@ export class Game {
   // Post-fog Heavy Gunner turret overlay (ensures visibility even outside vision)
   // RMB controllers removed
   }
+  // Post-Fog ability overlays (e.g., Rogue Hacker telegraph) so they are not hidden by FOW
+  try {
+    const am: any = (this.player as any).abilityManager;
+    if (am && typeof am.renderPostFog === 'function') {
+      am.renderPostFog(this.ctx, this.player);
+    }
+  } catch { /* ignore */ }
   // Draw visual red skip button (holder-like) near core during Last Stand. Visible and interactive only in SHOP.
   try {
     if (this.gameMode === 'LAST_STAND') {

@@ -20,6 +20,8 @@ export interface BaseAbilityManager {
   
   /** Render ability-specific visuals */
   render?(ctx: CanvasRenderingContext2D, player: any): void;
+  /** Optional: render overlays after Fog-of-War mask (ensures visibility even outside vision). */
+  renderPostFog?(ctx: CanvasRenderingContext2D, player: any): void;
   
   /** Add tachyon charge hits (Tech Warrior specific) */
   addTachyonHits?(count: number): boolean;

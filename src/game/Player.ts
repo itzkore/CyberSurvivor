@@ -2280,6 +2280,26 @@ export class Player {
             // Nudge forward to read as muzzle, not shoulder
             originX += baseCos * 8;
             originY += baseSin * 8;
+          } else if (!usedHookOrigin && (this.characterData?.id === 'titan_mech') && (weaponType === WeaponType.MECH_MORTAR || weaponType === WeaponType.SIEGE_HOWITZER)) {
+            // Titan Mech class weapon: spawn from left/right cannon muzzles, alternating per shot
+            const sideOffsetBase = 34; // distance from center to each cannon (increased)
+            const forwardNudge = 16;   // push slightly forward so it reads as muzzle (increased)
+            const perpX = perpX0;
+            const perpY = perpY0;
+            let sideSign = -1;
+            if (toShoot <= 1) {
+              // Alternate each trigger
+              sideSign = this.mechMortarSide;
+              this.mechMortarSide *= -1; // flip for next shot
+            } else {
+              // Hypothetical multi-salvo: split across barrels
+              const centeredIndex = (i - (toShoot - 1) / 2);
+              sideSign = centeredIndex < 0 ? -1 : 1;
+            }
+            originX += perpX * sideOffsetBase * sideSign;
+            originY += perpY * sideOffsetBase * sideSign;
+            originX += baseCos * forwardNudge;
+            originY += baseSin * forwardNudge;
           }
           // Converging fire: if Runner Gun, recompute angle so each barrel aims exactly at target (covers middle)
           let finalAngle = angle;

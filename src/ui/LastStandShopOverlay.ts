@@ -115,6 +115,25 @@ export class LastStandShopOverlay {
     window.addEventListener('keydown', (e: KeyboardEvent) => {
       if (!this.visible) return;
       const k = e.key;
+      // Dedicated turret hotkeys: map 1/+, 2/ě, 3/š to the first three turret offers
+      const tryTurretHotkey = (ordinal: number) => {
+        // ordinal is 0-based for first/second/third turret
+        let count = 0;
+        for (let i = 0; i < this.offers.length; i++) {
+          if (this.offers[i]?.kind === 'turret') {
+            if (count === ordinal) {
+              const card = this.list.children[i] as HTMLElement | undefined;
+              if (card) { card.click(); return true; }
+              break;
+            }
+            count++;
+          }
+        }
+        return false;
+      };
+      if (k === '1' || k === '+') { if (tryTurretHotkey(0)) { e.preventDefault(); return; } }
+      if (k === '2' || k === 'ě' || k === 'Ě') { if (tryTurretHotkey(1)) { e.preventDefault(); return; } }
+      if (k === '3' || k === 'š' || k === 'Š') { if (tryTurretHotkey(2)) { e.preventDefault(); return; } }
       if (k === 'Enter' || k === 'Escape') { this.exit(); e.preventDefault(); return; }
       if (k === 'r' || k === 'R') { this.handleReroll(); e.preventDefault(); return; }
       const idx = parseInt(k, 10);
@@ -290,7 +309,18 @@ export class LastStandShopOverlay {
   Object.assign(actions.style, { display: 'grid', gridTemplateRows: 'auto auto', gap: '6px' } as CSSStyleDeclaration);
       const buyBtn = document.createElement('div');
   Object.assign(buyBtn.style, { fontSize: '13px', color: '#012', background: accent, padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(0,0,0,0.2)', textAlign: 'center', width: '100%', transition: 'box-shadow 140ms ease, filter 140ms ease, transform 80ms ease', cursor: 'pointer', boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' } as CSSStyleDeclaration);
-      const hint = document.createElement('div'); hint.textContent = `[#${i + 1} or click]`; Object.assign(hint.style, { fontSize: '11px', opacity: '0.65', textAlign: 'right' } as CSSStyleDeclaration);
+      const hint = document.createElement('div');
+      // Show alternate hotkeys for the first three turret cards
+      let hintText = `[#${i + 1} or click]`;
+      if (kind === 'turret') {
+        // Determine this turret's ordinal among turrets in the list
+        let tIdx = 0; for (let j = 0; j < i; j++) if (this.offers[j]?.kind === 'turret') tIdx++;
+        if (tIdx === 0) hintText = '[1 / +]';
+        else if (tIdx === 1) hintText = '[2 / ě]';
+        else if (tIdx === 2) hintText = '[3 / š]';
+      }
+      hint.textContent = hintText;
+      Object.assign(hint.style, { fontSize: '11px', opacity: '0.65', textAlign: 'right' } as CSSStyleDeclaration);
 
       const capped = this.isOfferCapped(off);
       const canAffordPrice = this.currency.getBalance() >= off.price;

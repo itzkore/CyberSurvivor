@@ -192,7 +192,7 @@ export class EnemyManager {
   // Rogue Hacker paralysis/DoT zones (spawned under enemies on virus impact)
   // pulseUntil: draw a stronger spawn pulse/line for first ~220ms to improve visibility
   // stamp: unique per-zone id for O(1) per-enemy contact memoization (replaces Set<string> allocations)
-  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; stamp:number; pulseUntil?: number; seed?: number; nextProcAt?: number }[] = [];
+  private hackerZones: { x:number; y:number; radius:number; created:number; lifeMs:number; active:boolean; stamp:number; pulseUntil?: number; seed?: number; nextProcAt?: number; convertMs?: number }[] = [];
   // Cached sprites for Rogue Hacker zone rings to avoid heavy per-frame vector drawing
   private hackerZoneSpriteCache: Map<string, HTMLCanvasElement> = new Map();
   private getHackerZoneSprite(radius: number, evolved: boolean): HTMLCanvasElement {
@@ -853,7 +853,7 @@ export class EnemyManager {
     // Listen for Rogue Hacker zone spawns
     window.addEventListener('spawnHackerZone', (e: Event) => {
       const d = (e as CustomEvent).detail || {};
-      this.spawnHackerZone(d.x, d.y, d.radius || 120, d.lifeMs || 2000);
+      this.spawnHackerZone(d.x, d.y, d.radius || 120, d.lifeMs || 2000, d.convertMs);
     });
     // Listen for Rogue Hacker ultimate: System Hack
     window.addEventListener('rogueHackUltimate', (e: Event) => {
@@ -1206,16 +1206,16 @@ export class EnemyManager {
   // Legacy updateBlackSunSeeds is superseded by BlackSunZoneManager; retained as no-op for compatibility
   private updateBlackSunSeeds(_deltaMs: number): void { return; }
 
-  /** Spawn a Rogue Hacker zone at x,y with radius; lasts lifeMs. */
-  private spawnHackerZone(x:number, y:number, radius:number, lifeMs:number){
+  /** Spawn a Rogue Hacker zone at x,y with radius; lasts lifeMs. Optional convertMs applies mind control instead of default effects. */
+  private spawnHackerZone(x:number, y:number, radius:number, lifeMs:number, convertMs?: number){
     // Reuse inactive or push new
     let z = this.hackerZones.find(z=>!z.active);
     const now = performance.now();
     if (!z){
-  z = { x, y, radius, created: now, lifeMs, active: true, stamp: (this.hackerZoneStampCounter++), pulseUntil: now + 220, seed: Math.floor(now % 100000), nextProcAt: now };
+  z = { x, y, radius, created: now, lifeMs, active: true, stamp: (this.hackerZoneStampCounter++), pulseUntil: now + 220, seed: Math.floor(now % 100000), nextProcAt: now, convertMs };
       this.hackerZones.push(z);
     } else {
-  z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.stamp = (this.hackerZoneStampCounter++); z.pulseUntil = now + 220; z.seed = Math.floor(now % 100000); z.nextProcAt = now;
+  z.x = x; z.y = y; z.radius = radius; z.created = now; z.lifeMs = lifeMs; z.active = true; z.stamp = (this.hackerZoneStampCounter++); z.pulseUntil = now + 220; z.seed = Math.floor(now % 100000); z.nextProcAt = now; z.convertMs = convertMs;
     }
   }
 
@@ -5309,6 +5309,28 @@ export class EnemyManager {
         const stamp = z.stamp;
         // OPTIMIZATION: Use spatial grid to query only nearby enemies instead of iterating all activeEnemies
         const nearbyEnemies = this.enemySpatialGrid.query(z.x, z.y, rEff + 50); // +50 for safety margin
+        // Conversion cap: at most 2 enemies per Hacker Virus level; if evolved (Backdoor), hard cap = 20
+        let convertCap = Infinity;
+        try {
+          const aw: Map<number, number> | undefined = (this.player as any)?.activeWeapons;
+          const evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
+          if (evolved) {
+            convertCap = 20;
+          } else {
+            const lvl = aw ? (aw.get(WeaponType.HACKER_VIRUS) || 1) : 1;
+            convertCap = Math.max(0, Math.min(20, (lvl|0) * 2));
+          }
+        } catch { /* ignore */ }
+        // Count current mind-controlled enemies (global). We count all active enemies currently under MC.
+        let currentMC = 0;
+        if (Number.isFinite(convertCap)) {
+          const nowC = nowHz;
+          for (let ci = 0; ci < this.activeEnemies.length; ci++) {
+            const ce: any = this.activeEnemies[ci];
+            if (!ce || !ce.active) continue;
+            if (ce._mindControlledUntil && ce._mindControlledUntil > nowC) currentMC++;
+          }
+        }
         for (let i = 0; i < nearbyEnemies.length; i++) {
           const e = nearbyEnemies[i];
           if (!e.active || e.hp <= 0) continue;
@@ -5320,6 +5342,30 @@ export class EnemyManager {
           const rr = rEff + (e.radius || 0);
           if (dx*dx + dy*dy <= rr * rr) {
             anyE._lastHackerStamp = stamp;
+            // Conversion zone: apply mind control instead of paralysis/DoT
+            if (z.convertMs && z.convertMs > 0) {
+              // Enforce cap before converting
+              if (currentMC >= convertCap) { continue; }
+              const until = nowHz + z.convertMs;
+              // Extend or set mind control duration
+              anyE._mindControlledUntil = Math.max(anyE._mindControlledUntil || 0, until);
+              // Clear hostile-only effects to ensure ally can act
+              anyE._paralyzedUntil = 0;
+              anyE._hackerDot = undefined;
+              anyE._hackerVulnUntil = 0;
+              anyE._hackerVulnFrac = 0;
+              anyE._hackerVulnLingerMs = 0;
+              // Small visual glitch ping on convert
+              anyE._rgbGlitchUntil = nowHz + 260;
+              anyE._rgbGlitchPhase = ((anyE._rgbGlitchPhase || 0) + 1) % 7;
+              // Optional: kick off a friendly pulse cadence if supported elsewhere
+              if (anyE._mindControlNextPulse === undefined) {
+                anyE._mindControlNextPulse = nowHz + 2000;
+              }
+              currentMC++;
+              // Tag as handled; skip default hacker-virus effects
+              continue;
+            }
             // Apply paralysis and schedule DoT
             const parMs = (paralyzeMsOverride ?? 1500);
             const tickMs = (dotTickMsOverride ?? 500);
@@ -5339,6 +5385,8 @@ export class EnemyManager {
         }
         // Boss parity: zones also affect boss within radius
         try {
+          // Conversion zones do not affect bosses (non-convertible)
+          if (z.convertMs && z.convertMs > 0) { continue; }
           const bm: any = (window as any).__bossManager;
           const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : null;
           if (boss && boss.active && boss.hp > 0 && boss.state === 'ACTIVE') {

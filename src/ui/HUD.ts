@@ -223,6 +223,13 @@ export class HUD {
         const bg = fm.active ? '#2a0004' : '#220a33';
         const accent = fm.active ? '#ff1a1a' : '#d5a6ff';
         this.drawThemedBar(ctx, classX, hpBarY, maxW, 22, ratio, fg, bg, accent, label);
+        // RMB: Siege Barrage meter just above Fortress
+        if ((this.player as any).getTitanRmbMeter) {
+          const rm: any = (this.player as any).getTitanRmbMeter();
+          const rRatio = rm.max > 0 ? rm.value / rm.max : 0;
+          const rLabel = rm.active ? 'BARRAGE AIMING' : (rm.ready ? 'BARRAGE READY (RMB)' : `BARRAGE ${Math.ceil((rm.max - rm.value)/1000)}s`);
+          this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, rRatio, '#ffd36b', '#3a2a00', '#ffe499', rLabel);
+        }
   } else if (id === 'cyber_runner' && (this.player as any).getRunnerDash) {
         // Dash cooldown: show time until ready (fills up as it recharges)
         const d: any = (this.player as any).getRunnerDash();
@@ -309,6 +316,15 @@ export class HUD {
           const label2 = um.ready ? 'UMBRAL SURGE READY (Spacebar)' : (um.value > 0 && um.max === 5000 ? 'SURGE ACTIVE' : `SURGE ${Math.ceil((um.max - um.value)/1000)}s`);
           this.drawThemedBar(ctx, classX, hpBarY - 26, maxW, 22, ratio2, '#8c3cff', '#1a0830', '#bb88ff', label2);
         }
+        // Third bar: Phantom Blades RMB cooldown/aiming
+        try {
+          const rm: any = (this.player as any).getShadowRmbMeter ? (this.player as any).getShadowRmbMeter() : null;
+          if (rm) {
+            const ratio3 = rm.max > 0 ? rm.value / rm.max : 0;
+            const label3 = rm.active ? 'PHANTOM BLADES AIMING' : (rm.ready ? 'PHANTOM BLADES READY (RMB)' : `BLADES ${Math.ceil((rm.max - rm.value)/1000)}s`);
+            this.drawThemedBar(ctx, classX, hpBarY - 52, maxW, 22, ratio3, '#6a0dad', '#12041d', '#b266ff', label3);
+          }
+        } catch { /* ignore */ }
       } else if (id === 'neural_nomad' && (this.player as any).getOvermindMeter) {
         // Primary class bar: Overmind (Space)
         const m: any = (this.player as any).getOvermindMeter();
@@ -416,6 +432,48 @@ export class HUD {
     const sysHackY = hpBarY;
   if (evolved) this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratio, '#FF1333', '#2a0008', '#FF667F', label);
   else this.drawThemedBar(ctx, classX, sysHackY, maxW, 22, ratio, '#ffa500', '#2a1400', '#ffd280', label);
+
+        // RMB bar: Manual Hack cooldown (if manager exposed)
+        try {
+          const rm: any = (this.player as any).getHackerRmbMeter ? (this.player as any).getHackerRmbMeter() : null;
+          if (rm) {
+            const rRatio = rm.max > 0 ? rm.value / rm.max : 0;
+            const rY = hpBarY - 26 - (gp ? 26 : 0); // stack: GP at -26, RMB above that
+            const isActive = !!rm.active;
+            const ready = !!rm.ready;
+            // Compute cap (2 × Hacker Virus level; 20 if Backdoor owned) and approximate radius from current area scaling to communicate mechanics
+            let cap = 0; let radiusHint = 0;
+            try {
+              const pAny: any = this.player as any;
+              const aw: Map<number, number> | undefined = pAny?.activeWeapons;
+              const evolved = !!(aw && aw.has(WeaponType.HACKER_BACKDOOR));
+              if (evolved) cap = 20; else cap = 2 * Math.max(1, aw?.get(WeaponType.HACKER_VIRUS) ?? 1);
+              const lvl = evolved ? (aw?.get(WeaponType.HACKER_BACKDOOR) ?? 1) : (aw?.get(WeaponType.HACKER_VIRUS) ?? 1);
+              const baseTable = [0, 80, 92, 104, 116, 128, 140, 152];
+              const baseR = Math.max(60, baseTable[Math.max(1, Math.min(7, lvl))] || 120);
+              const areaMul = pAny?.getGlobalAreaMultiplier?.() ?? (pAny?.globalAreaMultiplier ?? 1);
+              radiusHint = Math.round(Math.max(60, Math.min(360, baseR * (areaMul || 1))));
+            } catch {}
+            const rLabel = isActive
+              ? `MANUAL HACK CASTING… (cap ${cap || '?'} | r≈${radiusHint || '?'}px)`
+              : (ready ? `MANUAL HACK READY (RMB) — cap ${cap || '?'}` : `MANUAL HACK ${Math.ceil((rm.max - rm.value)/1000)}s`);
+            // Draw bar
+            if (evolved) this.drawThemedBar(ctx, classX, rY, maxW, 22, rRatio, '#FF1333', '#1a0006', '#FF667F', rLabel);
+            else this.drawThemedBar(ctx, classX, rY, maxW, 22, rRatio, '#cc6d00', '#1a0c00', '#ffae55', rLabel);
+            // Subtle glow while actively charging
+            if (isActive) {
+              ctx.save();
+              const glowCol = evolved ? '#FF667F' : '#ffae55';
+              const pulse = 0.5 + 0.5 * Math.sin(((typeof performance!=='undefined'?performance.now():Date.now()) ) * 0.02);
+              ctx.strokeStyle = `${glowCol}cc`;
+              ctx.lineWidth = 2;
+              ctx.shadowColor = glowCol;
+              ctx.shadowBlur = 10 + 12 * pulse;
+              ctx.strokeRect(classX + 0.5, rY + 0.5, maxW - 1, 22 - 1);
+              ctx.restore();
+            }
+          }
+        } catch { /* ignore */ }
       }
 
       // Revive cooldown bar (right-aligned), visible if Revive passive is owned

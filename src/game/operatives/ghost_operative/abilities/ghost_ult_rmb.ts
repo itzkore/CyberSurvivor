@@ -1,5 +1,6 @@
 import type { Player } from '../../../Player';
 import { WeaponType } from '../../../WeaponType';
+import { WEAPON_SPECS } from '../../../WeaponConfig';
 
 /**
  * Ghost Ultimate RMB controller.
@@ -142,9 +143,8 @@ export class GhostUltRMB {
 
     // Damage budget: scale off Ghost Sniper base damage at current level and global multiplier
     try {
-      const WEAPON_SPECS = (await import('../../../WeaponConfig')).WEAPON_SPECS as any; // dynamic to avoid cycles
       const lvl = (this.player.activeWeapons?.get?.(WeaponType.GHOST_SNIPER) ?? 1) as number;
-      const base = WEAPON_SPECS[WeaponType.GHOST_SNIPER];
+      const base: any = (WEAPON_SPECS as any)[WeaponType.GHOST_SNIPER];
       const dmgBase = (base?.getLevelStats ? base.getLevelStats(lvl).damage : base?.damage) || 100;
       const gdm = (pAny.getGlobalDamageMultiplier?.() ?? (pAny.globalDamageMultiplier ?? 1));
   const beamDamage = Math.max(1, Math.round(dmgBase * 4.0 * gdm)); // 400% weapon damage
