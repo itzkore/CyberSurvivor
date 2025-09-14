@@ -19,10 +19,13 @@ export class Codex {
   private search: HTMLInputElement;
   private currentTab: Tab = 'operatives';
   private mounted = false;
+  // LoL-inspired detailed view state: when set, Operatives tab shows a single-hero page
+  private selectedOperativeId: string | null = null;
   private bossItems: Array<{ key: string; name: string; file: string; w?: number; h?: number; frames?: number; telegraph?: boolean }> | null = null;
   private bossLoading = false;
   private expandedWeapons: Set<string> = new Set();
   private pendingScrollToWeapon: string | null = null;
+  private pendingScrollToOperative: string | null = null;
   // Lightweight ability descriptions per operative (no hard numbers to avoid drift)
   private readonly abilityInfo: Record<string, {
     title?: string;
@@ -230,6 +233,21 @@ export class Codex {
   .cdx-table.sticky thead th{position:sticky;top:0;z-index:1}
   @media (max-width: 980px){ .cdx-boss-hero{grid-template-columns:1fr} .cdx-boss-image{width:160px;height:160px;margin:0 auto} .cdx-boss-card{grid-column:span 1} }
   @media (max-width: 980px){ .cdx-kv{grid-template-columns:repeat(2,1fr)} .cdx-guide{grid-template-columns:1fr} }
+  /* Operative hero detailed view */
+  .cdx-hero{display:grid;grid-template-columns:200px 1fr;gap:14px;align-items:center;border:1px solid rgba(0,255,255,.28);background:linear-gradient(180deg, rgba(0,22,28,.75), rgba(0,12,16,.85));border-radius:10px;padding:12px;overflow:hidden}
+  .cdx-hero .portrait{width:200px;height:200px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(0,255,255,.25);border-radius:10px;background:radial-gradient(circle at 50% 45%, rgba(0,120,140,.35), rgba(0,0,0,.6));box-shadow:0 14px 40px rgba(0,255,255,.10)}
+  .cdx-hero .portrait img{max-width:100%;max-height:100%;object-fit:contain;image-rendering:pixelated;filter:drop-shadow(0 0 18px rgba(94,235,255,.45))}
+  .cdx-hero .title{font:800 20px Orbitron, sans-serif;letter-spacing:1px;color:#5EEBFF;text-shadow:0 0 10px rgba(0,255,255,.45)}
+  .cdx-hero .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+  .cdx-subnav{position:sticky;top:0;z-index:2;margin:10px 0;padding:8px;display:flex;gap:8px;flex-wrap:wrap;border:1px solid rgba(0,255,255,.28);background:linear-gradient(180deg,rgba(0,30,40,.65),rgba(0,14,22,.55));border-radius:10px;box-shadow:inset 0 0 12px rgba(0,255,255,.08)}
+  .cdx-subnav a{font:12px/1.2 Inter;color:#9fe;background:rgba(0,255,255,.06);border:1px solid rgba(0,255,255,.18);padding:6px 10px;border-radius:999px;text-decoration:none}
+  .cdx-bars{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:8px}
+  .cdx-bar{display:flex;flex-direction:column;gap:4px}
+  .cdx-bar .label{font:11px/1 Inter;color:#c8f7ff;opacity:.9}
+  .cdx-bar .track{position:relative;height:8px;border-radius:999px;border:1px solid rgba(0,255,255,.18);background:rgba(0,255,255,.06);box-shadow:inset 0 0 6px rgba(0,255,255,.12)}
+  .cdx-bar .fill{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:linear-gradient(90deg,#5EEBFF,#1aa0b8)}
+  .cdx-hero-actions{display:flex;gap:8px;margin-top:8px}
+  @media (max-width: 980px){ .cdx-hero{grid-template-columns:1fr} .cdx-hero .portrait{width:160px;height:160px;margin:0 auto} .cdx-bars{grid-template-columns:1fr} }
     `;
     document.head.appendChild(style);
   }
@@ -268,6 +286,44 @@ export class Codex {
       if (!key) return;
       this.openWeaponEntry(key);
     });
+
+    // View details for an operative
+    this.body.addEventListener('click', (ev) => {
+      const el = (ev.target as HTMLElement).closest('.cdx-view-op') as HTMLElement | null;
+      if (!el) return;
+      const op = el.getAttribute('data-op');
+      if (!op) return;
+      this.selectedOperativeId = op;
+      // Clear search for clarity
+      if (this.search) this.search.value = '';
+      this.render();
+    });
+
+    // Back to list from detail view
+    this.body.addEventListener('click', (ev) => {
+      const el = (ev.target as HTMLElement).closest('.cdx-backlist') as HTMLElement | null;
+      if (!el) return;
+      this.selectedOperativeId = null;
+      this.render();
+    });
+
+    // Select operative directly from Codex Operatives tab
+    this.body.addEventListener('click', (ev) => {
+      const el = (ev.target as HTMLElement).closest('.cdx-btn-select') as HTMLElement | null;
+      if (!el) return;
+      const op = el.getAttribute('data-op');
+      if (!op) return;
+      try {
+        const selected = CHARACTERS.find(c => c.id === op);
+        if (selected) {
+          window.dispatchEvent(new CustomEvent('characterSelected', { detail: selected }));
+          // Provide brief visual confirmation
+          el.classList.add('cdx-highlight');
+          (el as HTMLButtonElement).disabled = true;
+          setTimeout(()=>{ el.classList.remove('cdx-highlight'); (el as HTMLButtonElement).disabled = false; }, 900);
+        }
+      } catch {}
+    });
   }
 
   public show() {
@@ -275,6 +331,24 @@ export class Codex {
     this.root.style.display = 'flex';
     matrixBackground.start();
     this.mounted = true;
+  }
+
+  /** Show Codex with Operatives tab active; optionally focus an operative id. */
+  public showOperatives(operativeId?: string) {
+    this.currentTab = 'operatives';
+    // Update tab active states
+    this.root.querySelectorAll('.codex-tab').forEach(b => {
+      const t = (b as HTMLElement).getAttribute('data-tab');
+      b.classList.toggle('active', t === 'operatives');
+    });
+    // Clear search to ensure target visibility
+    if (this.search) this.search.value = '';
+    // Schedule scroll to this operative after render
+    this.pendingScrollToOperative = operativeId || null;
+    // If an operative id is provided, open detailed view; otherwise show list
+    this.selectedOperativeId = operativeId || null;
+    this.render();
+    this.show();
   }
 
   public hide() {
@@ -286,7 +360,29 @@ export class Codex {
     const q = (this.search?.value || '').trim().toLowerCase();
     switch (this.currentTab) {
       case 'operatives':
-        this.body.innerHTML = this.renderOperatives(q);
+        // If detailed hero view is selected, render that; else render grid list
+        if (this.selectedOperativeId) {
+          const c = CHARACTERS.find(x => x.id === this.selectedOperativeId);
+          if (c) {
+            this.body.innerHTML = this.renderOperativeDetail(c as any);
+          } else {
+            this.selectedOperativeId = null;
+            this.body.innerHTML = this.renderOperatives(q);
+          }
+        } else {
+          this.body.innerHTML = this.renderOperatives(q);
+        }
+        // Handle pending operative focus/scroll
+        if (this.pendingScrollToOperative) {
+          const id = `op-${this.pendingScrollToOperative}`;
+          const node = document.getElementById(id);
+          if (node) {
+            node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            node.classList.add('cdx-highlight');
+            setTimeout(() => node.classList.remove('cdx-highlight'), 1200);
+          }
+          this.pendingScrollToOperative = null;
+        }
         break;
       case 'weapons':
         this.body.innerHTML = this.renderWeapons(q);
@@ -327,44 +423,202 @@ export class Codex {
       const spec: any = (WEAPON_SPECS as any)[wKey];
       const cdLabel = spec ? ((typeof spec.cooldownMs === 'number') ? (spec.cooldownMs + 'ms') : (typeof spec.cooldown === 'number' ? (Math.round(spec.cooldown * (1000/60)) + 'ms') : '—')) : '—';
       const badges = spec ? this.buildWeaponBadges(spec) : '';
+      const info = this.abilityInfo[c.id] || {};
+      const howTo = this.buildOperativeHowTo(c);
+      const tipsPreview = spec ? this.buildWeaponUsage(spec).slice(0,2).map(t=>this.escape(t)).join(' • ') : '';
+      const recPassives = spec ? this.recommendPassives(spec) : '';
       parts.push(`
-        <div class="cdx-card">
-          <div class="icon"><img src="${c.icon}" alt="${this.escape(c.name)}"/></div>
-          <div class="meta">
-            <div class="name">${this.escape(c.name)} <span style="opacity:.6;font-weight:400">— ${this.escape(c.playstyle||'')}</span></div>
-            <div class="desc">${this.escape(c.description||'')}</div>
-            <div class="cdx-stats auto-fit">
-              <div class="cdx-stat" title="Total health">Health ${s.hp}</div>
-              <div class="cdx-stat" title="Base damage">Damage ${s.damage}</div>
-              <div class="cdx-stat" title="Movement speed">Speed ${s.speed}</div>
-              <div class="cdx-stat" title="Damage reduction or armor">Defense ${s.defense}</div>
-              <div class="cdx-stat" title="Affects drops, crits, and rerolls (varies)">Luck ${s.luck}</div>
-              <div class="cdx-stat" title="Overall power rating">Power ${s.powerScore ?? '—'}</div>
-            </div>
-            <div class="cdx-note">Starting weapon: ${this.escape(spec?.name || String(wKey))}</div>
-            ${spec ? `
-      <div class="cdx-embedded-weapon" style="margin-top:8px">
-              <div class="cdx-compact-head">
-                <div class="icon">${this.weaponPreview(wKey)}</div>
-                <div class="meta" style="flex:1">
-                  <div class="name">${this.escape(spec?.name || String(wKey))}</div>
-                  <div class="cdx-stats auto-fit" style="grid-template-columns:repeat(3,1fr)">
-        ${(() => { try { const l1 = typeof spec?.getLevelStats==='function' ? (spec.getLevelStats(1)||{}) : {}; const dmg = (typeof l1.damage==='number' ? l1.damage : spec?.damage); return `<div class=\"cdx-stat\" title=\"Damage per hit at level 1\">Damage ${this.fmtNum(dmg)}</div>`; } catch { return `<div class=\"cdx-stat\" title=\"Damage per hit at level 1\">Damage ${this.fmtNum(spec?.damage)}</div>`; } })()}
-        ${(() => { try { const ms = this.computeCooldownMs(spec, 1); return `<div class=\"cdx-stat\" title=\"Time between attacks at level 1\">Cooldown ${typeof ms==='number'? (ms+'ms') : cdLabel}</div>`; } catch { return `<div class=\"cdx-stat\" title=\"Time between attacks at level 1\">Cooldown ${cdLabel}</div>`; } })()}
-                    <div class="cdx-stat" title="Highest upgrade level">Max Lv ${spec?.maxLevel ?? '—'}</div>
-                  </div>
-                  ${badges ? `<div class="cdx-badges">${badges}</div>` : ''}
-                  <div class="cdx-compact-actions">
-                    <button class="cdx-open-weapon" data-target="${this.escape(String(wKey))}">View in Weapons</button>
-                  </div>
-                </div>
+        <div class="cdx-card" id="op-${this.escape(c.id)}" style="flex-direction:column">
+          <div class="cdx-compact-head">
+            <div class="icon"><img src="${c.icon}" alt="${this.escape(c.name)}"/></div>
+            <div class="meta" style="flex:1">
+              <div class="name">${this.escape(c.name)} <span style="opacity:.6;font-weight:400">— ${this.escape(c.playstyle||'')}</span></div>
+              <div class="desc">${this.escape(c.description||'')}</div>
+              <div class="cdx-stats auto-fit">
+                <div class="cdx-stat" title="Total health">Health ${s.hp}</div>
+                <div class="cdx-stat" title="Base damage">Damage ${s.damage}</div>
+                <div class="cdx-stat" title="Movement speed">Speed ${s.speed}</div>
+                <div class="cdx-stat" title="Damage reduction or armor">Defense ${s.defense}</div>
+                <div class="cdx-stat" title="Affects drops, crits, and rerolls (varies)">Luck ${s.luck}</div>
+                <div class="cdx-stat" title="Overall power rating">Power ${s.powerScore ?? '—'}</div>
               </div>
-            </div>` : ''}
+              <div class="cdx-compact-actions">
+                <button class="cdx-btn-select" data-op="${this.escape(c.id)}">Set as Operative</button>
+                ${spec ? `<button class="cdx-open-weapon" data-target="${this.escape(String(wKey))}">Open Weapon</button>` : ''}
+                <button class="cdx-view-op" data-op="${this.escape(c.id)}">View Details</button>
+              </div>
+              ${tipsPreview ? `<div class="cdx-note">${tipsPreview}</div>` : ''}
+            </div>
           </div>
+          ${spec ? `
+          <div class="cdx-section"><h4>Signature Weapon</h4>
+            <div class="cdx-compact-head">
+              <div class="icon">${this.weaponPreview(wKey)}</div>
+              <div class="meta" style="flex:1">
+                <div class="name">${this.escape(spec?.name || String(wKey))}</div>
+                <div class="cdx-stats auto-fit" style="grid-template-columns:repeat(3,1fr)">
+                  ${(() => { try { const l1 = typeof spec?.getLevelStats==='function' ? (spec.getLevelStats(1)||{}) : {}; const dmg = (typeof l1.damage==='number' ? l1.damage : spec?.damage); return `<div class=\"cdx-stat\" title=\"Damage per hit at level 1\">Damage ${this.fmtNum(dmg)}</div>`; } catch { return `<div class=\"cdx-stat\" title=\"Damage per hit at level 1\">Damage ${this.fmtNum(spec?.damage)}</div>`; } })()}
+                  ${(() => { try { const ms = this.computeCooldownMs(spec, 1); return `<div class=\"cdx-stat\" title=\"Time between attacks at level 1\">Cooldown ${typeof ms==='number'? (ms+'ms') : cdLabel}</div>`; } catch { return `<div class=\"cdx-stat\" title=\"Time between attacks at level 1\">Cooldown ${cdLabel}</div>`; } })()}
+                  <div class="cdx-stat" title="Highest upgrade level">Max Lv ${spec?.maxLevel ?? '—'}</div>
+                </div>
+                ${badges ? `<div class="cdx-badges">${badges}</div>` : ''}
+              </div>
+            </div>
+          </div>` : ''}
+          <div class="cdx-section"><h4>Ability</h4>
+            <div class="cdx-kv">
+              <div class="cdx-pill">${this.escape(info.title || (c.specialAbility ? String(c.specialAbility).split(' — ')[0] : 'Signature'))}</div>
+            </div>
+            ${info.summary? `<div class="cdx-note">${this.escape(info.summary)}</div>`:''}
+            ${info.effects && info.effects.length ? `<ul class="cdx-list">${info.effects.map(e=>`<li>${this.escape(e)}</li>`).join('')}</ul>`:''}
+          </div>
+          <div class="cdx-section"><h4>How to Play</h4>
+            <ul class="cdx-list">${howTo.map(t=>`<li>${this.escape(t)}</li>`).join('')}</ul>
+          </div>
+          ${recPassives ? `<div class="cdx-section"><h4>Recommended Passives</h4><div class="cdx-badges">${recPassives}</div></div>`:''}
         </div>`);
     }
     parts.push('</div>');
     return parts.join('');
+  }
+
+  /** Detailed LoL-inspired hero page for a single operative. */
+  private renderOperativeDetail(c: any): string {
+    const s: any = c.stats || {};
+    const wKey: any = c.defaultWeapon;
+    const spec: any = (WEAPON_SPECS as any)[wKey];
+    const cdLabel = spec ? ((typeof spec.cooldownMs === 'number') ? (spec.cooldownMs + 'ms') : (typeof spec.cooldown === 'number' ? (Math.round(spec.cooldown * (1000/60)) + 'ms') : '—')) : '—';
+    const badges = spec ? this.buildWeaponBadges(spec) : '';
+    const info = this.abilityInfo[c.id] || {};
+    const howTo = this.buildOperativeHowTo(c);
+    // Stat bars scaled to roster extremes
+    const roster = CHARACTERS;
+    const maxHp = Math.max(...roster.map(r => r.stats.maxHp || r.stats.hp || 1));
+    const maxDmg = Math.max(...roster.map(r => r.stats.damage || 1));
+    const maxSpd = Math.max(...roster.map(r => r.stats.speed || 1));
+    const maxDef = Math.max(...roster.map(r => r.stats.defense || 1));
+    const maxPwr = Math.max(...roster.map(r => (r.stats.powerScore||0)));
+    const pct = (v:number,m:number)=> Math.max(4, Math.min(100, Math.round((v/m)*100)));
+    // Difficulty heuristic by playstyle + survivability
+    const baseDiff = ((): number => {
+      const role = c.playstyle || 'Balanced';
+      let d = 2;
+      if (role === 'Mobility' || role === 'Stealth') d = 4;
+      else if (role === 'Support') d = 3;
+      else if (role === 'Aggressive') d = 3;
+      else if (role === 'Defensive') d = 2;
+      // Low survivability nudges difficulty up
+      if ((s.survivability||0) < 120) d += 1;
+      return Math.max(1, Math.min(5, d));
+    })();
+    const diffLabel = ['Very Easy','Easy','Moderate','Hard','Very Hard'][baseDiff-1] || 'Moderate';
+    const diffStars = '★'.repeat(baseDiff) + '☆'.repeat(5-baseDiff);
+    const name = this.escape(c.name);
+    const role = this.escape(c.playstyle || '—');
+    const header = `
+      <div class="cdx-hero">
+        <div class="portrait"><img src="${c.icon}" alt="${name}"/></div>
+        <div class="meta">
+          <div class="title">${name}</div>
+          <div class="chips">
+            <div class="cdx-chip">Role ${role}</div>
+            <div class="cdx-chip" title="Heuristic difficulty">Difficulty ${diffStars} <span style="opacity:.7;margin-left:6px">${diffLabel}</span></div>
+            <div class="cdx-chip">Default ${this.escape(String(wKey))}</div>
+          </div>
+          <div class="cdx-bars">
+            <div class="cdx-bar"><div class="label">Health ${s.hp}</div><div class="track"><div class="fill" style="width:${pct(s.maxHp||s.hp||0, maxHp)}%"></div></div></div>
+            <div class="cdx-bar"><div class="label">Damage ${s.damage}</div><div class="track"><div class="fill" style="width:${pct(s.damage||0, maxDmg)}%"></div></div></div>
+            <div class="cdx-bar"><div class="label">Speed ${s.speed}</div><div class="track"><div class="fill" style="width:${pct(s.speed||0, maxSpd)}%"></div></div></div>
+            <div class="cdx-bar"><div class="label">Defense ${s.defense}</div><div class="track"><div class="fill" style="width:${pct(s.defense||0, maxDef)}%"></div></div></div>
+            <div class="cdx-bar"><div class="label">Power ${s.powerScore ?? '—'}</div><div class="track"><div class="fill" style="width:${pct(s.powerScore||0, Math.max(1,maxPwr))}%"></div></div></div>
+            <div class="cdx-bar"><div class="label">Crit Chance ${s.critChance ?? '—'}%</div><div class="track"><div class="fill" style="width:${pct(s.critChance||0, 60)}%"></div></div></div>
+          </div>
+          <div class="cdx-hero-actions">
+            <button class="cdx-btn-select" data-op="${this.escape(c.id)}">Set as Operative</button>
+            <button class="cdx-backlist">Back to Operatives</button>
+          </div>
+        </div>
+      </div>`;
+    const subnav = `
+      <nav class="cdx-subnav">
+        <a href="#op-overview">Overview</a>
+        <a href="#op-ability">Ability</a>
+        <a href="#op-build">Builds/Passives</a>
+        <a href="#op-weapon">Signature Weapon</a>
+        <a href="#op-counters">Counters & Synergies</a>
+        <a href="#op-lore">Lore</a>
+      </nav>`;
+    const overview = `
+      <section id="op-overview" class="cdx-section">
+        <h4>Overview</h4>
+        <div class="cdx-note">${this.escape(c.description||'')}</div>
+      </section>`;
+    const ability = `
+      <section id="op-ability" class="cdx-section">
+        <h4>Ability</h4>
+        <div class="cdx-kv"><div class="cdx-pill">${this.escape(info.title || (c.specialAbility ? String(c.specialAbility).split(' — ')[0] : 'Signature'))}</div></div>
+        ${info.summary? `<div class="cdx-note">${this.escape(info.summary)}</div>`:''}
+        ${info.effects && info.effects.length ? `<ul class="cdx-list">${info.effects.map((e:string)=>`<li>${this.escape(e)}</li>`).join('')}</ul>`:''}
+        ${info.scaling && info.scaling.length ? `<div class="cdx-badges" style="margin-top:6px">${info.scaling.map((s:string)=>`<span class='cdx-badge'>${this.escape(s)}</span>`).join(' ')}</div>`:''}
+        ${info.tips && info.tips.length ? `<div class="cdx-section"><h4>Tips</h4><ul class="cdx-list">${info.tips.map((t:string)=>`<li>${this.escape(t)}</li>`).join('')}</ul></div>`:''}
+      </section>`;
+    const recPassives = spec ? this.recommendPassives(spec) : '';
+    const builds = `
+      <section id="op-build" class="cdx-section">
+        <h4>Builds & Passives</h4>
+        <ul class="cdx-list">${howTo.map(t=>`<li>${this.escape(t)}</li>`).join('')}</ul>
+        ${recPassives ? `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">${recPassives}</div>`:''}
+      </section>`;
+    const weapon = spec ? `
+      <section id="op-weapon" class="cdx-section">
+        <h4>Signature Weapon</h4>
+        <div class="cdx-compact-head">
+          <div class="icon">${this.weaponPreview(wKey)}</div>
+          <div class="meta" style="flex:1">
+            <div class="name">${this.escape(spec?.name || String(wKey))}</div>
+            <div class="cdx-stats auto-fit" style="grid-template-columns:repeat(3,1fr)">
+              ${(() => { try { const l1 = typeof spec?.getLevelStats==='function' ? (spec.getLevelStats(1)||{}) : {}; const dmg = (typeof l1.damage==='number' ? l1.damage : spec?.damage); return `<div class=\"cdx-stat\" title=\"Damage per hit at level 1\">Damage ${this.fmtNum(dmg)}</div>`; } catch { return `<div class=\"cdx-stat\" title=\"Damage per hit at level 1\">Damage ${this.fmtNum(spec?.damage)}</div>`; } })()}
+              ${(() => { try { const ms = this.computeCooldownMs(spec, 1); return `<div class=\"cdx-stat\" title=\"Time between attacks at level 1\">Cooldown ${typeof ms==='number'? (ms+'ms') : cdLabel}</div>`; } catch { return `<div class=\"cdx-stat\" title=\"Time between attacks at level 1\">Cooldown ${cdLabel}</div>`; } })()}
+              <div class="cdx-stat" title="Highest upgrade level">Max Lv ${spec?.maxLevel ?? '—'}</div>
+            </div>
+            ${badges ? `<div class="cdx-badges">${badges}</div>` : ''}
+            <div class="cdx-compact-actions"><button class="cdx-open-weapon" data-target="${this.escape(String(wKey))}">Open in Weapons</button></div>
+          </div>
+        </div>
+      </section>` : '';
+    const counters = `
+      <section id="op-counters" class="cdx-section">
+        <h4>Counters & Synergies</h4>
+        <div class="cdx-note">Synergizes with passives that enhance ${spec?.explosionRadius ? 'Area and Cooldown' : (spec?.getLevelStats?.(1)?.pierce ? 'Pierce and Damage' : 'Damage and Fire Rate')}.
+        Avoid over-investing in ${spec?.explosionRadius ? 'pierce' : 'area'} unless your build demands it.</div>
+      </section>`;
+    const lore = `
+      <section id="op-lore" class="cdx-section">
+        <h4>Lore</h4>
+        <div class="cdx-note">${this.escape(c.lore || '—')}</div>
+      </section>`;
+    return [header, subnav, overview, ability, builds, weapon, counters, lore].join('');
+  }
+
+  /** Merge role and weapon heuristics into concise “how to play” tips for an operative. */
+  private buildOperativeHowTo(c:any): string[] {
+    const tips: string[] = [];
+    switch (c.playstyle) {
+      case 'Aggressive': tips.push('Stay close enough to keep damage uptime high; sidestep to avoid full surrounds.'); break;
+      case 'Defensive': tips.push('Hold ground near lanes; kite in arcs and leverage crowd control.'); break;
+      case 'Balanced': tips.push('Alternate short pushes with retreats; keep mid‑range for consistency.'); break;
+      case 'Support': tips.push('Place zones where enemies will be; herd mobs through damage.'); break;
+      case 'Stealth': tips.push('Dash through gaps and re‑engage from angles; avoid straight lines under pressure.'); break;
+      case 'Mobility': tips.push('Use speed to set angles; rotate around packs; keep guns sweeping.'); break;
+    }
+    const w = String(c.defaultWeapon||'').toLowerCase();
+    if (w.includes('shotgun')) tips.push('Point‑blank volleys delete elites; weave in/out to reset spread.');
+    if (w.includes('minigun') || w.includes('gun')) tips.push('Feather trigger to manage spread; strafe while firing.');
+    if (w.includes('spear')) tips.push('Lead targets and pierce lines; diagonal kiting rewards range.');
+    if (w.includes('toxin') || w.includes('bio')) tips.push('Tag many, move on—DoT ticks while you reposition.');
+    if (w.includes('sigil') || w.includes('orb')) tips.push('Pre‑place coverage on chokepaths; rotate with movement.');
+    tips.push('Early: take survivability/coverage; then stack damage as density rises.');
+    return tips;
   }
 
   private renderWeapons(q: string): string {

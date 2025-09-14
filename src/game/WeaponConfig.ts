@@ -809,7 +809,7 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Stay inside 360 range: weapons won\'t fire beyond it.',
     'Strafe while firing—barrels auto‑converge toward target for tighter hits.',
   'Dash through gaps and keep pressure; maintain DPS while repositioning.'
-  ], isClassWeapon: true, knockback: 5, evolution: { evolvedWeaponType: WeaponType.RUNNER_OVERDRIVE, requiredPassive: 'Fire Rate' }, getLevelStats(level: number) { const baseDamage=6, baseCooldown=6, mult=8.2; const lvl=Math.min(Math.max(level,1),7); const dmg=Math.round(baseDamage*(1+ (lvl-1)*(mult-1)/6)); const cd=Math.max(3, Math.round(baseCooldown*(1- (lvl-1)*0.38/6))); const salvo = [1,1,1,1,1,2,2][lvl-1]; return { damage:dmg, cooldown:cd, salvo }; } },
+  ], isClassWeapon: true, knockback: 5, evolution: { evolvedWeaponType: WeaponType.RUNNER_OVERDRIVE, requiredPassive: 'Fire Rate' }, getLevelStats(level: number) { const baseDamage=6, baseCooldown=6, mult=5.3333333333; const lvl=Math.min(Math.max(level,1),7); const dmg=Math.round(baseDamage*(1+ (lvl-1)*(mult-1)/6)); const cd=Math.max(4, Math.round(baseCooldown*(1- (lvl-1)*0.30/6))); const salvo = [1,1,1,1,1,1,2][lvl-1]; return { damage:dmg, cooldown:cd, salvo }; } },
   
   
   /** Tech Warrior: Tachyon Spear — a phased dash-lance that pierces and leaves a micro-warp trail. */
@@ -936,10 +936,10 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     'Tag elites/bosses, then pour damage while the psionic mark is active.',
     'Slows, pulls, or chokepoints extend beam uptime and stack marks safely.'
   ], isClassWeapon: true, evolution: { evolvedWeaponType: WeaponType.RESONANT_WEB, requiredPassive: 'Regen' }, getLevelStats(level:number){
-    // Buff: stronger damage growth and slightly faster top-end cadence
+    // Buff 2: minor lift for bottom performer; small damage bump and slightly faster cadence at higher levels
     const idx = Math.min(Math.max(level,1),7)-1;
-  const damageTbl   = [40,50,64,82,104,130,160][idx];
-  const cooldownTbl = [22,21,19,18,17,16,14][idx];
+    const damageTbl   = [42,52,66,84,108,134,166][idx];
+    const cooldownTbl = [22,21,19,18,17,16,13][idx];
     const bounceTbl   = [1,2,3,4,5,6,7][idx];
   const pierceTbl   = [1,1,2,2,2,3,3][idx];
   const lenTbl      = [136,140,144,148,152,156,160][idx];
@@ -1387,13 +1387,13 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
     isClassWeapon: true,
     knockback: 6,
     getLevelStats(level: number){
-      // Boost enough to hit ~1500 PF band but avoid runaway
+      // Trim evolution to keep ST within target band and avoid runaway
       const base = (WEAPON_SPECS as any)[WeaponType.RUNNER_GUN];
       const s = base?.getLevelStats ? base.getLevelStats(7) : { damage: 18, cooldown: 4 };
       const salvo = 2;
       const cd = 4; // frames
       const baseDpsL7 = (s.damage * 60) / Math.max(1, (s.cooldown || 1));
-  const targetDps = baseDpsL7 * 3.26; // tiny lift toward band
+      const targetDps = baseDpsL7 * 2.7; // scale down evolution budget
       const dmg = Math.max(1, Math.round(targetDps * cd / (salvo * 60)));
       const spread = 0.06; // tighter
       const speed = 12.5;

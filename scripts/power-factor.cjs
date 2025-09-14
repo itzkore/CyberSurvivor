@@ -31,6 +31,7 @@ async function main() {
   const level = args.level ? parseInt(args.level, 10) : 7;
   const timeMinutes = args.timeMin ? parseFloat(args.timeMin) : 15;
   const outFile = args.out || 'pf-output.json';
+  const shouldPrint = args.print === '1' || args.print === 'true';
 
   // Register ts-node for on-the-fly TS transpilation if available, else proceed with native loader for ESM TS (Node 20+ may still fail).
   try {
@@ -51,6 +52,17 @@ async function main() {
   }
   let mod;
   try {
+    // Bust require cache to avoid stale cached module between runs
+    // Delete all cached modules under the project src/ directory to avoid stale imports
+    const srcRoot = path.resolve(process.cwd(), 'src');
+    for (const k of Object.keys(require.cache)) {
+      try {
+        if (k && k.startsWith(srcRoot + path.sep)) {
+          delete require.cache[k];
+        }
+      } catch {}
+    }
+    delete require.cache[tsPath];
     mod = require(tsPath);
     console.log('[pf] required TS module ok');
   } catch (e) {
@@ -72,6 +84,13 @@ async function main() {
   const outPath = path.resolve(process.cwd(), outFile);
   fs.writeFileSync(outPath, JSON.stringify(payload, null, 2));
   console.log(`Power factor results written to ${outPath}`);
+  if (shouldPrint) {
+    const f = v => Math.round(v * 100) / 100;
+    for (const r of sorted) {
+      const s = r.scenarios;
+      console.log(`${String(r.operativeName).padEnd(20)} total=${f(r.totalPF).toFixed(2)}  B=${f(s.BOSS.PF).toFixed(2)} E=${f(s.ELITE.PF).toFixed(2)} H=${f(s.HORDE.PF).toFixed(2)}`);
+    }
+  }
 }
 
 main().catch(err => {

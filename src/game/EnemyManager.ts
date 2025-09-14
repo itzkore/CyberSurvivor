@@ -561,7 +561,9 @@ export class EnemyManager {
   }
   private readonly poisonTickIntervalMs: number = 500; // damage application cadence
   private readonly poisonDurationMs: number = 4000; // duration refreshed per stack add
-  private readonly poisonDpsPerStack: number = 6.4; // per-stack DPS baseline (100% buff)
+  private readonly poisonDpsPerStack: number = 6.4; // per-stack DPS baseline (buffed)
+  // Boss-only amplifier for Bio Engineer poison to lift BOSS ST a bit without over-buffing horde
+  private readonly poisonBossAmplifier: number = 1.25;
   /** Scheduler for puddle -> treasure corrosion ticks (aligned to poison tick cadence). */
   private puddleTreasureNextTickMs: number = 0;
   private readonly poisonMaxStacks: number = 10; // base cap; can be increased dynamically when evolved
@@ -2021,7 +2023,7 @@ export class EnemyManager {
     // Armor shred debuff reduces incoming damage slightly when active
     const anyE: any = enemy as any;
     if (anyE._armorShredExpire && performance.now() < anyE._armorShredExpire) {
-      // Shred reduces effective armor, so damage increases; apply 12% bonus while active
+      // Shred reduces effective armor, so damage increases; enemies get +12% while active (boss uses +16% in takeBossDamage)
       amount *= 1.12;
     }
     // Rogue Hacker evolved vulnerability: amplify all incoming damage while inside zone (and a short linger)
@@ -2201,7 +2203,8 @@ export class EnemyManager {
     // Armor shred increases damage taken while active (mirror enemy logic)
     const bAny: any = boss as any;
     if (bAny._armorShredExpire && performance.now() < bAny._armorShredExpire) {
-      amount *= 1.12;
+      // Boss gets slightly stronger shred effect to help single-target identity
+      amount *= 1.16; // was 1.12 on enemies; boss-only +4% boost
     }
     boss.hp -= amount;
   // Apply global lifesteal on boss damage as well
@@ -2471,7 +2474,7 @@ export class EnemyManager {
       // In-sludge contact amp for ticks while boss stands in sludge
       const inSludgeAmp = (b as any)._inSludgeUntil && now < (b as any)._inSludgeUntil ? 1.20 : 1.0;
       const dmgMul = (this.player as any)?.getGlobalDamageMultiplier?.() ?? ((this.player as any)?.globalDamageMultiplier ?? 1);
-      const dps = this.poisonDpsPerStack * baseLevelMul * evolvedMul * inSludgeAmp * dmgMul * stacks;
+  const dps = this.poisonDpsPerStack * this.poisonBossAmplifier * baseLevelMul * evolvedMul * inSludgeAmp * dmgMul * stacks;
   const perTick = dps * (this.poisonTickIntervalMs / 1000);
       this.takeBossDamage(boss, perTick, false, WeaponType.BIO_TOXIN, boss.x, boss.y, undefined, true);
   // Progressive toxicity on boss: each tick adds +1 stack (up to cap)

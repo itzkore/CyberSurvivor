@@ -464,25 +464,31 @@ window.onload = async () => {
   });
 
   window.addEventListener('showCharacterSelect', () => {
-    Logger.info('[main.ts] showCharacterSelect event received');
+    Logger.info('[main.ts] showCharacterSelect -> redirect to Codex Operatives');
     mainMenu.hide();
-    characterSelectPanel.show();
-    canvas.style.display = 'block';
-    canvas.style.zIndex = '10';
-  try { ensureSandboxOverlay(game).hide(); } catch {}
-  try { radioOverlay.hide(); } catch {}
+    characterSelectPanel.hide();
+    try { ensureSandboxOverlay(game).hide(); } catch {}
+    try { radioOverlay.hide(); } catch {}
+    try { codex.showOperatives(); } catch { codex.show(); }
+    // Keep canvas behind UI for Codex
+    canvas.style.zIndex = '-1';
   });
 
-  window.addEventListener('showCodex', () => {
+  window.addEventListener('showCodex', (e: Event) => {
     Logger.info('[main.ts] showCodex event received');
     mainMenu.hide();
     characterSelectPanel.hide();
-  try { ensureSandboxOverlay(game).hide(); } catch {}
-    codex.show();
+    try { ensureSandboxOverlay(game).hide(); } catch {}
+    const detail = (e as CustomEvent).detail as { tab?: string, operativeId?: string } | undefined;
+    if (detail?.tab === 'operatives') {
+      try { codex.showOperatives(detail.operativeId); } catch { codex.show(); }
+    } else {
+      codex.show();
+    }
     // Keep canvas behind to allow UI focus
     canvas.style.zIndex = '-1';
-  // Hide radio overlay while Codex is open
-  try { radioOverlay.hide(); } catch {}
+    // Hide radio overlay while Codex is open
+    try { radioOverlay.hide(); } catch {}
   });
 
   window.addEventListener('hideCodex', () => {

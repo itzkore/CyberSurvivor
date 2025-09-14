@@ -363,7 +363,6 @@ export class MainMenu {
               <div id="mode-desc" class="mode-desc"></div>
             </div>
             <div class="nav-buttons">
-              <button class="nav-btn" id="character-select-btn">Operatives</button>
               <button class="nav-btn" id="upgrades-btn">Upgrades ${this.playerProfile.currency > 0 ? '<span class="notification-dot"></span>' : ''}</button>
               <button class="nav-btn" id="codex-btn">Codex</button>
                  <!-- Statistics button removed -->
@@ -898,7 +897,6 @@ export class MainMenu {
   private setupEventListeners(): void {
     const startBtn = document.getElementById('start-mission-btn');
   const startSandboxBtn = document.getElementById('start-sandbox-btn');
-    const characterBtn = document.getElementById('character-select-btn');
     const upgradesBtn = document.getElementById('upgrades-btn');
   const codexBtn = document.getElementById('codex-btn');
     // statistics button removed
@@ -949,9 +947,7 @@ export class MainMenu {
       this.showSandboxLock();
     });
 
-    characterBtn?.addEventListener('click', () => {
-      this.showCharacterSelect();
-    });
+    // Operatives button removed; use Codex to access Operatives tab
 
     upgradesBtn?.addEventListener('click', () => {
       this.showUpgrades();
@@ -1157,8 +1153,9 @@ export class MainMenu {
   }
 
   private showCharacterSelect(): void {
+    // Redirect to unified Codex Operatives view
     this.hide();
-    window.dispatchEvent(new CustomEvent('showCharacterSelect'));
+    window.dispatchEvent(new CustomEvent('showCodex', { detail: { tab: 'operatives' } }));
   }
 
   /** Build a comprehensive pre-battle briefing for the selected operative */

@@ -104,21 +104,23 @@ function expectedUniqueHitsLine(rho: number, pathLen: number, corridorWidth: num
 }
 
 // Extract per-level damage/cooldown/speed/range from WEAPON_SPECS
-function getWeaponLevelStats(weapon: WeaponType, level: number): { damage: number; cooldown: number; speed?: number; range?: number; projectileSize?: number; salvo?: number } {
+function getWeaponLevelStats(weapon: WeaponType, level: number): any {
   const spec: any = (WEAPON_SPECS as any)[weapon];
   if (!spec) return { damage: 0, cooldown: 60 };
   if (typeof spec.getLevelStats === 'function') {
-    const s = spec.getLevelStats(level);
-    return {
-      damage: s.damage ?? spec.damage ?? 0,
-      cooldown: s.cooldown ?? spec.cooldown ?? 60,
-      speed: s.speed ?? spec.speed,
-      range: s.range ?? spec.range,
-    projectileSize: s.projectileSize,
-    salvo: s.salvo ?? spec.salvo
-    };
+    const s = spec.getLevelStats(level) || {};
+    // Merge: prefer per-level fields, fall back to base spec for core stats
+    const out: any = { ...s };
+    out.damage = (s as any).damage ?? spec.damage ?? 0;
+    out.cooldown = (s as any).cooldown ?? spec.cooldown ?? 60;
+    // Fill common movement/size fields if missing
+    out.speed = (s as any).speed ?? spec.speed;
+    out.range = (s as any).range ?? spec.range;
+    out.projectileSize = (s as any).projectileSize ?? spec.projectileSize;
+    out.salvo = (s as any).salvo ?? spec.salvo;
+    return out;
   }
-  return { damage: spec.damage ?? 0, cooldown: spec.cooldown ?? 60, speed: spec.speed, range: spec.range, projectileSize: undefined, salvo: spec.salvo };
+  return { damage: spec.damage ?? 0, cooldown: spec.cooldown ?? 60, speed: spec.speed, range: spec.range, projectileSize: spec.projectileSize, salvo: spec.salvo };
 }
 
 // Generic ST component (per-target contact cap optional)
@@ -141,9 +143,9 @@ function computeAOEShockPair(params: { rho: number; radius: number; dmgPrimary: 
   return dps;
 }
 
-// Control value from Armor Shred (+12% dmg taken for 0.6s)
-function computeArmorShredValue(stWithoutShred: number, uptimeFrac: number): number {
-  const bonus = 0.12;
+// Control value from Armor Shred (enemies +12%, boss +16% dmg taken for 0.6s)
+function computeArmorShredValue(stWithoutShred: number, uptimeFrac: number, isBoss: boolean = false): number {
+  const bonus = isBoss ? 0.16 : 0.12;
   return stWithoutShred * bonus * clamp(uptimeFrac, 0, 1);
 }
 
@@ -156,7 +158,7 @@ function computeSurviveScale(hp: number, def: number, hpm: number, knobs: Surviv
 }
 
 // Lash-specific metrics
-const LASH_PER_TARGET_HZ_CAP = 2.0; // 500ms per-target cooldown
+const LASH_PER_TARGET_HZ_CAP = 2.0; // default 500ms per-target cooldown
 const LASH_CRIT_OFFSET = 0.08;      // base offset used in BulletManager for Lash
 const SURGE_THRESHOLD = 25;         // stacks per surge
 const SURGE_RADIUS = 220;           // px
@@ -170,6 +172,13 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
   const level = clamp(Math.round(cfg.level), 1, 7);
   const defWeapon = char.defaultWeapon;
   const wStats = getWeaponLevelStats(defWeapon, level);
+  // Debug: print resolved stats for Cyber Runner when PF_DEBUG is enabled
+  try {
+    if ((process as any)?.env?.PF_DEBUG && char.id === 'cyber_runner') {
+      // eslint-disable-next-line no-console
+      console.log('[PF_DEBUG] Runner getLevelStats L', level, JSON.stringify(wStats));
+    }
+  } catch {}
 
   const scenarios: Record<ScenarioKey, Breakdown> = { BOSS: null as any, ELITE: null as any, HORDE: null as any };
 
@@ -192,23 +201,32 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
     const uptime = rel.uptime[scen] ?? 1;
     const targetAvailability = (scen === 'BOSS') ? 1 : (scen === 'ELITE' ? 0.85 : 0.5);
 
-    let ST = 0, AOE = 0, Control = 0;
+  let ST = 0, AOE = 0, Control = 0;
     let critMult = critMultGeneric;
 
   // Generic ST baseline
     const perTargetCapHz = undefined;
   ST = computeST(wStats.damage, wStats.cooldown, critMult, { uptime, pHit, targetAvailability, perTargetHitHzCap: perTargetCapHz, salvo: (wStats as any).salvo });
+    try {
+      if ((process as any)?.env?.PF_DEBUG && char.id === 'cyber_runner' && scen === 'BOSS') {
+        // eslint-disable-next-line no-console
+        console.log('[PF_DEBUG] Runner BOSS ST inputs', JSON.stringify({ damage: wStats.damage, cooldown: wStats.cooldown, salvo: (wStats as any).salvo, critMult, uptime, pHit, targetAvailability }), '=> ST', ST);
+      }
+    } catch {}
 
     // Specialize for scrap lash
-    if (defWeapon === WeaponType.SCRAP_LASH) {
+  if (defWeapon === WeaponType.SCRAP_LASH) {
       // ST with per-target cap and Lash crit offset
       critMult = critMultLash;
-  const ST_noCrit_noShred = computeST(wStats.damage, wStats.cooldown, 1, { uptime, pHit, targetAvailability, perTargetHitHzCap: LASH_PER_TARGET_HZ_CAP, salvo: (wStats as any).salvo });
+    // Slightly higher per-target hit cap for boss to better reflect sustained contact on single target
+    const perTargetCapHz = (scen === 'BOSS') ? 2.4 : LASH_PER_TARGET_HZ_CAP;
+  const ST_noCrit_noShred = computeST(wStats.damage, wStats.cooldown, 1, { uptime, pHit, targetAvailability, perTargetHitHzCap: perTargetCapHz, salvo: (wStats as any).salvo });
       ST = ST_noCrit_noShred * critMult; // apply crit
 
-      // Armor shred control value (on the focus target). Assume high uptime vs boss, less in crowds
-      const shredUptime = (scen === 'BOSS') ? 0.9 : (scen === 'ELITE' ? 0.6 : 0.35);
-      Control += computeArmorShredValue(ST_noCrit_noShred, shredUptime);
+  // Armor shred control value (on the focus target). Assume high uptime vs boss, less in crowds
+    // Nudge uptime assumptions slightly up to represent reliable returns and stickiness in mid-game
+  const shredUptime = (scen === 'BOSS') ? 0.95 : (scen === 'ELITE' ? 0.65 : 0.38);
+  Control += computeArmorShredValue(ST_noCrit_noShred, shredUptime, scen === 'BOSS');
 
       // Scrap Surge AoE: surge every SURGE_THRESHOLD unique hits
       const uniqueHitsPerShot = expectedUniqueHitsLine(rho, pathLen, corridorWidth);
@@ -232,7 +250,7 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
       AOE += baseDps * extraHits;
     }
 
-    // Psionic Wave: beam that sweeps a lane with pierce and thickness
+  // Psionic Wave: beam that sweeps a lane with pierce and thickness
     if (defWeapon === WeaponType.PSIONIC_WAVE) {
       // Pull beam params from level stats when present
       const len = (wStats as any).length ?? 132;
@@ -251,6 +269,35 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
       Control += singleDps * 0.08 * 0.6;
     }
 
+    // Hacker Virus: piercing disruptor with paralysis. Model slight multi-hit AoE and control value.
+    if (defWeapon === WeaponType.HACKER_VIRUS) {
+      const shotsPerSec = (60 / Math.max(1, wStats.cooldown)) * ((wStats as any).salvo || 1);
+      const laneWidth = 24; // slim projectile corridor
+      const hitsRaw = expectedUniqueHitsLine(rho, range || 340, laneWidth);
+      const hits = Math.max(1, Math.min(3, hitsRaw)); // cap at ~3 effective hits
+      const extraHits = Math.max(0, hits - 1);
+      const extraDps = wStats.damage * shotsPerSec * extraHits * critMult * overlapEff * uptime * pHit;
+      AOE += extraDps;
+      // Control valuation for paralysis/disrupt: ~15% of single-target pressure on uptime (conservative)
+      const singleDps = wStats.damage * shotsPerSec * critMult * uptime * pHit;
+      Control += singleDps * 0.15;
+    }
+
+    // Mech Mortar: large explosion per shell. Model AoE per shot from explosion radius.
+    if (defWeapon === WeaponType.MECH_MORTAR) {
+      const shotsPerSec = (60 / Math.max(1, wStats.cooldown)) * ((wStats as any).salvo || 1);
+      const radius = (wStats as any).explosionRadius ?? 150;
+      // Cap effective unique targets to avoid runaway density amplification in PF
+      const eTargetsRaw = expectedTargetsInRadius(rho, radius);
+      const eTargets = Math.min(3, eTargetsRaw);
+      // Only count extra targets beyond the primary (which is already reflected in ST)
+      const extraTargets = Math.max(0, eTargets - 1);
+      const perTargetDps = wStats.damage * shotsPerSec * critMult * uptime * pHit;
+      // Strong overlap/overkill penalty for large blasts (targets die early / partial hits)
+      const aoeOverlapPenalty = 0.25;
+      AOE += extraTargets * perTargetDps * aoeOverlapPenalty * overlapEff;
+    }
+
     // Glyph Compiler: predictive pierce lances; cap by pierce
     if (defWeapon === WeaponType.GLYPH_COMPILER) {
       const pierce = (wStats as any).pierce ?? 1;
@@ -267,25 +314,34 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
 
     // Neural Threader (Nomad): threads anchor targets and pulse; model pulses as AoE over time
     if (defWeapon === WeaponType.NOMAD_NEURAL) {
-  const shotsPerSec = (60 / Math.max(1, wStats.cooldown)) * ((wStats as any).salvo || 1);
+      const shotsPerSec = (60 / Math.max(1, wStats.cooldown)) * ((wStats as any).salvo || 1);
       const anchors = (wStats as any).anchors ?? 2;
       const threadLifeSec = Math.max(0.5, ((wStats as any).threadLifeMs ?? 3000) / 1000);
-      const pulseIntervalSec = Math.max(0.1, ((wStats as any).pulseIntervalMs ?? 500) / 1000);
+      const pulseIntervalSec = Math.max(0.2, ((wStats as any).pulseIntervalMs ?? 500) / 1000);
       const pulsePct = Math.max(0, (wStats as any).pulsePct ?? 0.6);
-      const expectedAnchors = Math.min(anchors, Math.max(1, expectedUniqueHitsLine(rho, range || 720, 24)));
-      const pulsesPerSec = shotsPerSec * (threadLifeSec / pulseIntervalSec);
-      const dps = (wStats.damage * pulsePct) * expectedAnchors * pulsesPerSec * critMult * overlapEff * uptime * pHit;
+      // Expected concurrent threads: limited by anchors, by available targets, and by how many threads can be created given fire rate and lifetime
+      const targetsAlongLane = Math.max(1, expectedUniqueHitsLine(rho, range || 720, 24));
+      let expectedAnchors = Math.min(anchors, targetsAlongLane);
+      // Assume the player can generally maintain at least 2 anchors in all scenarios
+      expectedAnchors = Math.max(2, expectedAnchors);
+      const threadsFromFireRate = shotsPerSec * threadLifeSec; // upper bound on concurrently maintained threads
+      const concurrentThreads = Math.max(1, Math.min(expectedAnchors, threadsFromFireRate));
+      const pulsesPerSec = concurrentThreads * (1 / pulseIntervalSec);
+    const raw = (wStats.damage * pulsePct) * pulsesPerSec * critMult;
+      // Apply overlap/overkill damping and reliability
+  const aoePulsePenalty = 0.68; // slightly higher reliability to avoid underflow
+      const dps = raw * aoePulsePenalty * overlapEff * uptime * pHit;
       AOE += dps;
       // Small control value for tethering effect
       Control += dps * 0.05;
     }
 
   // Bio Toxin: model boss DoT as ST; mobs via puddle AoE proportional to area and density
-    if (defWeapon === WeaponType.BIO_TOXIN) {
+  if (defWeapon === WeaponType.BIO_TOXIN) {
       // Use EnemyManager poison model rough constants
       const poisonDpsPerStack = 6.4; // synced with EnemyManager after buff
       // For boss: density is 0, but poison stacks still deal ST damage over time
-      if (scen === 'BOSS') {
+  if (scen === 'BOSS') {
     // Unlimited stacking on boss (no artificial cap):
     // Steady-state expected stacks ≈ stackAddRatePerSec * stackDurationSec.
     // From EnemyManager:
@@ -297,14 +353,15 @@ function buildOperativePF(operativeId: string, cfg: PowerConfig): PFResult {
     const durationSec = 4; // 4000ms
     // Contact uptime: fraction of time boss is actually inside damaging puddles
     // Scales gently with level to reflect larger/longer puddles and better control
-    const contactUptime = clamp(0.55 + 0.06 * (level - 1), 0.5, 0.95);
+  const contactUptime = clamp(0.56 + 0.055 * (level - 1), 0.5, 0.92);
     const stackAddRatePerSec = stacksPerTick * tickHz * contactUptime;
     const avgBossStacks = stackAddRatePerSec * durationSec; // no cap
     // Mirror EnemyManager base level scaling (non-evolved): 1 + (level-1)*0.35
     const baseLevelMul = 1 + Math.max(0, (level - 1)) * 0.35;
-    const evolvedMul = 1.0; // default weapon, not modeling evolved sludge here
-    const inSludgeAmp = 1.0; // neutral by default
-    const bossDps = poisonDpsPerStack * avgBossStacks * baseLevelMul * evolvedMul * inSludgeAmp;
+  const evolvedMul = 1.0; // default weapon, not modeling evolved sludge here
+  const inSludgeAmp = 1.0; // neutral by default
+  const bossAmp = 1.25; // mirror EnemyManager.poisonBossAmplifier (raised)
+  const bossDps = poisonDpsPerStack * bossAmp * avgBossStacks * baseLevelMul * evolvedMul * inSludgeAmp;
     ST += bossDps * uptime * pHit;
       } else {
         // Puddle spawn per shot on expiration: approximate 1 puddle per shot
@@ -377,7 +434,7 @@ export function runPowerFactor(opts: RunOptions = {}): PowerRunResult {
   const cfg: PowerConfig = {
     level,
     timeMinutes,
-    weights: { BOSS: 0.35, ELITE: 0.25, HORDE: 0.40 },
+    weights: { BOSS: 0.30, ELITE: 0.25, HORDE: 0.45 },
     reliability: {
       pHit: { BOSS: 0.95, ELITE: 0.92, HORDE: 0.90 },
       pChain: { BOSS: 0.2, ELITE: 0.6, HORDE: 0.9 },
