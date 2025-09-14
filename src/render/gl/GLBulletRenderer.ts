@@ -1,36 +1,33 @@
 /**
- * Minimal WebGL2 bullet renderer that draws bullets as antialiased circles using GL_POINTS.
- * Designed to be composited into the main 2D canvas at the bullets layer.
- *
- * Notes:
- * - This is an MVP: visuals are simple circles with a soft edge; weapon-specific sprites/trails aren't handled yet.
- * - The renderer targets an offscreen canvas sized to the main canvas backing store (DPR * renderScale * CSS size).
- * - Game.render() draws this canvas into the 2D context to preserve layering order without refactoring multiple canvases.
+ * WebGL2 bullets renderer (sprite-based): draws bullets as textured quads using a small atlas of projectile PNGs.
+ * - Builds an atlas from AssetLoader's cached projectile images (manifest projectiles.* entries).
+ * - Renders only classic sprite bullets (those with a projectileImageKey and not orbiting/melee/laser/plasma/droplet types).
+ * - Other special projectiles continue to be drawn by the 2D path when GL bullets are disabled (default) or when unsupported.
  */
-/**
- * WebGL2 bullets renderer (MVP): draws bullets as antialiased circles using GL_POINTS into an offscreen canvas.
- *
- * Design goals:
- * - Zero DOM changes: composited into existing 2D pipeline in the bullets layer.
- * - Keep CPU path intact as fallback; skip special bullets (orbit/melee sweep) that have bespoke visuals.
- * - Minimize allocations: reuse a preallocated instance buffer and GPU buffer; grow in chunks when required.
- */
+import { Logger } from '../../core/Logger';
+
 export class GLBulletRenderer {
   public readonly canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext;
   private program: WebGLProgram;
   private vao: WebGLVertexArrayObject | null = null;
+  private quadVBO: WebGLBuffer | null = null;
   private instanceBuffer: WebGLBuffer | null = null;
   private instancesCapacity = 0;
   private uViewSize: WebGLUniformLocation | null = null;
-  private uColor: WebGLUniformLocation | null = null;
-  private lastPixelW = 0;
-  private lastPixelH = 0;
-  private maxPointSize = 256; // hardware cap, queried at init
-
-  // Instance layout: [x_ndc, y_ndc, radius_pixels]
-  private instanceStrideFloats = 3;
-  private instanceData: Float32Array | null = null; // CPU-side staging buffer
+  private uSampler: WebGLUniformLocation | null = null;
+  private uTint: WebGLUniformLocation | null = null;
+  private texture: WebGLTexture | null = null;
+  private textureReady = false;
+  private lastAtlasBuildMs = 0;
+  // Atlas
+  private atlasMap: Record<string, { u0:number; v0:number; u1:number; v1:number }> = {};
+  private atlasDirty = true;
+  // Track keys we warned about to avoid spam
+  private warnedMissing: Record<string, number> = {};
+  // Instance layout: [centerX_ndc, centerY_ndc, size_px, angle_rad, u0, v0, u1, v1, a]
+  private instanceStrideFloats = 9;
+  private instanceData: Float32Array | null = null;
 
   constructor(width: number, height: number) {
     this.canvas = document.createElement('canvas');
@@ -41,38 +38,47 @@ export class GLBulletRenderer {
     this.gl = gl;
     this.program = this.createProgram(
       `#version 300 es\n
-       layout(location=0) in vec3 aInst; // x_ndc, y_ndc, radius_px\n
-       uniform vec2 uViewSize; // framebuffer pixel size (w,h)
-       // gl_PointSize is in pixels; we take radius_px * 2\n
-       void main() {\n
-         gl_Position = vec4(aInst.x, aInst.y, 0.0, 1.0);\n
-         float diameter = max(1.0, aInst.z * 2.0);\n
-         // Additional clamp happens on CPU using queried ALIASED_POINT_SIZE_RANGE; this is a safety cap.\n
-         gl_PointSize = min(diameter, 256.0);\n
-       }` ,
+       layout(location=0) in vec2 aPos; // unit quad [-0.5..0.5]\n
+       layout(location=1) in vec2 aUV;  // base uv [0..1]\n
+       layout(location=2) in vec2 aCenterNDC;\n
+       layout(location=3) in float aSizePx;\n
+       layout(location=4) in float aAngle;\n
+       layout(location=5) in vec4 aUVRect; // u0,v0,u1,v1 in atlas space\n
+       layout(location=6) in float aAlpha; // per-instance alpha (for future fades)\n
+       uniform vec2 uViewSize;\n
+       out vec2 vUV;\n
+       out float vA;\n
+       void main(){\n
+         float s = sin(aAngle);\n
+         float c = cos(aAngle);\n
+         vec2 p = vec2( c * aPos.x - s * aPos.y, s * aPos.x + c * aPos.y );\n
+         vec2 px = p * aSizePx;\n
+         vec2 ndcOfs = vec2(px.x * 2.0 / max(uViewSize.x,1.0), -px.y * 2.0 / max(uViewSize.y,1.0));\n
+         vec2 ndc = aCenterNDC + ndcOfs;\n
+         gl_Position = vec4(ndc, 0.0, 1.0);\n
+         vec2 uvMin = aUVRect.xy;\n
+         vec2 uvMax = aUVRect.zw;\n
+         vUV = uvMin + aUV * (uvMax - uvMin);\n
+         vA = aAlpha;\n
+       }`,
       `#version 300 es\n
        precision mediump float;\n
+       uniform sampler2D uTex;\n
+       uniform vec4 uTint;\n
+       in vec2 vUV;\n
+       in float vA;\n
        out vec4 outColor;\n
-       uniform vec4 uColor;\n
-       void main() {\n
-         // Circle mask inside point sprite using gl_PointCoord (0..1), with soft edge\n
-         vec2 uv = gl_PointCoord * 2.0 - 1.0;\n
-         float r2 = dot(uv, uv);\n
-         float edge = smoothstep(1.0, 0.80, r2);\n
-         // Soft inner falloff for a subtle glow core\n
-         float glow = smoothstep(0.0, 0.7, 1.0 - r2);\n
-         vec4 col = uColor;\n
-         col.a *= edge;\n
-         // Slight boost toward center\n
-         col.rgb = mix(col.rgb * 0.6, col.rgb, glow);\n
-         if (col.a <= 0.01) discard;\n
-         outColor = col;\n
+       void main(){\n
+         vec4 texel = texture(uTex, vUV);\n
+         float a = texel.a * uTint.a * vA;\n
+         if (a <= 0.003) discard;\n
+         outColor = vec4(texel.rgb * uTint.rgb, a);\n
        }`
     );
     this.lookupUniforms();
     this.initVAO();
     this.configureGL();
-    this.queryCaps();
+    this.initFallbackTexture();
   }
 
   private createShader(type: number, src: string): WebGLShader {
@@ -106,20 +112,54 @@ export class GLBulletRenderer {
 
   private lookupUniforms() {
     this.uViewSize = this.gl.getUniformLocation(this.program, 'uViewSize');
-    this.uColor = this.gl.getUniformLocation(this.program, 'uColor');
+    this.uSampler = this.gl.getUniformLocation(this.program, 'uTex');
+    this.uTint = this.gl.getUniformLocation(this.program, 'uTint');
   }
 
   private initVAO() {
     const gl = this.gl;
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
-    // Instance buffer: vec3 per instance
+    // Per-vertex quad (pos, uv)
+    this.quadVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVBO);
+    const quad = new Float32Array([
+      // x, y,   u, v
+      -0.5, -0.5,  0.0, 1.0,
+       0.5, -0.5,  1.0, 1.0,
+      -0.5,  0.5,  0.0, 0.0,
+       0.5,  0.5,  1.0, 0.0,
+    ]);
+    gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+    // aPos
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 4 * 4, 0);
+    // aUV
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 4 * 4, 2 * 4);
+    // Per-instance buffer: centerNDC (vec2), sizePx (float), uvRect (vec4), alpha (float)
     this.instanceBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-    // layout(location=0) vec3 aInst
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, this.instanceStrideFloats * 4, 0);
-    gl.vertexAttribDivisor(0, 1);
+    // aCenterNDC @ loc 2
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, this.instanceStrideFloats * 4, 0);
+    gl.vertexAttribDivisor(2, 1);
+    // aSizePx @ loc 3
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 1, gl.FLOAT, false, this.instanceStrideFloats * 4, 2 * 4);
+    gl.vertexAttribDivisor(3, 1);
+    // aAngle @ loc 4
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 1, gl.FLOAT, false, this.instanceStrideFloats * 4, 3 * 4);
+    gl.vertexAttribDivisor(4, 1);
+    // aUVRect @ loc 4
+    gl.enableVertexAttribArray(5);
+    gl.vertexAttribPointer(5, 4, gl.FLOAT, false, this.instanceStrideFloats * 4, 4 * 4);
+    gl.vertexAttribDivisor(5, 1);
+    // aAlpha @ loc 6
+    gl.enableVertexAttribArray(6);
+    gl.vertexAttribPointer(6, 1, gl.FLOAT, false, this.instanceStrideFloats * 4, 8 * 4);
+    gl.vertexAttribDivisor(6, 1);
     gl.bindVertexArray(null);
   }
 
@@ -127,66 +167,128 @@ export class GLBulletRenderer {
     const gl = this.gl;
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
-    // Premultiplied alpha friendly blending (consistent with Canvas compositing)
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.clearColor(0, 0, 0, 0);
   }
 
-  /**
-   * Query implementation caps relevant to this renderer (point size range) and cache them.
-   * We’ll clamp requested point sizes to maxPointSize to avoid undefined behavior on some drivers.
-   */
-  private queryCaps() {
+  private initFallbackTexture() {
+    const gl = this.gl;
+    const tex = gl.createTexture();
+    if (!tex) return;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const white = new Uint8Array([255, 255, 255, 255]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, white);
+    this.texture = tex;
+    this.textureReady = false;
+  }
+
+  private ensureAtlasForKeys(keys: string[]): void {
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    if (now - this.lastAtlasBuildMs < 200) return; // throttle rapid rebuilds in bursty spawns
     try {
-      const gl = this.gl as any;
-      const range = this.gl.getParameter(this.gl.ALIASED_POINT_SIZE_RANGE) as Float32Array | number[] | null;
-      if (range && (range as any).length >= 2) {
-        const max = Number((range as any)[1]);
-        if (Number.isFinite(max) && max > 0) this.maxPointSize = Math.min(512, Math.max(32, Math.floor(max)));
+      const AL: any = (window as any).AssetLoader;
+      const game: any = (window as any).__gameInstance;
+      const loader = game?.assetLoader || (AL ? new AL() : null);
+      if (!loader) return;
+      // Gather unique keys that we have images for
+      const unique: string[] = [];
+      for (let i=0;i<keys.length;i++) {
+        const k = keys[i] || 'bullet_cyan';
+        if (!unique.includes(k)) unique.push(k);
       }
+      // Check if all unique keys already present
+      let needsBuild = false;
+      for (let i=0;i<unique.length;i++) if (!this.atlasMap[unique[i]]) { needsBuild = true; break; }
+      if (!needsBuild && this.textureReady) return;
+      // Build a simple row-packed atlas with padding
+      const items: Array<{ key:string; img: HTMLImageElement; w:number; h:number }> = [];
+      for (let i=0;i<unique.length;i++) {
+        const key = unique[i];
+        // BulletManager stores projectileImageKey as manifest key like 'bullet_cyan'
+        const path = loader.getAsset ? loader.getAsset(key.includes('.')?key:(`projectiles.${key}`)) : '';
+        const normPath = path || (AL?.normalizePath ? AL.normalizePath(`/assets/projectiles/${key}.png`) : `/assets/projectiles/${key}.png`);
+        const img: HTMLImageElement | undefined = loader.getImage?.(normPath) || loader.getImage?.(key);
+        if (img && img.width && img.height) {
+          items.push({ key, img, w: img.width, h: img.height });
+        } else {
+          const last = this.warnedMissing[key] || 0;
+          const nowMs = (typeof performance!=='undefined'?performance.now():Date.now());
+          if (nowMs - last > 5000) {
+            Logger.warn(`GL bullets: missing image for key '${key}' (path='${normPath}')`);
+            this.warnedMissing[key] = nowMs;
+          }
+        }
+      }
+      if (!items.length) return;
+      // Sort by width desc for better packing
+      items.sort((a,b)=> (b.w*b.h) - (a.w*a.h));
+      const pad = 2;
+      // Estimate atlas size
+      let totalW = 0, maxH = 0;
+      for (const it of items) { totalW += it.w + pad*2; maxH = Math.max(maxH, it.h + pad*2); }
+      const pow2 = (n:number)=>{ let p=1; while(p<n) p<<=1; return p; };
+      const atlasW = pow2(Math.max(64, totalW));
+      const atlasH = pow2(Math.max(64, maxH));
+      const cv = document.createElement('canvas');
+      cv.width = atlasW; cv.height = atlasH;
+      const c2d = cv.getContext('2d'); if (!c2d) return;
+      c2d.clearRect(0,0,atlasW,atlasH);
+      const map: Record<string, { u0:number; v0:number; u1:number; v1:number }> = {};
+      let x = 0;
+      for (const it of items) {
+        if (x + it.w + pad*2 > atlasW) break; // simplistic single-row; should be enough for small set
+        const drawX = x + pad, drawY = pad + Math.floor((atlasH - it.h) * 0.5);
+        c2d.drawImage(it.img, drawX, drawY, it.w, it.h);
+        const u0 = drawX / atlasW, v0 = drawY / atlasH;
+        const u1 = (drawX + it.w) / atlasW, v1 = (drawY + it.h) / atlasH;
+        map[it.key] = { u0, v0, u1, v1 };
+        x += it.w + pad*2;
+      }
+      const gl = this.gl;
+      const tex = this.texture || gl.createTexture();
+      if (!tex) return;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      // Canvas source is premultiplied; do not premultiply again.
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+      this.texture = tex;
+      this.atlasMap = map;
+      this.textureReady = true;
+      this.atlasDirty = false;
+      this.lastAtlasBuildMs = now;
+      (window as any).__glBulletsAtlasInfo = { width: atlasW, height: atlasH, entries: Object.keys(map).length };
     } catch { /* ignore */ }
   }
 
-  /** Ensure CPU/GPU buffers can hold at least 'count' instances; grows by ~1.5x. */
   private ensureCapacity(count: number) {
     if (count <= this.instancesCapacity) return;
     this.instancesCapacity = Math.ceil(count * 1.5);
-    // CPU-side buffer
     this.instanceData = new Float32Array(this.instancesCapacity * this.instanceStrideFloats);
-    // GPU-side buffer: allocate (or reallocate) to full capacity; we'll use bufferSubData for partial updates.
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.instanceData.byteLength, gl.DYNAMIC_DRAW);
   }
 
-  /**
-   * Resize the internal framebuffer to match the 2D canvas backing store.
-   * Call on window resize or when render scale/DPR changes.
-   */
   public setSize(pixelW: number, pixelH: number) {
     const w = Math.max(1, Math.floor(pixelW));
     const h = Math.max(1, Math.floor(pixelH));
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w; this.canvas.height = h;
       this.gl.viewport(0, 0, w, h);
-      this.lastPixelW = w; this.lastPixelH = h;
     }
   }
 
-  /**
-   * Render bullets into the internal WebGL canvas.
-   * @param bullets Array of bullet-like objects with x,y,radius,active
-   * @param camX Camera X (world)
-   * @param camY Camera Y (world)
-   * @param designW Logical (CSS) width used by the 2D renderer
-   * @param designH Logical (CSS) height used by the 2D renderer
-   * @param pixelW Backing pixel width of the main canvas (DPR * renderScale * CSS width)
-   * @param pixelH Backing pixel height of the main canvas
-   */
-  /**
-   * Render bullets into the internal WebGL canvas.
-   * Bullets are expected to be plain objects that at least expose: x, y, radius, active and optionally flags isOrbiting/isMeleeSweep.
-   */
+  /** Render supported bullets (sprite-based) into offscreen GL canvas. */
   public render(
     bullets: Array<any>,
     camX: number,
@@ -198,47 +300,74 @@ export class GLBulletRenderer {
   ) {
     this.setSize(pixelW, pixelH);
     const gl = this.gl;
-    // In worst case most bullets are drawable; reserve accordingly.
+    // Collect keys we might need this frame
+    const keysNeeded: string[] = [];
+    for (let i=0;i<bullets.length;i++){
+      const b:any = bullets[i];
+      if (!b || !b.active) continue;
+      if (b.isOrbiting || b.isMeleeSweep) continue; // bespoke visuals
+      const vis:any = b.projectileVisual || {};
+      const vt = vis.type || 'bullet';
+      if (vt !== 'bullet') continue; // skip lasers/plasma/droplet, etc.
+      const key = b.projectileImageKey || 'bullet_cyan';
+      keysNeeded.push(key);
+    }
+    if (keysNeeded.length) this.ensureAtlasForKeys(keysNeeded);
+    if (!this.textureReady) { gl.viewport(0,0,this.canvas.width,this.canvas.height); gl.clear(gl.COLOR_BUFFER_BIT); return; }
+    // Prepare instances
     this.ensureCapacity(bullets.length);
-    // Prepare instance data (ndc coords + radius in pixels)
+    const inst = this.instanceData as Float32Array;
     const scaleX = pixelW / Math.max(1, designW);
     const scaleY = pixelH / Math.max(1, designH);
-    const inst = this.instanceData as Float32Array;
     let count = 0;
-    for (let i = 0; i < bullets.length; i++) {
-      const b: any = bullets[i];
+    for (let i=0;i<bullets.length;i++){
+      const b:any = bullets[i];
       if (!b || !b.active) continue;
-      // Skip orbiting/melee sweep bullets for now; they have dedicated 2D visuals
       if (b.isOrbiting || b.isMeleeSweep) continue;
-      const sx = (b.x - camX);
-      const sy = (b.y - camY);
-      // Cull off-screen (design space)
+      const vis:any = b.projectileVisual || {};
+      const vt = vis.type || 'bullet';
+      if (vt !== 'bullet') continue;
+      const sx = b.x - camX; const sy = b.y - camY;
       if (sx < -64 || sy < -64 || sx > designW + 64 || sy > designH + 64) continue;
+      const key = b.projectileImageKey || 'bullet_cyan';
+      const rect = this.atlasMap[key];
+      if (!rect) continue; // not in atlas yet
       const xNdc = sx / designW * 2 - 1;
       const yNdc = (sy / designH * 2 - 1) * -1.0;
-      let rPx = Math.max(1, (b.radius || 4) * (0.5 * (scaleX + scaleY))); // average scale
-      // Guard against driver point size caps. gl_PointSize is diameter in pixels; clamp radius accordingly.
-      const maxRadiusPx = this.maxPointSize * 0.5;
-      if (rPx * 2 > this.maxPointSize) rPx = maxRadiusPx;
+      const sizeDesign = (vis.size != null ? vis.size : (b.radius || 6)) * 2; // 2D draws diameter from radius
+      const sizePx = Math.max(2, sizeDesign * (0.5 * (scaleX + scaleY)));
+      // Compute orientation angle like 2D path: prefer velocity; fallback to displayAngle/orbitAngle
+      let ang = Math.atan2(b.vy || 0, b.vx || 0);
+      if ((!b.vx && !b.vy)) {
+        if (b.isOrbiting && (b.orbitAngle != null)) ang = b.orbitAngle;
+        if ((b as any).displayAngle != null) ang = (b as any).displayAngle;
+      }
+      if (typeof vis.rotationOffset === 'number') ang += vis.rotationOffset;
+      const alpha = 1.0; // future: per-bullet fade
       const idx = count * this.instanceStrideFloats;
-      inst[idx + 0] = xNdc;
-      inst[idx + 1] = yNdc;
-      inst[idx + 2] = rPx;
+      inst[idx+0] = xNdc;
+      inst[idx+1] = yNdc;
+      inst[idx+2] = sizePx;
+      inst[idx+3] = ang;
+      inst[idx+4] = rect.u0; inst[idx+5] = rect.v0; inst[idx+6] = rect.u1; inst[idx+7] = rect.v1;
+      inst[idx+8] = alpha;
       count++;
     }
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    if (!count) return; // nothing to draw
+    if (!count) return;
     gl.useProgram(this.program);
     if (this.uViewSize) gl.uniform2f(this.uViewSize, this.canvas.width, this.canvas.height);
-    // Default soft-cyan bullet color; alpha tuned to blend well over environment
-    if (this.uColor) gl.uniform4f(this.uColor, 0.6, 0.95, 1.0, 0.85);
+    if (this.uTint) gl.uniform4f(this.uTint, 1,1,1,1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    if (this.uSampler) gl.uniform1i(this.uSampler, 0);
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-    // Update only the used portion; avoid reallocating the GPU buffer every frame
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst.subarray(0, count * this.instanceStrideFloats));
-    gl.drawArraysInstanced(gl.POINTS, 0, 1, count);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
     gl.bindVertexArray(null);
+    (window as any).__glBulletsLastCount = count;
   }
 }
 

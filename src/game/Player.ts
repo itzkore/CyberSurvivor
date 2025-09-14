@@ -4207,43 +4207,7 @@ export class Player {
       }
   ctx.save();
   ctx.translate(this.x, this.y);
-  // Slow Aura visual (under-sprite): soft cyan ring showing effective slow radius
-  try {
-    const anyThis: any = this as any;
-    const slowLvl: number = anyThis.slowAuraLevel | 0;
-    if (slowLvl > 0) {
-      const baseR: number = anyThis.slowAuraBaseRadius ?? 352; // keep in sync with PassiveConfig
-      const addR: number = anyThis.slowAuraRadiusPerLevel ?? 48;
-      const areaMul: number = (this.getGlobalAreaMultiplier?.() ?? (this.globalAreaMultiplier || 1));
-      const rEff = (baseR + addR * slowLvl) * (areaMul || 1);
-      const avgMs = (window as any).__avgFrameMs || 16;
-      const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
-      const visR = Math.max(40, rEff * 0.98); // slight inset for aesthetics
-      const inner = Math.max(8, Math.min(24, this.size * 0.2));
-      const prevComp = ctx.globalCompositeOperation;
-      ctx.globalCompositeOperation = 'lighter';
-      // Radial gradient: soft cyan core fading to transparent edge
-      const grad = ctx.createRadialGradient(0, 0, inner, 0, 0, visR);
-      const alpha = vfxLow ? 0.10 : 0.16;
-      grad.addColorStop(0.0, `rgba(120, 240, 255, ${alpha * 0.60})`);
-      grad.addColorStop(0.35, `rgba(60, 200, 255, ${alpha * 0.35})`);
-      grad.addColorStop(0.9, 'rgba(0, 160, 255, 0.08)');
-      grad.addColorStop(1.0, 'rgba(0, 160, 255, 0.0)');
-      ctx.fillStyle = grad as any;
-      ctx.beginPath();
-      ctx.arc(0, 0, visR, 0, Math.PI * 2);
-      ctx.fill();
-      // Optional outline hint on higher settings
-      if (!vfxLow) {
-        ctx.strokeStyle = 'rgba(0, 200, 255, 0.22)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(0, 0, visR * 0.995, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      ctx.globalCompositeOperation = prevComp;
-    }
-  } catch {}
+  // Slow Aura visual handled via early GL glow underlay (2D path removed)
   // Align sprite artwork “front” with projectile aim. For our assets, use -90° so the sprite
   // points toward the shot direction (0 rad = right in math coords, sprites base-face up).
   const spriteFacingOffset = -Math.PI / 2; // adjust per-asset if needed

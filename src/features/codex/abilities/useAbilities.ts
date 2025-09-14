@@ -35,19 +35,23 @@ function friendlyName(desc: AbilityDescriptor): string {
 function iconFor(desc: AbilityDescriptor): string {
   // Use themed generic icons per key as fallback
   const base = '/assets/ui/icons';
-  switch (desc.id) {
-    case 'gunner_micro_turret': return '/assets/turrets/turret_gunner.png';
-    case 'tech_anchor': return `${base}/upgrade_speed.svg`;
-    case 'umbral_surge': return `${base}/passive_overclock.svg`;
-    case 'lattice_weave': return `${base}/passive_area.svg`;
-    case 'bio_outbreak': return `${base}/passive_regen.svg`;
-    case 'bio_boost': return `${base}/passive_speed.svg`;
-    case 'runner_dash': return `${base}/passive_speed.svg`;
-    case 'gunner_overheat': return `${base}/passive_fire.svg`;
-    case 'overmind_overload': return `${base}/passive_eye.svg`;
-    case 'fortress_stance': return `${base}/passive_armor.svg`;
-    default: return `${base}/passive_overclock.svg`;
-  }
+  const raw = (() => {
+    switch (desc.id) {
+      case 'gunner_micro_turret': return '/assets/turrets/turret_gunner.png';
+      case 'tech_anchor': return `${base}/upgrade_speed.svg`;
+      case 'umbral_surge': return `${base}/passive_overclock.svg`;
+      case 'lattice_weave': return `${base}/passive_area.svg`;
+      case 'bio_outbreak': return `${base}/passive_regen.svg`;
+      case 'bio_boost': return `${base}/passive_speed.svg`;
+      case 'runner_dash': return `${base}/passive_speed.svg`;
+      case 'gunner_overheat': return `${base}/passive_fire.svg`;
+      case 'overmind_overload': return `${base}/passive_eye.svg`;
+      case 'fortress_stance': return `${base}/passive_armor.svg`;
+      default: return `${base}/passive_overclock.svg`;
+    }
+  })();
+  const AL = (window as any).AssetLoader;
+  return AL ? AL.normalizePath(raw) : raw;
 }
 
 const DESCS: AbilityDescriptor[] = [

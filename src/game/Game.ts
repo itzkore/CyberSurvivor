@@ -2002,22 +2002,28 @@ export class Game {
   } catch { /* ignore core draw errors */ }
   // Enemies: optional GL instanced renderer for enemy bodies (overlays/HP bars still drawn in 2D path)
   try {
-    const glEnemiesOn: boolean = !!(window as any).__glEnemiesEnabled;
     const glER: any = (window as any).__glEnemiesRenderer;
-    if (glEnemiesOn && glER && typeof glER.render === 'function') {
+  if (glER && typeof glER.render === 'function') {
       const dpr2 = (window as any).devicePixelRatio || 1;
       const pixelW2 = Math.round(this.designWidth * dpr2 * this.renderScale);
       const pixelH2 = Math.round(this.designHeight * dpr2 * this.renderScale);
-      const enemiesArr: any[] = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
-  glER.render(enemiesArr, this.camX, this.camY, this.designWidth, this.designHeight, pixelW2, pixelH2, { tint: [1.0, 1.0, 1.0, 1.0] });
-      // Composite GL enemies canvas overlay in screen space (under 2D overlays/HP bars)
-      this.ctx.save();
-      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-      this.ctx.drawImage(glER.canvas, 0, 0);
-      this.ctx.restore();
-      // Mark to EnemyManager that base body sprites should be skipped this frame
-      (this.enemyManager as any).__skipBody2DOnce = true;
-      // Now draw overlays/HP bars via EnemyManager (body draw gated inside)
+    const enemiesArr: any[] = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
+    // Pass manager and playerX so GL can select atlas UVs and facing consistently with 2D path
+    glER.render(enemiesArr, this.enemyManager, this.player?.x ?? 0, this.camX, this.camY, this.designWidth, this.designHeight, pixelW2, pixelH2, { tint: [1.0, 1.0, 1.0, 1.0] });
+      // Only composite and skip 2D bodies if renderer reports ready (texture or atlas uploaded)
+      const glReady = !!((window as any).__glEnemiesIsReady);
+      if (glReady) {
+        // Composite GL enemies canvas overlay in screen space (under 2D overlays/HP bars)
+        this.ctx.save();
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        this.ctx.drawImage(glER.canvas, 0, 0);
+        this.ctx.restore();
+        // Mark to EnemyManager that base body sprites should be skipped this frame
+        (this.enemyManager as any).__skipBody2DOnce = true;
+      } else {
+        (this.enemyManager as any).__skipBody2DOnce = false;
+      }
+      // Now draw overlays/HP bars via EnemyManager (body draw gated inside when GL ready)
       this.enemyManager.draw(this.ctx, this.camX, this.camY);
     } else {
       this.enemyManager.draw(this.ctx, this.camX, this.camY);
@@ -2025,9 +2031,8 @@ export class Game {
   } catch { this.enemyManager.draw(this.ctx, this.camX, this.camY); }
         // Bullets layer: use GL renderer when enabled, else 2D draw
         try {
-          const glOn: boolean = !!(window as any).__glEnabled;
-          const glr: any = (window as any).__glBulletRenderer;
-          if (glOn && glr && glr.canvas) {
+        const glr: any = (window as any).__glBulletRenderer;
+        if (glr && glr.canvas) {
             // Drive GL renderer with current bullets and camera
             const bullets: any[] = (this.bulletManager as any).bullets || [];
             const dpr = (window as any).devicePixelRatio || 1;
@@ -2049,8 +2054,48 @@ export class Game {
           }
         } catch { this.bulletManager.draw(this.ctx); }
         // Active beams (railgun/sniper) under player for proper layering
+        const glBR: any = (window as any).__glBeamsRenderer;
+        let skipped2DBeams = false;
         if (this._activeBeams && this._activeBeams.length) {
-          for (const beam of this._activeBeams) {
+          if (glBR && typeof glBR.render === 'function') {
+            // Build GL instances from current beams
+            const dprB = (window as any).devicePixelRatio || 1;
+            const pixelWB = Math.round(this.designWidth * dprB * this.renderScale);
+            const pixelHB = Math.round(this.designHeight * dprB * this.renderScale);
+            const beamsGL: any[] = [];
+            for (const beam of this._activeBeams) {
+              const elapsed = performance.now() - beam.start;
+              const t = elapsed / beam.duration;
+              if (t >= 1) continue;
+              const fade = 1 - t;
+              const len = beam.range;
+              // Map beam type/variant
+              let type = 0; // 0 sniper, 1 melter
+              let variant = 0; // sniper variants: 0 default, 1 void, 2 black_sun, 3 exec
+              if (beam.type === 'melter') type = 1; else type = 0;
+              if (type === 0) {
+                if (beam.type === 'voidsniper') variant = 1; else if (beam.type === 'sniper_black_sun') variant = 2; else if (beam.type === 'sniper_exec') variant = 3; else variant = 0;
+                beamsGL.push({ x: beam.x, y: beam.y, angle: beam.angle, length: len, thickness: (beam.thickness || 10), type, variant, fade, additive: !this.lowFX && !(window as any).__noAddBlend, a: 1 });
+              } else {
+                const visLen = Math.min(len, (beam as any).visLen || len);
+                const lava = !!(beam as any).lavaHint;
+                const hue = (beam as any).hue ?? Math.floor(((elapsed / Math.max(1, beam.duration)) * 360) % 360);
+                const heatT = Math.max(0, Math.min(1, (beam as any).heatT || 0));
+                const coreFrac = 0.55;
+                beamsGL.push({ x: beam.x, y: beam.y, angle: beam.angle, length: len, thickness: Math.max(6, (beam.thickness || 12) * 1.6), type, variant: lava ? 1 : 0, hue, heatT, visLen, coreFrac, fade, additive: !this.lowFX && !(window as any).__noAddBlend, a: 1 });
+              }
+            }
+            if (beamsGL.length) {
+              glBR.render(beamsGL, this.camX, this.camY, this.designWidth, this.designHeight, pixelWB, pixelHB, performance.now() * 0.001);
+              // Composite GL beams canvas overlay in screen space
+              this.ctx.save();
+              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+              this.ctx.drawImage(glBR.canvas, 0, 0);
+              this.ctx.restore();
+              skipped2DBeams = true;
+            }
+          }
+          if (!skipped2DBeams) for (const beam of this._activeBeams) {
             const elapsed = performance.now() - beam.start;
             const t = elapsed / beam.duration;
             if (t >= 1) continue;
@@ -2300,9 +2345,118 @@ export class Game {
   // RMB controllers removed
   // Heavy Gunner micro turret visual (world space)
   // RMB controllers removed
+        // Early GL aura underlay: render player's Slow Aura via GL glows before drawing the player sprite
+        try {
+          const glGR: any = (window as any).__glGlowsRenderer;
+          if (glGR && typeof glGR.render === 'function' && this.explosionManager && typeof (this.explosionManager as any).getPlayerAuraGlowSnapshot === 'function') {
+            const snap = (this.explosionManager as any).getPlayerAuraGlowSnapshot() as Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }>;
+            if (snap && snap.length) {
+              const dpr = (window as any).devicePixelRatio || 1;
+              const pixelW = Math.round(this.designWidth * dpr * this.renderScale);
+              const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
+              glGR.render(snap, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
+              // Composite GL aura into screen beneath player
+              this.ctx.save();
+              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+              this.ctx.drawImage(glGR.canvas, 0, 0);
+              this.ctx.restore();
+              // 2D aura path removed; no skip flag necessary
+            }
+          }
+        } catch { /* ignore GL aura errors */ }
+
         this.player.draw(this.ctx);
-        this.particleManager.draw(this.ctx);
-        this.explosionManager?.draw(this.ctx);
+        // Particles: prefer GL renderer, fallback to 2D draw
+        try {
+          const glP: any = (window as any).__glParticlesRenderer;
+          if (glP && typeof glP.render === 'function') {
+            const dpr = (window as any).devicePixelRatio || 1;
+            const pixelW = Math.round(this.designWidth * dpr * this.renderScale);
+            const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
+            const particles: any[] = (this.particleManager as any).getSnapshot?.() || [];
+            glP.render(particles, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
+            // Composite GL particles texture into screen (between player and zones)
+            this.ctx.save();
+            this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+            this.ctx.drawImage(glP.canvas, 0, 0);
+            this.ctx.restore();
+          } else {
+            this.particleManager.draw(this.ctx);
+          }
+        } catch { this.particleManager.draw(this.ctx); }
+        // GL zones: render filled AoE zones (normal blend) via WebGL before glows and rings
+        try {
+          const glZR: any = (window as any).__glZonesRenderer;
+          if (glZR && typeof glZR.render === 'function' && this.explosionManager && typeof (this.explosionManager as any).getActiveAoEZonesSnapshot === 'function') {
+            const snap = (this.explosionManager as any).getActiveAoEZonesSnapshot() as Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }>;
+            if (snap && snap.length) {
+              const dpr = (window as any).devicePixelRatio || 1;
+              const pixelW = Math.round(this.designWidth * dpr * this.renderScale);
+              const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
+              glZR.render(snap, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
+              // Composite GL zones texture into screen
+              this.ctx.save();
+              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+              this.ctx.drawImage(glZR.canvas, 0, 0);
+              this.ctx.restore();
+            }
+          }
+        } catch { /* ignore GL zones errors */ }
+        // GL glows: render charge glows (additive) via WebGL before rings and 2D explosion draw
+        try {
+          const glGR: any = (window as any).__glGlowsRenderer;
+          if (glGR && typeof glGR.render === 'function' && this.explosionManager && typeof (this.explosionManager as any).getActiveChargeGlowsSnapshot === 'function') {
+            const snap = (this.explosionManager as any).getActiveChargeGlowsSnapshot() as Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }>;
+            if (snap && snap.length) {
+              const dpr = (window as any).devicePixelRatio || 1;
+              const pixelW = Math.round(this.designWidth * dpr * this.renderScale);
+              const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
+              glGR.render(snap, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
+              // Composite GL glows texture into screen
+              this.ctx.save();
+              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+              this.ctx.drawImage(glGR.canvas, 0, 0);
+              this.ctx.restore();
+            }
+          }
+        } catch { /* ignore GL glows errors */ }
+        // GL rings: render shockwave rings via WebGL and composite before 2D explosion draw
+        try {
+          const glRR: any = (window as any).__glRingsRenderer;
+          if (glRR && typeof glRR.render === 'function' && this.explosionManager && typeof (this.explosionManager as any).getActiveShockwaveSnapshot === 'function') {
+            const snap = (this.explosionManager as any).getActiveShockwaveSnapshot() as Array<{ x:number; y:number; innerR:number; outerR:number; color:string; alpha:number; additive:boolean }>;
+            if (snap && snap.length) {
+              // Convert to GLRingInstance array
+              const rings: any[] = new Array(snap.length);
+              // Helper parse color (reuse BulletManager.parseColor if available)
+              const parse = (col: string): { r:number; g:number; b:number; a:number } => {
+                try { return (require('../game/BulletManager') as any).BulletManager.parseColor(col) || { r:255,g:255,b:255,a:1 }; } catch { /* ignore require in bundlers */ }
+                // Fallback simple hex/rgb parser
+                const mHex = /^#([0-9a-f]{6})$/i.exec(col);
+                if (mHex) { const n = parseInt(mHex[1],16); return { r:(n>>16)&255, g:(n>>8)&255, b:n&255, a:1 }; }
+                const mR = /^rgba?\(([^)]+)\)$/i.exec(col);
+                if (mR) { const p = mR[1].split(',').map(s=>s.trim()); return { r:parseInt(p[0],10)||255, g:parseInt(p[1],10)||255, b:parseInt(p[2],10)||255, a:(p[3]?parseFloat(p[3]):1) }; }
+                return { r:255,g:255,b:255,a:1 };
+              };
+              for (let i = 0; i < snap.length; i++) {
+                const s = snap[i];
+                const c = parse(s.color);
+                const a = Math.max(0, Math.min(1, c.a * s.alpha));
+                rings[i] = { x: s.x, y: s.y, innerR: s.innerR, outerR: s.outerR, r: c.r/255, g: c.g/255, b: c.b/255, a, additive: s.additive };
+              }
+              const dpr = (window as any).devicePixelRatio || 1;
+              const pixelW = Math.round(this.designWidth * dpr * this.renderScale);
+              const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
+              glRR.render(rings, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
+              // Composite GL rings texture into screen
+              this.ctx.save();
+              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+              this.ctx.drawImage(glRR.canvas, 0, 0);
+              this.ctx.restore();
+            }
+          }
+        } catch { /* ignore GL rings errors */ }
+        // 2D explosion visuals removed; GL path covers rings/glows/zones
     this.bossManager.draw(this.ctx);
   this.ctx.restore();
   // (Removed post-entity drawWalkableMask; underlay already applied beneath entities)
@@ -2326,63 +2480,74 @@ export class Game {
         if (core && core.x != null && core.y != null) { visX = core.x; visY = core.y; }
       }
     } catch { /* ignore */ }
-    // In Last Stand, constrain the circular reveal to the corridor union (~100px margin) so outside visibility is limited
-    // We do NOT fully clear corridor rectangles; visibility should remain circle-limited inside the corridors.
-  let extraRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
-  let circleClipRects: Array<{x:number;y:number;w:number;h:number}> | undefined = undefined;
+    // Prefer GL fog if available, else fall back to 2D mask render
     try {
-  // In Last Stand, do not clip the circular reveal to corridor rectangles.
-  // Visuals show a clean arc; gameplay targeting remains gated by LS visibility checks.
-    } catch { /* ignore */ }
-    this.fog.render(this.ctx, cam, {
-      enable: true,
-      visibleCenterX: visX,
-      visibleCenterY: visY,
-      visibleRadiusPx: radiusPx,
-      exploredAlpha: 0.34,
-      // Do not clip the circle in Last Stand – keep a clean arc on the right.
-    });
-    // Flashlight wedge: reveal an arc ahead of player (bonus item toggles this)
-    try {
-      const ls: any = (this as any).lastStand;
-      const hasFlashlight = !!(ls && ls.getFlashlight && ls.getFlashlight());
-  if (hasFlashlight) {
-        const px = Math.round(this.player.x - this.camX);
-        const py = Math.round(this.player.y - this.camY);
-        const angle = Math.atan2((this.player as any).lastDirY || 0, (this.player as any).lastDirX || 1);
-  // Slightly smaller and tighter cone per feedback; reveal-only, no visible light sprite
-  const wedgeR = Math.max(200, Math.floor(this.fowTileSize * 3.6));
-  const wedgeHalf = Math.PI / 9; // ~40° cone
-        this.ctx.save();
-        this.ctx.globalCompositeOperation = 'destination-out';
-        // Constrain wedge to corridor-expanded rects if available
-        const clipRects: Array<{x:number;y:number;w:number;h:number}> | undefined = Array.isArray(circleClipRects) ? circleClipRects as any : undefined;
-        if (clipRects && clipRects.length) {
-          this.ctx.beginPath();
-          for (let i=0;i<clipRects.length;i++){
-            const r = clipRects[i];
-            const rx = Math.round(r.x - this.camX);
-            const ry = Math.round(r.y - this.camY);
-            this.ctx.rect(rx, ry, Math.round(r.w), Math.round(r.h));
+      const glFR: any = (window as any).__glFogRenderer;
+      if (glFR && glFR.render) {
+        const dpr = (window.devicePixelRatio || 1);
+        const pixelW = Math.round(this.designWidth * dpr * this.renderScale);
+        const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
+        // Flashlight wedge determination
+        let wedge: any = undefined;
+        try {
+          const ls: any = (this as any).lastStand;
+          const hasFlashlight = !!(ls && ls.getFlashlight && ls.getFlashlight());
+          if (hasFlashlight) {
+            const dirX = (this.player as any).lastDirX || 1;
+            const dirY = (this.player as any).lastDirY || 0;
+            const wedgeR = Math.max(200, Math.floor(this.fowTileSize * 3.6));
+            const wedgeHalf = Math.PI / 9;
+            wedge = { enabled: true, dirX, dirY, halfAngleRad: wedgeHalf, radius: wedgeR };
           }
-          this.ctx.clip();
-        }
-        // Use a simple linear gradient fill; radial gradient per frame is more expensive for a large cone
-        const gx = Math.cos(angle), gy = Math.sin(angle);
-        const edgeX = Math.round(px + gx * wedgeR), edgeY = Math.round(py + gy * wedgeR);
-        const grad = this.ctx.createLinearGradient(px, py, edgeX, edgeY);
-        grad.addColorStop(0, 'rgba(255,255,255,1)');
-        grad.addColorStop(1, 'rgba(255,255,255,0)');
-        this.ctx.fillStyle = grad;
-        this.ctx.beginPath();
-        this.ctx.moveTo(px, py);
-        this.ctx.arc(px, py, wedgeR, angle - wedgeHalf, angle + wedgeHalf);
-        this.ctx.closePath();
-        this.ctx.fill();
+        } catch { /* ignore */ }
+        glFR.render({
+          camX: this.camX,
+          camY: this.camY,
+          centerX: visX,
+          centerY: visY,
+          designW: this.designWidth,
+          designH: this.designHeight,
+          pixelW,
+          pixelH,
+          radiusPx,
+          darkRGB: [0.0196, 0.0313, 0.051], // #05080d roughly
+          darkAlpha: 0.88,
+          penScale: 1.18,
+          penAlpha: 0.04,
+          wedge,
+        });
+        // Composite GL fog texture into screen
+        this.ctx.save();
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        this.ctx.drawImage(glFR.canvas, 0, 0);
         this.ctx.restore();
-  // Do not mark explored along the flashlight path to avoid flicker and unintended memory reveal
+      } else {
+        this.fog.render(this.ctx, cam, {
+          enable: true,
+          visibleCenterX: visX,
+          visibleCenterY: visY,
+          visibleRadiusPx: radiusPx,
+          exploredAlpha: 0.34,
+          edgeNoise: !this.lowFX, // disable dithering on low FX to avoid any edge shimmer
+          penumbraScale: 1.18,
+          penumbraAlpha: this.lowFX ? 0.02 : 0.04,
+        });
       }
-    } catch { /* ignore */ }
+    } catch {
+      // Fallback to 2D on any GL error
+      this.fog.render(this.ctx, cam, {
+        enable: true,
+        visibleCenterX: visX,
+        visibleCenterY: visY,
+        visibleRadiusPx: radiusPx,
+        exploredAlpha: 0.34,
+        edgeNoise: !this.lowFX,
+        penumbraScale: 1.18,
+        penumbraAlpha: this.lowFX ? 0.02 : 0.04,
+      });
+    }
+    // Flashlight wedge: reveal an arc ahead of player (bonus item toggles this)
+    // Flashlight wedge is handled inside GL path; 2D fallback skipped for simplicity
   // Post-fog anchor overlay (ensures visibility even outside vision)
   // RMB controllers removed
   // Post-fog Heavy Gunner turret overlay (ensures visibility even outside vision)

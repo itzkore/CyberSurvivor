@@ -19,18 +19,32 @@ export class DebugOverlay {
     lines.push(`FPS ${fps}  avg ${avg.toFixed(1)}ms`);
     lines.push(`Enemies ${enemies}  Elites ${elites}  Bullets ${bullets}`);
     try {
-      const gle = (window as any).__glEnemiesEnabled ? 'ON' : 'off';
+      const r:any = (window as any).__glEnemiesRenderer;
+      const on = !!r;
       const inst = (window as any).__glEnemiesLastCount ?? 0;
       let extra = '';
-      try {
-        const r:any = (window as any).__glEnemiesRenderer;
-        if (r) {
-          const cap = (r as any).instancesCapacity ?? undefined;
-          const texReady = (r as any).textureReady === true ? 'tex' : 'no-tex';
-          if (cap != null) extra = ` cap=${cap} ${texReady}`; else extra = ` ${texReady}`;
-        }
-      } catch {}
-      lines.push(`GL-Enemies ${gle}  inst=${inst}${extra}`);
+      if (on) {
+        const cap = (r as any).instancesCapacity ?? undefined;
+        const texReady = (r as any).textureReady === true ? 'tex' : 'no-tex';
+        const atlas = (window as any).__glEnemiesAtlasInfo || {};
+        const ent = atlas.entries != null ? ` entries=${atlas.entries}` : '';
+        const ready = (window as any).__glEnemiesIsReady ? 'ready' : 'warming';
+        if (cap != null) extra = ` cap=${cap} ${texReady} ${ready}${ent}`; else extra = ` ${texReady} ${ready}${ent}`;
+      }
+      lines.push(`GL-Enemies ${on ? 'ON' : 'off'}  inst=${inst}${extra}`);
+    } catch {}
+    // GL Bullets
+    try {
+      const r:any = (window as any).__glBulletRenderer;
+      const on = !!r;
+      const inst = (window as any).__glBulletsLastCount ?? 0;
+      let extra = '';
+      if (on) {
+        const cap = (r as any).instancesCapacity ?? undefined;
+        const texReady = (r as any).textureReady === true ? 'tex' : 'no-tex';
+        if (cap != null) extra = ` cap=${cap} ${texReady}`; else extra = ` ${texReady}`;
+      }
+      lines.push(`GL-Bullets ${on ? 'ON' : 'off'}  inst=${inst}${extra}`);
     } catch {}
     // Pools (best-effort)
     try {

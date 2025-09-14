@@ -3,6 +3,11 @@ import { Game } from './game/Game';
 // Ensure Codex v2 Tailwind styles are always loaded in dev/prod
 import './features/codex/styles.css';
 import { createGLEnemyRendererLike } from './render/gl/GLEnemyRenderer';
+import { createGLRingsRendererLike } from './render/gl/GLRingsRenderer';
+import { createGLBeamsRendererLike } from './render/gl/GLBeamsRenderer';
+import { createGLGlowsRendererLike } from './render/gl/GLGlowsRenderer';
+import { createGLZonesRendererLike } from './render/gl/GLZonesRenderer';
+import { createGLFogRendererLike } from './render/gl/GLFogRenderer';
 import { MainMenu } from './ui/MainMenu';
 import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import CharacterSelectPanel
 import { AssetLoader } from './game/AssetLoader';
@@ -112,66 +117,82 @@ window.onload = async () => {
   canvas.classList.add('game-canvas-root');
   applyCanvasSizeGlobal(canvas);
 
-  // Optional GL bullets renderer toggle via URL (?gl=1)
-  const glEnabled = /[?&]gl=1/.test(location.search);
-  (window as any).__glEnabled = glEnabled;
-  if (glEnabled) {
-    try {
+  // Initialize GL bullets renderer only when explicitly enabled via URL (?glbullets=1 or ?glb=1)
+  // Default path uses 2D bullets to ensure visual parity with sprite PNGs.
+  try {
+    const enableGLB = /[?&](glbullets|glb)=1/.test(location.search);
+    if (enableGLB) {
       const mod = await import('./render/gl/GLBulletRenderer');
       const glr = mod.createGLBulletRendererLike(canvas);
       (window as any).__glBulletRenderer = glr;
-    } catch (e) {
-      (window as any).__glEnabled = false;
-      (window as any).__glBulletRenderer = null;
-      console.warn('[main] GL bullets init failed, will use 2D path', e);
+    } else {
+      (window as any).__glBulletRenderer = null; // force 2D bullets by default
     }
+  } catch (e) {
+    (window as any).__glBulletRenderer = null;
+    console.warn('[main] GL bullets init failed, using 2D bullets', e);
   }
 
-  // Optional GL enemies renderer via URL (?gle=1) or persisted preference
-  let glEnemiesEnabled = /[?&]gle=1/.test(location.search);
+  // Initialize GL enemies renderer only when explicitly enabled via URL (?glenemies=1 or ?gle=1)
+  // Default path uses 2D enemies to ensure visual parity with Codex sprites.
   try {
-    if (!glEnemiesEnabled) {
-      const saved = localStorage.getItem('cs-gl-enemies');
-      if (saved === '1') glEnemiesEnabled = true;
-    }
-  } catch { /* ignore storage */ }
-  (window as any).__glEnemiesEnabled = glEnemiesEnabled;
-  if (glEnemiesEnabled) {
-    try {
+    const enableGLE = /[?&](glenemies|gle)=1/.test(location.search);
+    if (enableGLE) {
       const glER = createGLEnemyRendererLike(canvas);
-      if (glER) {
-        (window as any).__glEnemiesRenderer = glER;
-      } else {
-        (window as any).__glEnemiesEnabled = false;
-      }
-    } catch (e) {
-      (window as any).__glEnemiesEnabled = false;
-      (window as any).__glEnemiesRenderer = null;
-      console.warn('[main] GL enemies init failed, using 2D path', e);
+      (window as any).__glEnemiesRenderer = glER || null;
+    } else {
+      (window as any).__glEnemiesRenderer = null; // force 2D enemies by default
     }
+  } catch (e) {
+    (window as any).__glEnemiesRenderer = null;
+    console.warn('[main] GL enemies init failed, using 2D enemies', e);
   }
-  // Keyboard runtime toggle: Ctrl+G -> toggle GL enemies
-  window.addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey || e.metaKey) || (e.key !== 'g' && e.key !== 'G')) return;
-    e.preventDefault();
-    const currently = !!(window as any).__glEnemiesEnabled;
-    const next = !currently;
-    (window as any).__glEnemiesEnabled = next;
-    try { localStorage.setItem('cs-gl-enemies', next ? '1' : '0'); } catch {}
-    if (next && !(window as any).__glEnemiesRenderer) {
-      try {
-        const glER = createGLEnemyRendererLike(canvas);
-        if (glER) (window as any).__glEnemiesRenderer = glER;
-        else (window as any).__glEnemiesEnabled = false;
-      } catch {
-        (window as any).__glEnemiesEnabled = false;
-      }
-    }
-    if (!next) {
-      // Drop reference to allow GC; 2D path resumes automatically
-      try { (window as any).__glEnemiesRenderer = null; } catch {}
-    }
-  });
+  // Initialize GL particles renderer (offscreen, premultiplied alpha)
+  try {
+    const mod = await import('./render/gl/GLParticlesRenderer');
+    const glp = mod.createGLParticlesRendererLike(canvas);
+    (window as any).__glParticlesRenderer = glp;
+  } catch (e) {
+    (window as any).__glParticlesRenderer = null;
+    console.warn('[main] GL particles init failed, using 2D particles', e);
+  }
+  // Optional GL zones renderer via URL (?glz=1) or persisted preference
+  try {
+    const glZR = createGLZonesRendererLike(canvas);
+    (window as any).__glZonesRenderer = glZR || null;
+  } catch (e) {
+    (window as any).__glZonesRenderer = null;
+    console.warn('[main] GL zones init failed, using 2D zones', e);
+  }
+  // Optional GL glows renderer via URL (?glow=1) or persisted preference
+  try {
+    const glGR = createGLGlowsRendererLike(canvas);
+    (window as any).__glGlowsRenderer = glGR || null;
+  } catch (e) {
+    (window as any).__glGlowsRenderer = null;
+    console.warn('[main] GL glows init failed, using 2D glows', e);
+  }
+  // Optional GL rings renderer via URL (?glr=1) or persisted preference
+  try {
+    const glRR = createGLRingsRendererLike(canvas);
+    (window as any).__glRingsRenderer = glRR || null;
+  } catch (e) {
+    (window as any).__glRingsRenderer = null;
+    console.warn('[main] GL rings init failed, using 2D rings', e);
+  }
+  // Optional GL beams renderer via URL (?glb=1) or persisted preference
+  // Initialize GL beams renderer unconditionally; fallback if creation fails
+  try {
+    const glBR = createGLBeamsRendererLike(canvas);
+    (window as any).__glBeamsRenderer = glBR || null;
+    try {
+      const glFR = createGLFogRendererLike(canvas);
+      (window as any).__glFogRenderer = glFR || null;
+    } catch { (window as any).__glFogRenderer = null; }
+  } catch (e) {
+    (window as any).__glBeamsRenderer = null;
+    console.warn('[main] GL beams init failed, using 2D beams', e);
+  }
 
   const game = new Game(canvas); // Instantiate Game first
   (window as any).__game = game; // expose for resize handling
@@ -355,7 +376,9 @@ window.onload = async () => {
   // Preload background music for legacy path (skipped if radio enabled)
   import('./game/SoundManager').then(({ SoundManager }) => {
   if ((window as any).__radioEnabled) return; // Radio will handle its own audio
-  const musicPathInit = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/music/bg-music.mp3') : (location.protocol==='file:'?'./assets/music/bg-music.mp3':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/music/bg-music.mp3':'/assets/music/bg-music.mp3'));
+  // Use an existing bundled track as the default background music
+  const fallbackTrack = '/assets/music/itzKORE - Breakthrough.mp3';
+  const musicPathInit = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(fallbackTrack) : (location.protocol==='file:'?('.' + fallbackTrack):((location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] : '') + fallbackTrack));
     SoundManager.preloadMusic(musicPathInit);
     // Also arm early start: first user gesture (click / key) in main menu triggers playback.
     // This keeps autoplay policy compliant while giving ambience before gameplay.
@@ -389,6 +412,42 @@ window.onload = async () => {
       const glE: any = (window as any).__glEnemiesRenderer;
       if (glE && typeof glE.setSize === 'function') {
         glE.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
+    try {
+      const glR: any = (window as any).__glRingsRenderer;
+      if (glR && typeof glR.setSize === 'function') {
+        glR.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
+    try {
+      const glGlow: any = (window as any).__glGlowsRenderer;
+      if (glGlow && typeof glGlow.setSize === 'function') {
+        glGlow.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
+    try {
+      const glB: any = (window as any).__glBeamsRenderer;
+      if (glB && typeof glB.setSize === 'function') {
+        glB.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
+    try {
+      const glZ: any = (window as any).__glZonesRenderer;
+      if (glZ && typeof glZ.setSize === 'function') {
+        glZ.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
+    try {
+      const glP: any = (window as any).__glParticlesRenderer;
+      if (glP && typeof glP.setSize === 'function') {
+        glP.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
+    try {
+      const glF: any = (window as any).__glFogRenderer;
+      if (glF && typeof glF.setSize === 'function') {
+        glF.setSize(canvas.width, canvas.height);
       }
     } catch { /* ignore */ }
   };
@@ -446,7 +505,8 @@ window.onload = async () => {
     if ((window as any).__radioEnabled) { musicStarted = true; return; }
     if (musicStarted && !forceReload) return;
     import('./game/SoundManager').then(({ SoundManager }) => {
-  const musicPath = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath('/assets/music/bg-music.mp3') : (location.protocol==='file:'?'./assets/music/bg-music.mp3':(location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] + '/assets/music/bg-music.mp3':'/assets/music/bg-music.mp3'));
+      const fallbackTrack = '/assets/music/itzKORE - Breakthrough.mp3';
+      const musicPath = (window as any).AssetLoader ? (window as any).AssetLoader.normalizePath(fallbackTrack) : (location.protocol==='file:'?('.' + fallbackTrack):((location.pathname.split('/').filter(Boolean)[0]? '/' + location.pathname.split('/').filter(Boolean)[0] : '') + fallbackTrack));
       SoundManager.playMusic(musicPath, forceReload);
       Logger.info('[main.ts] Background music playMusic invoked (forceReload=' + forceReload + ')');
       musicStarted = true;

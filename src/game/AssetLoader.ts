@@ -142,17 +142,26 @@ export class AssetLoader {
   public async loadManifest(url?: string) {
     const tried: string[] = [];
     const attempts: string[] = [];
+    // If a URL was provided, try it first but still enqueue fallbacks to survive mis-detected base paths.
     if (url) attempts.push(url);
-    else {
-      if (location.protocol === 'file:') attempts.push('./assets/manifest.json');
-      else {
-        // Always try absolute root assets first in dev
-        attempts.push('/assets/manifest.json');
-        // Detected basePrefix ('' or '/subfolder')
-        attempts.push(AssetLoader.basePrefix + '/assets/manifest.json');
-        // If basePrefix empty, enqueue known fallback subfolder
-        if (!AssetLoader.basePrefix) attempts.push('/cybersurvivor/assets/manifest.json');
-      }
+    // Enqueue standard fallbacks based on protocol and discovered basePrefix
+    if (location.protocol === 'file:') {
+      if (!attempts.includes('./assets/manifest.json')) attempts.push('./assets/manifest.json');
+    } else {
+      // Build a URL relative to the current document base (respects <base href>)
+      try {
+        const baseHref = (document.querySelector('base[href]') as HTMLBaseElement | null)?.href || document.baseURI;
+        const relUrl = new URL('assets/manifest.json', baseHref).pathname;
+        if (!attempts.includes(relUrl)) attempts.unshift(relUrl);
+      } catch {}
+      // Then try discovered base prefix (e.g., '/cs/assets/manifest.json')
+      const pref = AssetLoader.basePrefix || '';
+      const prefAttempt = pref + '/assets/manifest.json';
+      if (pref && !attempts.includes(prefAttempt)) attempts.push(prefAttempt);
+      // Try root (Vite dev often serves publicDir at root)
+      if (!attempts.includes('/assets/manifest.json')) attempts.push('/assets/manifest.json');
+      // Known fallback commonly used by this project
+      if (!pref && !attempts.includes('/cybersurvivor/assets/manifest.json')) attempts.push('/cybersurvivor/assets/manifest.json');
     }
     for (const attempt of attempts) {
       if (tried.includes(attempt)) continue;
@@ -277,7 +286,8 @@ export class AssetLoader {
       if (location.protocol === 'file:') base = './assets';
       else base = AssetLoader.basePrefix + '/assets';
     }
-    if (!this.manifest) await this.loadManifest(base + '/manifest.json');
+    // Allow loadManifest to run its own fallback discovery instead of forcing a single URL
+    if (!this.manifest) await this.loadManifest();
     // Collect file paths (single pass recursion). Preallocate using rough upper bound if available.
     const files: string[] = [];
     const prefix = (location.protocol === 'file:' ? './' : (AssetLoader.basePrefix || '') + '/');
@@ -285,7 +295,9 @@ export class AssetLoader {
       for (const k in obj) {
         const v = obj[k];
         if (!v) continue;
-        if (v.file) {
+        // Only eagerly preload non-optional assets.
+        // Optional ones will be fetched on-demand to avoid 404 noise when they are not shipped.
+        if (v.file && !v.optional) {
           files.push(prefix + (v.file as string).replace(/^\//, ''));
         } else if (typeof v === 'object') {
           walk(v);
@@ -353,7 +365,20 @@ export class AssetLoader {
       Logger.warn('[AssetLoader] getAsset called before manifest loaded');
       return '';
     }
-    // Recursive search through manifest object for property with matching key
+    // Prefer dotted path lookup (e.g., 'enemies.default') when provided
+    const tryDotPath = (pathKey: string): string => {
+      if (!pathKey.includes('.')) return '';
+      const parts = pathKey.split('.');
+      let cur: any = this.manifest;
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i];
+        if (!cur || typeof cur !== 'object' || !(p in cur)) return '';
+        cur = cur[p];
+      }
+      if (cur && typeof cur === 'object' && cur.file) return String(cur.file);
+      return '';
+    };
+    // Fallback: recursive search through manifest object for property with matching key
     const search = (obj: any): string => {
       if (!obj || typeof obj !== 'object') return '';
       for (const k in obj) {
@@ -367,7 +392,7 @@ export class AssetLoader {
       }
       return '';
     };
-  let path = search(this.manifest);
+  let path = tryDotPath(key) || search(this.manifest);
   if (!path) return '';
   path = AssetLoader.normalizePath(path);
   return path;

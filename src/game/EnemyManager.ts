@@ -27,7 +27,7 @@ import { WEAPON_SPECS } from './WeaponConfig';
 import { BlackSunZoneManager } from './operatives/shadow_operative/BlackSunZone';
 import { DataTornadoZoneManager } from './operatives/data_sorcerer/DataTornadoZone';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
-import { ENEMY_PRESSURE_BASE, ENEMY_PRESSURE_LINEAR, ENEMY_PRESSURE_QUADRATIC, XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS, getHealEfficiency } from './Balance';
+import { XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS, getHealEfficiency } from './Balance';
 // Elite behaviors
 import { updateEliteDasher } from './elites/EliteDasher';
 import { updateEliteGunner } from './elites/EliteGunner';
@@ -67,10 +67,7 @@ export class EnemyManager {
   private treasures: SpecialTreasure[] = []; // Destructible treasures that drop a random special item
   private treasurePool: SpecialTreasure[] = []; // Pool for treasures
   private assetLoader: AssetLoader | null = null;
-  // legacy waves removed
-  private dynamicWaveAccumulator: number = 0; // ms accumulator for dynamic spawner
-  // Wave system (replaces/on-demand dynamic spawning)
-  private enableDynamicSpawning: boolean = false; // legacy dynamic toggle (off by default now)
+  // Wave system (structured waves; legacy dynamic spawner removed)
   private waveNumber: number = 0;
   private nextWaveAtSec: number = 5; // first wave at 5s
   private waveIntervalBaseSec: number = 22; // base gap
@@ -78,13 +75,13 @@ export class EnemyManager {
   private waveIntervalFloorSec: number = 8; // minimum gap
   private lastWaveSpawnMs: number = 0;
   private pendingWaveSpawn: boolean = false;
-  private pressureBaseline: number = 100; // grows over time
+  // (removed pressureBaseline/dynamic budget)
   // Internal override used by spawnEnemyAt so we can reuse spawnEnemy logic without duplicating it.
   private forceSpawnOverride: { x:number; y:number } | null = null;
   private adaptiveGemBonus: number = 0; // multiplicative bonus for higher tier chance
   private bulletSpatialGrid: SpatialGrid<Bullet>; // Spatial grid for bullets
   private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid for enemies (optimization for zone queries)
-  private spawnBudgetCarry: number = 0; // carry fractional spawn budget between ticks so early game spawns occur
+  // (removed dynamic spawn budget carry)
   private enemySpeedScale: number = 0.55; // further reduced global speed scaler to keep mobs slower overall
   // Bio Engineer RMB: Mycelial Network zones (toxic ribbon segments)
   private mycelialZones: Array<{ x1:number; y1:number; x2:number; y2:number; width:number; created:number; lifeMs:number; active:boolean; seed:number } > = [];
@@ -145,8 +142,7 @@ export class EnemyManager {
   private dataSigils: { x:number; y:number; radius:number; pulsesLeft:number; pulseDamage:number; nextPulseAt:number; active:boolean; spin:number; created:number; follow?: boolean; cadenceMs?: number }[] = [];
   // Data Tornado: moved to dedicated manager to reduce EnemyManager size
   private dataTornadoZones: DataTornadoZoneManager;
-  // Black Sun seeds (Shadow Operative evolve): dim void orbs that slow/tick, then collapse
-  private blackSunSeeds: { x:number; y:number; created:number; active:boolean; fuseMs:number; pullRadius:number; pullStrength:number; collapseRadius:number; slowPct:number; tickIntervalMs:number; tickNext:number; ticksLeft:number; tickDmg:number; collapseDmg:number }[] = [];
+  // Black Sun moved to dedicated zone manager (legacy array removed)
   // Dedicated Black Sun zone manager (replaces legacy blackSunSeeds lifecycle)
   private blackSunZones: BlackSunZoneManager;
   // Shadow Surge window (for synergy buffs)
@@ -158,9 +154,7 @@ export class EnemyManager {
   // Elite spawn cooldowns: global next-allowed time and per-kind cooldowns to prevent immediate re-spawns
   private nextEliteSpawnAllowedAtSec: number = 0;
   private eliteKindCooldownUntil: Partial<Record<EliteKind, number>> = {};
-  // Elite rate scheduler state (spawns per desired cadence independent of budget)
-  private eliteRateAccumulator: number = 0;
-  private eliteRateLastSec: number = 0;
+  // (removed legacy elite rate accumulator; we use deterministic schedule)
   // Deterministic elite schedule (miniboss timers)
   private eliteSpawnSchedule: number[] = [];
   private eliteScheduleHorizonSec: number = 120; // schedule 2 minutes ahead
@@ -596,6 +590,10 @@ export class EnemyManager {
   }> = Object.create(null);
   private sharedEnemyImageLoaded = false; // indicates enemy_default.png processed
   private usePreRenderedSprites: boolean = true;
+  // Incremented whenever the composed enemy sprite set changes (default or overrides).
+  private enemySpriteVersion: number = 0;
+  /** Public read-only accessor: increments whenever enemy sprite atlas should be rebuilt. */
+  public getEnemySpriteVersion(): number { return this.enemySpriteVersion; }
   // Weaver Lattice tick scheduler
   private latticeTickIntervalMs: number = 500; // 0.5s
   private latticeNextTickMs: number = 0;
@@ -642,8 +640,6 @@ export class EnemyManager {
       const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
       this.spawnFreezeUntilMs = now + 15000; // 15 seconds
       this.clearAllEnemies();
-      // Reset dynamic accumulator so we don't burst-spawn when freeze ends
-      this.dynamicWaveAccumulator = 0;
     });
     // Listen for spawnChest event from BossManager
     window.addEventListener('spawnChest', (e: Event) => {
@@ -1190,7 +1186,7 @@ export class EnemyManager {
     this.dataTornadoZones.update(deltaMs);
   }
 
-  // Black Sun lifecycle temporarily stubbed for parser isolation
+  // Black Sun lifecycle handled by dedicated manager
   public spawnBlackSunSeed(x: number, y: number, params: { fuseMs:number; pullRadius:number; pullStrength:number; collapseRadius:number; slowPct:number; tickIntervalMs:number; ticks:number; tickDmg:number; collapseDmg:number }): void {
     // Route to dedicated zone manager; legacy array no longer used
     this.blackSunZones.spawn(x, y, {
@@ -1205,8 +1201,7 @@ export class EnemyManager {
       collapseDmg: params.collapseDmg,
     });
   }
-  // Legacy updateBlackSunSeeds is superseded by BlackSunZoneManager; retained as no-op for compatibility
-  private updateBlackSunSeeds(_deltaMs: number): void { return; }
+  // (legacy updateBlackSunSeeds removed)
 
   /** Spawn a Rogue Hacker zone at x,y with radius; lasts lifeMs. Optional convertMs applies mind control instead of default effects. */
   private spawnHackerZone(x:number, y:number, radius:number, lifeMs:number, convertMs?: number){
@@ -1532,6 +1527,8 @@ export class EnemyManager {
           redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any; // overwrite circle fallback
       }
       this.sharedEnemyImageLoaded = true;
+      // Increment version after base/default is established for all sizes
+      this.enemySpriteVersion++;
   // Try to override the 'small' type with enemy_spider.png if present
       try {
         const spiderPath = AssetLoader.normalizePath('/assets/enemies/enemy_spider.png');
@@ -1571,6 +1568,8 @@ export class EnemyManager {
           const greenGhostFlipped = makeGhost(normalFlipped, 'green');
           const blueGhostFlipped = makeGhost(normalFlipped, 'blue');
           this.enemySprites['small'] = { normal, flash, normalFlipped, flashFlipped, redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any;
+          // Signal that sprite set changed (small override applied)
+          this.enemySpriteVersion++;
         };
         simg.onerror = () => { /* keep default 'small' */ };
         simg.src = spiderPath;
@@ -1630,6 +1629,8 @@ export class EnemyManager {
           const greenGhostFlipped = makeGhost(normalFlipped, 'green');
           const blueGhostFlipped = makeGhost(normalFlipped, 'blue');
           this.enemySprites['large'] = { normal, flash, normalFlipped, flashFlipped, redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any;
+          // Signal that sprite set changed (large override applied)
+          this.enemySpriteVersion++;
         };
         eimg.onerror = () => { /* keep default 'large' */ };
         eimg.src = eyePath;
@@ -3816,8 +3817,8 @@ export class EnemyManager {
   }
   // Draw enemies (cached sprite images if enabled)
     // When GL enemies path is active, skip the base body draw and only render overlays and HP bars.
-    const glEnemiesActive = !!((window as any).__glEnemiesEnabled);
-    const skipBodyThisFrame = glEnemiesActive && ((this as any).__skipBody2DOnce === true);
+  const glEnemiesActive = !!((window as any).__glEnemiesRenderer);
+  const skipBodyThisFrame = glEnemiesActive && ((this as any).__skipBody2DOnce === true);
     // Reset the one-shot signal
     if (skipBodyThisFrame) { try { (this as any).__skipBody2DOnce = false; } catch {} }
     // Compute heavy FX budget per frame: start at 32 and scale down under load
@@ -3862,27 +3863,32 @@ export class EnemyManager {
     if (eliteKind) {
       // Kick off async build once; render will fallback until ready
       this.ensureEliteSprite(eliteKind);
-      // Draw colored foot ring under elite (positioned near feet)
-      try {
-        const col = eliteKind === 'DASHER' ? '#FF6688'
-          : eliteKind === 'GUNNER' ? '#FFCC66'
-          : eliteKind === 'SUPPRESSOR' ? '#66F9FF'
-          : eliteKind === 'BOMBER' ? '#FF7744'
-          : eliteKind === 'BLINKER' ? '#CC99FF'
-          : eliteKind === 'BLOCKER' ? '#88EEAA'
-          : /* SIPHON */ '#66FFA0';
-        // Use elite visual base radius so placement matches doubled sprites
-        const visR = this.getEliteBaseRadius(eliteKind) || (enemy.radius || 34);
-        // Radius slightly smaller than body to sit under the feet; y-offset pushes it toward the bottom of sprite
-        const rr = Math.max(16, visR * 0.75);
-        const yOff = visR * 0.62; // move ring down toward feet
-  // Always draw the low-cost ring: one stroke with small shadow (cheap)
-  ctx.save();
-  ctx.globalCompositeOperation = 'screen';
-  ctx.globalAlpha = 0.22; ctx.strokeStyle = col; ctx.lineWidth = 3.5; ctx.shadowColor = col; ctx.shadowBlur = 6;
-  ctx.beginPath(); ctx.arc(enemy.x + shakeX, enemy.y + shakeY + yOff, rr, 0, Math.PI*2); ctx.stroke();
-  ctx.restore();
-      } catch { /* ignore ring */ }
+      // Draw colored foot ring under elite (positioned near feet).
+      // IMPORTANT: When GL enemies renderer is active, the body is already drawn before this 2D pass.
+      // In that case, drawing the foot ring here would place it ABOVE the body (visually wrong).
+      // To preserve correct layering, skip the ring when skipBodyThisFrame is true.
+      if (!skipBodyThisFrame) {
+        try {
+          const col = eliteKind === 'DASHER' ? '#FF6688'
+            : eliteKind === 'GUNNER' ? '#FFCC66'
+            : eliteKind === 'SUPPRESSOR' ? '#66F9FF'
+            : eliteKind === 'BOMBER' ? '#FF7744'
+            : eliteKind === 'BLINKER' ? '#CC99FF'
+            : eliteKind === 'BLOCKER' ? '#88EEAA'
+            : /* SIPHON */ '#66FFA0';
+          // Use elite visual base radius so placement matches doubled sprites
+          const visR = this.getEliteBaseRadius(eliteKind) || (enemy.radius || 34);
+          // Radius slightly smaller than body to sit under the feet; y-offset pushes it toward the bottom of sprite
+          const rr = Math.max(16, visR * 0.75);
+          const yOff = visR * 0.62; // move ring down toward feet
+          // Always draw the low-cost ring: one stroke with small shadow (cheap)
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.globalAlpha = 0.22; ctx.strokeStyle = col; ctx.lineWidth = 3.5; ctx.shadowColor = col; ctx.shadowBlur = 6;
+          ctx.beginPath(); ctx.arc(enemy.x + shakeX, enemy.y + shakeY + yOff, rr, 0, Math.PI*2); ctx.stroke();
+          ctx.restore();
+        } catch { /* ignore ring */ }
+      }
       const eb = this.eliteSprites[eliteKind];
       if (eb) bundle = eb as any;
     }
@@ -4421,8 +4427,7 @@ export class EnemyManager {
   const targetInterval = severeLoad ? 600 : highLoad ? 450 : 300;
   // Ease toward target to avoid abrupt shifts
   this.spawnIntervalDynamic += (targetInterval - this.spawnIntervalDynamic) * 0.15;
-  // Wave-based spawning
-    // Dynamic spawning (every 300ms) – disabled in Sandbox mode
+  // Wave/elite spawning
   const gm = (window as any).__gameInstance?.gameMode;
   const isSandbox = gm === 'SANDBOX';
   const isLastStand = gm === 'LAST_STAND';
@@ -4431,17 +4436,16 @@ export class EnemyManager {
   if (!isLastStand) {
     this.updateWaveSystem(gameTime, nowFrame, isLastStand);
   }
-  if (!isSandbox && this.enableDynamicSpawning) {
-      const nowMs = nowFrame;
-      if (nowMs < this.spawnFreezeUntilMs) {
-        this.dynamicWaveAccumulator = 0;
-      } else {
-        this.dynamicWaveAccumulator += deltaTime;
-        if (this.dynamicWaveAccumulator >= this.spawnIntervalDynamic) {
-          this.dynamicWaveAccumulator -= this.spawnIntervalDynamic;
-          this.runDynamicSpawner(gameTime);
-        }
+  // Deterministic elite schedule consumption (outside Last Stand which has its own orchestrator)
+  if (!isLastStand && this.elitesUnlocked && this.useEliteSchedule) {
+    this.ensureEliteSchedule(gameTime);
+    const due = this.eliteSpawnSchedule.length > 0 ? this.eliteSpawnSchedule[0] : Infinity;
+    if (gameTime >= due && gameTime >= (this.nextEliteSpawnAllowedAtSec || 0)) {
+      if (this.trySpawnEliteNearPerimeter(gameTime)) {
+        this.eliteSpawnSchedule.shift();
+        this.nextEliteSpawnAllowedAtSec = gameTime + 1.6;
       }
+    }
   }
 
   // Timed special spawns (items/treasures) in real games
@@ -5139,8 +5143,7 @@ export class EnemyManager {
             if (!this.nextEliteSpawnAllowedAtSec || this.nextEliteSpawnAllowedAtSec < tSec + hold) {
               this.nextEliteSpawnAllowedAtSec = tSec + hold;
             }
-            // Drain accumulated rate so we don’t immediately spend multiple queued elites
-            this.eliteRateAccumulator = Math.max(0, this.eliteRateAccumulator - 1);
+            // Note: legacy eliteRateAccumulator removed with dynamic spawner; deterministic schedule handles pacing
             // Also set a per-kind cooldown bump to avoid same-type popping right back
             const kind = eliteDead.kind as EliteKind;
             const baseCd = 6; // seconds after kill
@@ -6430,165 +6433,7 @@ export class EnemyManager {
     }
   }
 
-  // Dynamic spawner: allocate enemy budget based on elapsed time and performance constraints
-  private runDynamicSpawner(gameTime: number) {
-  // In Last Stand, dynamic spawner is disabled (waves are driven by LastStand orchestrator)
-  try { if ((window as any).__gameInstance?.gameMode === 'LAST_STAND') return; } catch {}
-    const minutes = gameTime / 60;
-    // Auto-unlock elites 30s into the run (no boss gate required)
-    if (!this.elitesUnlocked && gameTime >= 30) {
-      this.elitesUnlocked = true;
-      if (!this.elitesUnlockedAtSec || this.elitesUnlockedAtSec === 0) this.elitesUnlockedAtSec = 30;
-    }
-    // Increase baseline over time (soft exponential flavor)
-  this.pressureBaseline = ENEMY_PRESSURE_BASE + minutes * ENEMY_PRESSURE_LINEAR + minutes * minutes * ENEMY_PRESSURE_QUADRATIC;
-    // Performance guard: if too many enemies active, reduce baseline
-  const activeEnemies = this.activeEnemies.length;
-    if (activeEnemies > 500) this.pressureBaseline *= 0.5;
-    else if (activeEnemies > 350) this.pressureBaseline *= 0.75;
-    // Budget per tick (every ~300ms). Previously fractional budgets (<1) were lost causing ~70s no-spawn gap.
-    const perTickBudget = this.pressureBaseline / 200; // heuristic scaling
-    this.spawnBudgetCarry += perTickBudget; // accumulate fractional part
-
-    // Guarantee some baseline pressure: if nothing active, seed a bit of budget
-    if (activeEnemies === 0 && this.spawnBudgetCarry < 1) this.spawnBudgetCarry = 1; // ensure at least one spawn soon after reset
-
-    // Deterministic elite schedule: miniboss spawns at set times; no immediate replacement on kill
-    if (this.elitesUnlocked && this.useEliteSchedule) {
-      this.ensureEliteSchedule(gameTime);
-      // Consume due spawn times one-by-one (at most one per tick)
-      const due = this.eliteSpawnSchedule.length > 0 ? this.eliteSpawnSchedule[0] : Infinity;
-      if (gameTime >= due && gameTime >= (this.nextEliteSpawnAllowedAtSec || 0)) {
-        if (this.trySpawnEliteNearPerimeter(gameTime)) {
-          this.eliteSpawnSchedule.shift();
-          // Smooth spacing between scheduled elites
-          this.nextEliteSpawnAllowedAtSec = gameTime + 1.6;
-          // Optionally deduct nominal budget to integrate with pressure system
-          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - 10);
-        }
-      }
-    }
-
-    // Legacy rate-based elite spawner (kept for fallback, disabled when schedule is on)
-    if (this.elitesUnlocked && !this.useEliteSchedule) {
-      const sinceUnlockMin = Math.max(0, (gameTime - (this.elitesUnlockedAtSec || 0)) / 60);
-      // Compute desired rate (elites per second)
-      const rateAtUnlock = 1 / 30;     // 0.0333 elites/sec
-      const rateAt20min  = 5 / 30;     // 0.1667 elites/sec
-      const t = Math.max(0, Math.min(1, sinceUnlockMin / 20));
-      let desiredRate = rateAtUnlock + (rateAt20min - rateAtUnlock) * t; // linear to 20m
-      if (sinceUnlockMin > 20) {
-        // Continue scaling: +0.003 elites/sec per minute beyond 20m (~+0.09 per 30s per minute)
-        desiredRate += (sinceUnlockMin - 20) * 0.003;
-      }
-      // Performance-aware reduction
-      try {
-        const avg = (window as any).__avgFrameMs || 16;
-        if (avg > 40) desiredRate *= 0.55; else if (avg > 28) desiredRate *= 0.8;
-      } catch {}
-      // Update accumulator from last time
-      if (!this.eliteRateLastSec) this.eliteRateLastSec = gameTime;
-      const dt = Math.max(0, gameTime - this.eliteRateLastSec);
-      this.eliteRateLastSec = gameTime;
-      this.eliteRateAccumulator += desiredRate * dt;
-      // Spawn as many whole elites as accumulated allows (respect cooldowns/caps); avoid infinite loops
-      let guard = 3; // limit burst per call
-      while (this.eliteRateAccumulator >= 1 && guard-- > 0) {
-        // Respect global cooldown to prevent instant back-to-back spawns
-        if (gameTime < (this.nextEliteSpawnAllowedAtSec || 0)) break;
-        if (this.trySpawnEliteNearPerimeter(gameTime)) {
-          this.eliteRateAccumulator -= 1;
-          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - 10); // pay nominal cost
-          // Global cooldown ~1.6s for smoother distribution at high rates
-          this.nextEliteSpawnAllowedAtSec = gameTime + 1.6;
-        } else {
-          // If caps prevent spawn, stop trying this tick
-          break;
-        }
-      }
-    }
-
-  // Force a first elite shortly after unlock if none spawned yet (only for legacy mode)
-  if (this.elitesUnlocked && !this.useEliteSchedule) {
-      const sinceUnlockSec = Math.max(0, gameTime - (this.elitesUnlockedAtSec || 0));
-      const totalElitesNow = this.activeEnemies.reduce((n,e)=> n + ((((e as any)?._elite)?.kind)?1:0), 0);
-      if (totalElitesNow === 0 && sinceUnlockSec >= 15) {
-        // Respect global cooldown/holds (e.g., after recent elite death)
-        if (gameTime >= (this.nextEliteSpawnAllowedAtSec || 0) && this.trySpawnEliteNearPerimeter(gameTime)) {
-          // Pay cost from budget; clamp at 0 to avoid runaway debt
-          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - 10);
-          // Apply a short global cooldown to avoid double spawns in the same frame
-          this.nextEliteSpawnAllowedAtSec = gameTime + 1.6;
-        }
-      }
-    }
-
-    // If dynamic spawns are disabled (e.g., Last Stand), skip autonomous enemy spawns
-    if ((this as any).__disableDynamicSpawns) {
-      this.spawnBudgetCarry = 0; // drain budget to avoid buildup
-    } else {
-    // Spend accumulated budget spawning enemies by cost weight
-    let safety = 20; // safety cap per tick to avoid infinite loops
-    while (this.spawnBudgetCarry >= 1 && safety-- > 0) {
-      const roll = Math.random();
-      let type: 'small' | 'medium' | 'large' = 'small';
-      if (minutes >= 3) {
-        // After 3 minutes, bias heavily toward medium/large and reduce smalls
-        if (roll > 0.65) type = 'large';
-        else if (roll > 0.30) type = 'medium';
-        else type = 'small';
-      } else {
-        if (roll > 0.85 + minutes * 0.005) type = 'large';
-        else if (roll > 0.55 + minutes * 0.01) type = 'medium';
-      }
-
-  // Allocate a portion of pressure to elites; start gently at 30s and ramp smoothly; throttle under load.
-  let eliteCost = 10;
-  let eliteShare = 0;
-  if (this.elitesUnlocked) {
-    const sinceUnlockMin = Math.max(0, (gameTime - (this.elitesUnlockedAtSec || 0)) / 60);
-    // Smoother early ramp: 5% base +2%/min up to 50%; earlier than 5m keep it very light
-    eliteShare = Math.min(0.50, 0.05 + sinceUnlockMin * 0.02);
-    if (sinceUnlockMin < 3) eliteCost = 13; else if (sinceUnlockMin < 7) eliteCost = 12; else if (sinceUnlockMin < 12) eliteCost = 11;
-    // Performance-aware throttling
-    try {
-      const avg = (window as any).__avgFrameMs || 16;
-      if (avg > 40) { eliteShare *= 0.30; eliteCost += 2; }
-      else if (avg > 28) { eliteShare *= 0.60; eliteCost += 1; }
-    } catch { /* ignore */ }
-    // Global early concurrency cap to avoid spikes
-    const totalElites = this.activeEnemies.reduce((n,e)=> n + ((((e as any)?._elite)?.kind)?1:0), 0);
-    const earlyCap = Math.max(1, Math.floor(2 + sinceUnlockMin * 0.4)); // 2 @ unlock, ~6 @ 10m, etc.
-    if (totalElites >= earlyCap) eliteShare = 0; // defer elites until some die
-  }
-
-  
-
-  
-  // Disable random-share elite allocation when using schedule or elites unlocked
-  if (eliteShare > 0 && !this.elitesUnlocked && !this.useEliteSchedule && Math.random() < eliteShare) {
-        // Respect global/per-kind cooldowns to avoid rapid re-spawns
-        const nowSec = gameTime;
-        if (nowSec >= (this.nextEliteSpawnAllowedAtSec || 0)) {
-          if (this.trySpawnEliteNearPerimeter(gameTime)) {
-            // Apply a short global cooldown between elite spawns (1.8s)
-            this.nextEliteSpawnAllowedAtSec = nowSec + 1.8;
-          // Allow borrowing against budget; clamp to 0
-          this.spawnBudgetCarry = Math.max(0, this.spawnBudgetCarry - eliteCost);
-          continue;
-          }
-        }
-        // fall-through to normal spawn if elite limits reached
-      }
-
-  // Increase cost for large enemies to throttle spawn count; medium are mid-cost
-      const cost = type === 'small' ? 1 : type === 'medium' ? 4 : 8;
-      if (cost > this.spawnBudgetCarry) break; // wait for more budget next tick
-      this.spawnBudgetCarry -= cost;
-      this.spawnEnemy(type, gameTime, this.pickPattern(gameTime));
-    }
-    }
-  }
+  // (legacy dynamic spawner removed)
 
   private pickPattern(gameTime: number): SpawnPattern {
     const cycle = Math.floor(gameTime / 15) % 4;

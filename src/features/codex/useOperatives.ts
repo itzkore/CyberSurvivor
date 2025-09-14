@@ -24,6 +24,8 @@ function deriveRarity(powerScore?: number): Operative['rarity']{
 
 // Build Operatives list from live character data
 const LIVE: Operative[] = CHARACTERS.map(c => {
+  const AL: any = (typeof window !== 'undefined' ? (window as any).AssetLoader : null);
+  const portrait = AL ? AL.normalizePath(c.icon) : c.icon;
   const spec = WEAPON_SPECS[c.defaultWeapon];
   const wStats = spec?.getLevelStats?.(1) as any | undefined;
   const cdFrames = (wStats?.cooldown ?? spec?.cooldown ?? 60);
@@ -33,7 +35,7 @@ const LIVE: Operative[] = CHARACTERS.map(c => {
     name: c.name,
     role: ROLE_MAP[c.playstyle] || 'ASSAULT',
     rarity: deriveRarity(c.stats.powerScore),
-    portrait: c.icon,
+  portrait,
     hp: Math.round(c.stats.hp),
     dmg: Math.round(c.stats.damage),
     spd: Number((c.stats.speed).toFixed(2)),

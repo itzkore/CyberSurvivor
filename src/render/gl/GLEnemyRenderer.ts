@@ -8,6 +8,8 @@
  * - Minimal allocations per frame: reuse a preallocated Float32Array and GPU buffer; grow by 1.5x when needed.
  * - Premultiplied alpha friendly blending to match Canvas2D composition.
  */
+import { Logger } from '../../core/Logger';
+
 export class GLEnemyRenderer {
   public readonly canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext;
@@ -19,12 +21,20 @@ export class GLEnemyRenderer {
   private uViewSize: WebGLUniformLocation | null = null;
   private uSampler: WebGLUniformLocation | null = null;
   private uTint: WebGLUniformLocation | null = null;
-  private texture: WebGLTexture | null = null;
-  private textureReady = false;
+  private texture: WebGLTexture | null = null; // fallback or atlas texture
+  private textureReady = false; // true when a real texture (fallback or atlas) is uploaded
   private lastTextureAttemptMs = 0;
+  // Atlas state
+  private atlasReady = false;
+  private atlasMap: Record<string, { u0: number; v0: number; u1: number; v1: number; sizePx: number }> = {};
+  private atlasDirty = true;
+  // Prevent log spam for repeatedly missing keys
+  private warnedMissing: Record<string, number> = {};
+  // Track EnemyManager's sprite version to know when to rebuild atlas
+  private lastSpriteVersion = -1;
 
-  // Instance layout: [centerX_ndc, centerY_ndc, size_px, angle_rad]
-  private instanceStrideFloats = 4;
+  // Instance layout: [centerX_ndc, centerY_ndc, size_px, angle_rad, u0, v0, u1, v1, flipX, tintR, tintG, tintB, tintA]
+  private instanceStrideFloats = 13;
   private instanceData: Float32Array | null = null;
 
   constructor(width: number, height: number) {
@@ -41,32 +51,41 @@ export class GLEnemyRenderer {
        layout(location=2) in vec2 aCenterNDC; // per-instance center in NDC\n
        layout(location=3) in float aSizePx;   // per-instance size in pixels (width=height)\n
        layout(location=4) in float aAngle;    // per-instance rotation (radians)\n
+       layout(location=5) in vec4 aUVRect;    // per-instance uv rect (u0,v0,u1,v1) in atlas space\n
+  layout(location=6) in float aFlipX;    // per-instance horizontal flip: +1 or -1\n
+  layout(location=7) in vec4 aTint;      // per-instance tint (premultiplied-friendly)\n
        uniform vec2 uViewSize; // framebuffer (pixelW, pixelH)\n
        out vec2 vUV;\n
+  out vec4 vTint;\n
        void main(){\n
-         // Rotate the unit quad around origin\n
+         // Rotate the unit quad around origin (apply optional horizontal flip)\n
          float s = sin(aAngle);\n
          float c = cos(aAngle);\n
-         vec2 p = vec2( c * aPos.x - s * aPos.y, s * aPos.x + c * aPos.y );\n
+         vec2 base = vec2(aPos.x * aFlipX, aPos.y);\n
+         vec2 p = vec2( c * base.x - s * base.y, s * base.x + c * base.y );\n
          // Scale to pixels\n
          vec2 px = p * aSizePx;\n
          // Convert pixel offset to NDC (y inverted)\n
          vec2 ndcOfs = vec2(px.x * 2.0 / max(uViewSize.x, 1.0), -px.y * 2.0 / max(uViewSize.y, 1.0));\n
          vec2 ndc = aCenterNDC + ndcOfs;\n
          gl_Position = vec4(ndc, 0.0, 1.0);\n
-         vUV = aUV;\n
+         vec2 uvMin = aUVRect.xy;\n
+         vec2 uvMax = aUVRect.zw;\n
+         vUV = uvMin + aUV * (uvMax - uvMin);\n
+         vTint = aTint;\n
        }`,
       `#version 300 es\n
        precision mediump float;\n
        uniform sampler2D uTex;\n
-       uniform vec4 uTint; // premultiplied-friendly tint (rgb optional, a multiplies alpha)\n
+       uniform vec4 uTint; // global tint multiplier (rgb optional, a multiplies alpha)\n
        in vec2 vUV;\n
+       in vec4 vTint;\n
        out vec4 outColor;\n
        void main(){\n
          vec4 texel = texture(uTex, vUV);\n
-         // Apply tint without breaking premult: scale rgb and alpha appropriately\n
-         vec3 rgb = texel.rgb * uTint.rgb;\n
-         float a = texel.a * uTint.a;\n
+         // Combine per-instance tint and global tint.\n
+         vec3 rgb = texel.rgb * uTint.rgb * vTint.rgb;\n
+         float a = texel.a * uTint.a * vTint.a;\n
          if (a <= 0.003) discard;\n
          outColor = vec4(rgb, a);\n
        }`
@@ -134,7 +153,7 @@ export class GLEnemyRenderer {
     // aUV
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 4 * 4, 2 * 4);
-    // Per-instance buffer: centerNDC (vec2), sizePx (float), angle (float)
+    // Per-instance buffer: centerNDC (vec2), sizePx (float), angle (float), uvRect (vec4), flipX (float)
     this.instanceBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
     // aCenterNDC @ loc 2
@@ -149,6 +168,18 @@ export class GLEnemyRenderer {
     gl.enableVertexAttribArray(4);
     gl.vertexAttribPointer(4, 1, gl.FLOAT, false, this.instanceStrideFloats * 4, 3 * 4);
     gl.vertexAttribDivisor(4, 1);
+    // aUVRect @ loc 5
+    gl.enableVertexAttribArray(5);
+    gl.vertexAttribPointer(5, 4, gl.FLOAT, false, this.instanceStrideFloats * 4, 4 * 4);
+    gl.vertexAttribDivisor(5, 1);
+  // aFlipX @ loc 6
+    gl.enableVertexAttribArray(6);
+    gl.vertexAttribPointer(6, 1, gl.FLOAT, false, this.instanceStrideFloats * 4, 8 * 4);
+    gl.vertexAttribDivisor(6, 1);
+  // aTint @ loc 7
+  gl.enableVertexAttribArray(7);
+  gl.vertexAttribPointer(7, 4, gl.FLOAT, false, this.instanceStrideFloats * 4, 9 * 4);
+  gl.vertexAttribDivisor(7, 1);
     gl.bindVertexArray(null);
   }
 
@@ -189,18 +220,19 @@ export class GLEnemyRenderer {
       // Use the game's shared loader to reuse the preloaded cache
       const game: any = (window as any).__gameInstance;
       const loader = game?.assetLoader || new AL();
-      // Resolve from manifest when possible, fallback to known path
-      let path = '';
-      try { path = loader.getAsset?.('enemies.default') || ''; } catch {}
+  // Resolve from manifest with dotted key when possible, fallback to known path
+  let path = '';
+  try { path = loader.getAsset?.('enemies.default') || ''; } catch {}
       if (!path) path = AL.normalizePath('/assets/enemies/enemy_default.png');
       const img: HTMLImageElement | undefined = loader.getImage?.(path);
       if (!img || !img.width || !img.height) return; // try again later
       const gl = this.gl;
       const tex = this.texture || gl.createTexture();
       if (!tex) return;
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // Source is HTMLImageElement (non-premultiplied). Enable premultiply so blending matches Canvas2D (PM alpha).
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -210,6 +242,99 @@ export class GLEnemyRenderer {
       this.textureReady = true;
     } catch {
       // ignore; will retry later
+    }
+  }
+
+  /** Build or rebuild the atlas texture from EnemyManager's pre-rendered canvases. */
+  private tryBuildAtlasFromManager(enemyManager: any): void {
+    try {
+      if (!enemyManager) return;
+      const baseMap: Array<{ key: string; img: HTMLCanvasElement | HTMLImageElement; size: number }> = [];
+      // Base enemy types
+      const es: any = enemyManager.enemySprites || {};
+      for (const key in es) {
+        const bundle = es[key];
+        const img = bundle?.normal as HTMLCanvasElement | HTMLImageElement | undefined;
+        if (img && (img as any).width && (img as any).height) {
+          baseMap.push({ key: String(key), img, size: (img as any).width });
+        }
+      }
+      // Elite kinds
+      const elites: any = enemyManager.eliteSprites || {};
+      for (const key in elites) {
+        const bundle = elites[key];
+        const img = bundle?.normal as HTMLCanvasElement | HTMLImageElement | undefined;
+        if (img && (img as any).width && (img as any).height) {
+          baseMap.push({ key: `ELITE:${String(key)}`, img, size: (img as any).width });
+        }
+      }
+      if (baseMap.length === 0) {
+        if (!this.atlasReady) {
+          const last = (this as any).__lastEmptyWarnMs || 0;
+          const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+          if (now - last > 5000) {
+            Logger.info('GL enemies: atlas build skipped, no sprites available yet (will retry)');
+            (this as any).__lastEmptyWarnMs = now;
+          }
+        }
+        this.atlasReady = false; return;
+      }
+      // Simple shelf packer with padding to prevent texture bleeding
+      baseMap.sort((a, b) => b.size - a.size);
+      const totalArea = baseMap.reduce((s, e) => s + e.size * e.size, 0);
+      const estSide = Math.max(64, Math.ceil(Math.sqrt(totalArea)));
+      const pow2 = (n: number) => { let p = 1; while (p < n) p <<= 1; return p; };
+      const atlasW = pow2(estSide);
+      const pad = 2; // pixels of gutter around each sprite
+      let x = 0, y = 0, rowH = 0;
+      // First pass: place and compute needed height
+      const placements: Array<{ key: string; x: number; y: number; size: number; img: any }> = [];
+      for (let i = 0; i < baseMap.length; i++) {
+        const e = baseMap[i];
+        const tile = e.size + pad * 2;
+        if (tile > atlasW) continue; // too big; skip
+        if (x + tile > atlasW) { x = 0; y += rowH; rowH = 0; }
+        placements.push({ key: e.key, x, y, size: e.size, img: e.img });
+        x += tile; rowH = Math.max(rowH, tile);
+      }
+      const atlasH = pow2(y + rowH);
+      // Draw
+      const cv = document.createElement('canvas');
+      cv.width = atlasW; cv.height = atlasH;
+      const c2d = cv.getContext('2d');
+      if (!c2d) { this.atlasReady = false; return; }
+      c2d.clearRect(0, 0, atlasW, atlasH);
+      const map: Record<string, { u0: number; v0: number; u1: number; v1: number; sizePx: number }> = {};
+      for (let i = 0; i < placements.length; i++) {
+        const p = placements[i];
+        // Draw with padding around each sprite to create a gutter region
+        c2d.drawImage(p.img, p.x + pad, p.y + pad, p.size, p.size);
+        const u0 = (p.x + pad) / atlasW, v0 = (p.y + pad) / atlasH;
+        const u1 = (p.x + pad + p.size) / atlasW, v1 = (p.y + pad + p.size) / atlasH;
+        map[p.key] = { u0, v0, u1, v1, sizePx: p.size };
+      }
+      // Upload
+      const gl = this.gl;
+      const tex = this.texture || gl.createTexture();
+      if (!tex) { this.atlasReady = false; return; }
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  // Source is a Canvas (sprite atlas) which is already premultiplied by the 2D renderer.
+  // Do NOT premultiply again to avoid dark fringes. Keep Y-flip for texture space consistency.
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+      this.texture = tex;
+      this.atlasMap = map;
+      this.atlasReady = true;
+      this.textureReady = true;
+      this.atlasDirty = false;
+      (window as any).__glEnemiesAtlasInfo = { width: atlasW, height: atlasH, entries: Object.keys(map).length, builtAt: Date.now() };
+    } catch {
+      this.atlasReady = false;
     }
   }
 
@@ -237,6 +362,8 @@ export class GLEnemyRenderer {
    */
   public render(
     enemies: Array<any>,
+    enemyManager: any,
+    playerX: number,
     camX: number,
     camY: number,
     designW: number,
@@ -248,34 +375,107 @@ export class GLEnemyRenderer {
     this.setSize(pixelW, pixelH);
     const gl = this.gl;
     this.ensureCapacity(enemies.length);
-    // Try to swap in the enemy texture once assets are ready
-    this.ensureEnemyTexture();
+    // Observe EnemyManager sprite version; if changed, mark atlas dirty
+    try {
+      const v = typeof enemyManager?.getEnemySpriteVersion === 'function' ? enemyManager.getEnemySpriteVersion() : this.lastSpriteVersion;
+      if (v !== this.lastSpriteVersion) { this.atlasDirty = true; this.lastSpriteVersion = v; }
+    } catch { /* ignore */ }
+    // Build atlas first if possible; fallback to shared single texture
+    if (this.atlasDirty || !this.atlasReady) this.tryBuildAtlasFromManager(enemyManager);
+    if (!this.atlasReady) this.ensureEnemyTexture();
     const inst = this.instanceData as Float32Array;
     const scaleX = pixelW / Math.max(1, designW);
     const scaleY = pixelH / Math.max(1, designH);
     let count = 0;
     const pad = 64;
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     for (let i = 0; i < enemies.length; i++) {
       const e: any = enemies[i];
       if (!e || !e.active || e.hp <= 0) continue;
-      const sx = e.x - camX; const sy = e.y - camY;
+      // Elite detection and key
+      const eliteKind: string | undefined = (e._elite && e._elite.kind) ? String(e._elite.kind) : undefined;
+      const key = eliteKind ? `ELITE:${eliteKind}` : String(e.type || '');
+      const rect = this.atlasMap[key];
+      if (!rect) {
+        // If elite missing, ask manager to build it and mark atlas dirty
+        try { if (eliteKind && enemyManager?.ensureEliteSprite) enemyManager.ensureEliteSprite(eliteKind); } catch {}
+        const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        const last = this.warnedMissing[key] || 0;
+        if (nowMs - last > 5000) {
+          Logger.warn(`GL enemies: missing atlas entry for key '${key}' (elite=${!!eliteKind}); scheduling rebuild`);
+          this.warnedMissing[key] = nowMs;
+        }
+        this.atlasDirty = true;
+      }
+      const sx = e.x - camX; let sy = e.y - camY;
       if (sx < -pad || sy < -pad || sx > designW + pad || sy > designH + pad) continue;
-      const xNdc = sx / designW * 2 - 1;
+      // Walking bob and shake offset (design-space)
+      let shakeX = 0, shakeY = 0;
+      if (e._shakeUntil && now < e._shakeUntil) {
+        const amp = e._shakeAmp || 0.8;
+        const phase = e._shakePhase || 0;
+        const t = now * 0.03 + phase;
+        shakeX = Math.sin(t) * amp;
+        shakeY = Math.cos(t * 1.3) * (amp * 0.6);
+      }
+      const eAny: any = e;
+      const faceLeft = (eAny._facingX != null) ? (eAny._facingX < 0) : (playerX < e.x);
+      const walkFlip = !!eAny._walkFlip;
+      const isElite = !!eliteKind;
+      const baseR = isElite
+        ? Math.max(8, ((rect?.sizePx ?? ((e.radius || 20) * 2)) as number) / 2)
+        : Math.max(2, e.radius || 20);
+      const stepAmp = isElite ? Math.min(0.8, baseR * 0.03) : Math.min(1.5, baseR * 0.06);
+      const stepOffsetX = (walkFlip ? -1 : 1) * stepAmp;
+      const stepOffsetY = (walkFlip ? -0.3 : 0.3);
+      const cx = sx + shakeX + stepOffsetX;
+      sy = sy + shakeY + stepOffsetY;
+      const xNdc = cx / designW * 2 - 1;
       const yNdc = (sy / designH * 2 - 1) * -1.0;
-      // Average scale for pixel radius
-      const rPx = Math.max(2, (e.radius || 20) * (0.5 * (scaleX + scaleY)));
-      const sizePx = rPx * 2;
+      // Average pixel scale
+      const avgScale = (0.5 * (scaleX + scaleY));
+      // Visual size from atlas entry if available else from radius*2
+      const baseSizeDesign = rect?.sizePx ?? ((e.radius || 20) * 2);
+      // Mind-controlled enlargement
+      const mcScale = (eAny._mindControlledUntil && now < eAny._mindControlledUntil) ? 1.5 : 1.0;
+      const sizePx = Math.max(2, baseSizeDesign * avgScale * mcScale);
+      const flipSign = ((faceLeft ? -1 : 1) * (walkFlip ? -1 : 1)) < 0 ? -1 : 1;
       const idx = count * this.instanceStrideFloats;
       inst[idx + 0] = xNdc;
       inst[idx + 1] = yNdc;
       inst[idx + 2] = sizePx;
       // Optional facing/rotation could be passed from enemy; default 0
       inst[idx + 3] = (e.angle || 0);
+      // UV rect (fallback to full texture if atlas not ready)
+      if (this.atlasReady && rect) {
+        inst[idx + 4] = rect.u0; inst[idx + 5] = rect.v0; inst[idx + 6] = rect.u1; inst[idx + 7] = rect.v1;
+      } else {
+        inst[idx + 4] = 0; inst[idx + 5] = 0; inst[idx + 6] = 1; inst[idx + 7] = 1;
+      }
+      // Flip sign
+      inst[idx + 8] = flipSign;
+      // Per-instance tint: default white; if in poison flash window, boost green channel
+      let tr = 1.0, tg = 1.0, tb = 1.0, ta = 1.0;
+      const pUntil = (eAny._poisonFlashUntil || 0) as number;
+      if (pUntil && now < pUntil) {
+        const left = Math.max(0, Math.min(1, (pUntil - now) / 140));
+        // Subtle green flash: ramp up green channel; keep premult consistent via alpha
+        tr = 0.9 + 0.1 * (1.0 - left);
+        tg = 1.0;
+        tb = 0.9 + 0.05 * (1.0 - left);
+        ta = 1.0; // maintain alpha
+      }
+      inst[idx + 9]  = tr;
+      inst[idx + 10] = tg;
+      inst[idx + 11] = tb;
+      inst[idx + 12] = ta;
       count++;
     }
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    if (!count) { (window as any).__glEnemiesLastCount = 0; return; }
+  gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  // Publish readiness for outer pipeline decisions (only skip 2D when ready)
+  try { (window as any).__glEnemiesIsReady = !!(this.atlasReady || this.textureReady); } catch {}
+  if (!count) { (window as any).__glEnemiesLastCount = 0; return; }
     gl.useProgram(this.program);
     if (this.uViewSize) gl.uniform2f(this.uViewSize, this.canvas.width, this.canvas.height);
     const t = opts?.tint || [1.0, 1.0, 1.0, 1.0];

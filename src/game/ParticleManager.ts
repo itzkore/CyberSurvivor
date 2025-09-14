@@ -9,6 +9,11 @@ export class ParticleManager {
     for (let i = 0; i < initial; i++) this.pool.push(this.createDead());
   }
 
+  /** Return a read-only view of the internal particle pool for renderers. */
+  public getSnapshot(): ReadonlyArray<Particle> {
+    return this.pool;
+  }
+
   private createDead(): Particle {
   // life now stored in milliseconds
   return { x: -9999, y: -9999, vx: 0, vy: 0, life: 0, size: 2, color: '#fff', active: false };

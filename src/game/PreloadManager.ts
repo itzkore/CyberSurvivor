@@ -21,7 +21,7 @@ export class PreloadManager {
     const AL: any = (window as any).AssetLoader;
     const norm = (p: string) => (AL ? AL.normalizePath(p) : p);
     const audioList = [
-      '/assets/music/bg-music.mp3',
+      // Use only tracks that are present in public/assets/music
       '/assets/music/s1monbeatz - gucci flip flops.mp3',
       '/assets/music/itzKORE - Breakthrough.mp3',
       '/assets/music/itzKORE - Obsidian.mp3',

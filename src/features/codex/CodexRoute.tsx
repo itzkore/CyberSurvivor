@@ -10,13 +10,15 @@ import WeaponsView from './weapons/WeaponsView';
 import AbilitiesView from './abilities/AbilitiesView';
 import PassivesView from './passives/PassivesView';
 import { EnemiesView, BossesView } from './enemies';
+import { ElitesView } from './elites';
+import FeaturedOperative from './FeaturedOperative';
 
-type Tab = 'Operatives' | 'Weapons' | 'Abilities' | 'Passives' | 'Enemies' | 'Bosses';
+type Tab = 'Operatives' | 'Weapons' | 'Abilities' | 'Passives' | 'Elites' | 'Enemies' | 'Bosses';
 
-const tabs: Tab[] = ['Operatives','Weapons','Abilities','Passives','Enemies','Bosses'];
+const tabs: Tab[] = ['Operatives','Weapons','Abilities','Passives','Elites','Enemies','Bosses'];
 
 export function CodexRoute(props?: { tab?: string; operativeId?: string }){
-  const initialTab = (props?.tab && ['Operatives','Weapons','Abilities','Passives','Enemies','Bosses'].includes(props.tab)) ? (props.tab as Tab) : 'Operatives';
+  const initialTab = (props?.tab && ['Operatives','Weapons','Abilities','Passives','Elites','Enemies','Bosses'].includes(props.tab)) ? (props.tab as Tab) : 'Operatives';
   const [active, setActive] = useState<Tab>(initialTab);
   const { list, query, setQuery, getById, sort, setSort } = useOperatives();
   const [detailId, setDetailId] = useState<string | null>(props?.operativeId ?? null);
@@ -42,6 +44,8 @@ export function CodexRoute(props?: { tab?: string; operativeId?: string }){
       case 'Operatives':
         return (
           <>
+            {/* Hero / CTA */}
+            <FeaturedOperative onEnter={()=> handleSelect('cyber_runner')} />
             <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-white/70">
               <span className="hidden md:inline">Legend:</span>
               <span className="inline-flex items-center gap-1"><span className="h-3 w-3 rounded-full bg-white/20 border border-white/30"/> Common</span>
@@ -69,6 +73,8 @@ export function CodexRoute(props?: { tab?: string; operativeId?: string }){
         return <AbilitiesView />;
       case 'Passives':
         return <PassivesView />;
+      case 'Elites':
+        return <ElitesView />;
       case 'Enemies':
         return <EnemiesView />;
       case 'Bosses':
@@ -109,6 +115,16 @@ export function CodexRoute(props?: { tab?: string; operativeId?: string }){
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') close();
+      // Pressing Enter on Operatives tab should quick-select the Featured Operative (Cyber Runner)
+      const tgt = e.target as HTMLElement | null;
+      const tag = (tgt?.tagName || '').toLowerCase();
+      const isFormEl = tag === 'input' || tag === 'textarea' || tag === 'select' || (tgt?.getAttribute('contenteditable') === 'true');
+      if (!isFormEl && (e.key === 'Enter' || e.key === 'NumpadEnter') && active === 'Operatives') {
+        e.preventDefault();
+        try {
+          handleSelect('cyber_runner');
+        } catch {}
+      }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);

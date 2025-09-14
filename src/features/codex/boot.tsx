@@ -175,8 +175,9 @@ if (enabled) {
   };
 
   // Bridge standard events
-  window.addEventListener('showCodex', (e) => { e.stopImmediatePropagation?.(); open((e as CustomEvent).detail); }, true);
-  window.addEventListener('hideCodex', (e) => { e.stopImmediatePropagation?.(); close(); }, true);
+  // Let events bubble so outer handlers (main.ts) can adjust canvas/menu visibility safely
+  window.addEventListener('showCodex', (e) => { open((e as CustomEvent).detail); }, true);
+  window.addEventListener('hideCodex', (e) => { close(); }, true);
   window.addEventListener('codex2:open', (e) => open((e as CustomEvent).detail));
   window.addEventListener('codex2:close', () => close());
   window.addEventListener('showMainMenu', () => close());

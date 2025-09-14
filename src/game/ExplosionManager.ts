@@ -330,93 +330,106 @@ export class ExplosionManager {
     }
   }
 
-  public draw(ctx: CanvasRenderingContext2D): void {
-  const avgMs = (window as any).__avgFrameMs || 16;
-  const vfxLow = (avgMs > 28) || !!(window as any).__vfxLowMode;
-    // Viewport for offscreen culling of shockwaves
-    const dW = (window as any).__designWidth || ctx.canvas.width;
-    const dH = (window as any).__designHeight || ctx.canvas.height;
-    const camX = (window as any).__camX || 0;
-    const camY = (window as any).__camY || 0;
-    const minX = camX - 64, maxX = camX + dW + 64;
-    const minY = camY - 64, maxY = camY + dH + 64;
-    // Draw all active AoE zones
-    for (let i = 0; i < this.aoeZones.length; i++) {
-      const zone = this.aoeZones[i];
-      if (zone.active) {
-        zone.draw(ctx);
-      }
-    }
+  public draw(_: CanvasRenderingContext2D): void { /* 2D explosion visuals removed (GL path only) */ }
 
-    // Draw charge glows before shockwaves (so completion shockwave sits atop)
-    if (this.chargeGlows.length) {
-      const now = performance.now();
-      for (let i = 0; i < this.chargeGlows.length; i++) {
-        const g = this.chargeGlows[i];
-        const t = Math.max(0, Math.min(1, (now - g.start) / g.duration));
-  const ease = t * (0.6 + 0.4 * t); // ramps in, slightly faster at end
-  const alpha = 0.02 + 0.12 * ease; // softer: 0.02 → 0.14
-  const r = g.radius * (0.92 + 0.08 * ease);
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.globalAlpha = alpha;
-        const grad = ctx.createRadialGradient(g.x, g.y, Math.max(0, r * 0.25), g.x, g.y, r);
-        grad.addColorStop(0, `${g.color}80`);
-        grad.addColorStop(0.7, `${g.color}25`);
-        grad.addColorStop(1, `${g.color}00`);
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(g.x, g.y, r, 0, Math.PI * 2);
-        ctx.fill();
-  // Remove crisp white rim; keep only soft additive fill for a cleaner look
-        ctx.restore();
-      }
-    }
-
-    // Draw shockwaves after zones and glows (so rings appear atop)
-    // Stride in low mode to reduce draw calls
-    const step = vfxLow ? 2 : 1;
-    for (let i = 0; i < this.shockwaves.length; i += step) {
+  /**
+   * Returns a lightweight snapshot of active shockwave rings for GL rendering.
+   * Each entry contains world x/y, current inner/outer radius, and a color with alpha.
+   */
+  public getActiveShockwaveSnapshot(): Array<{ x:number; y:number; innerR:number; outerR:number; color:string; alpha:number; additive:boolean }>{
+    const out: Array<{ x:number; y:number; innerR:number; outerR:number; color:string; alpha:number; additive:boolean }> = [];
+    const avgMs = (window as any).__avgFrameMs || 16;
+    const vfxLow = (avgMs > 28) || !!(window as any).__vfxLowMode;
+    for (let i = 0; i < this.shockwaves.length; i++) {
       const sw = this.shockwaves[i];
-      // Offscreen cull by bounding box of current radius
-      const tCull = 1 - sw.life / sw.maxLife;
-      const rCull = sw.startR + (sw.endR - sw.startR) * tCull;
-      if (sw.x + rCull < minX || sw.x - rCull > maxX || sw.y + rCull < minY || sw.y - rCull > maxY) continue;
-      const t = 1 - sw.life / sw.maxLife; // 0..1
-      const radius = sw.startR + (sw.endR - sw.startR) * t;
+      if (!sw || sw.life <= 0 || sw.maxLife <= 0) continue;
+      const t = 1 - sw.life / sw.maxLife;
+      const inner = Math.max(0, sw.startR + (sw.endR - sw.startR) * Math.max(0, t - 0.06));
+      const outer = sw.startR + (sw.endR - sw.startR) * t;
       const alphaBase = (1 - t) * (vfxLow ? 0.25 : 0.35);
-      const alpha = alphaBase * (sw.alphaScale != null ? sw.alphaScale : 1);
-      ctx.save();
-      // Avoid additive blending in low mode to cut fill-rate cost
-      if (!vfxLow) ctx.globalCompositeOperation = 'lighter';
-      ctx.lineWidth = Math.max(1, (vfxLow ? 2 : 3) * (1 - t));
-      ctx.beginPath();
-      ctx.arc(sw.x, sw.y, radius, 0, Math.PI * 2);
-      // Single pass stroke on low; dual on normal
-      if (vfxLow) {
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = sw.color;
-        ctx.stroke();
-      } else {
-        ctx.shadowColor = sw.color;
-        ctx.shadowBlur = 10 * (1 - t * 0.7);
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = sw.color;
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = Math.min(1, alpha * 1.1);
-        ctx.strokeStyle = `rgba(255,255,255,${0.8 * (1 - t)})`;
-        ctx.lineWidth = Math.max(1, 1.5 * (1 - t));
-        ctx.stroke();
-      }
-      ctx.restore();
+      const alpha = Math.max(0, Math.min(1, alphaBase * (sw.alphaScale != null ? sw.alphaScale : 1)));
+      const additive = !vfxLow; // match 2D path: additive only when not low VFX
+      out.push({ x: sw.x, y: sw.y, innerR: inner, outerR: outer, color: sw.color, alpha, additive });
     }
+    return out;
   }
 
   /** Visual-only: starts a soft radial glow used for weapon charging UX (e.g., Railgun). */
   public triggerChargeGlow(x: number, y: number, radius: number = 30, color: string = '#00FFE6', durationMs: number = 1000) {
     const start = performance.now();
     this.chargeGlows.push({ x, y, radius: Math.max(8, radius), color, start, duration: Math.max(120, durationMs) });
+  }
+
+  /** Returns snapshot of charge glows for GL rendering. */
+  public getActiveChargeGlowsSnapshot(): Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }>{
+    const out: Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }> = [];
+    if (!this.chargeGlows.length) return out;
+    const now = performance.now();
+    const parse = (col: string): { r:number; g:number; b:number; a:number } => {
+      const mHex = /^#([0-9a-f]{6})$/i.exec(col);
+      if (mHex) { const n = parseInt(mHex[1],16); return { r:(n>>16)&255, g:(n>>8)&255, b:n&255, a:1 }; }
+      const mR = /^rgba?\(([^)]+)\)$/i.exec(col);
+      if (mR) { const p = mR[1].split(',').map(s=>s.trim()); return { r:parseInt(p[0],10)||255, g:parseInt(p[1],10)||255, b:parseInt(p[2],10)||255, a:(p[3]?parseFloat(p[3]):1) }; }
+      return { r:255,g:255,b:255,a:1 };
+    };
+    for (let i = 0; i < this.chargeGlows.length; i++){
+      const g = this.chargeGlows[i];
+      const t = Math.max(0, Math.min(1, (now - g.start) / g.duration));
+      const ease = t * (0.6 + 0.4 * t);
+      const alpha = 0.02 + 0.12 * ease; // match 2D path base alpha
+      const col = parse(g.color);
+      out.push({ x:g.x, y:g.y, radius:g.radius * (0.92 + 0.08 * ease), r: col.r/255, g: col.g/255, b: col.b/255, a: Math.max(0, Math.min(1, (col.a ?? 1) * alpha)) });
+    }
+    return out;
+  }
+
+  /**
+   * Returns a single-entry snapshot for the player's Slow Aura as a GL glow instance (if active).
+   * This is used for an early GL underlay pass so the aura renders beneath the player sprite.
+   */
+  public getPlayerAuraGlowSnapshot(): Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }>{
+    try {
+      const pAny: any = this.player as any;
+      const lvl: number = pAny.slowAuraLevel | 0;
+      if (!lvl || lvl <= 0) return [];
+      const baseR: number = pAny.slowAuraBaseRadius ?? 352;
+      const addR: number = pAny.slowAuraRadiusPerLevel ?? 48;
+      const areaMul: number = (pAny.getGlobalAreaMultiplier?.() ?? (pAny.globalAreaMultiplier ?? 1)) || 1;
+      const rEff = (baseR + addR * lvl) * areaMul;
+      const visR = Math.max(40, rEff * 0.98);
+      const avgMs = (window as any).__avgFrameMs || 16;
+      const vfxLow = (avgMs > 55) || !!(window as any).__vfxLowMode;
+      const alpha = vfxLow ? 0.10 : 0.16; // match 2D path base intensity
+      // Cyan tone matching 2D gradient palette
+      const r = 120/255, g = 240/255, b = 255/255;
+      return [{ x: this.player.x, y: this.player.y, radius: visR, r, g, b, a: alpha }];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Returns snapshot of active AoE zones (filled disks) for GL rendering. */
+  public getActiveAoEZonesSnapshot(): Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }>{
+    const out: Array<{ x:number; y:number; radius:number; r:number; g:number; b:number; a:number }> = [];
+    if (!this.aoeZones.length) return out;
+    const parse = (col: string): { r:number; g:number; b:number; a:number } => {
+      const mHex = /^#([0-9a-f]{6})$/i.exec(col);
+      if (mHex) { const n = parseInt(mHex[1],16); return { r:(n>>16)&255, g:(n>>8)&255, b:n&255, a:1 }; }
+      const mR = /^rgba?\(([^)]+)\)$/i.exec(col);
+      if (mR) { const p = mR[1].split(',').map(s=>s.trim()); return { r:parseInt(p[0],10)||255, g:parseInt(p[1],10)||255, b:parseInt(p[2],10)||255, a:(p[3]?parseFloat(p[3]):1) }; }
+      return { r:255,g:255,b:255,a:1 };
+    };
+    for (let i = 0; i < this.aoeZones.length; i++){
+      const z = this.aoeZones[i];
+      if (!z || !z.active) continue;
+      // Zones already fade via their draw() alpha, but for GL we incorporate life factor here
+      const lifeAlpha = Math.max(0, z.life / z.maxLife) * 0.35;
+      const c = parse(z.color);
+      const a = Math.max(0, Math.min(1, (c.a ?? 1) * lifeAlpha));
+      if (a <= 0.001) continue;
+      out.push({ x: z.x, y: z.y, radius: z.radius, r: c.r/255, g: c.g/255, b: c.b/255, a });
+    }
+    return out;
   }
 
   /** Plasma normal detonation: immediate AoE (no fragments) with clear impact visuals */
