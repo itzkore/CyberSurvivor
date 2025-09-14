@@ -28,6 +28,7 @@
   <link rel="preload" href="./assets/fonts/Orbitron/static/Orbitron-ExtraBold.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="preload" href="./assets/fonts/Orbitron/static/Orbitron-Black.ttf" as="font" type="font/ttf" crossorigin>
   <link rel="stylesheet" href="./assets/cyberpunk-styles.css" />
+  <!-- Codex v2 Tailwind styles are imported via modules (main.ts / boot.tsx) -->
   <!-- Load font preloader as a module to satisfy CSP (no inline scripts) -->
   <script type="module" src="./font-preload.ts"></script>
 </head>
@@ -41,6 +42,8 @@
     <div id="loading-tip" class="loading-tip">Loading assets...</div>
   </div>
   <script type="module" src="./lb-config.ts"></script>
+  <!-- React Codex boot (inert unless ?codex2=1 or localStorage cs-codex2=1) -->
+  <script type="module" src="./features/codex/boot.tsx"></script>
   <script type="module" src="./main.ts"></script>
 </body>
 </html>

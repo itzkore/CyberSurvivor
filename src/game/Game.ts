@@ -433,7 +433,8 @@ export class Game {
 
     // Listen for level up and chest upgrade events to show UpgradePanel
     window.addEventListener('levelup', () => {
-  if (this.gameMode === 'SANDBOX') return; // Disable upgrade panel in sandbox
+  // Disable upgrade panel in Sandbox and Last Stand (LS uses its own shop)
+  if (this.gameMode === 'SANDBOX' || this.gameMode === 'LAST_STAND') return;
       if (!this.upgradePanel) {
         Logger.error('[Game] UpgradePanel instance missing on levelup!');
         return;
@@ -447,7 +448,8 @@ export class Game {
       }
     });
     window.addEventListener('forceUpgradeOption', (e: Event) => {
-  if (this.gameMode === 'SANDBOX') return; // Disable forced upgrade panel in sandbox
+  // Disable forced/auto upgrade panel in Sandbox and Last Stand
+  if (this.gameMode === 'SANDBOX' || this.gameMode === 'LAST_STAND') return;
       if (!this.upgradePanel) {
         Logger.error('[Game] UpgradePanel instance missing on forceUpgradeOption!');
         return;
@@ -484,8 +486,15 @@ export class Game {
   window.dispatchEvent(new CustomEvent('hidePauseOverlay'));
       }
     });
-    // Chain double upgrade when a boss is defeated
+    // Boss defeat rewards
     window.addEventListener('bossDefeated', () => {
+      // In Last Stand: award scrap instead of opening the standard UpgradePanel
+      if (this.gameMode === 'LAST_STAND') {
+        try { (this.lastStand as any)?.addScrap?.(500); } catch {}
+        try { window.dispatchEvent(new CustomEvent('upgradeNotice', { detail: { type: 'boss-clear', message: '+500 Scrap (Boss)' } })); } catch {}
+        return;
+      }
+      // In other modes: chain double upgrade
       if (!this.upgradePanel) return;
       let remaining = 2;
       const showNext = () => {
@@ -988,8 +997,8 @@ export class Game {
         }
       } catch {}
       // Known nested state bags
-      const hg = pAny.__hgTurret; if (hg && typeof hg.cooldownUntil === 'number') shiftIfTime(hg, 'cooldownUntil');
-      const vb = pAny.__runnerVB; if (vb && typeof vb.meterCdUntil === 'number') shiftIfTime(vb, 'meterCdUntil');
+  const hg = pAny.__hgTurret; if (hg && typeof hg.cooldownUntil === 'number') shiftIfTime(hg, 'cooldownUntil');
+  // Legacy Cyber Runner Vector Boomerang (__runnerVB) removed; cooldown handled by ability manager's onTimeShift.
     } catch {}
 
     // Current operative ability manager internals (generic hook + best-effort per-ability safety net)
@@ -1991,8 +2000,54 @@ export class Game {
       }
     }
   } catch { /* ignore core draw errors */ }
-  this.enemyManager.draw(this.ctx, this.camX, this.camY);
-        this.bulletManager.draw(this.ctx);
+  // Enemies: optional GL instanced renderer for enemy bodies (overlays/HP bars still drawn in 2D path)
+  try {
+    const glEnemiesOn: boolean = !!(window as any).__glEnemiesEnabled;
+    const glER: any = (window as any).__glEnemiesRenderer;
+    if (glEnemiesOn && glER && typeof glER.render === 'function') {
+      const dpr2 = (window as any).devicePixelRatio || 1;
+      const pixelW2 = Math.round(this.designWidth * dpr2 * this.renderScale);
+      const pixelH2 = Math.round(this.designHeight * dpr2 * this.renderScale);
+      const enemiesArr: any[] = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
+  glER.render(enemiesArr, this.camX, this.camY, this.designWidth, this.designHeight, pixelW2, pixelH2, { tint: [1.0, 1.0, 1.0, 1.0] });
+      // Composite GL enemies canvas overlay in screen space (under 2D overlays/HP bars)
+      this.ctx.save();
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.drawImage(glER.canvas, 0, 0);
+      this.ctx.restore();
+      // Mark to EnemyManager that base body sprites should be skipped this frame
+      (this.enemyManager as any).__skipBody2DOnce = true;
+      // Now draw overlays/HP bars via EnemyManager (body draw gated inside)
+      this.enemyManager.draw(this.ctx, this.camX, this.camY);
+    } else {
+      this.enemyManager.draw(this.ctx, this.camX, this.camY);
+    }
+  } catch { this.enemyManager.draw(this.ctx, this.camX, this.camY); }
+        // Bullets layer: use GL renderer when enabled, else 2D draw
+        try {
+          const glOn: boolean = !!(window as any).__glEnabled;
+          const glr: any = (window as any).__glBulletRenderer;
+          if (glOn && glr && glr.canvas) {
+            // Drive GL renderer with current bullets and camera
+            const bullets: any[] = (this.bulletManager as any).bullets || [];
+            const dpr = (window as any).devicePixelRatio || 1;
+            const pixelW = Math.round(this.designWidth * dpr * this.renderScale);
+            const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
+            if (typeof glr.render === 'function') {
+              glr.render(bullets, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
+            }
+            // Composite GL canvas into 2D context at current transform (already translated by camera)
+            this.ctx.save();
+            // Reset transform to screen space to blit the offscreen framebuffer
+            this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+            // Draw pixel-exact; the offscreen canvas matches the 2D backing store size
+            this.ctx.drawImage(glr.canvas, 0, 0);
+            // Restore world transform
+            this.ctx.restore();
+          } else {
+            this.bulletManager.draw(this.ctx);
+          }
+        } catch { this.bulletManager.draw(this.ctx); }
         // Active beams (railgun/sniper) under player for proper layering
         if (this._activeBeams && this._activeBeams.length) {
           for (const beam of this._activeBeams) {

@@ -204,9 +204,12 @@ export class BossManager {
         const ce = e as CustomEvent<{ spell: 'supernova' | 'multinova' | 'shocknova' | 'dash' | 'cross' | 'earth' | 'rifts' | 'rift_barrage' | 'volley' }>
         if (!this.boss || this.boss.state !== 'ACTIVE' || this.spellState !== 'IDLE') return;
         const sp = ce?.detail?.spell;
+        // In Last Stand, suppress forced Supernova/Multi‑Nova for fairness; substitute Volley.
+        const gm = (() => { try { return (window as any).__gameInstance?.gameMode; } catch { return undefined; } })();
+        const ls = gm === 'LAST_STAND';
         switch (sp) {
-          case 'supernova': this.startSuperNova(); break;
-          case 'multinova': this.startMultiNova(); break;
+          case 'supernova': if (ls) { this.startVolley(); } else { this.startSuperNova(); } break;
+          case 'multinova': if (ls) { this.startVolley(); } else { this.startMultiNova(); } break;
           case 'shocknova': this.startShockNova(); break;
           case 'dash': {
             const dx = this.player.x - this.boss.x; const dy = this.player.y - this.boss.y; const d = Math.hypot(dx, dy) || 1;
@@ -401,14 +404,24 @@ export class BossManager {
           const beh = this.bossDefs.find(b => b.id === identity)?.behavior || 'balanced';
           // Exclusive kits per boss
           if (beh === 'nova') {
-            // Beta: Volley, Multi‑Nova or Supernova (no dash). Pity enforces Supernova periodically.
-            if (this.betaNovaPity >= this.betaPityThreshold) {
-              this.startSuperNova();
+            // Beta behavior. In Last Stand, disable Multi‑Nova and Supernova; use safer options.
+            const gm = (() => { try { return (window as any).__gameInstance?.gameMode; } catch { return undefined; } })();
+            const ls = gm === 'LAST_STAND';
+            if (ls) {
+              // Only Volley and Shock Nova allowed in Last Stand.
+              if (Math.random() < 0.6) this.startVolley(); else this.startShockNova();
+              // Never allow pity to force Supernova in LS
+              this.betaNovaPity = 0;
             } else {
-              const r = Math.random();
-              if (r < 0.36) this.startVolley();
-              else if (r < 0.72) this.startMultiNova();
-              else this.startSuperNova();
+              // Standard: Volley, Multi‑Nova or Supernova (pity enforces Supernova periodically)
+              if (this.betaNovaPity >= this.betaPityThreshold) {
+                this.startSuperNova();
+              } else {
+                const r = Math.random();
+                if (r < 0.36) this.startVolley();
+                else if (r < 0.72) this.startMultiNova();
+                else this.startSuperNova();
+              }
             }
           } else if (beh === 'summoner') {
             // Gamma: Rifts or Rift Barrage (no nova/dash)
@@ -528,11 +541,12 @@ export class BossManager {
         const core: any = (window as any).__lsCore;
         const cy = core?.y ?? this.player.y;
         if (cor && cy != null) {
-          // Push X inside corridor and close to gate x+ (so boss arrives fairly)
+          // Push X inside corridor and further to the right of the gate gap so boss enters later/fairer.
           const wallX = (ls as any).holders?.[0]?.x ?? (cor.x + Math.floor(cor.w * 0.35));
           const holdW = (ls as any).holders?.[0]?.w ?? 36;
           const minX = cor.x + 40, maxX = cor.x + cor.w - 120;
-          bx = Math.min(maxX, Math.max(minX, Math.max(bx, wallX + holdW + 140)));
+          // Spawn at least ~280px to the right of the gate holders, not just 140px.
+          bx = Math.min(maxX, Math.max(minX, Math.max(bx, wallX + holdW + 280)));
           by = cy;
         }
       }

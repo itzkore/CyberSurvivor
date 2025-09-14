@@ -2156,6 +2156,11 @@ export class EnemyManager {
       kbResist = 0.90;
     }
   } catch { /* ignore */ }
+  // Global rule: elites should have very high knockback resistance across all modes
+  try {
+    const isElite = !!((enemy as any)._elite && (enemy as any)._elite.kind);
+    if (isElite) kbResist = Math.max(kbResist, 0.92);
+  } catch { /* ignore */ }
   let impulse = baseForcePerSec * massScale * beamDampen * Math.max(0, 1 - kbResist);
         // Radial-only stacking: project any existing knockback onto radial axis, discard sideways component
         let existingRadial = 0;
@@ -3810,6 +3815,11 @@ export class EnemyManager {
     ctx.restore();
   }
   // Draw enemies (cached sprite images if enabled)
+    // When GL enemies path is active, skip the base body draw and only render overlays and HP bars.
+    const glEnemiesActive = !!((window as any).__glEnemiesEnabled);
+    const skipBodyThisFrame = glEnemiesActive && ((this as any).__skipBody2DOnce === true);
+    // Reset the one-shot signal
+    if (skipBodyThisFrame) { try { (this as any).__skipBody2DOnce = false; } catch {} }
     // Compute heavy FX budget per frame: start at 32 and scale down under load
     const frameMsForBudget = this.avgFrameMs || 16;
     // Count visible enemies once to scale budgets accurately
@@ -3876,7 +3886,7 @@ export class EnemyManager {
       const eb = this.eliteSprites[eliteKind];
       if (eb) bundle = eb as any;
     }
-    if (!bundle) continue;
+  if (!bundle) continue;
   // Movement-based facing + walk-cycle flip: compose both for visible stepping
   const faceLeft = (eAny._facingX ?? ((this.player.x < enemy.x) ? -1 : 1)) < 0;
   const walkFlip = !!eAny._walkFlip;
@@ -3892,7 +3902,7 @@ export class EnemyManager {
   const drawX = enemy.x + shakeX + stepOffsetX - size/2;
   const drawY = enemy.y + shakeY + stepOffsetY - size/2;
   // Mind-controlled visual enlargement & glow
-  if (eAny._mindControlledUntil && eAny._mindControlledUntil > now) {
+  if (!skipBodyThisFrame && eAny._mindControlledUntil && eAny._mindControlledUntil > now) {
     const scale = 1.5; // 50% larger
     const w = size * scale; const h = size * scale;
     const dxS = enemy.x + shakeX + stepOffsetX - w/2;
@@ -3909,7 +3919,7 @@ export class EnemyManager {
       ctx.beginPath(); ctx.arc(enemy.x + shakeX, enemy.y + shakeY, (enemy.radius || 20) * 1.55, 0, Math.PI*2); ctx.stroke();
     } catch { /* ignore */ }
     ctx.restore();
-  } else {
+  } else if (!skipBodyThisFrame) {
     ctx.drawImage(baseImg, drawX, drawY, size, size);
   }
         // Blocker: draw a front-facing riot shield plate held ahead of the body
@@ -4013,7 +4023,7 @@ export class EnemyManager {
           }
         }
         // RGB glitch effect: use cached-tint ghosts; cap heavy work per frame (globally gated)
-  if (glitchBudget > 0 && !fxLow && (eAny._rgbGlitchUntil || 0) > now) {
+  if (!skipBodyThisFrame && glitchBudget > 0 && !fxLow && (eAny._rgbGlitchUntil || 0) > now) {
           glitchBudget--;
           const tLeft = Math.max(0, Math.min(1, (eAny._rgbGlitchUntil - now) / 220));
           const phase = (eAny._rgbGlitchPhase || 0);
@@ -5246,7 +5256,7 @@ export class EnemyManager {
         // Before recycling, announce death (including elite flag) for hooks like rewards
         try {
           const eliteDead: EliteRuntime | undefined = (enemy as any)?._elite;
-          eventBus.emit('enemyDead', { id: enemy.id, elite: !!eliteDead, kind: eliteDead?.kind, x: enemy.x, y: enemy.y, time: (window as any)?.__gameInstance?.getGameTime?.() ?? 0 });
+          eventBus.emit('enemyDead', { id: enemy.id, elite: !!eliteDead, kind: eliteDead?.kind, x: enemy.x, y: enemy.y, time: (window as any)?.__gameInstance?.getGameTime?.() ?? 0, size: enemy.type });
         } catch { /* ignore */ }
         // Then clear elite flags/state to avoid pool leakage
         try {

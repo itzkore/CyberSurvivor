@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
 // Pure web build (Electron removed): use root-relative base.
 export default defineConfig({
+  plugins: [react()],
   // Use relative base so the app works when hosted under a subfolder (e.g., https://site.tld/cs/)
   // You can override with BASE env: BASE=/my/sub/base/ npm run build
   base: process.env.BASE || './',

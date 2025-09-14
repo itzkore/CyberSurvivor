@@ -1,5 +1,6 @@
 import { HackingSystem, type HackState } from '../../../HackingSystem';
 import { WeaponType } from '../../../WeaponType';
+import { scaleRadius } from '../../../scaling';
 
 /**
  * Rogue Hacker RMB: Manual Hack controller (per-operative).
@@ -120,8 +121,8 @@ export class RogueHackerHackRMB {
     if (!v || v.state !== 'CHARGING') return;
     // Draw at anchored position captured on charge start
     if (this.anchorX == null || this.anchorY == null) return;
-    const sx = this.anchorX - camX; const sy = this.anchorY - camY;
-    if (sx < -20 || sy < -20 || sx > canvasW + 20 || sy > canvasH + 20) return;
+    const sx = this.anchorX - camX;
+    const sy = this.anchorY - camY;
     ctx.save();
     try {
       // Base ring

@@ -145,6 +145,16 @@ export class CyberRunnerAbilityManager extends BaseAbilityManagerImpl {
 
     // Start cooldown
     this.dashCooldownMs = this.dashCooldownMsMax;
+
+    // Trigger Runner Overdrive surge window (align with legacy: ~2s buff for evolved shots)
+    try {
+      const surgeMs = 2000;
+      this.overdriveSurgeUntil = now + surgeMs;
+      // Also mirror onto player so any shooting logic that checks player state can see it
+      if (typeof this.player === 'object') {
+        this.player.runnerOverdriveSurgeUntil = Math.max(this.player.runnerOverdriveSurgeUntil || 0, this.overdriveSurgeUntil);
+      }
+    } catch { /* ignore */ }
   }
 
   private updateDash(dt: number): void {
@@ -423,6 +433,12 @@ export class CyberRunnerAbilityManager extends BaseAbilityManagerImpl {
         max: this.dashCooldownMsMax,
         ready: this.dashCooldownMs <= 0,
         active: this.dashActive
+      },
+      runner_overdrive: {
+        value: this.overdriveSurgeUntil > now ? (this.overdriveSurgeUntil - now) : 0,
+        max: 1500,
+        ready: true,
+        active: this.overdriveSurgeUntil > now
       }
     };
   }
@@ -450,6 +466,16 @@ export class CyberRunnerAbilityManager extends BaseAbilityManagerImpl {
         this.renderTrailOnly(ctx, lt.trail, now, isEvolved);
       }
     }
+  }
+
+  // Shift absolute timers after auto-pause so cooldowns/effects don't progress while unfocused
+  onTimeShift(deltaMs: number): void {
+    const n = (v: number) => (typeof v === 'number' && isFinite(v)) ? v + deltaMs : v;
+    try {
+      this.boomerangState.meterCdUntil = n(this.boomerangState.meterCdUntil) as any;
+      this.overdriveSurgeUntil = n(this.overdriveSurgeUntil) as any;
+      // Dash cooldown remains relative (ms remaining), no shift needed unless stored as absolute
+    } catch { /* ignore */ }
   }
 
   private renderBoomerang(ctx: CanvasRenderingContext2D): void {

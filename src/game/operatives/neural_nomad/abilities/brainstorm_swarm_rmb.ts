@@ -1,5 +1,6 @@
 import { WEAPON_SPECS } from '../../../WeaponConfig';
 import { WeaponType } from '../../../WeaponType';
+import { scaleDamage } from '../../../scaling';
 // no sounds for this ability per design
 
 type Drone = { ang: number; next: number };
@@ -149,7 +150,7 @@ export class BrainstormSwarmRMB {
         return (spec?.damage ?? 20);
       })();
       let dmg = Math.round(25 + baseShot * 0.35);
-      try { dmg = Math.round(dmg * (p.globalDamageMultiplier || 1)); } catch {}
+  try { dmg = scaleDamage(dmg, p); } catch {}
 
   const b = g.bulletManager?.spawnBullet?.(ox, oy, best.x, best.y, wType, dmg, lvl, 'NOMAD_SWARM');
       if (b) {

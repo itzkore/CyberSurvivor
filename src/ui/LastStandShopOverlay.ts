@@ -20,6 +20,8 @@ export class LastStandShopOverlay {
   private freeSpan!: HTMLSpanElement;
   // Track purchased offer ids for the current roll (one-time purchase per card)
   private purchasedIds: Set<string> = new Set();
+  // Store keydown handler to remove on destroy
+  private keydownHandler?: (e: KeyboardEvent) => void;
 
   constructor(
     private shop: ShopManager,
@@ -112,7 +114,7 @@ export class LastStandShopOverlay {
     close.onclick = () => this.exit();
 
     // Keyboard shortcuts
-    window.addEventListener('keydown', (e: KeyboardEvent) => {
+    this.keydownHandler = (e: KeyboardEvent) => {
       if (!this.visible) return;
       const k = e.key;
       // Dedicated turret hotkeys: map 1/+, 2/ě, 3/š to the first three turret offers
@@ -141,7 +143,8 @@ export class LastStandShopOverlay {
         const child = this.list.children[idx - 1] as HTMLElement | undefined;
         if (child) { child.click(); e.preventDefault(); }
       }
-    });
+    };
+    window.addEventListener('keydown', this.keydownHandler);
   }
 
   setTimer(seconds: number) { this.timer.textContent = String(Math.max(0, Math.ceil(seconds))); }
@@ -368,10 +371,27 @@ export class LastStandShopOverlay {
     this.updateRerollUI();
   }
 
-  show() { this.visible = true; this.root.style.display = 'flex'; this.purchasedIds.clear(); this.refreshOffers(); }
+  show() {
+    // Strict mode gate: LS shop is valid only in Last Stand mode
+    const mode = (window as any).__gameInstance?.gameMode;
+    if (mode !== 'LAST_STAND') {
+      // Defensive: never display outside LS; ensure hidden
+      this.visible = false;
+      this.root.style.display = 'none';
+      return;
+    }
+    this.visible = true; this.root.style.display = 'flex'; this.purchasedIds.clear(); this.refreshOffers();
+  }
   hide() { this.visible = false; this.root.style.display = 'none'; }
   isVisible() { return this.visible; }
   exit() { this.hide(); this.onExit(); }
+
+  /** Permanently remove overlay from DOM and unhook listeners. */
+  destroy() {
+    try { this.hide(); } catch {}
+    try { if (this.keydownHandler) window.removeEventListener('keydown', this.keydownHandler); } catch {}
+    try { this.root.remove(); } catch {}
+  }
 
   private handleReroll() {
     const price = this.currentRerollPrice();

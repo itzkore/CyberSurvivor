@@ -595,16 +595,19 @@ export class Player {
 
   // Cyber Runner: dash cooldown tick + input edge detect (Shift)
   if (!inputLocked && this.characterData?.id === 'cyber_runner') {
-      if (this.runnerDashCooldownMs > 0) this.runnerDashCooldownMs = Math.max(0, this.runnerDashCooldownMs - dt);
-      if (this.bladeCycloneCooldownMs > 0) this.bladeCycloneCooldownMs = Math.max(0, this.bladeCycloneCooldownMs - dt);
-
-      const shiftNow = !!keyState['shift'];
-      if (shiftNow && !this.runnerDashPrevKey && this.runnerDashCooldownMs <= 0) {
-        (this as any).performRunnerDash?.();
+      // If an ability manager exists for Runner, it owns dash input/cooldown. Keep Blade Cyclone here.
+      const hasManager = !!this.abilityManager;
+      if (!hasManager) {
+        if (this.runnerDashCooldownMs > 0) this.runnerDashCooldownMs = Math.max(0, this.runnerDashCooldownMs - dt);
+        const shiftNow = !!keyState['shift'];
+        if (shiftNow && !this.runnerDashPrevKey && this.runnerDashCooldownMs <= 0) {
+          (this as any).performRunnerDash?.();
+        }
+        this.runnerDashPrevKey = shiftNow;
       }
-      this.runnerDashPrevKey = shiftNow;
 
       // Blade Cyclone: Spacebar for AOE spin attack (edge-trigger)
+      if (this.bladeCycloneCooldownMs > 0) this.bladeCycloneCooldownMs = Math.max(0, this.bladeCycloneCooldownMs - dt);
       const spaceNowRunner = !!(keyState[' '] || (keyState as any)['space'] || (keyState as any)['spacebar']);
       if (spaceNowRunner && !this.bladeCyclonePrevKey && this.bladeCycloneCooldownMs <= 0) {
         (this as any).performBladeCyclone?.();

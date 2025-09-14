@@ -2,6 +2,7 @@
 import { screenToWorld } from '../../../../core/coords';
 import { keyState } from '../../../../game/keyState';
 import { WeaponType } from '../../../WeaponType';
+import { scaleDamage, scaleRadius } from '../../../scaling';
 
 /** Wasteland Scavenger RMB: Redirect Scrap Lash and Space Pulse (per-operative). */
 export class ScavengerRedirectRMB {
@@ -49,7 +50,19 @@ export class ScavengerRedirectRMB {
         const enemies = this.game.enemyManager.getEnemies ? this.game.enemyManager.getEnemies() : this.game.enemyManager.enemies; let hits = 0; const dmgBase = (lash?.damage || 30);
         for (let i=0;i<enemies.length;i++) { const e:any = enemies[i]; if (!e || !e.active || e.hp<=0) continue; const dx = e.x - pulseX; const dy = e.y - pulseY; if (dx*dx + dy*dy > radius*radius) continue; this.game.enemyManager.takeDamage(e, dmgBase, false, false, WeaponType.SCRAP_LASH, pulseX, pulseY, (lash?.level||1), false, 'PLAYER'); hits++; }
         if (hits>0) {
-          try { const p:any = this.game.player; const trig = p.addScrapHits ? p.addScrapHits(hits) : false; if (trig) { const reach2 = 120; const radius2 = Math.max(220, Math.round(reach2 * 1.6)); const gdm = (p.getGlobalDamageMultiplier?.() ?? (p.globalDamageMultiplier ?? 1)); const dmgRef = Math.round((dmgBase) * 1.25 * (gdm || 1)); window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: p.x, y: p.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } })); const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0; const eff = (this.game as any).getHealEfficiency ? (this.game as any).getHealEfficiency(timeSec) : 1; const amt = 5 * eff; p.hp = Math.min(p.maxHp || p.hp, p.hp + amt); } } catch {}
+          try {
+            const p:any = this.game.player;
+            const trig = p.addScrapHits ? p.addScrapHits(hits) : false;
+            if (trig) {
+              const reach2 = 120;
+              const radius2 = Math.max(220, scaleRadius(Math.round(reach2 * 1.6), p));
+              const dmgRef = scaleDamage(Math.round(dmgBase * 1.25), p);
+              window.dispatchEvent(new CustomEvent('scrapExplosion', { detail: { x: p.x, y: p.y, damage: dmgRef, radius: radius2, color: '#FFAA33' } }));
+              const timeSec = (window as any)?.__gameInstance?.getGameTime?.() ?? 0;
+              const eff = (this.game as any).getHealEfficiency ? (this.game as any).getHealEfficiency(timeSec) : 1;
+              const amt = 5 * eff; p.hp = Math.min(p.maxHp || p.hp, p.hp + amt);
+            }
+          } catch {}
           try { window.dispatchEvent(new CustomEvent('scrapPulse', { detail: { x: pulseX, y: pulseY, r: radius } })); } catch {}
         }
         this.pulseCdUntil = nowMs + 10000;

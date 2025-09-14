@@ -1,5 +1,6 @@
 import { WEAPON_SPECS } from '../../../WeaponConfig';
 import { WeaponType } from '../../../WeaponType';
+import { scaleDamage } from '../../../scaling';
 
 type ArcPoint = { x: number; y: number };
 
@@ -288,7 +289,8 @@ export class PhaseStitchRMB {
     const stats = spec?.getLevelStats ? spec.getLevelStats(lvl) : { damage: spec?.damage ?? 20 };
     const base = stats?.damage ?? 20;
     let dmg = Math.round(base * 0.8); // per tick along the thread
-    try { dmg = Math.round(dmg * (p.globalDamageMultiplier || 1)); } catch {}
+  // Apply global damage multiplier via helper (consistent behavior)
+  try { dmg = scaleDamage(dmg, p); } catch {}
     return Math.max(1, dmg);
   }
 
@@ -339,7 +341,7 @@ export class PhaseStitchRMB {
   private applyLandingWaveDamage(now: number) {
     const g:any = this.game; const p:any = this.player; if (!g||!p) return;
     const em:any = g.enemyManager; if (!em) return;
-    const R = this.landingWave.radius; const dmg = Math.round(this.landingWave.damage * (p.getGlobalDamageMultiplier?.() ?? (p.globalDamageMultiplier ?? 1)));
+  const R = this.landingWave.radius; const dmg = scaleDamage(this.landingWave.damage, p);
     const list = em.getEnemies?.() || [];
     for (let i=0;i<list.length;i++) {
       const e:any = list[i]; if (!e||!e.active||e.hp<=0) continue;

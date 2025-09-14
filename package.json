@@ -4,6 +4,7 @@
   "private": true,
   "description": "CyberSurvivor game (Web / Vite + TypeScript)",
   "license": "UNLICENSED",
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build:renderer": "vite build",
@@ -36,8 +37,8 @@
     "pf": "node .\\scripts\\power-factor.cjs --level=7 --timeMin=15 --out=pf-output.json",
     "pf:l1": "node .\\scripts\\power-factor.cjs --level=1 --timeMin=5 --out=pf-l1.json",
     "pf:l7": "node .\\scripts\\power-factor.cjs --level=7 --timeMin=25 --out=pf-l7.json",
-  "assets:generate:elites": "node .\\scripts\\generate-elites.cjs",
-  "assets:clean:elites": "node .\\scripts\\cleanup-elites.cjs"
+    "assets:generate:elites": "node .\\scripts\\generate-elites.cjs",
+    "assets:clean:elites": "node .\\scripts\\cleanup-elites.cjs"
   },
   "build": {},
   "engines": {
@@ -45,16 +46,32 @@
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
+    "@tailwindcss/postcss": "^4.1.13",
     "@types/howler": "^2.2.12",
     "@types/node": "^20.0.0",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "autoprefixer": "^10.4.21",
     "cross-env": "^7.0.3",
+    "postcss": "^8.5.6",
     "rimraf": "^5.0.5",
+    "tailwindcss": "^4.1.13",
     "ts-node": "^10.9.2",
     "typescript": "^5.0.0",
     "vite": "^7.1.2",
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "howler": "^2.2.4"
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-tooltip": "^1.2.8",
+    "@react-aria/visually-hidden": "^3.8.27",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "embla-carousel-react": "^8.6.0",
+    "framer-motion": "^12.23.12",
+    "howler": "^2.2.4",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   }
 }

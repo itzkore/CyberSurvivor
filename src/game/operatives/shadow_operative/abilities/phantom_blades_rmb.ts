@@ -1,5 +1,6 @@
 import { WEAPON_SPECS } from '../../../WeaponConfig';
 import { WeaponType } from '../../../WeaponType';
+import { scaleDamage } from '../../../scaling';
 
 type BladeVisual = { x0:number; y0:number; x1:number; y1:number; born:number; ttl:number };
 
@@ -82,11 +83,10 @@ export class PhantomBladesRMB {
     try {
       const spec:any = (WEAPON_SPECS as any)[WeaponType.VOID_SNIPER];
       const s = spec?.getLevelStats ? spec.getLevelStats(Math.min(7, Math.max(1, lvl))) : { damage: spec?.damage ?? 100 };
-      // Per-blade damage tuned to a fraction of per-shot expected damage
-      dmg = Math.max(6, Math.round((s.damage ?? 100) * 0.45));
-      // Apply global damage multiplier if available
-      const gMul = p.getGlobalDamageMultiplier?.() ?? (p.globalDamageMultiplier ?? 1);
-      dmg = Math.max(1, Math.round(dmg * gMul));
+  // Per-blade damage tuned to a fraction of per-shot expected damage
+  dmg = Math.max(6, Math.round((s.damage ?? 100) * 0.45));
+  // Apply global damage multiplier via helper
+  dmg = Math.max(1, scaleDamage(dmg, p));
     } catch {}
 
     // Emit N instantaneous blades within wedge (centered), apply geometry-based damage with pierce limit per blade

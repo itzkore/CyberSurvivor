@@ -1,8 +1,10 @@
 // Entry point for the game
 import { Game } from './game/Game';
+// Ensure Codex v2 Tailwind styles are always loaded in dev/prod
+import './features/codex/styles.css';
+import { createGLEnemyRendererLike } from './render/gl/GLEnemyRenderer';
 import { MainMenu } from './ui/MainMenu';
 import { CharacterSelectPanel } from './ui/CharacterSelectPanel'; // Import CharacterSelectPanel
-import { Codex } from './ui/Codex';
 import { AssetLoader } from './game/AssetLoader';
 import { Logger } from './core/Logger'; // Import Logger
 import { PreloadManager } from './game/PreloadManager';
@@ -109,6 +111,67 @@ window.onload = async () => {
 
   canvas.classList.add('game-canvas-root');
   applyCanvasSizeGlobal(canvas);
+
+  // Optional GL bullets renderer toggle via URL (?gl=1)
+  const glEnabled = /[?&]gl=1/.test(location.search);
+  (window as any).__glEnabled = glEnabled;
+  if (glEnabled) {
+    try {
+      const mod = await import('./render/gl/GLBulletRenderer');
+      const glr = mod.createGLBulletRendererLike(canvas);
+      (window as any).__glBulletRenderer = glr;
+    } catch (e) {
+      (window as any).__glEnabled = false;
+      (window as any).__glBulletRenderer = null;
+      console.warn('[main] GL bullets init failed, will use 2D path', e);
+    }
+  }
+
+  // Optional GL enemies renderer via URL (?gle=1) or persisted preference
+  let glEnemiesEnabled = /[?&]gle=1/.test(location.search);
+  try {
+    if (!glEnemiesEnabled) {
+      const saved = localStorage.getItem('cs-gl-enemies');
+      if (saved === '1') glEnemiesEnabled = true;
+    }
+  } catch { /* ignore storage */ }
+  (window as any).__glEnemiesEnabled = glEnemiesEnabled;
+  if (glEnemiesEnabled) {
+    try {
+      const glER = createGLEnemyRendererLike(canvas);
+      if (glER) {
+        (window as any).__glEnemiesRenderer = glER;
+      } else {
+        (window as any).__glEnemiesEnabled = false;
+      }
+    } catch (e) {
+      (window as any).__glEnemiesEnabled = false;
+      (window as any).__glEnemiesRenderer = null;
+      console.warn('[main] GL enemies init failed, using 2D path', e);
+    }
+  }
+  // Keyboard runtime toggle: Ctrl+G -> toggle GL enemies
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || (e.key !== 'g' && e.key !== 'G')) return;
+    e.preventDefault();
+    const currently = !!(window as any).__glEnemiesEnabled;
+    const next = !currently;
+    (window as any).__glEnemiesEnabled = next;
+    try { localStorage.setItem('cs-gl-enemies', next ? '1' : '0'); } catch {}
+    if (next && !(window as any).__glEnemiesRenderer) {
+      try {
+        const glER = createGLEnemyRendererLike(canvas);
+        if (glER) (window as any).__glEnemiesRenderer = glER;
+        else (window as any).__glEnemiesEnabled = false;
+      } catch {
+        (window as any).__glEnemiesEnabled = false;
+      }
+    }
+    if (!next) {
+      // Drop reference to allow GC; 2D path resumes automatically
+      try { (window as any).__glEnemiesRenderer = null; } catch {}
+    }
+  });
 
   const game = new Game(canvas); // Instantiate Game first
   (window as any).__game = game; // expose for resize handling
@@ -279,7 +342,8 @@ window.onload = async () => {
   // Instantiate CharacterSelectPanel after assets are loaded
   const characterSelectPanel = new CharacterSelectPanel();
   game.setCharacterSelectPanel(characterSelectPanel);
-  const codex = new Codex();
+  // Codex: React Codex v2 is the only implementation now
+  const codexV2 = (window as any).__codex2Enabled === true;
 
   // Instantiate UpgradePanel after player is initialized
   import('./ui/UpgradePanel').then(({ UpgradePanel }) => {
@@ -315,6 +379,18 @@ window.onload = async () => {
   const handleResize = () => {
     applyCanvasSizeGlobal(canvas);
     game.resize(window.innerWidth, window.innerHeight);
+    try {
+      const glr: any = (window as any).__glBulletRenderer;
+      if (glr && typeof glr.setSize === 'function') {
+        glr.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
+    try {
+      const glE: any = (window as any).__glEnemiesRenderer;
+      if (glE && typeof glE.setSize === 'function') {
+        glE.setSize(canvas.width, canvas.height);
+      }
+    } catch { /* ignore */ }
   };
   window.addEventListener('resize', handleResize);
   // In case of orientation change / zoom adjustments
@@ -469,22 +545,19 @@ window.onload = async () => {
     characterSelectPanel.hide();
     try { ensureSandboxOverlay(game).hide(); } catch {}
     try { radioOverlay.hide(); } catch {}
-    try { codex.showOperatives(); } catch { codex.show(); }
+    // Let codex2 boot handle this via showCodex
+    window.dispatchEvent(new CustomEvent('showCodex', { detail: { tab: 'operatives' } }));
     // Keep canvas behind UI for Codex
     canvas.style.zIndex = '-1';
   });
 
   window.addEventListener('showCodex', (e: Event) => {
     Logger.info('[main.ts] showCodex event received');
-    mainMenu.hide();
+    // Keep main menu visible behind Codex so closing Codex never yields a blank screen.
+    // mainMenu.hide();
     characterSelectPanel.hide();
     try { ensureSandboxOverlay(game).hide(); } catch {}
     const detail = (e as CustomEvent).detail as { tab?: string, operativeId?: string } | undefined;
-    if (detail?.tab === 'operatives') {
-      try { codex.showOperatives(detail.operativeId); } catch { codex.show(); }
-    } else {
-      codex.show();
-    }
     // Keep canvas behind to allow UI focus
     canvas.style.zIndex = '-1';
     // Hide radio overlay while Codex is open
@@ -493,11 +566,31 @@ window.onload = async () => {
 
   window.addEventListener('hideCodex', () => {
     Logger.info('[main.ts] hideCodex event received');
-    codex.hide();
+  // Codex v2 will handle hide via its event listener
     // If in-game, re-show radio overlay upon leaving Codex
     try {
       const st = game.getState ? game.getState() : (game as any).state;
       if (st === 'GAME' || st === 'PAUSE') radioOverlay.show();
+    } catch {}
+    // Restore canvas layering so something is visible immediately
+    try {
+      const canvas = document.getElementById('gameCanvas') as HTMLCanvasElement | null;
+      if (canvas) {
+        canvas.style.display = 'block';
+        // If Codex boot preserved previous z-index, it will restore it. Ensure a sane fallback.
+        if (!canvas.style.zIndex || canvas.style.zIndex === '-1') {
+          // If we're in menu state, keep canvas behind menus; otherwise bring above
+          const st = game.getState ? game.getState() : (game as any).state;
+          canvas.style.zIndex = (st === 'MAIN_MENU' || st === 'CHAR_SELECT') ? '-1' : '10';
+        }
+      }
+    } catch {}
+    // If we're in main menu state, make sure the main menu is visible again
+    try {
+      const st = game.getState ? game.getState() : (game as any).state;
+      if (st === 'MAIN_MENU') {
+        mainMenu.show();
+      }
     } catch {}
   });
 
@@ -506,7 +599,7 @@ window.onload = async () => {
   characterSelectPanel.hide(); // Hide character select if coming from there
   try { game.stopToMainMenu(); } catch {}
     mainMenu.show();
-  codex.hide();
+  // Codex v2 reacts to showMainMenu itself via listener
     canvas.style.zIndex = '-1';
   try { ensureSandboxOverlay(game).hide(); } catch {}
   try { radioOverlay.hide(); } catch {}
@@ -540,8 +633,12 @@ window.onload = async () => {
   try { radioOverlay.show(); } catch {}
   });
 
-  // Show upgrade panel on player level up
+  // Show upgrade panel on player level up (not in Last Stand)
   window.addEventListener('levelup', () => {
+    try {
+      const g: any = (window as any).__game;
+      if (g && g.gameMode === 'LAST_STAND') return;
+    } catch {}
     Logger.info('[main.ts] levelup event received, dispatching showUpgradePanel');
     window.dispatchEvent(new CustomEvent('showUpgradePanel'));
     canvas.style.display = 'block';

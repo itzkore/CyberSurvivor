@@ -25,7 +25,11 @@ export class DataStormRMB {
     return { value: (max - remain), max, ready, active } as any;
   }
 
-  /** Try cast on RMB edge; while active, EnemyManager handles tornado movement/damage. */
+  /**
+   * Try cast on RMB edge; while active, EnemyManager handles tornado movement/damage.
+   * Note: Global multipliers (area/damage) are applied inside DataTornadoZoneManager.spawn
+   * so parameters here should remain base values to avoid double-scaling.
+   */
   update(nowMs: number, deltaMs: number, rDown: boolean, edge: boolean, camX: number, camY: number) {
     // Activate on edge if off cooldown
     if (edge && nowMs >= this.cdUntil) {

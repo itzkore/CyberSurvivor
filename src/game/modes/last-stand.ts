@@ -75,7 +75,7 @@ export class LastStandGameMode {
   // Kick off LS asset preloading in background ASAP to avoid first-visibility stalls
   try { setTimeout(() => { this.preloadAssets().catch(()=>{}); }, 0); } catch {}
     // Earn 1 scrap per kill baseline; decrement alive counter
-    eventBus.on('enemyDead', (payload) => {
+  eventBus.on('enemyDead', (payload) => {
       // Early-wave economy boost: award extra scrap for first waves
       const wv = this.wave.getCurrentWaveNumber() + 1;
       const bonus = (wv <= 5) ? 1 : 0; // 2 scrap/kill in waves 1-5
@@ -91,6 +91,12 @@ export class LastStandGameMode {
           } catch {}
         }
       } catch {}
+      // Bonus scrap for larger enemies in Last Stand
+      try {
+        const sz = (payload as any).size as 'small'|'medium'|'large'|undefined;
+        if (sz === 'medium') this.currency.add(1);
+        else if (sz === 'large') this.currency.add(3);
+      } catch { /* ignore */ }
       this.wave.onEnemyDefeated();
       updateEnemiesLeftDisplay();
     });
@@ -153,6 +159,8 @@ export class LastStandGameMode {
 
   // Expose turret manager for renderer (read-only usage)
   public getTurretManager(){ return this.turrets; }
+  // External award API: add scrap safely (clamped and emits HUD update via CurrencySystem)
+  public addScrap(amount: number){ try { this.currency.add(amount|0); } catch {} }
   // Expose geometry for renderer (read-only)
   public get palisadesGeom(){ return this.palisades; }
   public get holdersGeom(){ return this.holders; }
@@ -517,8 +525,11 @@ export class LastStandGameMode {
         }
       } catch { /* ignore */ }
     }
-  // When wave completes, open shop — but only after any elites are cleared
-  if (!this.onCompleteHooked) { this.wave.onWaveComplete(()=> this.onWaveCleared()); this.onCompleteHooked = true; }
+  // When wave completes, award completion scrap and open shop — but only after any elites are cleared
+  if (!this.onCompleteHooked) {
+    this.wave.onWaveComplete((idx:number)=> this.onWaveCleared(idx));
+    this.onCompleteHooked = true;
+  }
   if (first) this.currency.add(100); // seed more initial scrap for first shop
   }
 
@@ -528,6 +539,8 @@ export class LastStandGameMode {
   }
 
   private startShopPhase(){
+    // Defensive: never open LS shop unless the global mode is LAST_STAND
+    try { if (((window as any).__gameInstance?.gameMode) !== 'LAST_STAND') return; } catch {}
     this.phase = 'SHOP';
     this.hud.setPhase('SHOP');
     const EM:any = this.game.getEnemyManager();
@@ -552,22 +565,36 @@ export class LastStandGameMode {
   }
 
   /** After the wave's regular enemies are cleared, wait for elites/boss to die before opening the shop. */
-  private onWaveCleared(){
+  private onWaveCleared(completedIndex?: number){
     if (this.phase !== 'COMBAT') return; // ignore if already transitioned
     const EM:any = this.game.getEnemyManager();
+    // Wave completion reward: 50 + 5 × wave number (1-indexed)
+    try {
+      const waveNum = (typeof completedIndex === 'number' ? completedIndex + 1 : (this.wave.getCurrentWaveNumber() || 0));
+      const reward = 50 + 5 * Math.max(1, waveNum);
+      this.currency.add(reward);
+      // Optional: broadcast toast without binding HUD API
+      try { window.dispatchEvent(new CustomEvent('upgradeNotice', { detail: { type:'wave-clear', message: `Wave Clear +${reward}` } })); } catch {}
+    } catch { /* ignore */ }
     const hasThreatsAlive = () => {
       try {
-        if (EM && typeof EM.hasActiveElites === 'function') {
-          if (EM.hasActiveElites()) return true;
-        } else {
-          const arr = EM?.getEnemies?.() || [];
-          for (let i=0;i<arr.length;i++) { const e:any = arr[i]; if (e && e.active && (e._elite && e._elite.kind)) return true; }
-        }
+        // Any active enemies at all (small/medium/large) should block shop opening
+        const arr = EM?.getEnemies?.() || [];
+        for (let i=0;i<arr.length;i++) { const e:any = arr[i]; if (e && e.active && e.hp > 0) return true; }
       } catch {}
       // Also gate on boss alive
       try {
         const bm:any = (window as any).__bossManager; const boss = bm?.getBoss ? bm.getBoss() : (bm?.boss);
         if (boss && boss.active && boss.hp > 0) return true;
+      } catch {}
+      // And ensure no pending wave spawns are queued (avoid premature shop when delayed spawns exist)
+      try {
+        if (EM && typeof (EM as any).isWaveSpawning === 'function') {
+          if ((EM as any).isWaveSpawning()) return true;
+        } else {
+          // Fallback: check known internal flag if present
+          if ((EM as any).pendingWaveSpawn === true) return true;
+        }
       } catch {}
       return false;
     };
@@ -706,7 +733,7 @@ export class LastStandGameMode {
   // Replace any existing Last Stand blockers to avoid duplicates
   if (typeof rm.clearBlockRects === 'function') rm.clearBlockRects();
   if (typeof rm.clearEnemyBlockRects === 'function') rm.clearEnemyBlockRects();
-      if (typeof rm.addBlockRects === 'function') {
+  if (typeof rm.addBlockRects === 'function') {
         // Core as a solid blocker (approximate circle with square)
         if (this.core) {
           const r = Math.max(8, Math.floor(this.core.radius * 0.95));
@@ -716,7 +743,14 @@ export class LastStandGameMode {
   if (allHolders?.length) rm.addBlockRects(allHolders.map(h => ({ x: Math.round(h.x), y: Math.round(h.y), w: Math.round(h.w), h: Math.round(h.h) })));
         if (this.skipRect) rm.addBlockRects([{ x: Math.round(this.skipRect.x), y: Math.round(this.skipRect.y), w: Math.round(this.skipRect.w), h: Math.round(this.skipRect.h) }]);
         // Enemy-only blockers (yellow lanes and gate)
-        if (typeof rm.addEnemyBlockRects === 'function' && this.enemyBlocks?.length) rm.addEnemyBlockRects(this.enemyBlocks.map(b => ({ x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) })));
+        if (typeof rm.addEnemyBlockRects === 'function') {
+          // Ensure active gate blocker is included
+          if (this.gate && this.gate.active) {
+            const exists = this.enemyBlocks.some(b => Math.abs(b.x - this.gate!.x) < 2 && Math.abs(b.y - this.gate!.y) < 2 && Math.abs(b.w - this.gate!.w) < 2 && Math.abs(b.h - this.gate!.h) < 2);
+            if (!exists) this.enemyBlocks.push({ x: this.gate.x, y: this.gate.y, w: this.gate.w, h: this.gate.h });
+          }
+          if (this.enemyBlocks?.length) rm.addEnemyBlockRects(this.enemyBlocks.map(b => ({ x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) })));
+        }
       } else {
         // Fallback: stash into first room's doorRects
         const rooms:any = rm?.getRooms?.();
@@ -890,7 +924,18 @@ export class LastStandGameMode {
       const wallX = this.holders[0]?.x || (cor.x + Math.floor(cor.w * 0.35));
       const gw = 22; const gh = Math.max(48, Math.min(96, gapBot - gapTop - 24));
       const gy = Math.floor((gapTop + gapBot) / 2 - gh/2);
-      this.gate = { x: wallX + Math.floor((this.holders[0]?.w||36)/2 - gw/2), y: gy, w: gw, h: gh, hp: 0, maxHp: 0, level: 0, active: false };
+      const newX = wallX + Math.floor((this.holders[0]?.w||36)/2 - gw/2);
+      if (!this.gate) {
+        this.gate = { x: newX, y: gy, w: gw, h: gh, hp: 0, maxHp: 0, level: 0, active: false };
+      } else {
+        // Preserve existing state; only update geometry
+        this.gate.x = newX; this.gate.y = gy; this.gate.w = gw; this.gate.h = gh;
+      }
+      // If gate is active, ensure corresponding enemy-only blocker exists
+      if (this.gate.active) {
+        const exists = this.enemyBlocks.some(b => Math.abs(b.x - this.gate!.x) < 2 && Math.abs(b.y - this.gate!.y) < 2 && Math.abs(b.w - this.gate!.w) < 2 && Math.abs(b.h - this.gate!.h) < 2);
+        if (!exists) this.enemyBlocks.push({ x: this.gate.x, y: this.gate.y, w: this.gate.w, h: this.gate.h });
+      }
     } catch { /* ignore */ }
   }
 
@@ -920,6 +965,14 @@ export class LastStandGameMode {
     this.towerPlusPurchases++;
     // Rebuild enemy-only blockers with new geometry and register
     this.setupEnemyOnlyNoPassZones();
+    // Re-apply gate blocker if gate active
+    try {
+      const g = this.gate;
+      if (g && g.active) {
+        const exists = this.enemyBlocks.some(b => Math.abs(b.x - g.x) < 2 && Math.abs(b.y - g.y) < 2 && Math.abs(b.w - g.w) < 2 && Math.abs(b.h - g.h) < 2);
+        if (!exists) this.enemyBlocks.push({ x: g.x, y: g.y, w: g.w, h: g.h });
+      }
+    } catch { /* ignore */ }
     this.registerBlockers();
   }
 
@@ -947,7 +1000,7 @@ export class LastStandGameMode {
   /** Tear down LS UI and listeners so returning to main menu doesn't leave UI visible. */
   public dispose(){
     try { this.hud.hide(); } catch {}
-    try { this.overlay?.hide(); } catch {}
+    try { (this.overlay as any)?.destroy?.(); } catch { try { this.overlay?.hide(); } catch {} }
     try { this.hideTurretHolderShop(); } catch {}
     try { this.hideSkipControl(); } catch {}
   try { const rm:any = (window as any).__roomManager; rm?.clearBlockRects?.(); } catch {}

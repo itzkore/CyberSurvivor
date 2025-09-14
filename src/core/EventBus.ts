@@ -4,7 +4,7 @@
  */
 export type EventMap = {
   enemyHit: { enemyId: string; amount: number; isCritical?: boolean; weapon?: number; x: number; y: number };
-  enemyDead: { id: string; elite?: boolean; kind?: string; x: number; y: number; time: number };
+  enemyDead: { id: string; elite?: boolean; kind?: string; x: number; y: number; time: number; size?: 'small'|'medium'|'large' };
   eliteSpawned: { kind: string; x: number; y: number; time: number };
 };
 

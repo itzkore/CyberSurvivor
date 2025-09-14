@@ -1,0 +1,111 @@
+@import "tailwindcss";
+/* Tailwind config is resolved automatically; explicit @config removed for dev/HMR stability */
+
+:root {
+  --scanline-opacity: 0.08;
+  --cs-bg-top: rgba(0, 12, 18, 0.96);
+  --cs-bg-bot: rgba(0, 8, 12, 0.92);
+  --cs-accent: #5EEBFF;
+  --cs-accent-2: #3ED1E4;
+  --cs-border: rgba(0, 255, 255, 0.28);
+  --cs-border-strong: rgba(0, 255, 255, 0.38);
+  --cs-text: #c8f7ff;
+}
+
+.scanlines::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(0,0,0,0) 0px,
+    rgba(0,0,0,0) 2px,
+    rgba(94, 235, 255, var(--scanline-opacity)) 3px
+  );
+}
+
+/* Background utility used by CodexRoute wrapper */
+.bg-bg {
+  background: linear-gradient(180deg, var(--cs-bg-top), var(--cs-bg-bot));
+}
+
+.skeleton {
+  /* Avoid @apply animate-pulse to prevent Tailwind v4 unknown utility issues in PostCSS builds */
+  animation: skeleton-pulse 1.6s ease-in-out infinite;
+  background-color: rgba(34, 211, 238, 0.10); /* cyan-500/10 */
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+/* --- Fallbacks: ensure core Codex utilities always exist --- */
+.glass {
+  background: rgba(8, 24, 30, 0.55);
+  backdrop-filter: saturate(1.1) blur(6px);
+  -webkit-backdrop-filter: saturate(1.1) blur(6px);
+  border: 1px solid var(--cs-border);
+}
+.neon-border {
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.35),
+    inset 0 0 12px rgba(94, 235, 255, 0.08);
+  border-color: var(--cs-border);
+}
+.holo {
+  background: linear-gradient(180deg, rgba(0, 26, 34, 0.65), rgba(0, 14, 18, 0.55));
+  border: 1px solid var(--cs-border);
+  box-shadow: inset 0 0 24px rgba(94, 235, 255, 0.10), 0 0 26px rgba(0, 255, 255, 0.18);
+}
+
+/* Neon shadow utility used by buttons/cards */
+.shadow-neon { box-shadow: 0 0 16px rgba(94, 235, 255, 0.25), 0 0 6px rgba(62, 209, 228, 0.25); }
+
+/* Subtle hover lift for holo panels and cards */
+.holo.neon-border { transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease; }
+.holo.neon-border:hover {
+  transform: translateY(-1px);
+  border-color: var(--cs-border-strong);
+  box-shadow:
+    0 14px 30px rgba(0,0,0,.38),
+    inset 0 0 14px rgba(94,235,255,.12);
+}
+
+/* Font utility fallbacks (if Tailwind theme isn’t loaded) */
+.font-orbitron { font-family: "Orbitron", sans-serif; }
+.font-inter { font-family: "Inter", system-ui, sans-serif; }
+
+/* Pixel-art friendly rendering for portraits */
+.image-render-pixel { image-rendering: pixelated; image-rendering: crisp-edges; }
+
+/* --- Overscroll/gesture guards to avoid white flashes/back-swipe on left --- */
+.codex-overlay { overscroll-behavior: contain; overscroll-behavior-x: none; }
+.codex-overlay * { overscroll-behavior: contain; }
+/* Ensure horizontal carousels use touch-action correctly. Embla expects the
+  root overflow wrapper (with ref) and a flex container for slides. */
+.embla { touch-action: pan-y pinch-zoom; /* avoid browser back on horizontal swipe */ }
+.embla__container { display: flex; }
+/* Make each slide non-flexible to stabilize widths during momentum */
+.embla__container > * { flex: 0 0 auto; min-width: 0; }
+/* Give the viewport a subtle smooth scroll feel on keyboard arrows/wheel */
+.embla { scroll-behavior: smooth; }
+/* Avoid accidental text/image selection while dragging the carousel */
+.embla, .embla * {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.embla img { -webkit-user-drag: none; }
+
+/* Reusable utility to disable selection when needed */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Harden the character select thumbnails row as well (legacy UI path) */
+.carousel-thumbnails { touch-action: pan-y pinch-zoom; overscroll-behavior-x: contain; }
