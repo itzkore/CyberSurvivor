@@ -2010,22 +2010,19 @@ export class Game {
     const enemiesArr: any[] = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
     // Pass manager and playerX so GL can select atlas UVs and facing consistently with 2D path
     glER.render(enemiesArr, this.enemyManager, this.player?.x ?? 0, this.camX, this.camY, this.designWidth, this.designHeight, pixelW2, pixelH2, { tint: [1.0, 1.0, 1.0, 1.0] });
-      // Only composite and skip 2D bodies if renderer reports ready AND drew at least one instance
-  const glReady = !!((window as any).__glEnemiesIsReady);
-  const glAtlasReady = !!((window as any).__glEnemiesAtlasReady);
-  const glCount = (window as any).__glEnemiesLastCount ?? 0;
-  // Only treat GL as authoritative for body draw when the atlas is actually ready and drew instances
-  if (glReady && glAtlasReady && glCount > 0) {
-        // Composite GL enemies canvas overlay in screen space (under 2D overlays/HP bars)
+      // Read GL readiness flags published by the renderer
+      const glReady = !!((window as any).__glEnemiesIsReady);
+      const glAtlasReady = !!((window as any).__glEnemiesAtlasReady);
+      const glCount = (window as any).__glEnemiesLastCount ?? 0;
+      // Composite GL canvas whenever it rendered any instances (texture or atlas path)
+      if (glReady && glCount > 0) {
         this.ctx.save();
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
         this.ctx.drawImage(glER.canvas, 0, 0);
         this.ctx.restore();
-        // Mark to EnemyManager that base body sprites should be skipped this frame
-        (this.enemyManager as any).__skipBody2DOnce = true;
-      } else {
-        (this.enemyManager as any).__skipBody2DOnce = false;
       }
+      // Only skip 2D body draw when the atlas is ready (parity with sprite visuals) AND GL drew instances
+      (this.enemyManager as any).__skipBody2DOnce = !!(glAtlasReady && glCount > 0);
       // Now draw overlays/HP bars via EnemyManager (body draw gated inside when GL ready)
       this.enemyManager.draw(this.ctx, this.camX, this.camY);
     } else {
