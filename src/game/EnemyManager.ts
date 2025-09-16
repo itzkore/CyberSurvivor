@@ -42,6 +42,13 @@ import { ENEMY_SPRITE_DEFS, ENEMY_RADIUS_DEFS } from './enemies/archetypes';
 import { configureSmallSpawn } from './enemies/Small';
 import { configureMediumSpawn } from './enemies/Medium';
 import { configureLargeSpawn } from './enemies/Large';
+import { EnemyWebGLRenderer } from '../rendering/EnemyWebGLRenderer';
+
+interface EnemyDrawOptions {
+  shakeX?: number;
+  shakeY?: number;
+  brightness?: number;
+}
 
 type SpawnPattern = 'normal' | 'ring' | 'cone' | 'surge';
 
@@ -67,6 +74,7 @@ export class EnemyManager {
   private treasures: SpecialTreasure[] = []; // Destructible treasures that drop a random special item
   private treasurePool: SpecialTreasure[] = []; // Pool for treasures
   private assetLoader: AssetLoader | null = null;
+  private glRenderer: EnemyWebGLRenderer | null = null;
   // legacy waves removed
   private dynamicWaveAccumulator: number = 0; // ms accumulator for dynamic spawner
   // Wave system (replaces/on-demand dynamic spawning)
@@ -2951,7 +2959,7 @@ export class EnemyManager {
    * @param camX Camera X offset (unused)
    * @param camY Camera Y offset (unused)
    */
-  public draw(ctx: CanvasRenderingContext2D, camX: number = 0, camY: number = 0) {
+  public draw(ctx: CanvasRenderingContext2D, camX: number = 0, camY: number = 0, opts?: EnemyDrawOptions) {
   ctx.save();
   // Visible rect for culling (pad to avoid pop-in at edges)
   const viewW = (window as any).__designWidth || (ctx.canvas as HTMLCanvasElement).width;
@@ -3823,15 +3831,52 @@ export class EnemyManager {
   const globalLow = !!((window as any).__lowFX);
   const underLoad = this.avgFrameMs > 18; // adaptive threshold used elsewhere
   const fxLow = sandboxLow || globalLow || underLoad;
-    // Heavy FX slice budget scales down under load; zero when lowFX
+  // Heavy FX slice budget scales down under load; zero when lowFX
   let heavyBudget = fxLow
       ? 0
       : (frameMsForBudget > 55 ? 8 : frameMsForBudget > 40 ? 16 : 32);
   // Cap to a fraction of visible enemies to avoid worst-case storms
   heavyBudget = Math.min(heavyBudget, Math.ceil(visibleEnemies * 0.25));
-    // Per-frame budget for RGB glitch ghost overlays (expensive overdraw)
+  // Per-frame budget for RGB glitch ghost overlays (expensive overdraw)
   let glitchBudget = fxLow ? 0 : (frameMsForBudget > 55 ? 4 : frameMsForBudget > 40 ? 8 : 12);
   glitchBudget = Math.min(glitchBudget, Math.ceil(visibleEnemies * 0.15));
+  const brightness = opts?.brightness ?? 1;
+  const shakeXGlobal = opts?.shakeX ?? 0;
+  const shakeYGlobal = opts?.shakeY ?? 0;
+  let skipBaseSprites = false;
+  if (!this.glRenderer) {
+    this.glRenderer = new EnemyWebGLRenderer();
+  }
+  const glRenderer = this.glRenderer;
+  if (glRenderer && glRenderer.isAvailable()) {
+    const visibleForGl: Enemy[] = [];
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const enemy = this.activeEnemies[i];
+      if (!enemy || !enemy.active) continue;
+      if (enemy.x < minX || enemy.x > maxX || enemy.y < minY || enemy.y > maxY) continue;
+      visibleForGl.push(enemy);
+    }
+    glRenderer.render({
+      enemies: visibleForGl,
+      cameraX: camX,
+      cameraY: camY,
+      viewWidth: viewW,
+      viewHeight: viewH,
+      pixelWidth: (ctx.canvas as HTMLCanvasElement).width,
+      pixelHeight: (ctx.canvas as HTMLCanvasElement).height,
+      shakeX: shakeXGlobal,
+      shakeY: shakeYGlobal,
+      time: now,
+      brightness,
+    });
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(glRenderer.getCanvas(), 0, 0, (ctx.canvas as HTMLCanvasElement).width, (ctx.canvas as HTMLCanvasElement).height);
+    ctx.restore();
+    skipBaseSprites = visibleForGl.length > 0;
+  }
     if (this.usePreRenderedSprites) {
   for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
         const enemy = this.activeEnemies[i];
@@ -3891,26 +3936,28 @@ export class EnemyManager {
   const stepOffsetY = (walkFlip ? -0.3 : 0.3);
   const drawX = enemy.x + shakeX + stepOffsetX - size/2;
   const drawY = enemy.y + shakeY + stepOffsetY - size/2;
-  // Mind-controlled visual enlargement & glow
-  if (eAny._mindControlledUntil && eAny._mindControlledUntil > now) {
-    const scale = 1.5; // 50% larger
-    const w = size * scale; const h = size * scale;
-    const dxS = enemy.x + shakeX + stepOffsetX - w/2;
-    const dyS = enemy.y + shakeY + stepOffsetY - h/2;
-    ctx.save();
-    ctx.drawImage(baseImg, dxS, dyS, w, h);
-    // Cyan/red mixed pulse outline for hacked ally clarity
-    try {
-      const pulse = 0.5 + 0.5 * Math.sin(now / 160);
-      ctx.globalCompositeOperation = 'lighter';
-      ctx.globalAlpha = 0.35 + 0.25 * pulse;
-      ctx.strokeStyle = '#ff3d3d';
-      ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.arc(enemy.x + shakeX, enemy.y + shakeY, (enemy.radius || 20) * 1.55, 0, Math.PI*2); ctx.stroke();
-    } catch { /* ignore */ }
-    ctx.restore();
-  } else {
-    ctx.drawImage(baseImg, drawX, drawY, size, size);
+  if (!skipBaseSprites) {
+    // Mind-controlled visual enlargement & glow
+    if (eAny._mindControlledUntil && eAny._mindControlledUntil > now) {
+      const scale = 1.5; // 50% larger
+      const w = size * scale; const h = size * scale;
+      const dxS = enemy.x + shakeX + stepOffsetX - w/2;
+      const dyS = enemy.y + shakeY + stepOffsetY - h/2;
+      ctx.save();
+      ctx.drawImage(baseImg, dxS, dyS, w, h);
+      // Cyan/red mixed pulse outline for hacked ally clarity
+      try {
+        const pulse = 0.5 + 0.5 * Math.sin(now / 160);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.35 + 0.25 * pulse;
+        ctx.strokeStyle = '#ff3d3d';
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(enemy.x + shakeX, enemy.y + shakeY, (enemy.radius || 20) * 1.55, 0, Math.PI*2); ctx.stroke();
+      } catch { /* ignore */ }
+      ctx.restore();
+    } else {
+      ctx.drawImage(baseImg, drawX, drawY, size, size);
+    }
   }
         // Blocker: draw a front-facing riot shield plate held ahead of the body
         if (eliteKind === 'BLOCKER') {
@@ -4013,7 +4060,7 @@ export class EnemyManager {
           }
         }
         // RGB glitch effect: use cached-tint ghosts; cap heavy work per frame (globally gated)
-  if (glitchBudget > 0 && !fxLow && (eAny._rgbGlitchUntil || 0) > now) {
+  if (!skipBaseSprites && glitchBudget > 0 && !fxLow && (eAny._rgbGlitchUntil || 0) > now) {
           glitchBudget--;
           const tLeft = Math.max(0, Math.min(1, (eAny._rgbGlitchUntil - now) / 220));
           const phase = (eAny._rgbGlitchPhase || 0);
