@@ -412,6 +412,9 @@ export class AssetLoader {
   }
 }
 
+// Expose AssetLoader for modules that access it via window (dev/debug compatibility)
+try { (window as any).AssetLoader = AssetLoader; } catch {}
+
 // Expose for UI helpers that guard on window.AssetLoader presence
 try {
   if (typeof window !== 'undefined') {

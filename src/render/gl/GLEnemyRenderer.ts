@@ -484,6 +484,7 @@ export class GLEnemyRenderer {
   try {
     (window as any).__glEnemiesIsReady = !!(this.atlasReady || this.textureReady);
     (window as any).__glEnemiesAtlasReady = !!this.atlasReady;
+    (window as any).__glEnemiesHasValidTexture = !!(this.texture && (this.textureReady || this.atlasReady));
   } catch {}
   if (!count) { (window as any).__glEnemiesLastCount = 0; return; }
     gl.useProgram(this.program);
