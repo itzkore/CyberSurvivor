@@ -2032,8 +2032,8 @@ export class Game {
       this.enemyManager.draw(this.ctx, this.camX, this.camY);
     }
   } catch { this.enemyManager.draw(this.ctx, this.camX, this.camY); }
-        // Bullets layer: use GL renderer when enabled, else 2D draw
-        try {
+    // Bullets layer: use GL renderer when enabled, else 2D draw
+    try {
         const glr: any = (window as any).__glBulletRenderer;
         if (glr && glr.canvas) {
             // Drive GL renderer with current bullets and camera
@@ -2055,8 +2055,8 @@ export class Game {
           } else {
             this.bulletManager.draw(this.ctx);
           }
-        } catch { this.bulletManager.draw(this.ctx); }
-        // Active beams (railgun/sniper) under player for proper layering
+  } catch { this.bulletManager.draw(this.ctx); }
+  // Active beams (railgun/sniper) under player for proper layering
         const glBR: any = (window as any).__glBeamsRenderer;
         let skipped2DBeams = false;
         if (this._activeBeams && this._activeBeams.length) {

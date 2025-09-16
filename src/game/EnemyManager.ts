@@ -43,6 +43,12 @@ import { configureSmallSpawn } from './enemies/Small';
 import { configureMediumSpawn } from './enemies/Medium';
 import { configureLargeSpawn } from './enemies/Large';
 
+interface EnemyDrawOptions {
+  shakeX?: number;
+  shakeY?: number;
+  brightness?: number;
+}
+
 type SpawnPattern = 'normal' | 'ring' | 'cone' | 'surge';
 
 export class EnemyManager {
@@ -2957,7 +2963,7 @@ export class EnemyManager {
    * @param camX Camera X offset (unused)
    * @param camY Camera Y offset (unused)
    */
-  public draw(ctx: CanvasRenderingContext2D, camX: number = 0, camY: number = 0) {
+  public draw(ctx: CanvasRenderingContext2D, camX: number = 0, camY: number = 0, opts?: EnemyDrawOptions) {
   ctx.save();
   // Visible rect for culling (pad to avoid pop-in at edges)
   const viewW = (window as any).__designWidth || (ctx.canvas as HTMLCanvasElement).width;
@@ -3834,15 +3840,19 @@ export class EnemyManager {
   const globalLow = !!((window as any).__lowFX);
   const underLoad = this.avgFrameMs > 18; // adaptive threshold used elsewhere
   const fxLow = sandboxLow || globalLow || underLoad;
-    // Heavy FX slice budget scales down under load; zero when lowFX
+  // Heavy FX slice budget scales down under load; zero when lowFX
   let heavyBudget = fxLow
       ? 0
       : (frameMsForBudget > 55 ? 8 : frameMsForBudget > 40 ? 16 : 32);
   // Cap to a fraction of visible enemies to avoid worst-case storms
   heavyBudget = Math.min(heavyBudget, Math.ceil(visibleEnemies * 0.25));
-    // Per-frame budget for RGB glitch ghost overlays (expensive overdraw)
+  // Per-frame budget for RGB glitch ghost overlays (expensive overdraw)
   let glitchBudget = fxLow ? 0 : (frameMsForBudget > 55 ? 4 : frameMsForBudget > 40 ? 8 : 12);
   glitchBudget = Math.min(glitchBudget, Math.ceil(visibleEnemies * 0.15));
+  const brightness = opts?.brightness ?? 1;
+  const shakeXGlobal = opts?.shakeX ?? 0;
+  const shakeYGlobal = opts?.shakeY ?? 0;
+  // Note: GL enemy body rendering is handled in Game.ts; here we respect __skipBody2DOnce to avoid double-draw.
     if (this.usePreRenderedSprites) {
   for (let i = 0, len = this.activeEnemies.length; i < len; i++) {
         const enemy = this.activeEnemies[i];
