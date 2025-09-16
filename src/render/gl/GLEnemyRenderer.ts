@@ -215,16 +215,21 @@ export class GLEnemyRenderer {
     if (now - this.lastTextureAttemptMs < 500) return; // throttle attempts
     this.lastTextureAttemptMs = now;
     try {
-      const AL: any = (window as any).AssetLoader;
+  const AL: any = (window as any).AssetLoader;
       if (!AL) return;
       // Use the game's shared loader to reuse the preloaded cache
       const game: any = (window as any).__gameInstance;
-      const loader = game?.assetLoader || new AL();
+  const loader = game?.assetLoader || new AL();
   // Resolve from manifest with dotted key when possible, fallback to known path
   let path = '';
   try { path = loader.getAsset?.('enemies.default') || ''; } catch {}
       if (!path) path = AL.normalizePath('/assets/enemies/enemy_default.png');
-      const img: HTMLImageElement | undefined = loader.getImage?.(path);
+      let img: HTMLImageElement | undefined = loader.getImage?.(path);
+      // Proactively load the image if not cached yet to avoid long “no texture” windows in dev
+      if ((!img || !img.width || !img.height) && typeof loader.loadImage === 'function' && path) {
+        try { loader.loadImage(path); } catch {}
+        img = loader.getImage?.(path);
+      }
       if (!img || !img.width || !img.height) return; // try again later
       const gl = this.gl;
       const tex = this.texture || gl.createTexture();
@@ -277,7 +282,8 @@ export class GLEnemyRenderer {
             (this as any).__lastEmptyWarnMs = now;
           }
         }
-        this.atlasReady = false; return;
+        this.atlasReady = false; try { (window as any).__glEnemiesAtlasReady = false; } catch {}
+        return;
       }
       // Simple shelf packer with padding to prevent texture bleeding
       baseMap.sort((a, b) => b.size - a.size);
@@ -333,8 +339,9 @@ export class GLEnemyRenderer {
       this.textureReady = true;
       this.atlasDirty = false;
       (window as any).__glEnemiesAtlasInfo = { width: atlasW, height: atlasH, entries: Object.keys(map).length, builtAt: Date.now() };
+      try { (window as any).__glEnemiesAtlasReady = true; } catch {}
     } catch {
-      this.atlasReady = false;
+      this.atlasReady = false; try { (window as any).__glEnemiesAtlasReady = false; } catch {}
     }
   }
 
@@ -474,7 +481,10 @@ export class GLEnemyRenderer {
   gl.viewport(0, 0, this.canvas.width, this.canvas.height);
   gl.clear(gl.COLOR_BUFFER_BIT);
   // Publish readiness for outer pipeline decisions (only skip 2D when ready)
-  try { (window as any).__glEnemiesIsReady = !!(this.atlasReady || this.textureReady); } catch {}
+  try {
+    (window as any).__glEnemiesIsReady = !!(this.atlasReady || this.textureReady);
+    (window as any).__glEnemiesAtlasReady = !!this.atlasReady;
+  } catch {}
   if (!count) { (window as any).__glEnemiesLastCount = 0; return; }
     gl.useProgram(this.program);
     if (this.uViewSize) gl.uniform2f(this.uViewSize, this.canvas.width, this.canvas.height);

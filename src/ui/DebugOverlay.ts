@@ -33,6 +33,13 @@ export class DebugOverlay {
       }
       lines.push(`GL-Enemies ${on ? 'ON' : 'off'}  inst=${inst}${extra}`);
     } catch {}
+    // GL Fog
+    try {
+      const r:any = (window as any).__glFogRenderer;
+      const on = !!r;
+      const ready = (window as any).__glFogReady ? 'ready' : 'warming';
+      lines.push(`GL-Fog ${on ? 'ON' : 'off'}  ${ready}`);
+    } catch {}
     // GL Bullets
     try {
       const r:any = (window as any).__glBulletRenderer;

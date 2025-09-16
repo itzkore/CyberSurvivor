@@ -2010,9 +2010,12 @@ export class Game {
     const enemiesArr: any[] = this.enemyManager.getEnemies ? this.enemyManager.getEnemies() : (this.enemyManager as any).enemies;
     // Pass manager and playerX so GL can select atlas UVs and facing consistently with 2D path
     glER.render(enemiesArr, this.enemyManager, this.player?.x ?? 0, this.camX, this.camY, this.designWidth, this.designHeight, pixelW2, pixelH2, { tint: [1.0, 1.0, 1.0, 1.0] });
-      // Only composite and skip 2D bodies if renderer reports ready (texture or atlas uploaded)
-      const glReady = !!((window as any).__glEnemiesIsReady);
-      if (glReady) {
+      // Only composite and skip 2D bodies if renderer reports ready AND drew at least one instance
+  const glReady = !!((window as any).__glEnemiesIsReady);
+  const glAtlasReady = !!((window as any).__glEnemiesAtlasReady);
+  const glCount = (window as any).__glEnemiesLastCount ?? 0;
+  // Only treat GL as authoritative for body draw when the atlas is actually ready and drew instances
+  if (glReady && glAtlasReady && glCount > 0) {
         // Composite GL enemies canvas overlay in screen space (under 2D overlays/HP bars)
         this.ctx.save();
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -2516,35 +2519,54 @@ export class Game {
           penAlpha: 0.04,
           wedge,
         });
-        // Composite GL fog texture into screen
+        // Composite GL fog texture into screen with neutral blending
         this.ctx.save();
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+        const oldCompF = this.ctx.globalCompositeOperation as GlobalCompositeOperation;
+        const oldAlphaF = this.ctx.globalAlpha;
+        this.ctx.globalCompositeOperation = 'source-over';
+        this.ctx.globalAlpha = 1;
         this.ctx.drawImage(glFR.canvas, 0, 0);
+        this.ctx.globalAlpha = oldAlphaF;
+        this.ctx.globalCompositeOperation = oldCompF;
         this.ctx.restore();
       } else {
+        // Use 2D fallback; reset transform to avoid compounding fractional transforms
+        this.ctx.save();
+        this.ctx.setTransform(1,0,0,1,0,0);
+        // Ensure prior additive blends (bullets/beams) don't affect mask draw
+        const oldCompF2 = this.ctx.globalCompositeOperation as GlobalCompositeOperation;
+        const oldAlphaF2 = this.ctx.globalAlpha;
+        this.ctx.globalCompositeOperation = 'source-over';
+        this.ctx.globalAlpha = 1;
         this.fog.render(this.ctx, cam, {
           enable: true,
           visibleCenterX: visX,
           visibleCenterY: visY,
           visibleRadiusPx: radiusPx,
           exploredAlpha: 0.34,
-          edgeNoise: !this.lowFX, // disable dithering on low FX to avoid any edge shimmer
+          edgeNoise: !this.lowFX && !(/[?&](fowNoise)=0/.test(location.search)), // optional override to reduce shimmer
           penumbraScale: 1.18,
           penumbraAlpha: this.lowFX ? 0.02 : 0.04,
         });
+        this.ctx.globalAlpha = oldAlphaF2;
+        this.ctx.globalCompositeOperation = oldCompF2;
+        this.ctx.restore();
       }
     } catch {
       // Fallback to 2D on any GL error
+      this.ctx.save(); this.ctx.setTransform(1,0,0,1,0,0);
       this.fog.render(this.ctx, cam, {
         enable: true,
         visibleCenterX: visX,
         visibleCenterY: visY,
         visibleRadiusPx: radiusPx,
         exploredAlpha: 0.34,
-        edgeNoise: !this.lowFX,
+        edgeNoise: !this.lowFX && !(/[?&](fowNoise)=0/.test(location.search)),
         penumbraScale: 1.18,
         penumbraAlpha: this.lowFX ? 0.02 : 0.04,
       });
+      this.ctx.restore();
     }
     // Flashlight wedge: reveal an arc ahead of player (bonus item toggles this)
     // Flashlight wedge is handled inside GL path; 2D fallback skipped for simplicity

@@ -204,8 +204,10 @@ export class GLFogRenderer {
     const scaleY = p.pixelH / Math.max(1, p.designH);
     const cxPxTL = (p.centerX - p.camX) * scaleX;
     const cyPxTL = (p.centerY - p.camY) * scaleY;
-    const cxPxGL = cxPxTL;
-    const cyPxGL = p.pixelH - cyPxTL;
+  // Snap to half-pixel to reduce subpixel jitter when composited to a 2D canvas
+  // This helps minimize visible shimmer at the fog edge during smooth camera/player motion.
+  const cxPxGL = Math.round(cxPxTL) + 0.5;
+  const cyPxGL = Math.round(p.pixelH - cyPxTL) + 0.5;
     // Wedge direction in GL pixel space is identical (only direction matters)
     const wedge = p.wedge;
     const wedgeEnabled = wedge && wedge.enabled && isFinite(wedge.dirX) && isFinite(wedge.dirY) && isFinite(wedge.halfAngleRad) && isFinite(wedge.radius);
@@ -230,7 +232,8 @@ export class GLFogRenderer {
     if (this.uWedgeCosHalf) gl.uniform1f(this.uWedgeCosHalf, wedgeEnabled ? Math.cos(wedge!.halfAngleRad) : 0.0);
     if (this.uWedgeRadius) gl.uniform1f(this.uWedgeRadius, wedgeEnabled ? wedge!.radius : 1.0);
 
-    this.gl.bindVertexArray(this.vao);
+  (window as any).__glFogReady = true;
+  this.gl.bindVertexArray(this.vao);
     this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
     this.gl.bindVertexArray(null);
   }

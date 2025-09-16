@@ -133,20 +133,30 @@ window.onload = async () => {
     console.warn('[main] GL bullets init failed, using 2D bullets', e);
   }
 
-  // Initialize GL enemies renderer only when explicitly enabled via URL (?glenemies=1 or ?gle=1)
-  // Default path uses 2D enemies to ensure visual parity with Codex sprites.
+  // Initialize GL enemies renderer by default; allow disabling via ?glenemies=0 or ?gle=0
   try {
-    const enableGLE = /[?&](glenemies|gle)=1/.test(location.search);
-    if (enableGLE) {
+    const disableGLE = /[?&](glenemies|gle)=0/.test(location.search);
+    if (disableGLE) {
+      (window as any).__glEnemiesRenderer = null;
+    } else {
       const glER = createGLEnemyRendererLike(canvas);
       (window as any).__glEnemiesRenderer = glER || null;
-    } else {
-      (window as any).__glEnemiesRenderer = null; // force 2D enemies by default
     }
   } catch (e) {
     (window as any).__glEnemiesRenderer = null;
     console.warn('[main] GL enemies init failed, using 2D enemies', e);
   }
+  // Initialize GL fog renderer by default; allow disabling via ?glfog=0 or ?glf=0
+  try {
+    const disableGLF = /[?&](glfog|glf)=0/.test(location.search);
+    if (disableGLF) {
+      (window as any).__glFogRenderer = null;
+    } else {
+      const glFR = createGLFogRendererLike(canvas);
+      (window as any).__glFogRenderer = glFR || null;
+    }
+  } catch { (window as any).__glFogRenderer = null; }
+
   // Initialize GL particles renderer (offscreen, premultiplied alpha)
   try {
     const mod = await import('./render/gl/GLParticlesRenderer');
@@ -180,15 +190,10 @@ window.onload = async () => {
     (window as any).__glRingsRenderer = null;
     console.warn('[main] GL rings init failed, using 2D rings', e);
   }
-  // Optional GL beams renderer via URL (?glb=1) or persisted preference
-  // Initialize GL beams renderer unconditionally; fallback if creation fails
+  // Optional GL beams renderer; initialize and fallback if creation fails
   try {
     const glBR = createGLBeamsRendererLike(canvas);
     (window as any).__glBeamsRenderer = glBR || null;
-    try {
-      const glFR = createGLFogRendererLike(canvas);
-      (window as any).__glFogRenderer = glFR || null;
-    } catch { (window as any).__glFogRenderer = null; }
   } catch (e) {
     (window as any).__glBeamsRenderer = null;
     console.warn('[main] GL beams init failed, using 2D beams', e);

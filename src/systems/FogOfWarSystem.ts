@@ -130,7 +130,10 @@ export class FogOfWarSystem {
   ) {
     if (opts && opts.enable === false) return; // disabled
     // Ensure mask surface matches viewport logical size
-    this.ensureMaskSurface(Math.ceil(camera.width), Math.ceil(camera.height));
+  // Round camera size to integers to ensure the mask matches exactly and avoids subpixel sampling
+  const camW = Math.ceil(camera.width);
+  const camH = Math.ceil(camera.height);
+  this.ensureMaskSurface(camW, camH);
     if (!this.maskCtx || !this.maskCanvas) return;
 
   const mctx = this.maskCtx as CanvasRenderingContext2D;
@@ -150,6 +153,8 @@ export class FogOfWarSystem {
   // Guard against NaN/Infinity: fall back to viewport center and a safe radius
   if (!isFinite(vcx) || !isFinite(vcy)) { vcx = this.maskW * 0.5; vcy = this.maskH * 0.5; }
   if (!isFinite(vR) || vR <= 0) vR = Math.max(64, Math.floor(this.tileSize * Math.max(1, this.lastRadiusTiles)));
+  // Snap reveal center to half-pixels to reduce shimmer when drawn over 2D
+  vcx = Math.round(vcx) + 0.5; vcy = Math.round(vcy) + 0.5;
   // Ensure cached circle sprite exists (alpha falloff baked once)
   this.ensureCircleSprite();
   // Ensure noise sprite for edge dithering if needed

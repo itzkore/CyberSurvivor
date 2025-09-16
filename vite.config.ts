@@ -1,12 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Pure web build (Electron removed): use root-relative base.
-export default defineConfig({
+// Pure web build (Electron removed). Use base='/' in dev to avoid '/src' base collisions,
+// and allow subfolder-friendly base only for production builds.
+export default defineConfig(({ command }) => ({
   plugins: [react()],
-  // Use relative base so the app works when hosted under a subfolder (e.g., https://site.tld/cs/)
-  // You can override with BASE env: BASE=/my/sub/base/ npm run build
-  base: process.env.BASE || './',
+  // In dev, always use '/'. In build, allow overriding via BASE env or default to './'.
+  base: command === 'serve' ? '/' : (process.env.BASE || './'),
   root: 'src',
   envDir: '.',
   publicDir: '../public',
@@ -34,4 +34,4 @@ export default defineConfig({
     }
   },
   server: { port: 5173, open: true }
-});
+}));

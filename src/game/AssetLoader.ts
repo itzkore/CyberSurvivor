@@ -17,22 +17,28 @@ export class AssetLoader {
     if (typeof location === 'undefined') return '';
     if (location.protocol === 'file:') return '.'; // relative root for file protocol
     // Prefer HTML <base href> when present (Vite sets it based on base config)
-    try {
-      const baseEl = document.querySelector('base[href]') as HTMLBaseElement | null;
-      if (baseEl && baseEl.href) {
-        const u = new URL(baseEl.href);
-        let p = (u.pathname || '');
-        p = p.replace(/\/index\.html?$/i, '');
-        p = p.replace(/\/$/, '');
-        if (p) return p;
-      }
-    } catch {}
+    if (typeof document !== 'undefined') {
+      try {
+        const baseEl = document.querySelector('base[href]') as HTMLBaseElement | null;
+        if (baseEl && baseEl.href) {
+          const u = new URL(baseEl.href);
+          let p = (u.pathname || '');
+          p = p.replace(/\/index\.html?$/i, '');
+          p = p.replace(/\/$/, '');
+          // In dev, Vite sets base to '/', which should map to empty prefix
+          if (p === '' || p === '/') return '';
+          if (p) return p;
+        }
+      } catch {}
+    }
     // Meta hint (used in some builds); treat '.' as root under http(s)
-    const meta = document.querySelector('meta[name="asset-base"]') as HTMLMetaElement | null;
-    if (meta?.content) {
-      const c = meta.content.replace(/\/$/, '');
-      if (c === '.' || c === './') return '';
-      return c;
+    if (typeof document !== 'undefined') {
+      const meta = document.querySelector('meta[name="asset-base"]') as HTMLMetaElement | null;
+      if (meta?.content) {
+        const c = meta.content.replace(/\/$/, '');
+        if (c === '.' || c === './') return '';
+        return c;
+      }
     }
     // Derive from pathname segments (allow multi-segment, e.g., /games/cs)
     const parts = location.pathname.split('/').filter(Boolean);
@@ -148,6 +154,8 @@ export class AssetLoader {
     if (location.protocol === 'file:') {
       if (!attempts.includes('./assets/manifest.json')) attempts.push('./assets/manifest.json');
     } else {
+      // Try root first (Vite dev serves publicDir at root)
+      if (!attempts.includes('/assets/manifest.json')) attempts.push('/assets/manifest.json');
       // Build a URL relative to the current document base (respects <base href>)
       try {
         const baseHref = (document.querySelector('base[href]') as HTMLBaseElement | null)?.href || document.baseURI;
@@ -158,8 +166,6 @@ export class AssetLoader {
       const pref = AssetLoader.basePrefix || '';
       const prefAttempt = pref + '/assets/manifest.json';
       if (pref && !attempts.includes(prefAttempt)) attempts.push(prefAttempt);
-      // Try root (Vite dev often serves publicDir at root)
-      if (!attempts.includes('/assets/manifest.json')) attempts.push('/assets/manifest.json');
       // Known fallback commonly used by this project
       if (!pref && !attempts.includes('/cybersurvivor/assets/manifest.json')) attempts.push('/cybersurvivor/assets/manifest.json');
     }
@@ -167,7 +173,7 @@ export class AssetLoader {
       if (tried.includes(attempt)) continue;
       tried.push(attempt);
       try {
-        const resp = await fetch(attempt);
+  const resp = await fetch(attempt);
         if (!resp.ok) throw new Error('Manifest HTTP ' + resp.status);
         const text = await resp.text();
         try {
@@ -201,8 +207,8 @@ export class AssetLoader {
     const candidates: string[] = [];
     const pushUnique = (p: string) => { if (p && !candidates.includes(p)) candidates.push(p); };
     pushUnique(normalized);
-  // Variant: ensure single leading slash (for dev server publicDir)
-  pushUnique('/' + normalized.replace(/^\.*\//, '').replace(/^\/+/, ''));
+    // Variant: ensure single leading slash (for dev server publicDir)
+    pushUnique('/' + normalized.replace(/^\.*\//, '').replace(/^\/+/, ''));
     // Variant: without leading slash (relative)
     pushUnique(normalized.replace(/^\/+/, ''));
     // Variant: remove basePrefix if present
@@ -220,6 +226,11 @@ export class AssetLoader {
     if (typeof location !== 'undefined' && location.protocol === 'file:') {
       const rel = normalized.replace(/^\/?assets\//, './assets/');
       pushUnique(rel);
+    }
+
+    // Avoid accidentally trying to load from '/src/...', which is not a public asset mount
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      if (/\/(?:src|node_modules)\//.test(candidates[i])) candidates.splice(i, 1);
     }
 
     // If cached under any candidate, return immediately
@@ -274,10 +285,12 @@ export class AssetLoader {
     }
     // http(s) hosting – inject basePrefix if path starts at root /assets
     // Apply the same logic for JSON/config under /data
-    if (p.startsWith('/assets/')) return AssetLoader.basePrefix + p; // '' or '/cs' prefix
-    if (p.startsWith('assets/')) return AssetLoader.basePrefix + '/' + p; // relative form
-    if (p.startsWith('/data/')) return AssetLoader.basePrefix + p;
-    if (p.startsWith('data/')) return AssetLoader.basePrefix + '/' + p;
+  if (p.startsWith('/assets/')) return (AssetLoader.basePrefix || '') + p; // '' or '/cs' prefix
+  // Normalize relative assets paths to include a leading slash so keys match preloaded manifest entries
+  if (p.startsWith('assets/')) return (AssetLoader.basePrefix || '') + '/' + p; // http(s): '/assets/...'
+  if (p.startsWith('/data/')) return (AssetLoader.basePrefix || '') + p;
+  // Normalize relative data paths similarly
+  if (p.startsWith('data/')) return (AssetLoader.basePrefix || '') + '/' + p;
     return p;
   }
 

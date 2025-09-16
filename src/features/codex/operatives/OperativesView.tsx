@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import useEmblaCarousel from 'embla-carousel-react';
 import { OperativeCard } from './OperativeCard';
 import type { Operative } from '../types';
@@ -18,12 +18,42 @@ export function OperativesView({
   // - keepSnaps preserves ends (we add container padding so last/first have breathing room)
   // - dragFree=false provides smooth, consistent snap feel
   // - loop=false so the “end of cycle” shows natural end with gap rather than an abrupt seam
-  const [viewportRef] = useEmblaCarousel({
+  const [viewportRef, emblaApi] = useEmblaCarousel({
     align: 'start',
     dragFree: true, // momentum for smoother feel
     containScroll: 'keepSnaps', // preserve natural ends; we add padding for gap
     loop: false,
   });
+  // Guard: ignore clicks that happen as a result of a drag/momentum scroll
+  const dragGuard = useRef<{ dragging: boolean; ignoreUntil: number }>({ dragging: false, ignoreUntil: 0 });
+  useEffect(() => {
+    if (!emblaApi) return;
+    const onPointerDown = () => { dragGuard.current.dragging = false; };
+    const onScroll = () => { dragGuard.current.dragging = true; };
+    const onPointerUp = () => {
+      if (dragGuard.current.dragging) {
+        dragGuard.current.ignoreUntil = performance.now() + 140; // small window to suppress click
+      }
+      dragGuard.current.dragging = false;
+    };
+    emblaApi.on('pointerDown', onPointerDown);
+    emblaApi.on('scroll', onScroll);
+    emblaApi.on('pointerUp', onPointerUp);
+    return () => {
+      try {
+        emblaApi.off('pointerDown', onPointerDown);
+        emblaApi.off('scroll', onScroll);
+        emblaApi.off('pointerUp', onPointerUp);
+      } catch {}
+    };
+  }, [emblaApi]);
+
+  const safe = useMemo(() => {
+    return (fn: () => void) => () => {
+      if (performance.now() < dragGuard.current.ignoreUntil) return; // ignore click after drag
+      fn();
+    };
+  }, []);
   return (
     <div className="space-y-4">
       {list.length === 0 ? (
@@ -35,9 +65,9 @@ export function OperativesView({
               <OperativeCard
                 key={op.id}
                 operative={op}
-                onViewDetails={() => onViewDetails(op.id)}
-                onSelect={() => onSelect(op.id)}
-                onOpenWeapons={() => onOpenWeapons?.(op.id)}
+                onViewDetails={safe(() => onViewDetails(op.id))}
+                onSelect={safe(() => onSelect(op.id))}
+                onOpenWeapons={safe(() => onOpenWeapons?.(op.id))}
               />
             ))}
           </div>

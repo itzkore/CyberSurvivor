@@ -3860,7 +3860,7 @@ export class EnemyManager {
     // Choose sprite bundle: elite-specific if available, else base by size type
     let bundle = this.enemySprites[enemy.type];
     const eliteKind: EliteKind | undefined = (eAny._elite && (eAny._elite.kind as EliteKind)) || undefined;
-    if (eliteKind) {
+  if (eliteKind) {
       // Kick off async build once; render will fallback until ready
       this.ensureEliteSprite(eliteKind);
       // Draw colored foot ring under elite (positioned near feet).
@@ -3892,7 +3892,38 @@ export class EnemyManager {
       const eb = this.eliteSprites[eliteKind];
       if (eb) bundle = eb as any;
     }
-  if (!bundle) continue;
+  // If no pre-rendered bundle is available, draw a simple placeholder circle for body visibility
+  // unless the GL path already drew bodies this frame (skipBodyThisFrame=true).
+  if (!bundle) {
+    if (!skipBodyThisFrame) {
+      try {
+        const eAny2: any = enemy as any;
+        let shakeX2 = 0, shakeY2 = 0;
+        if (eAny2._shakeUntil && now < eAny2._shakeUntil) {
+          const amp = eAny2._shakeAmp || 0.8;
+          const phase = eAny2._shakePhase || 0;
+          const t = now * 0.03 + phase;
+          shakeX2 = Math.sin(t) * amp;
+          shakeY2 = Math.cos(t * 1.3) * (amp * 0.6);
+        }
+        const r = Math.max(6, enemy.radius || 20);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.beginPath();
+        ctx.arc(enemy.x + shakeX2, enemy.y + shakeY2, r, 0, Math.PI * 2);
+        ctx.fillStyle = enemy.hp > 0 ? '#f00' : '#222';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#fff';
+        ctx.stroke();
+        ctx.closePath();
+        ctx.restore();
+      } catch { /* ignore placeholder errors */ }
+    }
+    // Skip the rest of the sprite-based path (which references bundle/baseImg).
+    // Overlays/HP bars will still appear once sprites are ready on subsequent frames.
+    continue;
+  }
   // Movement-based facing + walk-cycle flip: compose both for visible stepping
   const faceLeft = (eAny._facingX ?? ((this.player.x < enemy.x) ? -1 : 1)) < 0;
   const walkFlip = !!eAny._walkFlip;
