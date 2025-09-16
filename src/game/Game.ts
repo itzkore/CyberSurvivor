@@ -1991,7 +1991,11 @@ export class Game {
       }
     }
   } catch { /* ignore core draw errors */ }
-  this.enemyManager.draw(this.ctx, this.camX, this.camY);
+  this.enemyManager.draw(this.ctx, this.camX, this.camY, {
+    shakeX: shakeOffsetX,
+    shakeY: shakeOffsetY,
+    brightness: this.environment?.dayFactor ?? 1,
+  });
         this.bulletManager.draw(this.ctx);
         // Active beams (railgun/sniper) under player for proper layering
         if (this._activeBeams && this._activeBeams.length) {
