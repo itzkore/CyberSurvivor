@@ -15,7 +15,7 @@ export interface GLBeamInstance {
   // Core thickness fraction (0..1) relative to thickness for melter-style beams; sniper uses single band
   coreFrac?: number; // default 0.5 for melter; ignored for sniper
   // Visual type and variant
-  type: 0 | 1; // 0 = sniper, 1 = melter
+  type: 0 | 1 | 2; // 0 = sniper, 1 = melter, 2 = railgun (distinct palette)
   variant?: number; // sniper: 0 default white, 1 void, 2 black_sun, 3 exec; melter: 0 default, 1 lava
   // Melter parameters
   hue?: number;     // 0..360 for rainbow melter
@@ -157,7 +157,7 @@ export class GLBeamsRenderer {
            float band = 1.0 - smoothstep(0.9, 1.0, abs(vy)); // soft edges
            float gAlpha = mix(addA0, addA1, t2) * tEnd * band * alpha;
            col = grad; a = gAlpha;
-         } else {
+         } else if (vType < 1.5) {
            // Melter: core and rim; rainbow or lava tint; fade at vis end
            float vis = clamp(vVisLenPx / max(vLenPx, 1.0), 0.0, 1.0);
            float tail = 1.0 - smoothstep(vis * 0.8, vis, u);
@@ -182,8 +182,18 @@ export class GLBeamsRenderer {
              vec3 coreCol = vec3(1.0);
              col = mix(rim, coreCol, coreRegion);
              a = (0.42 * coreRegion + 0.28 * (1.0 - coreRegion)) * band * tail * alpha;
+             }
+           } else {
+             // Railgun: warm gold/orange band independent from sniper variants
+             vec3 c0 = vec3(1.0, 0.94, 0.65);
+             vec3 c1 = vec3(1.0, 0.82, 0.35);
+             float t2 = smoothstep(0.08, 0.35, u);
+             float tEnd = 1.0 - smoothstep(0.55, 1.0, u);
+             vec3 grad = mix(c0, c1, t2);
+             float band = 1.0 - smoothstep(0.88, 1.0, abs(vy));
+             float gAlpha = mix(0.95, 0.30, t2) * tEnd * band * alpha;
+             col = grad; a = gAlpha;
            }
-         }
          // Output premultiplied color
          outColor = vec4(col * a, a);
        }`

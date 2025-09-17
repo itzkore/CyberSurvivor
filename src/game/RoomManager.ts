@@ -208,6 +208,9 @@ export class RoomManager {
   this.ensureCentralRoom();
   // Add dead-end branches for exploration flavor
   this.generateDeadEnds(6);
+    // Anchor the layout to the left edge so walkable begins at x=0
+    // This shifts all generated shapes horizontally so the minimum x is 0.
+    this.alignLeft();
     Logger.info(`[RoomManager] Generated ${this.rooms.length} rooms (attempts=${attempts}).`);
   }
 
@@ -429,6 +432,35 @@ export class RoomManager {
     // Rebuild corridors including possible new central room
     this.corridors.length = 0;
     this.generateCorridors();
+  }
+
+  /**
+   * Shift all room/corridor/dead-end/block rectangles so the minimum X is 0.
+   * This effectively "locks" the playable area to the left edge of the world,
+   * ensuring immediate walkable space begins at x=0.
+   */
+  private alignLeft() {
+    // Compute minimum x across all generated shapes
+    let minX = Number.POSITIVE_INFINITY;
+    for (let i=0;i<this.rooms.length;i++) minX = Math.min(minX, this.rooms[i].x);
+    for (let i=0;i<this.corridors.length;i++) minX = Math.min(minX, this.corridors[i].x);
+    for (let i=0;i<this.deadEnds.length;i++) minX = Math.min(minX, this.deadEnds[i].x);
+    for (let i=0;i<this.blockRects.length;i++) minX = Math.min(minX, this.blockRects[i].x);
+    for (let i=0;i<this.enemyOnlyBlockRects.length;i++) minX = Math.min(minX, this.enemyOnlyBlockRects[i].x);
+    if (!isFinite(minX) || minX <= 0) return; // already aligned or nothing to shift
+    const dx = -minX;
+    // Shift rooms (including door anchoring points and any cached door rects)
+    for (let i=0;i<this.rooms.length;i++) {
+      const r = this.rooms[i];
+      r.x += dx;
+      if (r.doors) { for (let d=0; d<r.doors.length; d++) r.doors[d].x += dx; }
+      if (r.doorRects) { for (let d=0; d<r.doorRects.length; d++) r.doorRects[d].x += dx; }
+    }
+    // Shift corridors, dead ends, and blockers
+    for (let i=0;i<this.corridors.length;i++) this.corridors[i].x += dx;
+    for (let i=0;i<this.deadEnds.length;i++) this.deadEnds[i].x += dx;
+    for (let i=0;i<this.blockRects.length;i++) this.blockRects[i].x += dx;
+    for (let i=0;i<this.enemyOnlyBlockRects.length;i++) this.enemyOnlyBlockRects[i].x += dx;
   }
 
   /** Create additional doorway rectangles where corridor/deadEnd rectangles overlap room outer wall band, widening passage to avoid cross-wall collisions */

@@ -4702,6 +4702,18 @@ export class EnemyManager {
       const prov: (()=>{x:number;y:number}) | undefined = (this as any).__chaseTargetProvider;
       if (prov) { const p = prov(); if (p && typeof p.x === 'number' && typeof p.y === 'number') { coreChaseX = p.x; coreChaseY = p.y; } }
     } catch { /* ignore */ }
+    // Last Stand fallback: if no provider or it returned invalid values, derive target from the Core entity
+    try {
+      const gi: any = (window as any).__gameInstance;
+      if (gi && gi.gameMode === 'LAST_STAND') {
+        // In Last Stand, always try to get the core position directly
+        const core: any = (window as any).__lsCore;
+        if (core && typeof core.x === 'number' && typeof core.y === 'number') {
+          coreChaseX = core.x;
+          coreChaseY = core.y;
+        }
+      }
+    } catch { /* ignore LS fallback errors */ }
   // Psionic Weaver Lattice: compute slow zone radius if active
   const nowMs = nowFrame;
   const latticeUntil = (window as any).__weaverLatticeActiveUntil || 0;
@@ -4806,40 +4818,153 @@ export class EnemyManager {
       // Early viewport culling - categorize enemies by distance from viewport
       const isFarOutside = enemy.x < minX || enemy.x > maxX || enemy.y < minY || enemy.y > maxY;
       
-      if (isFarOutside) {
+      // Skip all optimizations in Last Stand mode for smooth enemy movement
+      if (isLastStand) {
+        // Process all enemies normally in Last Stand - no culling, no frame skipping
+        this.activeEnemies.push(enemy);
+        // Skip the far outside processing and continue with normal processing below
+        // (fall through to normal enemy processing)
+      } else if (isFarOutside) {
         // Far outside: minimal processing - just add to activeEnemies for spatial queries
         this.activeEnemies.push(enemy);
-        
-        // Calculate distance to player for culling very distant enemies (avoid sqrt until needed)
-        const dpx = this.player.x - enemy.x;
-        const dpy = this.player.y - enemy.y;
+
+        // Calculate distance to target (prefer core in Last Stand when provided)
+        let tgtX = (coreChaseX !== undefined && coreChaseY !== undefined) ? coreChaseX : this.player.x;
+        let tgtY = (coreChaseY !== undefined) ? coreChaseY : this.player.y;
+
+        // In Last Stand, when not directly aggroing the player, bias the path toward the gate gap center
+        // to avoid hugging holder edges while off-screen.
+        if (isLastStand) {
+          try {
+            const g:any = (window as any).__lsGate;
+            if (g && g.active && g.hp > 0) {
+              const margin = 12;
+              if (enemy.x <= g.x + g.w + margin) {
+                const gapY = g.y + g.h * 0.5;
+                const dxGate = Math.max(1, Math.abs((g.x + g.w*0.5) - enemy.x));
+                const blend = dxGate < 220 ? 0.65 : dxGate < 420 ? 0.45 : 0.25; // closer → stronger bias
+                tgtY = tgtY * (1 - blend) + gapY * blend;
+                // Nudge target X at least to the gate center to avoid hugging holder edges
+                const minTx = g.x + Math.floor(g.w * 0.5);
+                if (tgtX < minTx) tgtX = minTx;
+              }
+            }
+          } catch { /* ignore gate bias */ }
+        }
+
+        const dpx = tgtX - enemy.x;
+        const dpy = tgtY - enemy.y;
         const distSq = dpx*dpx + dpy*dpy;
-        
-        // Skip update for enemies extremely far away (beyond 2 screens) - use squared distance
+
+        // Skip heavy update for enemies extremely far away (beyond ~2 screens),
+        // but in Last Stand we still advance them toward the core so waves don't stall off-screen.
         const maxDistSq = (designW + designH) * (designW + designH);
         if (distSq > maxDistSq) {
-          continue; // Skip all processing for very distant enemies
+          if (isLastStand) {
+            if (distSq > 1) {
+              const invDist = 1 / Math.sqrt(distSq);
+              const speed = Math.min(enemy.speed || 2, chaseCap);
+              const moveScale = Math.min(1, (speed * deltaTime) / 1000) * invDist;
+              const ox = enemy.x, oy = enemy.y;
+              const nx = ox + dpx * moveScale;
+              const ny = oy + dpy * moveScale;
+              // Respect walkable geometry even off-screen to ensure forward progress along corridors
+              try {
+                const rmAny: any = (window as any).__roomManager;
+                if (rmAny && typeof rmAny.clampToWalkable === 'function') {
+                  const r = enemy.radius || 20;
+                  const cl = rmAny.clampToWalkable(nx, ny, r);
+                  // If clamped significantly, try axis‑separable slides and pick the better progress
+                  const blocked = (Math.abs(cl.x - nx) + Math.abs(cl.y - ny)) > 0.25;
+                  if (blocked) {
+                    let bestX = cl.x, bestY = cl.y; let bestScore = -Infinity;
+                    // Option A: X only
+                    try {
+                      const cX = rmAny.clampToWalkable(ox + (nx - ox), oy, r);
+                      const dx1 = cX.x - ox, dy1 = cX.y - oy;
+                      const prog1 = (tgtX - ox) * dx1 + (tgtY - oy) * dy1;
+                      if (prog1 > bestScore && (Math.abs(dx1) + Math.abs(dy1)) > 0.01) { bestScore = prog1; bestX = cX.x; bestY = cX.y; }
+                    } catch {}
+                    // Option B: Y only
+                    try {
+                      const cY = rmAny.clampToWalkable(ox, oy + (ny - oy), r);
+                      const dx2 = cY.x - ox, dy2 = cY.y - oy;
+                      const prog2 = (tgtX - ox) * dx2 + (tgtY - oy) * dy2;
+                      if (prog2 > bestScore && (Math.abs(dx2) + Math.abs(dy2)) > 0.01) { bestScore = prog2; bestX = cY.x; bestY = cY.y; }
+                    } catch {}
+                    enemy.x = bestX; enemy.y = bestY;
+                  } else {
+                    enemy.x = cl.x; enemy.y = cl.y;
+                  }
+                } else {
+                  enemy.x = nx; enemy.y = ny;
+                }
+              } catch { enemy.x = nx; enemy.y = ny; }
+            }
+            continue; // Movement applied; skip detailed processing
+          } else {
+            continue; // Non-LS: fully skip very distant enemies
+          }
         }
         
         // Advanced frame skipping based on distance and load
         const anyE = enemy as any;
         if (!anyE._skipFrames) anyE._skipFrames = 0;
         
-        // Adaptive frame skipping based on performance
-        const skipThreshold = skipExpensive ? 
-          (distSq > this.criticalRangeSq ? 5 : 2) : // More aggressive skipping under load
-          (distSq > this.criticalRangeSq ? 3 : 1);   // Normal skipping
+        // Skip frame skipping entirely in Last Stand mode for smooth movement
+        let skipThreshold = 1; // Default: no skipping
+        
+        if (!isLastStand) {
+          // Adaptive frame skipping based on performance (only for non-LS modes)
+          skipThreshold = skipExpensive ? 
+            (distSq > this.criticalRangeSq ? 5 : 2) : // More aggressive skipping under load
+            (distSq > this.criticalRangeSq ? 3 : 1);   // Normal skipping
+        }
           
         if (++anyE._skipFrames < skipThreshold) continue;
         anyE._skipFrames = 0;
         
-        // Basic movement toward player for far enemies - optimized calculation
+        // Basic movement toward target for far enemies - optimized calculation
         if (distSq > 1) { // Avoid sqrt for very close enemies
           const invDist = 1 / Math.sqrt(distSq); // Single sqrt and invert
           const speed = Math.min(enemy.speed || 2, chaseCap);
           const moveScale = Math.min(1, speed * deltaTime / 1000) * invDist;
-          enemy.x += dpx * moveScale;
-          enemy.y += dpy * moveScale;
+          const ox = enemy.x, oy = enemy.y;
+          const nx = ox + dpx * moveScale;
+          const ny = oy + dpy * moveScale;
+          // Respect walkable even off-screen in Last Stand to avoid piling up on geometry
+          if (isLastStand) {
+            try {
+              const rmAny: any = (window as any).__roomManager;
+              if (rmAny && typeof rmAny.clampToWalkable === 'function') {
+                const r = enemy.radius || 20;
+                const cl = rmAny.clampToWalkable(nx, ny, r);
+                const blocked = (Math.abs(cl.x - nx) + Math.abs(cl.y - ny)) > 0.25;
+                if (blocked) {
+                  let bestX = cl.x, bestY = cl.y; let bestScore = -Infinity;
+                  try {
+                    const cX = rmAny.clampToWalkable(ox + (nx - ox), oy, r);
+                    const dx1 = cX.x - ox, dy1 = cX.y - oy;
+                    const prog1 = (tgtX - ox) * dx1 + (tgtY - oy) * dy1;
+                    if (prog1 > bestScore && (Math.abs(dx1) + Math.abs(dy1)) > 0.01) { bestScore = prog1; bestX = cX.x; bestY = cX.y; }
+                  } catch {}
+                  try {
+                    const cY = rmAny.clampToWalkable(ox, oy + (ny - oy), r);
+                    const dx2 = cY.x - ox, dy2 = cY.y - oy;
+                    const prog2 = (tgtX - ox) * dx2 + (tgtY - oy) * dy2;
+                    if (prog2 > bestScore && (Math.abs(dx2) + Math.abs(dy2)) > 0.01) { bestScore = prog2; bestX = cY.x; bestY = cY.y; }
+                  } catch {}
+                  enemy.x = bestX; enemy.y = bestY;
+                } else {
+                  enemy.x = cl.x; enemy.y = cl.y;
+                }
+              } else {
+                enemy.x = nx; enemy.y = ny;
+              }
+            } catch { enemy.x = nx; enemy.y = ny; }
+          } else {
+            enemy.x = nx; enemy.y = ny;
+          }
         }
         continue; // Skip detailed processing
       }
@@ -4851,19 +4976,58 @@ export class EnemyManager {
       const enemySlot = i & 7; // enemy slot in cycle
       const isHighLoad = this.avgFrameMs > 35; // ~28 FPS threshold
       
-      if (isHighLoad && frameIndex !== enemySlot) {
+      // Skip temporal load balancing in Last Stand mode to ensure smooth enemy movement
+      const skipLoadBalancing = isLastStand;
+      
+      if (isHighLoad && frameIndex !== enemySlot && !skipLoadBalancing) {
         // Under high load, only process 1/8th of enemies per frame
         // But still do basic position updates to avoid stuttering
-        const dpx = this.player.x - enemy.x;
-        const dpy = this.player.y - enemy.y;
+        const tgtX = (coreChaseX !== undefined && coreChaseY !== undefined) ? coreChaseX : this.player.x;
+        const tgtY = (coreChaseY !== undefined) ? coreChaseY : this.player.y;
+        const dpx = tgtX - enemy.x;
+        const dpy = tgtY - enemy.y;
         const distSq = dpx*dpx + dpy*dpy;
         
         if (distSq > 1) { // Optimized distance check
           const invDist = 1 / Math.sqrt(distSq);
           const speed = Math.min(enemy.speed || 2, chaseCap);
           const moveScale = Math.min(1, speed * deltaTime / 1000) * invDist;
-          enemy.x += dpx * moveScale;
-          enemy.y += dpy * moveScale;
+          const ox = enemy.x, oy = enemy.y;
+          const nx = ox + dpx * moveScale;
+          const ny = oy + dpy * moveScale;
+          // In Last Stand, respect walkable and try lightweight wall sliding to avoid idle-on-wall while skipped
+          if (isLastStand) {
+            try {
+              const rmAny: any = (window as any).__roomManager;
+              if (rmAny && typeof rmAny.clampToWalkable === 'function') {
+                const r = enemy.radius || 20;
+                const cl = rmAny.clampToWalkable(nx, ny, r);
+                const blocked = (Math.abs(cl.x - nx) + Math.abs(cl.y - ny)) > 0.25;
+                if (blocked) {
+                  let bestX = cl.x, bestY = cl.y; let bestScore = -Infinity;
+                  try {
+                    const cX = rmAny.clampToWalkable(ox + (nx - ox), oy, r);
+                    const dx1 = cX.x - ox, dy1 = cX.y - oy;
+                    const prog1 = (tgtX - ox) * dx1 + (tgtY - oy) * dy1;
+                    if (prog1 > bestScore && (Math.abs(dx1) + Math.abs(dy1)) > 0.01) { bestScore = prog1; bestX = cX.x; bestY = cX.y; }
+                  } catch {}
+                  try {
+                    const cY = rmAny.clampToWalkable(ox, oy + (ny - oy), r);
+                    const dx2 = cY.x - ox, dy2 = cY.y - oy;
+                    const prog2 = (tgtX - ox) * dx2 + (tgtY - oy) * dy2;
+                    if (prog2 > bestScore && (Math.abs(dx2) + Math.abs(dy2)) > 0.01) { bestScore = prog2; bestX = cY.x; bestY = cY.y; }
+                  } catch {}
+                  enemy.x = bestX; enemy.y = bestY;
+                } else {
+                  enemy.x = cl.x; enemy.y = cl.y;
+                }
+              } else {
+                enemy.x = nx; enemy.y = ny;
+              }
+            } catch { enemy.x = nx; enemy.y = ny; }
+          } else {
+            enemy.x = nx; enemy.y = ny;
+          }
         }
         
         // Minimal knockback decay
@@ -4886,8 +5050,39 @@ export class EnemyManager {
           if (!visible) {
             const since = anyE._lsInvisibleSinceMs || (anyE._lsInvisibleSinceMs = nowT);
             const dwell = nowT - since;
-            // Threshold: normal 14s, but shorten a bit for small enemies (they should reach core faster)
-            const baseThresh = (enemy.type === 'small') ? 12000 : 14000;
+            // Threshold: reduced to make hidden enemies re-engage sooner
+            // - small enemies: 8s, others: 10s
+            const baseThresh = (enemy.type === 'small') ? 8000 : 10000;
+            // Gentle "FoW pull": after a brief delay while hidden, bias the chase target toward
+            // a point on the FoW circle edge inside the corridor to keep motion going before teleporting.
+            try {
+              if (dwell >= 1800) {
+                const core: any = (window as any).__lsCore;
+                const rmAny: any = (window as any).__roomManager;
+                const corrs = (rmAny && typeof rmAny.getCorridors === 'function') ? (rmAny.getCorridors() || []) : [];
+                // Choose corridor containing core; fallback to widest
+                let corr: any = null;
+                for (let ci = 0; ci < corrs.length; ci++) { const c = corrs[ci]; if (!c) continue; const inside = core && (core.x >= c.x && core.x <= c.x + c.w && core.y >= c.y && core.y <= c.y + c.h); if (inside) { corr = c; break; } if (!corr || (c.w*c.h) > (corr.w*corr.h)) corr = c; }
+                // Core FoW radius (mirror Game.ts)
+                let rPx = 640; try { const tiles = typeof gi.getEffectiveFowRadiusTiles === 'function' ? gi.getEffectiveFowRadiusTiles() : 4; const ts = (typeof gi.fowTileSize === 'number') ? gi.fowTileSize : 160; rPx = Math.floor(tiles * ts * 0.95); } catch {}
+                if (core && corr) {
+                  const margin = 22;
+                  const left = corr.x + margin, right = corr.x + corr.w - margin;
+                  const top = corr.y + margin, bot = corr.y + corr.h - margin;
+                  const rad = enemy.radius || 18;
+                  const epsilon = 10;
+                  const laneY = Math.max(top, Math.min(bot, Math.floor(enemy.y)));
+                  const dy = laneY - core.y; const dyAbs = Math.abs(dy);
+                  let txEdge = Math.floor(core.x + Math.max(0, Math.sqrt(Math.max(0, rPx*rPx - dyAbs*dyAbs)) - rad - epsilon));
+                  let tyEdge = laneY;
+                  txEdge = Math.max(left, Math.min(right, txEdge));
+                  // Clamp to walkable to avoid steering into walls
+                  try { if (rmAny && typeof rmAny.clampToWalkable === 'function') { const cl = rmAny.clampToWalkable(txEdge, tyEdge, enemy.radius || 18); txEdge = cl.x; tyEdge = cl.y; } } catch {}
+                  // Store temporary bias target for this frame; consumed below during chase target selection
+                  anyE._lsBiasTx = txEdge; anyE._lsBiasTy = tyEdge; anyE._lsBiasUntil = nowT + 60; // ~one frame window
+                }
+              }
+            } catch { /* ignore FoW pull errors */ }
             // Allow 1 relocation per enemy (avoid ping-pong); store a small cooldown after a move
             const movedCdUntil = anyE._lsRelocateCooldownUntil || 0;
             if (dwell >= baseThresh && nowT >= movedCdUntil) {
@@ -5096,25 +5291,33 @@ export class EnemyManager {
         // - When not aggroing player and before crossing the gate, bias pathing Y toward the gate gap center to pass smoothly.
         const isElite = !!((enemy as any)?._elite);
         const giLS: boolean = ((window as any).__gameInstance?.gameMode === 'LAST_STAND');
-        const eLS: any = enemy as any;
-        let aggroPlayer = isElite; // elites: always true
+        let aggroPlayer = isElite; // elites: always chase the player in all modes
         if (giLS && !isElite) {
-          try {
-            const px = playerChaseX, py = playerChaseY;
-            const dxp = enemy.x - px, dyp = enemy.y - py;
-            const inRange = (dxp*dxp + dyp*dyp) <= (100*100);
-            const nowS = performance.now();
-            if (inRange) {
-              eLS._lsAggroPlayer = true;
-              eLS._lsAggroExpireAt = nowS + 3000; // 3s decay window
-            } else {
-              if (eLS._lsAggroExpireAt == null || nowS >= eLS._lsAggroExpireAt) eLS._lsAggroPlayer = false;
-            }
-            aggroPlayer = !!eLS._lsAggroPlayer;
-          } catch { /* ignore aggro calc */ }
+          // Last Stand: non-elites should always progress toward the core regardless of player proximity.
+          // Only switch to chasing the player at close melee range so encounters feel responsive when you approach.
+          const dxp = enemy.x - playerChaseX;
+          const dyp = enemy.y - playerChaseY;
+          const meleeRangeSq = 80 * 80; // tighter than previous 100px with timer
+          aggroPlayer = (dxp*dxp + dyp*dyp) <= meleeRangeSq;
+        }
+        // In Last Stand, ensure we have a valid core target for non-elites
+        if (giLS && !isElite && !aggroPlayer && (coreChaseX === undefined || coreChaseY === undefined)) {
+          // Fallback: if no core target, force aggro on player to prevent idling
+          aggroPlayer = true;
         }
         let tx = aggroPlayer ? playerChaseX : (coreChaseX ?? playerChaseX);
         let ty = aggroPlayer ? playerChaseY : (coreChaseY ?? playerChaseY);
+        // If we computed a short-lived FoW bias target above (while hidden), prefer it as interim target
+        if (giLS && !aggroPlayer) {
+          try {
+            const eLS2: any = enemy as any;
+            if (typeof eLS2._lsBiasUntil === 'number' && performance.now() <= eLS2._lsBiasUntil) {
+              if (typeof eLS2._lsBiasTx === 'number' && typeof eLS2._lsBiasTy === 'number') {
+                tx = eLS2._lsBiasTx; ty = eLS2._lsBiasTy;
+              }
+            }
+          } catch { /* ignore bias */ }
+        }
         // Gate gap bias: if chasing core and the gate is ahead, steer toward gap center to reduce snagging on holders
         if (giLS && !aggroPlayer) {
           try {
@@ -6135,8 +6338,9 @@ export class EnemyManager {
       
       if (distSq < this.criticalRangeSq) {
         // Only update position for nearby enemies for collision accuracy
-        enemy.x += (enemy.vx || 0) * dt;
-        enemy.y += (enemy.vy || 0) * dt;
+        const anyEnemy = enemy as any;
+        enemy.x += (anyEnemy.vx || 0) * dt;
+        enemy.y += (anyEnemy.vy || 0) * dt;
         
         // Update knockback for smooth visual
         if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {

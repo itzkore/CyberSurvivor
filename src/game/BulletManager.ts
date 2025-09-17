@@ -1962,9 +1962,17 @@ export class BulletManager {
   let hitBoss = false;
   let hitTreasure = false;
 
-  // Use spatial grid to find potential enemies near the bullet
-  // Query potential enemies near the bullet's current position
-  const potentialEnemies = this.queryEnemies(b.x, b.y, b.radius);
+  // Use spatial grid to find potential enemies near the bullet.
+  // Expand the query radius to include the swept path when the projectile traveled a noticeable distance
+  // this frame to avoid broadphase misses (tunneling) on fast movers.
+  const dxq = b.x - prevX; const dyq = b.y - prevY;
+  const travel = Math.sqrt(dxq*dxq + dyq*dyq);
+  let queryRadius = b.radius;
+  if (travel > 1.5) {
+    // General CCD broadphase: include travel path with a small pad; clamp to a sane max
+    queryRadius = Math.min(600, Math.max(queryRadius, b.radius + travel + 8));
+  }
+  const potentialEnemies = this.queryEnemies(b.x, b.y, queryRadius);
   // Plasma friendly arming zone + minimal arming time/distance:
   // While within the friendly hazard radius around the player OR within a small
   // fixed arming distance/time from travel start, skip enemy collision checks.
@@ -2001,7 +2009,9 @@ export class BulletManager {
 
     // For Mech Mortar and Siege Howitzer, use swept-sphere collision with NO arming delay (immediate close-range hits)
           if (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) {
-            intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, b.radius + enemy.radius);
+            // Inflate radius slightly to avoid grazing misses at high speed and trigger on first contact
+            const sweepR = (b.radius + (enemy.radius || 16)) + 2;
+            intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, sweepR);
         } else {
           // For PSIONIC_WAVE, use a swept-segment vs circle test with effective beam thickness
     if (b.weaponType === WeaponType.PSIONIC_WAVE) {
@@ -2009,11 +2019,19 @@ export class BulletManager {
             const effR = (enemy.radius || 16) + thickness * 0.5; // half-thickness as beam radius
             intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, effR);
           } else {
-            // Other bullets: simple circle-circle collision
-            const dx = b.x - enemy.x;
-            const dy = b.y - enemy.y;
-            const rs = b.radius + enemy.radius;
-            if (dx*dx + dy*dy < rs*rs) intersectionPoint = { x: b.x, y: b.y };
+            // Other bullets: continuous collision detection when moving fast or when enemy is fast.
+            // Add a small motion-based padding derived from enemy speed to reduce misses on fast enemies.
+            const enemyMotionPad = Math.min(18, ((enemy.speed || 0) * (deltaTime / 1000)) || 0);
+            const effR = (b.radius + enemy.radius + enemyMotionPad);
+            if (travel > 1.5) {
+              // Swept segment vs circle using the per-frame path
+              intersectionPoint = this.lineCircleIntersect(prevX, prevY, b.x, b.y, enemy.x, enemy.y, effR);
+            } else {
+              // Fallback: simple circle-circle when travel is tiny
+              const dx = b.x - enemy.x;
+              const dy = b.y - enemy.y;
+              if (dx*dx + dy*dy < effR*effR) intersectionPoint = { x: b.x, y: b.y };
+            }
           }
         }
 
@@ -2500,6 +2518,10 @@ export class BulletManager {
               }
               break;
             }
+            // For high‑impact shells, explode on first contact — break out to process explosion below
+            if (b.weaponType === WeaponType.MECH_MORTAR || b.weaponType === WeaponType.SIEGE_HOWITZER) {
+              break;
+            }
           }
         }
       }
@@ -2511,7 +2533,7 @@ export class BulletManager {
           const bm: any = (window as any).__bossManager;
           const boss = bm && bm.getActiveBoss ? bm.getActiveBoss() : (bm && bm.getBoss ? bm.getBoss() : null);
           if (boss && boss.active && boss.state === 'ACTIVE' && boss.hp > 0) {
-            const effR = (boss.radius || 160) + Math.max(2, b.radius || 6);
+            const effR = (boss.radius || 160) + Math.max(4, (b.radius || 6) + 2);
             // Primary: swept test across the segment this frame
             const pt = this.lineCircleIntersect(prevX, prevY, b.x, b.y, boss.x, boss.y, effR);
             if (pt) { intersectionPoint = pt; hitBoss = true; }
@@ -2530,7 +2552,7 @@ export class BulletManager {
               const treasures = emAny.getTreasures() as Array<{ x:number; y:number; radius:number; active:boolean; hp:number }>;
               for (let ti = 0; ti < treasures.length; ti++) {
                 const t = treasures[ti]; if (!t || !t.active || (t as any).hp <= 0) continue;
-                const effR = (t.radius || 18) + Math.max(2, b.radius || 6);
+                const effR = (t.radius || 18) + Math.max(4, (b.radius || 6) + 2);
                 // Primary: swept test across the segment this frame
                 const pt = this.lineCircleIntersect(prevX, prevY, b.x, b.y, t.x, t.y, effR);
                 if (pt) { intersectionPoint = pt; hitTreasure = true; break; }

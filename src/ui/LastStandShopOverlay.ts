@@ -41,11 +41,11 @@ export class LastStandShopOverlay {
 
     const panel = document.createElement('div');
     Object.assign(panel.style, {
-      width: '1280px', height: '680px',
+      width: '1280px', height: '720px',
       border: '1px solid rgba(120,255,235,0.25)', borderRadius: '14px',
       background: 'linear-gradient(180deg, rgba(2,18,22,0.95), rgba(0,10,12,0.95))', boxShadow: '0 24px 90px rgba(0,255,220,0.22)',
       backdropFilter: 'blur(4px)',
-      display: 'grid', gridTemplateRows: 'auto auto 1fr auto', padding: '18px'
+      display: 'grid', gridTemplateRows: 'auto auto 1fr auto', padding: '18px', boxSizing: 'border-box'
     } as CSSStyleDeclaration);
 
     // Header
@@ -56,7 +56,7 @@ export class LastStandShopOverlay {
     // Sub-header (timer + caps note + currency/free tokens)
     const sub = document.createElement('div');
     sub.innerHTML = `
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:14px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <span style="opacity:.9">Shop resets in</span>
           <span id="ls-shop-timer" style="color:#fff">15</span>s
@@ -68,16 +68,20 @@ export class LastStandShopOverlay {
           <span id="ls-shop-free" style="color:#fff;background:rgba(255,210,120,0.10);border:1px solid rgba(255,210,120,0.35);padding:4px 8px;border-radius:8px;">Free: ${this.currency.getFreeUpgradeTokens()}</span>
         </div>
       </div>`;
+    // Ensure sub-header spans full width and doesn't clip
+    Object.assign(sub.style, { width: '100%', boxSizing: 'border-box', minWidth: '0' } as CSSStyleDeclaration);
     this.timer = sub.querySelector('#ls-shop-timer') as HTMLSpanElement;
     this.scrapSpan = sub.querySelector('#ls-shop-scrap') as HTMLSpanElement;
     this.freeSpan = sub.querySelector('#ls-shop-free') as HTMLSpanElement;
 
     // List grid (4 columns)
-    const listWrap = document.createElement('div');
-    Object.assign(listWrap.style, { position: 'relative', overflow: 'hidden', paddingRight: '0' } as CSSStyleDeclaration);
-    const list = document.createElement('div');
+  const listWrap = document.createElement('div');
+  // Allow vertical scroll if needed; prevent horizontal clipping of grid content
+  // minHeight:0 is required for grid children to shrink and enable scrolling within 1fr row
+  Object.assign(listWrap.style, { position: 'relative', overflowX: 'visible', overflowY: 'auto', paddingRight: '2px', paddingBottom: '6px', minHeight: '0' } as CSSStyleDeclaration);
+  const list = document.createElement('div');
     this.list = list;
-  Object.assign(list.style, { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '18px', alignContent: 'start' } as CSSStyleDeclaration);
+  Object.assign(list.style, { display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '18px', alignContent: 'start', boxSizing: 'border-box', minWidth: '0' } as CSSStyleDeclaration);
     listWrap.appendChild(list);
 
     // Footer actions
@@ -222,14 +226,14 @@ export class LastStandShopOverlay {
         background: 'linear-gradient(180deg, rgba(2,22,26,0.96), rgba(0,10,12,0.94))', color: '#cffffa', textAlign: 'left', cursor: 'pointer',
         display: 'grid', gridTemplateRows: 'auto 1fr auto', gap: '10px', alignItems: 'stretch', boxSizing: 'border-box',
         transition: 'transform 80ms ease-out, box-shadow 120ms ease-out', position: 'relative', overflow: 'hidden',
-        minHeight: '164px'
+        minHeight: '164px', minWidth: '0'
       } as CSSStyleDeclaration);
       card.onmouseenter = () => { card.style.boxShadow = '0 0 24px rgba(0,255,220,0.18)'; card.style.transform = 'translateY(-1px)'; };
       card.onmouseleave = () => { card.style.boxShadow = 'none'; card.style.transform = 'none'; };
 
       // HEADER: icon | (meta + title) | price pill
       const header = document.createElement('div');
-      Object.assign(header.style, { display: 'grid', gridTemplateColumns: '64px 1fr auto', gap: '12px', alignItems: 'center' } as CSSStyleDeclaration);
+  Object.assign(header.style, { display: 'grid', gridTemplateColumns: '64px minmax(0,1fr) auto', gap: '12px', alignItems: 'center' } as CSSStyleDeclaration);
       const icon = document.createElement('div');
       Object.assign(icon.style, { width: '64px', height: '64px', borderRadius: '10px', background: 'rgba(0,255,220,0.06)', display: 'grid', placeItems: 'center', fontSize: '22px', color: '#7dffea', overflow: 'hidden', border: `1px solid rgba(120,255,235,0.15)` } as CSSStyleDeclaration);
       if (iconUrl) {
@@ -239,8 +243,9 @@ export class LastStandShopOverlay {
         icon.textContent = kind === 'passive' ? '▲' : kind === 'turret' ? '⛭' : '⨳';
       }
 
-      const headText = document.createElement('div');
-      Object.assign(headText.style, { display: 'grid', gridTemplateRows: '18px auto', alignContent: 'center' } as CSSStyleDeclaration);
+  const headText = document.createElement('div');
+  // Critical: minWidth:0 prevents the grid middle cell from forcing overflow when the price pill is wide.
+  Object.assign(headText.style, { display: 'grid', gridTemplateRows: '18px auto', alignContent: 'center', minWidth: '0' } as CSSStyleDeclaration);
       // badges line
       const meta = document.createElement('div');
       Object.assign(meta.style, { display: 'flex', alignItems: 'center', gap: '6px' } as CSSStyleDeclaration);
@@ -252,13 +257,15 @@ export class LastStandShopOverlay {
         const classBadge = document.createElement('span'); classBadge.textContent = 'CLASS'; Object.assign(classBadge.style, { fontSize: '10px', padding: '2px 6px', borderRadius: '6px', background: '#2dbd8b', color: '#012', border: '1px solid rgba(0,0,0,0.25)' } as CSSStyleDeclaration);
         meta.appendChild(classBadge);
       }
-      const title = document.createElement('div');
+  const title = document.createElement('div');
       title.textContent = displayName;
-      Object.assign(title.style, { color: accent, fontSize: '17px', letterSpacing: '0.2px', lineHeight: '18px', maxHeight: '36px', overflow: 'hidden' } as CSSStyleDeclaration);
+  // Ensure long names never overflow the header cell
+  Object.assign(title.style, { color: accent, fontSize: '17px', letterSpacing: '0.2px', lineHeight: '18px', maxHeight: '36px', overflow: 'hidden', textOverflow: 'ellipsis' } as CSSStyleDeclaration);
       try { (title.style as any).display = '-webkit-box'; (title.style as any).webkitLineClamp = '2'; (title.style as any).webkitBoxOrient = 'vertical'; } catch { }
       headText.appendChild(meta); headText.appendChild(title);
-      const pricePill = document.createElement('div');
-      Object.assign(pricePill.style, { fontSize: '14px', color: '#fff', padding: '6px 10px', borderRadius: '999px', border: '1px solid rgba(120,255,235,0.25)', background: 'rgba(120,255,235,0.10)', whiteSpace: 'nowrap' } as CSSStyleDeclaration);
+  const pricePill = document.createElement('div');
+  // Clamp width to avoid pushing header grid and causing text overflow; ellipsis for extreme cases
+  Object.assign(pricePill.style, { fontSize: '14px', color: '#fff', padding: '6px 10px', borderRadius: '999px', border: '1px solid rgba(120,255,235,0.25)', background: 'rgba(120,255,235,0.10)', whiteSpace: 'nowrap', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis' } as CSSStyleDeclaration);
       const hasFree = this.currency.hasFreeUpgrade();
       const showFree = hasFree && !alreadyBought;
       pricePill.textContent = showFree ? 'FREE' : `${off.price} Scrap`;
@@ -266,10 +273,11 @@ export class LastStandShopOverlay {
       header.appendChild(icon); header.appendChild(headText); header.appendChild(pricePill);
 
       // CONTENT: trait chips + description (3-line clamp)
-      const content = document.createElement('div');
-      Object.assign(content.style, { display: 'grid', gridTemplateRows: 'auto auto', rowGap: '6px' } as CSSStyleDeclaration);
+  const content = document.createElement('div');
+  // minWidth:0 prevents grid child overflow; helps desc clamp behave.
+  Object.assign(content.style, { display: 'grid', gridTemplateRows: 'auto auto', rowGap: '6px', minWidth: '0' } as CSSStyleDeclaration);
       const chips = document.createElement('div');
-      Object.assign(chips.style, { display: 'flex', flexWrap: 'wrap', gap: '6px' } as CSSStyleDeclaration);
+  Object.assign(chips.style, { display: 'flex', flexWrap: 'wrap', gap: '6px', overflow: 'hidden', maxHeight: '48px' } as CSSStyleDeclaration);
       if (kind === 'weapon') {
         try {
           const wt = off.data?.weaponType as WeaponType | undefined;
@@ -302,7 +310,7 @@ export class LastStandShopOverlay {
       }
       const desc = document.createElement('div');
       desc.textContent = subtitle || this.describe(off);
-      Object.assign(desc.style, { fontSize: '13px', opacity: '0.95', lineHeight: '18px', maxHeight: '54px', overflow: 'hidden' } as CSSStyleDeclaration);
+  Object.assign(desc.style, { fontSize: '13px', opacity: '0.95', lineHeight: '18px', maxHeight: '54px', overflow: 'hidden', textOverflow: 'ellipsis' } as CSSStyleDeclaration);
       try { (desc.style as any).webkitLineClamp = '3'; (desc.style as any).display = '-webkit-box'; (desc.style as any).webkitBoxOrient = 'vertical'; } catch { }
       if (chips.childElementCount > 0) content.appendChild(chips);
       content.appendChild(desc);
@@ -310,7 +318,7 @@ export class LastStandShopOverlay {
       // ACTIONS: full-width Buy + hint below
       const actions = document.createElement('div');
   Object.assign(actions.style, { display: 'grid', gridTemplateRows: 'auto auto', gap: '6px' } as CSSStyleDeclaration);
-      const buyBtn = document.createElement('div');
+    const buyBtn = document.createElement('div');
   Object.assign(buyBtn.style, { fontSize: '13px', color: '#012', background: accent, padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(0,0,0,0.2)', textAlign: 'center', width: '100%', transition: 'box-shadow 140ms ease, filter 140ms ease, transform 80ms ease', cursor: 'pointer', boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' } as CSSStyleDeclaration);
       const hint = document.createElement('div');
       // Show alternate hotkeys for the first three turret cards

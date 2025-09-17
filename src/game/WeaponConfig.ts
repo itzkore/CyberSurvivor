@@ -759,12 +759,13 @@ export const WEAPON_SPECS: Record<WeaponType, WeaponSpec> = {
      ],
      beamVisual: {
        type: 'beam',
-       color: '#FFFFFF',
+       // Distinct Railgun identity: gold core with warm orange glow (not white like sniper lasers)
+       color: '#FFE066',
        thickness: 20,
        length: 260,
-       glowColor: '#FF00FF',
+       glowColor: '#FF8C00',
        glowRadius: 64,
-       trailColor: '#FFD700',
+       trailColor: '#FFE066',
        trailLength: 60
      },
      isClassWeapon: false,

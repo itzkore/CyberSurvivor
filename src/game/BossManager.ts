@@ -325,14 +325,46 @@ export class BossManager {
             } catch { /* ignore */ }
             speed *= (1 - slow);
           }
+          const ox = this.boss.x, oy = this.boss.y;
           const stepX = (dx / dist) * speed;
           const stepY = (dy / dist) * speed;
-          this.boss.x += stepX;
-          this.boss.y += stepY;
+          let nx = ox + stepX;
+          let ny = oy + stepY;
+          // Clamp with lightweight wall sliding to avoid stalling on diagonal hits
+          try {
+            const rm: any = (window as any).__roomManager;
+            if (rm && typeof rm.clampToWalkable === 'function') {
+              const r = this.boss.radius || 80;
+              const cl = rm.clampToWalkable(nx, ny, r);
+              const blocked = (Math.abs(cl.x - nx) + Math.abs(cl.y - ny)) > 0.25;
+              if (blocked) {
+                let bestX = cl.x, bestY = cl.y; let bestScore = -Infinity;
+                // Option A: X only slide
+                try {
+                  const cX = rm.clampToWalkable(ox + stepX, oy, r);
+                  const dx1 = cX.x - ox, dy1 = cX.y - oy;
+                  const prog1 = (this.player.x - ox) * dx1 + (this.player.y - oy) * dy1;
+                  if (prog1 > bestScore && (Math.abs(dx1) + Math.abs(dy1)) > 0.01) { bestScore = prog1; bestX = cX.x; bestY = cX.y; }
+                } catch {}
+                // Option B: Y only slide
+                try {
+                  const cY = rm.clampToWalkable(ox, oy + stepY, r);
+                  const dx2 = cY.x - ox, dy2 = cY.y - oy;
+                  const prog2 = (this.player.x - ox) * dx2 + (this.player.y - oy) * dy2;
+                  if (prog2 > bestScore && (Math.abs(dx2) + Math.abs(dy2)) > 0.01) { bestScore = prog2; bestX = cY.x; bestY = cY.y; }
+                } catch {}
+                nx = bestX; ny = bestY;
+              } else {
+                nx = cl.x; ny = cl.y;
+              }
+            }
+          } catch { /* ignore clamp/slide errors */ }
+          this.boss.x = nx;
+          this.boss.y = ny;
           // Track last non-zero horizontal direction for facing
-          if (Math.abs(stepX) > 0.0001) bAny._facingX = stepX < 0 ? -1 : 1;
+          if (Math.abs(nx - ox) > 0.0001) bAny._facingX = (nx - ox) < 0 ? -1 : 1;
           // Walk-cycle flip at fixed interval while moving
-          const mvMag = Math.hypot(stepX, stepY);
+          const mvMag = Math.hypot(nx - ox, ny - oy);
           if (mvMag > 0.01) {
             this.bossWalkFlipTimerMs += deltaTime;
             while (this.bossWalkFlipTimerMs >= this.bossWalkIntervalMs) {
@@ -375,7 +407,7 @@ export class BossManager {
           this.boss.specialCharge = 0;
         }
       }
-      // Clamp boss to walkable after movement
+      // Clamp boss to walkable after movement (still keep a final safety clamp)
       const rm = (window as any).__roomManager;
       if (rm && typeof rm.clampToWalkable === 'function') {
         const c = rm.clampToWalkable(this.boss.x, this.boss.y, this.boss.radius || 80);

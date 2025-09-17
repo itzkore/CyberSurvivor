@@ -1,5 +1,7 @@
 import { Player } from './Player';
 import { EnemyManager } from './EnemyManager';
+import { HighCapacityEnemyManager } from './HighCapacityEnemyManager';
+import { PerfFlags as Perf } from '../config/perfFlags';
 import { ExplosionManager } from './ExplosionManager';
 import { HUD } from '../ui/HUD';
 import type { UpgradePanel } from '../ui/UpgradePanel'; // Type-only import to avoid bundling; actual code loaded dynamically in main.ts
@@ -358,7 +360,11 @@ export class Game {
   } catch (error) {
     Logger.debug('Failed to expose player on window:', error);
   }
-    this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1);
+    // Choose enemy manager implementation based on perf flags
+    const em: EnemyManager = (Perf.useHighCapacityEnemyManager)
+      ? new HighCapacityEnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1)
+      : new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1);
+    this.enemyManager = em;
   this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager, this.player);
   this.bossManager = new BossManager(this.player, this.particleManager, 1, this.assetLoader);
   try { 
@@ -2216,19 +2222,24 @@ export class Game {
               const fade = 1 - t;
               const len = beam.range;
               // Map beam type/variant
-              let type = 0; // 0 sniper, 1 melter
+              let type = 0; // 0 sniper, 1 melter, 2 railgun
               let variant = 0; // sniper variants: 0 default, 1 void, 2 black_sun, 3 exec
-              if (beam.type === 'melter') type = 1; else type = 0;
+              if (beam.type === 'melter') type = 1; else if (beam.type === 'railgun') type = 2; else type = 0;
               if (type === 0) {
                 if (beam.type === 'voidsniper') variant = 1; else if (beam.type === 'sniper_black_sun') variant = 2; else if (beam.type === 'sniper_exec') variant = 3; else variant = 0;
                 beamsGL.push({ x: beam.x, y: beam.y, angle: beam.angle, length: len, thickness: (beam.thickness || 10), type, variant, fade, additive: !this.lowFX && !(window as any).__noAddBlend, a: 1 });
               } else {
-                const visLen = Math.min(len, (beam as any).visLen || len);
-                const lava = !!(beam as any).lavaHint;
-                const hue = (beam as any).hue ?? Math.floor(((elapsed / Math.max(1, beam.duration)) * 360) % 360);
-                const heatT = Math.max(0, Math.min(1, (beam as any).heatT || 0));
-                const coreFrac = 0.55;
-                beamsGL.push({ x: beam.x, y: beam.y, angle: beam.angle, length: len, thickness: Math.max(6, (beam.thickness || 12) * 1.6), type, variant: lava ? 1 : 0, hue, heatT, visLen, coreFrac, fade, additive: !this.lowFX && !(window as any).__noAddBlend, a: 1 });
+                if (type === 1) {
+                  const visLen = Math.min(len, (beam as any).visLen || len);
+                  const lava = !!(beam as any).lavaHint;
+                  const hue = (beam as any).hue ?? Math.floor(((elapsed / Math.max(1, beam.duration)) * 360) % 360);
+                  const heatT = Math.max(0, Math.min(1, (beam as any).heatT || 0));
+                  const coreFrac = 0.55;
+                  beamsGL.push({ x: beam.x, y: beam.y, angle: beam.angle, length: len, thickness: Math.max(6, (beam.thickness || 12) * 1.6), type, variant: lava ? 1 : 0, hue, heatT, visLen, coreFrac, fade, additive: !this.lowFX && !(window as any).__noAddBlend, a: 1 });
+                } else {
+                  // Railgun: gold/orange palette handled in shader; no variants used
+                  beamsGL.push({ x: beam.x, y: beam.y, angle: beam.angle, length: len, thickness: (beam.thickness || 12), type, variant: 0, fade, additive: !this.lowFX && !(window as any).__noAddBlend, a: 1 });
+                }
               }
             }
             if (beamsGL.length) {
@@ -2315,6 +2326,28 @@ export class Game {
               } else {
                 this.ctx.strokeStyle = this.lowFX ? `rgba(255,255,255,${0.3 * fadeEase})` : `rgba(255,255,255,${0.7 * fadeEase})`;
               }
+            } else if (beam.type === 'railgun') {
+              // Railgun: independent warm gold/orange gradient
+              const fadeEase = fade * fade;
+              const thickness = (beam.thickness || 14) * (0.92 + 0.08 * Math.sin(elapsed * 0.18)) * (0.85 + 0.15 * fadeEase);
+              if (!this.lowFX && !debugNoAdd) {
+                const grad = this.ctx.createLinearGradient(0, 0, len, 0);
+                grad.addColorStop(0, `rgba(255,224,102,${0.95 * fadeEase})`);
+                grad.addColorStop(0.10, `rgba(255,180,60,${0.70 * fadeEase})`);
+                grad.addColorStop(0.35, `rgba(255,150,20,${0.30 * fadeEase})`);
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                this.ctx.fillStyle = grad;
+                this.ctx.shadowColor = `rgba(255,140,0,${0.85 * fadeEase})`;
+                this.ctx.shadowBlur = 22 * (0.6 + 0.4 * fadeEase);
+                if (!debugNoAdd) this.ctx.globalCompositeOperation = 'lighter';
+              } else {
+                this.ctx.fillStyle = `rgba(255,210,90,${0.55*fadeEase})`;
+                this.ctx.globalCompositeOperation = 'source-over';
+              }
+              this.ctx.beginPath();
+              this.ctx.rect(0, -thickness/2, len, thickness);
+              this.ctx.fill();
+              this.ctx.strokeStyle = this.lowFX ? `rgba(255,180,60,${0.30 * fadeEase})` : `rgba(255,180,60,${0.70 * fadeEase})`;
             } else if (beam.type === 'melter') {
               // Melter beam: tight core, RGB hue-cycling rim while intensifying; draws only up to visLen (subtle glow)
               const visLen = Math.min(len, beam.visLen || len);
