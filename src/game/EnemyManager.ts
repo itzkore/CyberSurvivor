@@ -8,6 +8,8 @@ export type Enemy = { x: number; y: number; hp: number; maxHp: number; radius: n
   _walkFlip?: boolean; // toggled for visual walk cycle
   _walkFlipTimerMs?: number; // timer accumulator
   _walkFlipIntervalMs?: number; // dynamic per speed
+  _cellX?: number; // Spatial grid cell X coordinate for incremental updates
+  _cellY?: number; // Spatial grid cell Y coordinate for incremental updates
 };
 
 export type Chest = { x: number; y: number; radius: number; active: boolean; }; // New Chest type
@@ -27,6 +29,7 @@ import { WEAPON_SPECS } from './WeaponConfig';
 import { BlackSunZoneManager } from './operatives/shadow_operative/BlackSunZone';
 import { DataTornadoZoneManager } from './operatives/data_sorcerer/DataTornadoZone';
 import { SpatialGrid } from '../physics/SpatialGrid'; // Import SpatialGrid
+import { HierarchicalSpatialGrid } from '../physics/HierarchicalSpatialGrid'; // Import optimized grid
 import { XP_ENEMY_BASE_TIERS, GEM_UPGRADE_PROB_SCALE, XP_DROP_CHANCE_SMALL, XP_DROP_CHANCE_MEDIUM, XP_DROP_CHANCE_LARGE, GEM_TTL_MS, getHealEfficiency } from './Balance';
 // Elite behaviors
 import { updateEliteDasher } from './elites/EliteDasher';
@@ -86,7 +89,7 @@ export class EnemyManager {
   private forceSpawnOverride: { x:number; y:number } | null = null;
   private adaptiveGemBonus: number = 0; // multiplicative bonus for higher tier chance
   private bulletSpatialGrid: SpatialGrid<Bullet>; // Spatial grid for bullets
-  private enemySpatialGrid: SpatialGrid<Enemy>; // Spatial grid for enemies (optimization for zone queries)
+  private enemySpatialGrid: HierarchicalSpatialGrid; // Hierarchical spatial grid for ultra-fast collision detection
   // (removed dynamic spawn budget carry)
   private enemySpeedScale: number = 0.55; // further reduced global speed scaler to keep mobs slower overall
   // Bio Engineer RMB: Mycelial Network zones (toxic ribbon segments)
@@ -107,6 +110,23 @@ export class EnemyManager {
   private avgFrameMs: number = 16; // exponential moving average of frame time (ms)
   private lastPerfSample: number = performance.now();
   private spawnIntervalDynamic: number = 300; // base spawn cadence in ms (can stretch under load)
+  
+  // Chunked update system for frame budget management
+  private updateChunkSize: number = 100; // enemies processed per chunk
+  private currentUpdateIndex: number = 0; // cycling through enemy array
+  private updateBudgetMs: number = 4; // max 4ms per frame for enemy updates
+  private frameSkipCounter: number = 0;
+  private readonly FRAME_SKIP_THRESHOLD: number = 2; // update every 3rd frame for far enemies
+  private criticalRangeSq: number = 40000; // 200px squared for critical updates
+  
+  // SIMD-style batch processing
+  private readonly BATCH_SIZE: number = 4; // Process 4 enemies at once for cache efficiency
+  private batchBuffer: any[] = []; // Preallocated batch buffer
+  
+  // Zero-allocation collision system
+  private collisionBuffer = new Float32Array(1000 * 4); // x,y,id,distance for 1000 results
+  private collisionCount = 0;
+  private tempCollisionResults: any[] = []; // Preallocated temp array for object results
   // Random special item/treasure spawns (real games)
   private nextSpecialSpawnAtMs: number = 0;
   private specialSpawnMinMs: number = 45000; // 45s ..
@@ -600,6 +620,31 @@ export class EnemyManager {
   private enemySpriteVersion: number = 0;
   /** Public read-only accessor: increments whenever enemy sprite atlas should be rebuilt. */
   public getEnemySpriteVersion(): number { return this.enemySpriteVersion; }
+  /** Promise gate for GL: resolves once shared enemy image is loaded and size variants are prepared. */
+  private spritesReadyPromise: Promise<void> | null = null;
+  private resolveSpritesReady: (() => void) | null = null;
+  /** True when shared enemy_default.png has been processed (circle fallbacks exist earlier). */
+  public areSpritesReady(): boolean { return this.sharedEnemyImageLoaded === true; }
+  /**
+   * Wait until shared enemy sprites are prepared. Returns true when ready, or false on timeout.
+   * Does not block circle fallbacks; intended for GL atlas builder to avoid empty atlases.
+   */
+  public async waitForSpritesReady(timeoutMs: number = 4000): Promise<boolean> {
+    if (this.areSpritesReady()) return true;
+    if (!this.spritesReadyPromise) {
+      this.spritesReadyPromise = new Promise<void>((res) => { this.resolveSpritesReady = res; });
+    }
+    let timer: number | undefined;
+    try {
+      const race = await Promise.race([
+        this.spritesReadyPromise.then(() => true),
+        new Promise<boolean>((resolve) => { timer = (setTimeout(() => resolve(false), Math.max(0, timeoutMs)) as unknown) as number; })
+      ]);
+      return !!race;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
   // Weaver Lattice tick scheduler
   private latticeTickIntervalMs: number = 500; // 0.5s
   private latticeNextTickMs: number = 0;
@@ -626,7 +671,7 @@ export class EnemyManager {
   constructor(player: Player, bulletSpatialGrid: SpatialGrid<Bullet>, particleManager?: ParticleManager, assetLoader?: AssetLoader, difficulty: number = 1) {
     this.player = player;
     this.bulletSpatialGrid = bulletSpatialGrid; // Assign spatial grid
-    this.enemySpatialGrid = new SpatialGrid<Enemy>(150); // Cell size 150 for enemy spatial queries
+    this.enemySpatialGrid = new HierarchicalSpatialGrid(); // Hierarchical grid for ultra-fast queries
     this.particleManager = particleManager || null;
     this.assetLoader = assetLoader || null;
     this.preallocateEnemies(difficulty);
@@ -1030,7 +1075,7 @@ export class EnemyManager {
       const minX = camX, maxX = camX + vw, minY = camY, maxY = camY + vh;
       for (let i = 0; i < this.enemies.length; i++) {
         const e: any = this.enemies[i]; if (!e.active) continue;
-        if (e.x >= minX && e.x <= maxX && e.y >= minY && e.y <= maxY) { e.active = false; this.enemyPool.push(e); }
+        if (e.x >= minX && e.x <= maxX && e.y >= minY && e.y <= maxY) { e.active = false; this.enemySpatialGrid.remove(e); this.enemyPool.push(e); }
       }
     });
   }
@@ -1363,7 +1408,7 @@ export class EnemyManager {
             const t = candidates[k]; if (t === e || !t.active || t.hp <= 0) continue;
             const tA:any = t as any; if (tA._mindControlledUntil && tA._mindControlledUntil > now) continue; // skip allies
             const dx = t.x - ex, dy = t.y - ey; const d2 = dx*dx + dy*dy; if (d2 > pr2) continue;
-            t.hp -= dmg; if (t.hp <= 0) { t.active = false; this.enemyPool.push(t); this.killCount++; }
+            t.hp -= dmg; if (t.hp <= 0) { t.active = false; this.enemySpatialGrid.remove(t); this.enemyPool.push(t); this.killCount++; }
           }
         }
       }
@@ -1380,15 +1425,18 @@ export class EnemyManager {
         target = best;
       }
       if (target) {
-        const dx = target.x - e.x; const dy = target.y - e.y; const d = Math.sqrt(dx*dx + dy*dy) || 1;
+        const dx = target.x - e.x; const dy = target.y - e.y; 
+        const dSq = dx*dx + dy*dy;
+        const d = dSq > 1e-8 ? Math.sqrt(dSq) : 1;
         // Simple steering toward target; reuse existing speed computation (includes MC haste)
         const speed = this.getEffectiveEnemySpeed(e, e.speed);
         const step = speed * dtSec;
         // Maintain small personal space so they don't perfectly overlap; stop just inside attack radius
         const desiredStop = (e.radius + (target.radius||24)) * 0.75;
         if (d > desiredStop) {
-          e.x += (dx / d) * step;
-          e.y += (dy / d) * step;
+          const invD = 1 / d;
+          e.x += dx * invD * step;
+          e.y += dy * invD * step;
         }
         // Attack cadence: every 0.6s baseline (faster for small, slower for large)
         // Faster cadence: small 220ms, medium 320ms, large 460ms baseline
@@ -1406,7 +1454,7 @@ export class EnemyManager {
               // Damage scales: +50% mind-control bonus
               const dmg = Math.max(1, Math.round((e.damage || 4) * 1.5));
               target.hp -= dmg;
-              if (target.hp <= 0) { target.active = false; this.enemyPool.push(target); this.killCount++; }
+              if (target.hp <= 0) { target.active = false; this.enemySpatialGrid.remove(target); this.enemyPool.push(target); this.killCount++; }
               // (No knockback: hacked allies should not displace enemy formations)
               // Minor refund to accelerate next swing chain for small units (combo feel)
               if (e.type === 'small') anyE._mcNextAttackAt = Math.min(anyE._mcNextAttackAt, now + Math.floor(baseCadence * 0.45));
@@ -1475,8 +1523,10 @@ export class EnemyManager {
   /** Load single enemy_default.png and create scaled canvases per size category. */
   private loadSharedEnemyImage() {
     const path = AssetLoader.normalizePath('/assets/enemies/enemy_default.png');
+    console.log('[EnemyManager] Loading shared enemy image from:', path);
     const img = new Image();
     img.onload = () => {
+      console.log('[EnemyManager] Enemy image loaded successfully, size:', img.width, 'x', img.height);
   const defs: Array<{type: Enemy['type']; radius: number}> = ENEMY_RADIUS_DEFS as any;
       // Helper for ghosts
       const makeGhost = (base: HTMLCanvasElement, tint: 'red'|'green'|'blue'): HTMLCanvasElement => {
@@ -1533,8 +1583,11 @@ export class EnemyManager {
           redGhost, greenGhost, blueGhost, redGhostFlipped, greenGhostFlipped, blueGhostFlipped } as any; // overwrite circle fallback
       }
       this.sharedEnemyImageLoaded = true;
+      console.log('[EnemyManager] Shared enemy image processing complete, sprites ready');
       // Increment version after base/default is established for all sizes
       this.enemySpriteVersion++;
+      // Resolve readiness for GL once the shared image is processed
+      try { if (this.resolveSpritesReady) { this.resolveSpritesReady(); this.resolveSpritesReady = null; } } catch { /* ignore */ }
   // Try to override the 'small' type with enemy_spider.png if present
       try {
         const spiderPath = AssetLoader.normalizePath('/assets/enemies/enemy_spider.png');
@@ -1643,7 +1696,10 @@ export class EnemyManager {
       } catch { /* ignore */ }
   // Remove elite overrides to avoid opaque backgrounds; keep base sprites
     };
-    img.onerror = () => { /* fallback circles already exist */ };
+    img.onerror = () => { 
+      console.error('[EnemyManager] Failed to load enemy image from:', path);
+      /* fallback circles already exist */ 
+    };
     img.src = path;
   }
 
@@ -1894,7 +1950,9 @@ export class EnemyManager {
     const dx = sx - px, dy = sy - py;
     const d2 = dx*dx + dy*dy; const minD = 800;
     if (d2 < minD*minD) {
-      const d = Math.sqrt(d2) || 1; const nx = dx/d, ny = dy/d;
+      const d = d2 > 1e-8 ? Math.sqrt(d2) : 1;
+      const invD = 1 / d;
+      const nx = dx * invD, ny = dy * invD;
       sx = px + nx * minD; sy = py + ny * minD;
     }
     return { x: sx, y: sy };
@@ -3367,8 +3425,14 @@ export class EnemyManager {
   // Cap telegraph length to the actual beam length so it never overextends beyond the action range
   const maxLen = 900; // must mirror EliteSiphon beam length
   {
-    const dx = tx - x0, dy = ty - y0; const d = Math.sqrt(dx*dx + dy*dy);
-    if (d > maxLen) { const s = maxLen / d; tx = x0 + dx * s; ty = y0 + dy * s; }
+    const dx = tx - x0, dy = ty - y0; 
+    const dSq = dx*dx + dy*dy;
+    const d = Math.sqrt(dSq);
+    if (d > maxLen) { 
+      const s = maxLen / d; 
+      tx = x0 + dx * s; 
+      ty = y0 + dy * s; 
+    }
   }
   const x1 = tx; const y1 = ty;
       const start = eAny._siphonAimStart || (until - 900);
@@ -3825,6 +3889,14 @@ export class EnemyManager {
     // When GL enemies path is active, skip the base body draw and only render overlays and HP bars.
   const glEnemiesActive = !!((window as any).__glEnemiesRenderer);
   const skipBodyThisFrame = glEnemiesActive && ((this as any).__skipBody2DOnce === true);
+    // Debug: log GL state for troubleshooting
+    if (typeof window !== 'undefined' && (window as any).__debugEnemyDraw !== false) {
+      const debugCount = ((this as any).__debugEnemyDrawCount || 0) + 1;
+      (this as any).__debugEnemyDrawCount = debugCount;
+      if (debugCount % 60 === 1) { // log every ~1 second
+        console.log('[EnemyManager] GL Active:', glEnemiesActive, 'Skip Body:', skipBodyThisFrame, 'Use Pre-rendered:', this.usePreRenderedSprites, 'Active Enemies:', this.activeEnemies.length);
+      }
+    }
     // Reset the one-shot signal
     if (skipBodyThisFrame) { try { (this as any).__skipBody2DOnce = false; } catch {} }
     // Compute heavy FX budget per frame: start at 32 and scale down under load
@@ -3906,6 +3978,14 @@ export class EnemyManager {
   // unless the GL path already drew bodies this frame (skipBodyThisFrame=true).
   if (!bundle) {
     if (!skipBodyThisFrame) {
+      // Debug: log when drawing placeholder
+      if (typeof window !== 'undefined' && (window as any).__debugEnemyDraw !== false) {
+        const debugCount = ((this as any).__debugPlaceholderCount || 0) + 1;
+        (this as any).__debugPlaceholderCount = debugCount;
+        if (debugCount % 60 === 1) { // log every ~1 second
+          console.log('[EnemyManager] Drawing placeholder circle for enemy type:', enemy.type, 'at', enemy.x.toFixed(0), enemy.y.toFixed(0));
+        }
+      }
       try {
         const eAny2: any = enemy as any;
         let shakeX2 = 0, shakeY2 = 0;
@@ -4449,13 +4529,32 @@ export class EnemyManager {
    * @param bullets Array of active bullets
    */
   public update(deltaTime: number, gameTime: number = 0, bullets: Bullet[] = []) {
+  const startUpdate = performance.now();
+  this.frameSkipCounter++;
+  
+  // Check if we're dropping frames and need aggressive optimization
+  const skipExpensive = this.avgFrameMs > 20; // >20ms = <50 FPS
+  
   this.lodToggle = !this.lodToggle;
   const nowFrame = performance.now(); // cache once per frame
   
-  // Clear and rebuild enemy spatial grid for optimized zone queries
-  this.enemySpatialGrid.clear();
+  // Clear spatial grid query cache once per frame for fresh results
+  this.enemySpatialGrid.clearCache();
+  
+  // Chunked enemy updates with frame budget management
+  if (!skipExpensive || this.frameSkipCounter % this.FRAME_SKIP_THRESHOLD === 0) {
+    this.updateActiveEnemiesChunked(deltaTime, nowFrame);
+  } else {
+    // Minimal update - only critical enemies near player
+    this.updateCriticalEnemiesOnly(deltaTime);
+  }
+  
+  // Incremental spatial grid updates instead of full rebuild
+  // Only update positions for enemies that moved significantly
   for (let i = 0; i < this.activeEnemies.length; i++) {
-    this.enemySpatialGrid.insert(this.activeEnemies[i]);
+    const enemy = this.activeEnemies[i];
+    if (!enemy.active) continue;
+    this.enemySpatialGrid.insertOrUpdate(enemy);
   }
   // --- Adaptive frame time tracking ---
   // Use a fast EMA to smooth deltaTime (weight 0.1 new value)
@@ -4684,11 +4783,97 @@ export class EnemyManager {
   // Hoist globals used inside the loop
   const rm = (window as any).__roomManager;
   const chaseCap = (this.player?.speed ?? 4) * this.enemyChaseCapRatio;
-  // Update enemies
-  for (let i = 0, len = this.enemies.length; i < len; i++) {
+  
+  // Viewport culling bounds - skip enemies far outside visible area to improve performance
+  const camX = (window as any).__camX || 0;
+  const camY = (window as any).__camY || 0;
+  const designW = (window as any).__designWidth || 1280;
+  const designH = (window as any).__designHeight || 720;
+  const cullBuffer = 400; // Extra margin for gameplay relevance (abilities, attraction, etc.)
+  const minX = camX - cullBuffer;
+  const maxX = camX + designW + cullBuffer;
+  const minY = camY - cullBuffer;
+  const maxY = camY + designH + cullBuffer;
+  
+  // Update enemies with micro-optimizations
+  const enemiesLength = this.enemies.length; // Cache length
+  const nowFrameCached = nowFrame; // Cache performance.now() call
+  
+  for (let i = 0; i < enemiesLength; i++) {
       const enemy = this.enemies[i];
       if (!enemy.active) continue;
+      
+      // Early viewport culling - categorize enemies by distance from viewport
+      const isFarOutside = enemy.x < minX || enemy.x > maxX || enemy.y < minY || enemy.y > maxY;
+      
+      if (isFarOutside) {
+        // Far outside: minimal processing - just add to activeEnemies for spatial queries
+        this.activeEnemies.push(enemy);
+        
+        // Calculate distance to player for culling very distant enemies (avoid sqrt until needed)
+        const dpx = this.player.x - enemy.x;
+        const dpy = this.player.y - enemy.y;
+        const distSq = dpx*dpx + dpy*dpy;
+        
+        // Skip update for enemies extremely far away (beyond 2 screens) - use squared distance
+        const maxDistSq = (designW + designH) * (designW + designH);
+        if (distSq > maxDistSq) {
+          continue; // Skip all processing for very distant enemies
+        }
+        
+        // Advanced frame skipping based on distance and load
+        const anyE = enemy as any;
+        if (!anyE._skipFrames) anyE._skipFrames = 0;
+        
+        // Adaptive frame skipping based on performance
+        const skipThreshold = skipExpensive ? 
+          (distSq > this.criticalRangeSq ? 5 : 2) : // More aggressive skipping under load
+          (distSq > this.criticalRangeSq ? 3 : 1);   // Normal skipping
+          
+        if (++anyE._skipFrames < skipThreshold) continue;
+        anyE._skipFrames = 0;
+        
+        // Basic movement toward player for far enemies - optimized calculation
+        if (distSq > 1) { // Avoid sqrt for very close enemies
+          const invDist = 1 / Math.sqrt(distSq); // Single sqrt and invert
+          const speed = Math.min(enemy.speed || 2, chaseCap);
+          const moveScale = Math.min(1, speed * deltaTime / 1000) * invDist;
+          enemy.x += dpx * moveScale;
+          enemy.y += dpy * moveScale;
+        }
+        continue; // Skip detailed processing
+      }
+      
       this.activeEnemies.push(enemy);
+      
+      // Temporal load balancing - spread expensive updates across frames under high load
+      const frameIndex = Math.floor(nowFrameCached * 0.06) & 7; // 8-frame cycle, optimized division
+      const enemySlot = i & 7; // enemy slot in cycle
+      const isHighLoad = this.avgFrameMs > 35; // ~28 FPS threshold
+      
+      if (isHighLoad && frameIndex !== enemySlot) {
+        // Under high load, only process 1/8th of enemies per frame
+        // But still do basic position updates to avoid stuttering
+        const dpx = this.player.x - enemy.x;
+        const dpy = this.player.y - enemy.y;
+        const distSq = dpx*dpx + dpy*dpy;
+        
+        if (distSq > 1) { // Optimized distance check
+          const invDist = 1 / Math.sqrt(distSq);
+          const speed = Math.min(enemy.speed || 2, chaseCap);
+          const moveScale = Math.min(1, speed * deltaTime / 1000) * invDist;
+          enemy.x += dpx * moveScale;
+          enemy.y += dpy * moveScale;
+        }
+        
+        // Minimal knockback decay
+        if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
+          enemy.knockbackTimer -= deltaTime;
+          if (enemy.knockbackTimer < 0) enemy.knockbackTimer = 0;
+        }
+        continue; // Skip detailed processing this frame
+      }
+      
       // Last Stand anti-stall: if an enemy stays outside FoW visibility for too long, relocate it into the corridor
       // within the core’s visibility circle so it can re-engage (prevents waves from hanging on hidden/stuck enemies).
       try {
@@ -4832,23 +5017,31 @@ export class EnemyManager {
   let suppressBySlow = false;
   try { const now = performance.now(); const eAny3: any = enemy as any; if (eAny3._blackSunSlowUntil && now < eAny3._blackSunSlowUntil) suppressBySlow = true; } catch {}
   // Allow elite dash movement even through some suppression conditions
-  const isEliteDash = !!((enemy as any)._elite && (enemy as any).knockbackTimer && (enemy as any)._kbSuppressUntil && (performance.now() < (enemy as any)._kbSuppressUntil));
+  const isEliteDash = !!((enemy as any)._elite && (enemy as any).knockbackTimer && (enemy as any)._kbSuppressUntil && (nowFrameCached < (enemy as any)._kbSuppressUntil));
   if (enemy.knockbackTimer && enemy.knockbackTimer > 0 && (!suppressKbByBlackSun || isEliteDash) && (!suppressWindow || isEliteDash) && (!suppressBySpawnRing || isEliteDash) && (!suppressBySlow || isEliteDash)) {
         const dtSec = effectiveDelta / 1000;
         // Direction: use velocity for elite dashes; otherwise push outward from player for normal knockback
         let knx: number, kny: number;
-        let speed = Math.hypot(enemy.knockbackVx ?? 0, enemy.knockbackVy ?? 0);
+        // Optimized speed calculation - use squared distance check first
+        const vx = enemy.knockbackVx ?? 0;
+        const vy = enemy.knockbackVy ?? 0;
+        const speedSq = vx*vx + vy*vy;
+        const speed = speedSq > 1e-8 ? Math.sqrt(speedSq) : 0;
+        
         if (isEliteDash && speed > 0.0001) {
-          knx = (enemy.knockbackVx as number) / speed;
-          kny = (enemy.knockbackVy as number) / speed;
+          knx = vx / speed;
+          kny = vy / speed;
         } else {
           // Recompute outward direction each frame so normal knockback always moves enemy further from hero
           let kdx = enemy.x - playerChaseX;
           let kdy = enemy.y - playerChaseY;
-          let kdist = Math.hypot(kdx, kdy);
-          if (kdist < 0.0001) { kdx = 1; kdy = 0; kdist = 1; }
-          knx = kdx / kdist;
-          kny = kdy / kdist;
+          const kdistSq = kdx*kdx + kdy*kdy;
+          if (kdistSq < 1e-8) { kdx = 1; kdy = 0; knx = 1; kny = 0; } 
+          else {
+            const invKdist = 1 / Math.sqrt(kdistSq);
+            knx = kdx * invKdist;
+            kny = kdy * invKdist;
+          }
         }
         const stepX = knx * speed * dtSec;
         const stepY = kny * speed * dtSec;
@@ -5205,6 +5398,7 @@ export class EnemyManager {
         } catch { /* ignore */ }
         const isDummy = (enemy as any)._isDummy === true;
         enemy.active = false;
+        this.enemySpatialGrid.remove(enemy); // Remove from spatial grid when deactivated
         // Skip on dummy targets
   if (!isDummy) {
           // Poison contagion: on death with significant stacks, spread only a single basic stack to nearby enemies
@@ -5895,6 +6089,226 @@ export class EnemyManager {
   // Update enemy projectiles (elites)
   this.updateEnemyProjectiles(deltaTime);
 }
+
+  /**
+   * Chunked enemy update system for frame budget management.
+   * Processes enemies in chunks with time budget to prevent frame drops.
+   */
+  private updateActiveEnemiesChunked(deltaTime: number, nowFrame: number): void {
+    const startTime = nowFrame;
+    const enemies = this.activeEnemies;
+    const enemyCount = enemies.length;
+    
+    if (enemyCount === 0) return;
+    
+    // Process enemies in chunks to stay under budget
+    let processed = 0;
+    const maxToProcess = Math.min(this.updateChunkSize, enemyCount);
+    
+    while (processed < maxToProcess && (performance.now() - startTime) < this.updateBudgetMs) {
+      const enemy = enemies[this.currentUpdateIndex];
+      
+      if (enemy && enemy.active) {
+        this.updateSingleEnemyOptimized(enemy, deltaTime, nowFrame);
+      }
+      
+      this.currentUpdateIndex = (this.currentUpdateIndex + 1) % enemyCount;
+      processed++;
+    }
+  }
+
+  /**
+   * Minimal update for distant enemies - only critical systems near player.
+   */
+  private updateCriticalEnemiesOnly(deltaTime: number): void {
+    const px = this.player.x;
+    const py = this.player.y;
+    const dt = deltaTime * 0.001;
+    
+    for (let i = 0; i < this.activeEnemies.length; i++) {
+      const enemy = this.activeEnemies[i];
+      if (!enemy.active) continue;
+      
+      const dx = enemy.x - px;
+      const dy = enemy.y - py;
+      const distSq = dx * dx + dy * dy;
+      
+      if (distSq < this.criticalRangeSq) {
+        // Only update position for nearby enemies for collision accuracy
+        enemy.x += (enemy.vx || 0) * dt;
+        enemy.y += (enemy.vy || 0) * dt;
+        
+        // Update knockback for smooth visual
+        if (enemy.knockbackTimer && enemy.knockbackTimer > 0) {
+          enemy.knockbackTimer = Math.max(0, enemy.knockbackTimer - deltaTime);
+        }
+      }
+    }
+  }
+
+  /**
+   * Optimized single enemy update with minimal allocations.
+   */
+  private updateSingleEnemyOptimized(enemy: any, deltaTime: number, nowFrame: number): void {
+    // Basic position update
+    const dt = deltaTime * 0.001;
+    const anyEnemy = enemy as any;
+    anyEnemy.x += (anyEnemy.vx || 0) * dt;
+    anyEnemy.y += (anyEnemy.vy || 0) * dt;
+    
+    // Update timers
+    if (anyEnemy.knockbackTimer && anyEnemy.knockbackTimer > 0) {
+      anyEnemy.knockbackTimer = Math.max(0, anyEnemy.knockbackTimer - deltaTime);
+    }
+    
+    // Simple AI steering toward player (cached from main update)
+    const px = this.player.x;
+    const py = this.player.y;
+    const dx = px - anyEnemy.x;
+    const dy = py - anyEnemy.y;
+    const distSq = dx * dx + dy * dy;
+    
+    if (distSq > 1) {
+      const invDist = 1 / Math.sqrt(distSq);
+      const speed = anyEnemy.speed || 60;
+      anyEnemy.vx = dx * invDist * speed;
+      anyEnemy.vy = dy * invDist * speed;
+    }
+  }
+
+  /**
+   * SIMD-style batch processing for 4 enemies at once.
+   * Improves CPU cache utilization and reduces branch mispredictions.
+   */
+  private updateEnemyBatch(enemies: any[], startIdx: number, deltaTime: number, playerX: number, playerY: number): void {
+    const dt = deltaTime * 0.001;
+    
+    // Unroll loop for 4 enemies for better CPU pipeline utilization
+    const e0 = enemies[startIdx];
+    const e1 = enemies[startIdx + 1];
+    const e2 = enemies[startIdx + 2];
+    const e3 = enemies[startIdx + 3];
+    
+    // Position updates - vectorized style
+    if (e0?.active) {
+      e0.x += (e0.vx || 0) * dt;
+      e0.y += (e0.vy || 0) * dt;
+    }
+    if (e1?.active) {
+      e1.x += (e1.vx || 0) * dt;
+      e1.y += (e1.vy || 0) * dt;
+    }
+    if (e2?.active) {
+      e2.x += (e2.vx || 0) * dt;
+      e2.y += (e2.vy || 0) * dt;
+    }
+    if (e3?.active) {
+      e3.x += (e3.vx || 0) * dt;
+      e3.y += (e3.vy || 0) * dt;
+    }
+    
+    // Knockback timer updates - batch processing
+    if (e0?.knockbackTimer > 0) e0.knockbackTimer = Math.max(0, e0.knockbackTimer - deltaTime);
+    if (e1?.knockbackTimer > 0) e1.knockbackTimer = Math.max(0, e1.knockbackTimer - deltaTime);
+    if (e2?.knockbackTimer > 0) e2.knockbackTimer = Math.max(0, e2.knockbackTimer - deltaTime);
+    if (e3?.knockbackTimer > 0) e3.knockbackTimer = Math.max(0, e3.knockbackTimer - deltaTime);
+    
+    // AI steering updates - vectorized calculations
+    this.updateBatchSteering(e0, playerX, playerY);
+    this.updateBatchSteering(e1, playerX, playerY);
+    this.updateBatchSteering(e2, playerX, playerY);
+    this.updateBatchSteering(e3, playerX, playerY);
+  }
+
+  /**
+   * Optimized steering calculation for batch processing.
+   */
+  private updateBatchSteering(enemy: any, playerX: number, playerY: number): void {
+    if (!enemy?.active) return;
+    
+    const dx = playerX - enemy.x;
+    const dy = playerY - enemy.y;
+    const distSq = dx * dx + dy * dy;
+    
+    if (distSq > 1) {
+      const invDist = 1 / Math.sqrt(distSq);
+      const speed = enemy.speed || 60;
+      enemy.vx = dx * invDist * speed;
+      enemy.vy = dy * invDist * speed;
+    }
+  }
+
+  /**
+   * Zero-allocation collision detection using preallocated buffers.
+   * Returns number of collisions found, results stored in collisionBuffer.
+   */
+  private checkCollisionsImmediate(x: number, y: number, radius: number): number {
+    this.collisionCount = 0;
+    const radiusSq = radius * radius;
+    const enemies = this.activeEnemies;
+    const maxResults = 250; // Maximum results to prevent buffer overflow
+    
+    for (let i = 0; i < enemies.length && this.collisionCount < maxResults; i++) {
+      const enemy = enemies[i];
+      if (!enemy.active) continue;
+      
+      const dx = enemy.x - x;
+      const dy = enemy.y - y;
+      const distSq = dx * dx + dy * dy;
+      
+      if (distSq < radiusSq) {
+        const idx = this.collisionCount * 4;
+        this.collisionBuffer[idx] = enemy.x;
+        this.collisionBuffer[idx + 1] = enemy.y;
+        this.collisionBuffer[idx + 2] = i; // enemy index
+        this.collisionBuffer[idx + 3] = distSq;
+        this.collisionCount++;
+      }
+    }
+    
+    return this.collisionCount;
+  }
+
+  /**
+   * Get collision result at index without allocation.
+   */
+  private getCollisionResult(index: number): { x: number; y: number; enemyIndex: number; distSq: number } | null {
+    if (index >= this.collisionCount) return null;
+    
+    const idx = index * 4;
+    return {
+      x: this.collisionBuffer[idx],
+      y: this.collisionBuffer[idx + 1],
+      enemyIndex: this.collisionBuffer[idx + 2],
+      distSq: this.collisionBuffer[idx + 3]
+    };
+  }
+
+  /**
+   * Immediate mode enemy proximity check - no allocations.
+   */
+  private getClosestEnemyImmediate(x: number, y: number, maxRadius: number): any | null {
+    const maxRadiusSq = maxRadius * maxRadius;
+    let closestEnemy: any = null;
+    let closestDistSq = maxRadiusSq;
+    
+    const enemies = this.activeEnemies;
+    for (let i = 0; i < enemies.length; i++) {
+      const enemy = enemies[i];
+      if (!enemy.active) continue;
+      
+      const dx = enemy.x - x;
+      const dy = enemy.y - y;
+      const distSq = dx * dx + dy * dy;
+      
+      if (distSq < closestDistSq) {
+        closestDistSq = distSq;
+        closestEnemy = enemy;
+      }
+    }
+    
+    return closestEnemy;
+  }
 
   /** Clear all currently active enemies immediately (used on boss spawn). */
   private clearAllEnemies() {

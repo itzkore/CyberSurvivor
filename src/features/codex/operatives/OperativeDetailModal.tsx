@@ -12,7 +12,7 @@ export function OperativeDetailModal({ open, onOpenChange, operative, onSelect }
         <AnimatePresence>
           {open && (
             <Dialog.Overlay asChild>
-              <motion.div className="fixed inset-0 bg-black/70 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
+              <motion.div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[2005]" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
             </Dialog.Overlay>
           )}
         </AnimatePresence>
@@ -22,7 +22,7 @@ export function OperativeDetailModal({ open, onOpenChange, operative, onSelect }
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.96 }}
             transition={{ type: 'spring', stiffness: 320, damping: 28 }}
-            className="fixed left-1/2 top-1/2 z-[100] w-[min(960px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl holo glass neon-border p-6"
+            className="fixed left-1/2 top-1/2 z-[2010] w-[min(960px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl holo glass neon-border p-6"
             role="dialog" aria-modal="true"
           >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

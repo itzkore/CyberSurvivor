@@ -28,26 +28,15 @@ import { screenToWorld } from '../core/coords';
 // RMB controllers removed; abilities are declared via per-operative registries.
 import { keyState } from './keyState';
 import { getHealEfficiency } from './Balance';
+import { GameConstants } from './GameConstants';
 
 export class Game {
-  /**
-   * Neon colors for scanlines and city lights
-   */
-  private static neonColors = [
-    '#00FFFF', // Cyan
-    '#FF00FF', // Magenta
-    '#FFD700', // Gold
-    '#00FF99', // Green
-    '#FF0055', // Pink
-    '#00BFFF'  // Blue
-  ];
   // Static background image
   // Removed external background PNG; using procedural backdrop
-  private backgroundImage: HTMLImageElement | null = null; // retained for compatibility (unused)
   private bgPatternCanvas?: HTMLCanvasElement; // cached background tile for low-jitter redraw
   private bgPatternCtx?: CanvasRenderingContext2D | null;
   private bgPatternValid: boolean = false;
-  private bgPatternSize: number = 512; // size of cached pattern texture (power of two preferred)
+  private bgPatternSize: number = GameConstants.RENDERING.BG_PATTERN_SIZE; // size of cached pattern texture (power of two preferred)
   private bgGridSize: number = 160; // logical grid spacing
   private bgPatternNeedsRedraw: boolean = true; // flag for lazy rebuild
   private bgGradient?: CanvasGradient; // cached vertical gradient
@@ -62,12 +51,13 @@ export class Game {
     const prev = this.state;
     this.state = state;
     // Auto start/stop loop to eliminate idle jitter in menus
-    if (prev !== 'GAME' && state === 'GAME') {
+    if ((prev !== 'GAME' && prev !== 'CINEMATIC') && (state === 'GAME' || state === 'CINEMATIC')) {
       this.gameLoop.start();
     } else if (state === 'CINEMATIC') {
       // Ensure loop is running during cinematic so it can advance & draw
       this.gameLoop.start();
-    } else if (prev === 'GAME' && state === 'MAIN_MENU') {
+    } else if ((prev === 'GAME' || prev === 'CINEMATIC') && (state === 'MAIN_MENU' || state === 'MENU' || state === 'CHARACTER_SELECT' || state === 'GAME_OVER')) {
+      // Stop game loop when returning to any menu state
       this.gameLoop.stop();
     }
     // Show pending initial upgrade on first actual GAME entry
@@ -85,7 +75,12 @@ export class Game {
             Logger.error('[Game] Auto initial upgrade show failed: ' + (err as any)?.message);
           }
         } else {
-          try { window.dispatchEvent(new CustomEvent('showUpgradePanel')); this.initialUpgradeOffered = true; } catch {}
+          try { 
+            window.dispatchEvent(new CustomEvent('showUpgradePanel')); 
+            this.initialUpgradeOffered = true; 
+          } catch (error) {
+            Logger.debug('Failed to dispatch showUpgradePanel event:', error);
+          }
           this.pendingInitialUpgrade = false;
         }
       }, delay);
@@ -110,12 +105,12 @@ export class Game {
   private _activeBeams: any[] = [];
 
   // world/camera
-  private worldW = 4000 * 10; // start smaller; expand later to reduce coordinate magnitude early
-  private worldH = 4000 * 10;
+  private worldW: number = GameConstants.WORLD.INITIAL_WIDTH; // start smaller; expand later to reduce coordinate magnitude early
+  private worldH: number = GameConstants.WORLD.INITIAL_HEIGHT;
   private worldExpanded: boolean = false;
   private camX = 0;
   private camY = 0;
-  private camLerp = 0.12;
+  private camLerp = GameConstants.CAMERA.LERP_FACTOR;
   private brightenMode: boolean = true;
   // Abilities system
   private _abilities: any[] = [];
@@ -137,13 +132,15 @@ export class Game {
   private gameLoop: GameLoop;
   private enemySpatialGrid: SpatialGrid<any>; // Spatial grid for enemies
   private bulletSpatialGrid: SpatialGrid<any>; // Spatial grid for bullets
+  private enemySpatialGridDirty: boolean = true; // Track if enemy grid needs rebuild
+  private bulletSpatialGridDirty: boolean = true; // Track if bullet grid needs rebuild
+  private eventCleanupFunctions: Array<() => void> = []; // Track event listeners for cleanup
   private environment: EnvironmentManager; // biome + ambient background
   private roomManager: RoomManager; // random rooms structure
   private showRoomDebug: boolean = false;
   public gameMode: 'SHOWDOWN' | 'DUNGEON' | 'SANDBOX' | 'LAST_STAND' = 'LAST_STAND'; // default to Last Stand (main menu)
   private lastStand?: LastStandGameMode;
   // RMB controllers removed; abilities now resolved from registries.
-  // Removed perf + frame pulse overlays; lightweight FPS sampling only
   private fpsFrameCount: number = 0;
   private fpsLastTs: number = performance.now();
   private autoPaused: boolean = false; // track alt-tab auto pause
@@ -155,7 +152,7 @@ export class Game {
   private fog?: FogOfWarSystem;
   private fowEnabled: boolean = true; // locked on
   private fowRadiusBase: number = 4; // tiles (locked baseline; passives may modify)
-  private readonly fowTileSize: number = 160;
+  private readonly fowTileSize: number = GameConstants.RENDERING.FOW_TILE_SIZE;
   private lastFowTileX: number = Number.NaN;
   private lastFowTileY: number = Number.NaN;
 
@@ -207,11 +204,91 @@ export class Game {
           }
         } else {
           // Fallback: dispatch global event main.ts listens for
-          try { window.dispatchEvent(new CustomEvent('showUpgradePanel')); this.initialUpgradeOffered = true; } catch {}
+          try { 
+            window.dispatchEvent(new CustomEvent('showUpgradePanel')); 
+            this.initialUpgradeOffered = true; 
+          } catch (error) {
+            Logger.debug('Failed to dispatch showUpgradePanel event (fallback):', error);
+          }
         }
       }
     };
     if (delayMs > 0) setTimeout(exec, delayMs); else exec();
+  }
+
+  /**
+   * Composites a GL renderer canvas onto the 2D context in screen space.
+   * Common pattern used for enemies, bullets, beams, particles, etc.
+   */
+  private compositeGLRenderer(glRenderer: any, renderMethod: string = 'render'): boolean {
+    if (!glRenderer || typeof glRenderer[renderMethod] !== 'function') {
+      return false;
+    }
+    
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.drawImage(glRenderer.canvas, 0, 0);
+    this.ctx.restore();
+    return true;
+  }
+
+  /**
+   * Rebuilds enemy spatial grid only when dirty flag is set.
+   * Call this before collision detection that relies on enemy grid.
+   */
+  private updateEnemySpatialGridIfNeeded(): void {
+    if (!this.enemySpatialGridDirty) return;
+    
+    this.enemySpatialGrid.clear();
+    for (let i = 0; i < this.enemyManager.enemies.length; i++) {
+      const enemy = this.enemyManager.enemies[i];
+      if (enemy.active) this.enemySpatialGrid.insert(enemy);
+    }
+    this.enemySpatialGridDirty = false;
+  }
+
+  /**
+   * Rebuilds bullet spatial grid only when dirty flag is set.
+   * Call this before collision detection that relies on bullet grid.
+   */
+  private updateBulletSpatialGridIfNeeded(): void {
+    if (!this.bulletSpatialGridDirty) return;
+    
+    this.bulletSpatialGrid.clear();
+    for (let i = 0; i < this.bulletManager.bullets.length; i++) {
+      const bullet = this.bulletManager.bullets[i];
+      if (bullet.active) this.bulletSpatialGrid.insert(bullet);
+    }
+    this.bulletSpatialGridDirty = false;
+  }
+
+  /**
+   * Adds an event listener and tracks it for cleanup.
+   * Returns cleanup function.
+   */
+  private addEventListenerWithCleanup(target: EventTarget, event: string, handler: EventListenerOrEventListenerObject): () => void {
+    target.addEventListener(event, handler);
+    const cleanup = () => target.removeEventListener(event, handler);
+    this.eventCleanupFunctions.push(cleanup);
+    return cleanup;
+  }
+
+  /**
+   * Cleans up all tracked event listeners.
+   * Call this when Game instance is being destroyed.
+   */
+  public dispose(): void {
+    this.eventCleanupFunctions.forEach(cleanup => cleanup());
+    this.eventCleanupFunctions = [];
+  }
+
+  /**
+   * Marks spatial grids as dirty, forcing rebuild on next access.
+   * Call this when entities are added, removed, or moved significantly.
+   */
+  private markSpatialGridsDirty(): void {
+    this.enemySpatialGridDirty = true;
+    this.bulletSpatialGridDirty = true;
   }
 
   /** Compute effective Fog-of-War radius in tiles, including class and Vision passive multipliers. */
@@ -241,9 +318,17 @@ export class Game {
     this.state = 'MAIN_MENU';
     this.gameTime = 0;
   // Expose AssetLoader static helpers on window before any weapon visuals read them
-  try { (window as any).AssetLoader = AssetLoader; } catch {}
+  try { 
+    (window as any).AssetLoader = AssetLoader; 
+  } catch (error) {
+    Logger.debug('Failed to expose AssetLoader on window:', error);
+  }
   this.assetLoader = new AssetLoader(); // Initialization remains here
-  try { (window as any).__gameInstance = this; } catch {}
+  try { 
+    (window as any).__gameInstance = this; 
+  } catch (error) {
+    Logger.debug('Failed to expose game instance on window:', error);
+  }
     this.particleManager = new ParticleManager(160);
     // Initialize spatial grids first
     this.enemySpatialGrid = new SpatialGrid<any>(200); // Cell size 200
@@ -252,18 +337,35 @@ export class Game {
     // Initialize player and managers in correct dependency order
     this.player = new Player(this.worldW / 2, this.worldH / 2);
   // Ensure player has a stable instance id for scoping shared effects
-  try { if ((this.player as any)._instanceId == null) { (this.player as any)._instanceId = Math.floor(Math.random()*1e9); } } catch {}
+  try { 
+    if ((this.player as any)._instanceId == null) { 
+      (this.player as any)._instanceId = Math.floor(Math.random()*1e9); 
+    } 
+  } catch (error) {
+    Logger.debug('Failed to set player instance ID:', error);
+  }
     // Scale base radius by character scale (Tech Warrior +25%, others 1.0)
     try {
       const scale = (this.player as any).getCharacterScale ? (this.player as any).getCharacterScale() : 1.0;
       this.player.radius = Math.round(18 * scale);
-    } catch { this.player.radius = 18; }
+    } catch (error) { 
+      this.player.radius = 18; 
+      Logger.debug('Failed to get character scale, using default radius:', error);
+    }
   // Expose player globally for loosely-coupled systems (crit, piercing, AoE passives)
-  try { (window as any).player = this.player; } catch {}
+  try { 
+    (window as any).player = this.player; 
+  } catch (error) {
+    Logger.debug('Failed to expose player on window:', error);
+  }
     this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1);
   this.bulletManager = new BulletManager(this.assetLoader, this.enemySpatialGrid, this.particleManager, this.enemyManager, this.player);
   this.bossManager = new BossManager(this.player, this.particleManager, 1, this.assetLoader);
-  try { (window as any).__bossManager = this.bossManager; } catch {}
+  try { 
+    (window as any).__bossManager = this.bossManager; 
+  } catch (error) {
+    Logger.debug('Failed to expose boss manager on window:', error);
+  }
     this.cinematic = new Cinematic();
     
     if (!this.explosionManager) {
@@ -280,13 +382,13 @@ export class Game {
     AssetLoader.normalizePath('assets/ui/umbral_surge.mp4')
   ]);
   // Start overlay when surge begins
-  window.addEventListener('shadowSurgeStart', (e: any) => {
+  this.addEventListenerWithCleanup(window, 'shadowSurgeStart', (e: any) => {
     const dur = (e?.detail?.durationMs) ?? 5000;
   // Make the effect less obstructive near the end with a longer fade-out
   this.surgeOverlay?.play(dur, { fadeInMs: 140, fadeOutMs: 700 });
   });
   // Stop overlay early if surge explicitly ends sooner
-  window.addEventListener('shadowSurgeEnd', () => {
+  this.addEventListenerWithCleanup(window, 'shadowSurgeEnd', () => {
     this.surgeOverlay?.stop();
   });
   this.environment = new EnvironmentManager();
@@ -319,7 +421,7 @@ export class Game {
   // Expose globally for managers lacking direct reference (lightweight)
   try { (window as any).__roomManager = this.roomManager; } catch {}
   // Listen for revive to start a 5s cinematic overlay and schedule detonation
-  window.addEventListener('playerRevived', (e: Event) => {
+  this.addEventListenerWithCleanup(window, 'playerRevived', (e: Event) => {
     try {
       this.reviveCinematicActive = true;
       this.reviveCinematicStart = performance.now();
@@ -330,9 +432,10 @@ export class Game {
     } catch { /* ignore */ }
   });
   // Allow global skip via Escape to instantly end revive cinematic with detonation
-  window.addEventListener('keydown', (ke: KeyboardEvent) => {
+  this.addEventListenerWithCleanup(window, 'keydown', (ke: Event) => {
+    const keyEvent = ke as KeyboardEvent;
     if (!this.reviveCinematicActive) return;
-    if (ke.key === 'Escape') {
+    if (keyEvent.key === 'Escape') {
       this.triggerReviveDetonation();
       this.reviveCinematicActive = false;
   try { (window as any).__reviveCinematicActive = false; } catch {}
@@ -344,15 +447,11 @@ export class Game {
     this.player.x = spawnRoom.x + spawnRoom.w/2;
     this.player.y = spawnRoom.y + spawnRoom.h/2;
   }
-    // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // Will be set via setter
     this.player.setEnemyProvider(() => this.enemyManager.getEnemies());
     this.player.setGameContext(this as any); // Cast to any to allow setting game context
   // Provide global game instance reference (used by EnemyManager passive AoE)
   try { (window as any).__gameInstance = this; } catch {}
     this.initInput();
-  // RMB controllers removed
-  // (Electron auto lowFX removed)
-    // Removed frame pulse overlay (F9 toggle)
   this.gameLoop = new GameLoop(this.update.bind(this), this.render.bind(this));
   // Initialize Last Stand after gameLoop only when explicitly requested via URL
   if (parsedMode === 'LAST_STAND') {
@@ -390,17 +489,25 @@ export class Game {
     window.addEventListener('scrapExplosion', (e: Event) => {
       const d = (e as CustomEvent).detail;
       // Stronger visual: immediate damage + an extra subtle second ring
-      try { this.explosionManager?.triggerShockwave(d.x, d.y, d.damage, d.radius, d.color || '#FFAA33'); } catch {}
+      if (this.explosionManager) {
+        this.explosionManager.triggerShockwave(d.x, d.y, d.damage, d.radius, d.color || '#FFAA33');
+      }
       // Add a quick faint second ring for readability
-      try { this.explosionManager?.triggerShockwave(d.x, d.y, Math.max(1, Math.round(d.damage*0.2)), Math.round(d.radius*0.65), '#FFD199'); } catch {}
+      if (this.explosionManager) {
+        this.explosionManager.triggerShockwave(d.x, d.y, Math.max(1, Math.round(d.damage*0.2)), Math.round(d.radius*0.65), '#FFD199');
+      }
       this.startScreenShake(100, 4);
     });
     // Scavenger Pulse visualization (dual warm rings + sparks)
     window.addEventListener('scrapPulse', (e: Event) => {
       const d = (e as CustomEvent).detail || {}; const x = d.x, y = d.y; const r = d.r || 160;
-      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r*0.75), '#FFB347'); } catch {}
-      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r*1.05), '#FFE6C2'); } catch {}
-  try { this.particleManager.spawn(x, y, 14, '#FF9B2A', { sizeMin:2,sizeMax:4,lifeMs:420,speedMin:0.5,speedMax:2.0 }); } catch {}
+      if (this.explosionManager) {
+        this.explosionManager.triggerShockwave(x, y, 0, Math.round(r*0.75), '#FFB347');
+        this.explosionManager.triggerShockwave(x, y, 0, Math.round(r*1.05), '#FFE6C2');
+      }
+      if (this.particleManager) {
+        this.particleManager.spawn(x, y, 14, '#FF9B2A', { sizeMin:2,sizeMax:4,lifeMs:420,speedMin:0.5,speedMax:2.0 });
+      }
     });
     // Listen for enemyDeathExplosion event
     window.addEventListener('enemyDeathExplosion', (e: Event) => this.handleEnemyDeathExplosion(e as CustomEvent));
@@ -415,8 +522,12 @@ export class Game {
     // Serpent Chain finisher: soft teal shockwave burst
     window.addEventListener('serpentBurst', (e: Event) => {
       const d = (e as CustomEvent).detail;
-      try { this.explosionManager?.triggerShockwave(d.x, d.y, d.damage, d.radius, '#7EF1FF'); } catch {}
-      try { this.particleManager.spawn(d.x, d.y, 12, '#A8F7FF', { sizeMin: 2, sizeMax: 4, lifeMs: 380, speedMin: 0.8, speedMax: 2.2 }); } catch {}
+      if (this.explosionManager) {
+        this.explosionManager.triggerShockwave(d.x, d.y, d.damage, d.radius, '#7EF1FF');
+      }
+      if (this.particleManager) {
+        this.particleManager.spawn(d.x, d.y, 12, '#A8F7FF', { sizeMin: 2, sizeMax: 4, lifeMs: 380, speedMin: 0.8, speedMax: 2.2 });
+      }
     });
 
     // Neural Nomad Overmind VFX: teal shockwaves + brief charge glow burst
@@ -424,11 +535,15 @@ export class Game {
       const d = (e as CustomEvent).detail || {};
       const x = d.x ?? this.player.x, y = d.y ?? this.player.y;
       const r = Math.max(140, d.radius ?? 240);
-      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r * 0.85), '#66F2FF'); } catch {}
-      try { this.explosionManager?.triggerShockwave(x, y, 0, Math.round(r * 1.15), '#A8FFFF'); } catch {}
-      try { this.explosionManager?.triggerChargeGlow(x, y, Math.round(r * 0.6), '#9FFFFF', 260); } catch {}
+      if (this.explosionManager) {
+        this.explosionManager.triggerShockwave(x, y, 0, Math.round(r * 0.85), '#66F2FF');
+        this.explosionManager.triggerShockwave(x, y, 0, Math.round(r * 1.15), '#A8FFFF');
+        this.explosionManager.triggerChargeGlow(x, y, Math.round(r * 0.6), '#9FFFFF', 260);
+      }
       // Light energy flecks
-      try { this.particleManager.spawn(x, y, 18, '#9FFCF6', { sizeMin: 2, sizeMax: 4, lifeMs: 420, speedMin: 0.6, speedMax: 1.8 }); } catch {}
+      if (this.particleManager) {
+        this.particleManager.spawn(x, y, 18, '#9FFCF6', { sizeMin: 2, sizeMax: 4, lifeMs: 420, speedMin: 0.6, speedMax: 1.8 });
+      }
     });
 
     // Listen for level up and chest upgrade events to show UpgradePanel
@@ -468,7 +583,12 @@ export class Game {
   if (this.state === 'GAME') {
         this.pause();
         this.autoPaused = true;
-        try { this.autoPauseStartTs = performance.now(); } catch { this.autoPauseStartTs = Date.now(); }
+        try { 
+          this.autoPauseStartTs = performance.now(); 
+        } catch (error) { 
+          this.autoPauseStartTs = Date.now(); 
+          Logger.debug('performance.now() not available, using Date.now():', error);
+        }
   window.dispatchEvent(new CustomEvent('showPauseOverlay', { detail: { auto: true } }));
       }
     });
@@ -476,9 +596,18 @@ export class Game {
       if (this.autoPaused && this.state === 'PAUSE') {
         // Compute how long we were auto-paused and shift absolute timers forward so cooldowns/effects don't advance while unfocused.
         let pausedDelta = 0;
-        try { pausedDelta = Math.max(0, (performance.now() - (this.autoPauseStartTs || performance.now()))); } catch { pausedDelta = 0; }
+        try { 
+          pausedDelta = Math.max(0, (performance.now() - (this.autoPauseStartTs || performance.now()))); 
+        } catch (error) { 
+          pausedDelta = 0; 
+          Logger.debug('Failed to calculate pause delta:', error);
+        }
         if (pausedDelta > 0) {
-          try { this.adjustTimeAfterPause(pausedDelta); } catch { /* best-effort */ }
+          try { 
+            this.adjustTimeAfterPause(pausedDelta); 
+          } catch (error) { 
+            Logger.debug('Failed to adjust time after pause:', error);
+          }
         }
         (this.gameLoop as any)?.resetTiming?.();
         this.resume();
@@ -490,8 +619,16 @@ export class Game {
     window.addEventListener('bossDefeated', () => {
       // In Last Stand: award scrap instead of opening the standard UpgradePanel
       if (this.gameMode === 'LAST_STAND') {
-        try { (this.lastStand as any)?.addScrap?.(500); } catch {}
-        try { window.dispatchEvent(new CustomEvent('upgradeNotice', { detail: { type: 'boss-clear', message: '+500 Scrap (Boss)' } })); } catch {}
+        try { 
+          (this.lastStand as any)?.addScrap?.(500); 
+        } catch (error) {
+          Logger.debug('Failed to add boss defeat scrap:', error);
+        }
+        try { 
+          window.dispatchEvent(new CustomEvent('upgradeNotice', { detail: { type: 'boss-clear', message: '+500 Scrap (Boss)' } })); 
+        } catch (error) {
+          Logger.debug('Failed to dispatch boss defeat upgrade notice:', error);
+        }
         return;
       }
       // In other modes: chain double upgrade
@@ -515,8 +652,6 @@ export class Game {
       // Start chain
       showNext();
     });
-
-  // Removed old interval-based initial upgrade watcher; now handled explicitly on reset/cinematic end.
   }
 
   /**
@@ -634,7 +769,9 @@ export class Game {
         e.preventDefault(); // avoid page scroll / focus issues on Space
         try {
           (this.player as any)?.activateAbility?.();
-        } catch {}
+        } catch (error) {
+          Logger.debug('Failed to activate player ability:', error);
+        }
       } else if (e.key === 'k' || e.key === 'K') {
         // Manual hero kill hotkey for rapid leaderboard submission testing
         if (this.state === 'GAME') { this.player.hp = 0; }
@@ -643,7 +780,11 @@ export class Game {
         const current = ((this as any).aimMode as ('closest'|'toughest')) || ((window as any).__aimMode) || 'closest';
         const next = current === 'closest' ? 'toughest' : 'closest';
         (this as any).aimMode = next; (window as any).__aimMode = next;
-        try { localStorage.setItem('cs-aimMode', next); } catch {}
+        try { 
+          localStorage.setItem('cs-aimMode', next); 
+        } catch (error) {
+          Logger.debug('Failed to save aim mode to localStorage:', error);
+        }
         window.dispatchEvent(new CustomEvent('aimModeChanged', { detail: { mode: next } }));
       } else if (this.state === 'GAME' && (e.key === 'F10')) {
         // Toggle debug overlay
@@ -666,7 +807,11 @@ export class Game {
         const cur = ((this as any).aimMode as ('closest'|'toughest')) || ((window as any).__aimMode);
         const mode = (cur === 'toughest' || cur === 'closest') ? cur : 'closest';
         (this as any).aimMode = mode; (window as any).__aimMode = mode;
-        try { localStorage.setItem('cs-aimMode', mode); } catch {}
+        try { 
+          localStorage.setItem('cs-aimMode', mode); 
+        } catch (error) {
+          Logger.debug('Failed to save initial aim mode to localStorage:', error);
+        }
         window.dispatchEvent(new CustomEvent('aimModeChanged', { detail: { mode } }));
       }
     });
@@ -715,7 +860,6 @@ export class Game {
       }
     });
 
-  // Removed internal 'startGame' listener to avoid pre-CINEMATIC GAME state flash; main.ts handles start sequence.
   }
 
   /**
@@ -749,6 +893,7 @@ export class Game {
     this._abilities = [];
     this.enemySpatialGrid.clear(); // Clear grid on reset
     this.bulletSpatialGrid.clear(); // Clear grid on reset
+    this.markSpatialGridsDirty(); // Mark for rebuild
   this.enemyManager = new EnemyManager(this.player, this.bulletSpatialGrid, this.particleManager, this.assetLoader, 1); // Pass spatial grid
   this.bossManager = new BossManager(this.player, this.particleManager, 1, this.assetLoader);
   // Recreate bullet manager with updated player reference
@@ -772,7 +917,6 @@ export class Game {
       (this.roomManager as any).clear?.();
   (this.roomManager as any).setOpenWorld(true);
     }
-    // Removed direct instantiation: this.upgradePanel = new UpgradePanel(this.player, this); // UpgradePanel is now set via setter in main.ts
     this.gameTime = 0;
     this.dpsLog = [];
     this.totalDamageDealt = 0;
@@ -783,8 +927,16 @@ export class Game {
     this.currentShakeTime = 0;
   this.state = 'GAME'; // Set state to GAME after reset
   // Ensure loop is running when entering GAME directly via reset
-  try { if (this.gameLoop) this.gameLoop.start(); } catch {}
-  try { window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); } catch {}
+  try { 
+    if (this.gameLoop) this.gameLoop.start(); 
+  } catch (error) {
+    Logger.error('Failed to start game loop:', error);
+  }
+  try { 
+    window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); 
+  } catch (error) {
+    Logger.debug('Failed to dispatch state change to GAME:', error);
+  }
 
     // Restart upgrade offering: on a fresh run (e.g. after GAME_OVER Enter) the original
     // interval-based free upgrade watcher no longer exists (it was cleared after first run),
@@ -871,7 +1023,11 @@ export class Game {
     if (this.state !== 'GAME') return; // Only allow pausing from active gameplay
   this.state = 'PAUSE'; // update state first so listeners see PAUSE
   if (this.gameLoop) this.gameLoop.stop();
-  try { window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'PAUSE' } })); } catch {}
+  try { 
+    window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'PAUSE' } })); 
+  } catch (error) {
+    Logger.debug('Failed to dispatch state change to PAUSE:', error);
+  }
   // Defer to main.ts listener to show overlay (it will verify state === 'PAUSE').
   window.dispatchEvent(new CustomEvent('showPauseOverlay', { detail: { auto: false } }));
   }
@@ -888,8 +1044,16 @@ export class Game {
   const was = this.state;
   if (this.gameLoop) this.gameLoop.start();
   this.state = 'GAME';
-  try { window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); } catch {}
-  try { window.dispatchEvent(new CustomEvent('hidePauseOverlay')); } catch {}
+  try { 
+    window.dispatchEvent(new CustomEvent('statechange', { detail: { state: 'GAME' } })); 
+  } catch (error) {
+    Logger.debug('Failed to dispatch state change to GAME (resume):', error);
+  }
+  try { 
+    window.dispatchEvent(new CustomEvent('hidePauseOverlay')); 
+  } catch (error) {
+    Logger.debug('Failed to dispatch hide pause overlay:', error);
+  }
   (window as any).__lastResumeDebug = { prev: was, now: this.state, t: performance.now(), loop: (this.gameLoop as any) };
   }
 
@@ -1160,9 +1324,9 @@ export class Game {
     }
   } catch { /* ignore LS phase check */ }
   // One-time world expansion after first 10s of gameplay to keep early coordinates small
-  if (!this.worldExpanded && this.gameTime > 10) {
-    this.worldW = 4000 * 100;
-    this.worldH = 4000 * 100;
+  if (!this.worldExpanded && this.gameTime > GameConstants.WORLD.EXPANSION_TIME) {
+    this.worldW = GameConstants.WORLD.EXPANDED_WIDTH;
+    this.worldH = GameConstants.WORLD.EXPANDED_HEIGHT;
     this.worldExpanded = true;
   }
   // Expose avg frame time for adaptive systems (particle manager) using rolling EMA
@@ -1248,17 +1412,9 @@ export class Game {
   }
   // (handled at top) revive cinematic timing and detonation
 
-    // Clear and re-populate spatial grids
-    this.enemySpatialGrid.clear();
-    for (let i=0;i<this.enemyManager.enemies.length;i++) {
-      const enemy = this.enemyManager.enemies[i];
-      if (enemy.active) this.enemySpatialGrid.insert(enemy);
-    }
-    this.bulletSpatialGrid.clear();
-    for (let i=0;i<this.bulletManager.bullets.length;i++) {
-      const bullet = this.bulletManager.bullets[i];
-      if (bullet.active) this.bulletSpatialGrid.insert(bullet);
-    }
+    // Clear and re-populate spatial grids only if needed
+    this.updateEnemySpatialGridIfNeeded();
+    this.updateBulletSpatialGridIfNeeded();
 
   // --- Boss bullet collision ---
     const boss = this.bossManager.getActiveBoss();
@@ -1412,8 +1568,6 @@ export class Game {
   // Apply high-DPI transform so logical coordinates map to CSS pixels; background fill will cover full area.
   const dpr = (window as any).devicePixelRatio || 1;
   this.ctx.scale(dpr * this.renderScale, dpr * this.renderScale);
-  // Frame pulse (visual actual repaint cadence)
-  // Removed frame pulse debug box
 
   // (Removed global ctx.filter brightness which caused full-screen flicker on some drivers when combined with 'lighter' beam composites.)
   // Keep filter neutral; apply a lightweight additive overlay later instead (see below) when brightenMode is enabled.
@@ -2011,18 +2165,16 @@ export class Game {
     // Pass manager and playerX so GL can select atlas UVs and facing consistently with 2D path
     glER.render(enemiesArr, this.enemyManager, this.player?.x ?? 0, this.camX, this.camY, this.designWidth, this.designHeight, pixelW2, pixelH2, { tint: [1.0, 1.0, 1.0, 1.0] });
       // Read GL readiness flags published by the renderer
-      const glReady = !!((window as any).__glEnemiesIsReady);
-      const glAtlasReady = !!((window as any).__glEnemiesAtlasReady);
-      const glCount = (window as any).__glEnemiesLastCount ?? 0;
-      // Composite GL canvas whenever it rendered any instances (texture or atlas path)
-      if (glReady && glCount > 0) {
-        this.ctx.save();
-        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        this.ctx.drawImage(glER.canvas, 0, 0);
-        this.ctx.restore();
+  const glReady = !!((window as any).__glEnemiesIsReady);
+  const glAtlasReady = !!((window as any).__glEnemiesAtlasReady);
+  const glHasValidTexture = !!((window as any).__glEnemiesHasValidTexture);
+  const glCount = (window as any).__glEnemiesLastCount ?? 0;
+      // Composite GL canvas only when atlas is ready and instances were drawn
+      if (glReady && glAtlasReady && glCount > 0) {
+        this.compositeGLRenderer(glER);
       }
       // Only skip 2D body draw when the atlas is ready (parity with sprite visuals) AND GL drew instances
-      (this.enemyManager as any).__skipBody2DOnce = !!(glAtlasReady && glCount > 0);
+  (this.enemyManager as any).__skipBody2DOnce = !!(glAtlasReady && glHasValidTexture && glCount > 0);
       // Now draw overlays/HP bars via EnemyManager (body draw gated inside when GL ready)
       this.enemyManager.draw(this.ctx, this.camX, this.camY);
     } else {
@@ -2042,13 +2194,7 @@ export class Game {
               glr.render(bullets, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
             }
             // Composite GL canvas into 2D context at current transform (already translated by camera)
-            this.ctx.save();
-            // Reset transform to screen space to blit the offscreen framebuffer
-            this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-            // Draw pixel-exact; the offscreen canvas matches the 2D backing store size
-            this.ctx.drawImage(glr.canvas, 0, 0);
-            // Restore world transform
-            this.ctx.restore();
+            this.compositeGLRenderer(glr);
           } else {
             this.bulletManager.draw(this.ctx);
           }
@@ -2088,10 +2234,7 @@ export class Game {
             if (beamsGL.length) {
               glBR.render(beamsGL, this.camX, this.camY, this.designWidth, this.designHeight, pixelWB, pixelHB, performance.now() * 0.001);
               // Composite GL beams canvas overlay in screen space
-              this.ctx.save();
-              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-              this.ctx.drawImage(glBR.canvas, 0, 0);
-              this.ctx.restore();
+              this.compositeGLRenderer(glBR);
               skipped2DBeams = true;
             }
           }
@@ -2376,10 +2519,7 @@ export class Game {
             const particles: any[] = (this.particleManager as any).getSnapshot?.() || [];
             glP.render(particles, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
             // Composite GL particles texture into screen (between player and zones)
-            this.ctx.save();
-            this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-            this.ctx.drawImage(glP.canvas, 0, 0);
-            this.ctx.restore();
+            this.compositeGLRenderer(glP);
           } else {
             this.particleManager.draw(this.ctx);
           }
@@ -2395,10 +2535,7 @@ export class Game {
               const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
               glZR.render(snap, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
               // Composite GL zones texture into screen
-              this.ctx.save();
-              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-              this.ctx.drawImage(glZR.canvas, 0, 0);
-              this.ctx.restore();
+              this.compositeGLRenderer(glZR);
             }
           }
         } catch { /* ignore GL zones errors */ }
@@ -2413,10 +2550,7 @@ export class Game {
               const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
               glGR.render(snap, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
               // Composite GL glows texture into screen
-              this.ctx.save();
-              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-              this.ctx.drawImage(glGR.canvas, 0, 0);
-              this.ctx.restore();
+              this.compositeGLRenderer(glGR);
             }
           }
         } catch { /* ignore GL glows errors */ }
@@ -2449,10 +2583,7 @@ export class Game {
               const pixelH = Math.round(this.designHeight * dpr * this.renderScale);
               glRR.render(rings, this.camX, this.camY, this.designWidth, this.designHeight, pixelW, pixelH);
               // Composite GL rings texture into screen
-              this.ctx.save();
-              this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-              this.ctx.drawImage(glRR.canvas, 0, 0);
-              this.ctx.restore();
+              this.compositeGLRenderer(glRR);
             }
           }
         } catch { /* ignore GL rings errors */ }
@@ -2619,7 +2750,6 @@ export class Game {
   } catch { /* ignore */ }
   // Draw boss screen-space FX (e.g., Supernova darken) before HUD so UI stays readable on top
   this.bossManager.drawScreenFX(this.ctx, this.designWidth, this.designHeight);
-  // Removed full-screen additive overlay to prevent global flash; enemy hit feedback now strictly per-entity.
         this.hud.draw(this.ctx, this.gameTime, this.enemyManager.getEnemies(), this.worldW, this.worldH, this.player.upgrades);
     // Draw cinematic alerts LAST so they remain visible even during bright spells/HUD
     this.bossManager.drawAlerts(this.ctx, this.designWidth, this.designHeight);

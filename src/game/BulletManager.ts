@@ -1090,16 +1090,19 @@ export class BulletManager {
           // Capture a per-shot base speed and normalize current velocity to it to avoid speed ratcheting
           try {
             const lvl = ((b as any).level || 1);
-            let baseSpeed = Math.hypot(b.vx, b.vy) || 8;
+            const vx = b.vx, vy = b.vy;
+            const speedSq = vx*vx + vy*vy;
+            let baseSpeed = speedSq > 64 ? Math.sqrt(speedSq) : 8; // 8^2 = 64
             const specL: any = (WEAPON_SPECS as any)[WeaponType.SCRAP_LASH];
             if (specL && specL.getLevelStats) {
               const scaled = specL.getLevelStats(lvl);
               if (scaled && typeof scaled.speed === 'number') baseSpeed = scaled.speed;
             }
             (b as any)._lashBaseSpeed = baseSpeed;
-            const m = Math.hypot(b.vx, b.vy) || 1;
-            b.vx = (b.vx / m) * baseSpeed;
-            b.vy = (b.vy / m) * baseSpeed;
+            const m = speedSq > 1 ? Math.sqrt(speedSq) : 1;
+            const invM = 1 / m;
+            b.vx = vx * invM * baseSpeed;
+            b.vy = vy * invM * baseSpeed;
           } catch { /* ignore */ }
         }
         // Update spin
@@ -1114,15 +1117,20 @@ export class BulletManager {
         }
         // RMB redirect steering toward queued waypoints
         if ((b as any)._lashPhase === 'REDIRECT') {
-          const base = (b as any)._lashBaseSpeed ?? (Math.hypot(b.vx, b.vy) || 8);
+          const vx = b.vx, vy = b.vy;
+          const speedSq = vx*vx + vy*vy;
+          const base = (b as any)._lashBaseSpeed ?? (speedSq > 64 ? Math.sqrt(speedSq) : 8);
           // Slightly reduced speed for controllability while redirecting
           const speed = base * 0.8;
           const tx = (b as any)._lashRedirectX;
           const ty = (b as any)._lashRedirectY;
           if (typeof tx === 'number' && typeof ty === 'number') {
-            const dxT = tx - b.x; const dyT = ty - b.y; const distT = Math.hypot(dxT, dyT) || 1;
-            b.vx = (dxT / distT) * speed;
-            b.vy = (dyT / distT) * speed;
+            const dxT = tx - b.x; const dyT = ty - b.y; 
+            const distTSq = dxT*dxT + dyT*dyT;
+            const distT = distTSq > 1 ? Math.sqrt(distTSq) : 1;
+            const invDistT = 1 / distT;
+            b.vx = dxT * invDistT * speed;
+            b.vy = dyT * invDistT * speed;
             // Arrival threshold accounts for blade size
             const arrive = Math.max(16, (b.radius || 10) * 1.2);
             if (distT <= arrive) {
@@ -1146,12 +1154,17 @@ export class BulletManager {
           }
         }
         if ((b as any)._lashPhase === 'RETURN' && pl) {
-          const dx = pl.x - b.x; const dy = pl.y - b.y; const dist = Math.hypot(dx, dy) || 1;
+          const dx = pl.x - b.x; const dy = pl.y - b.y; 
+          const distSq = dx*dx + dy*dy;
+          const dist = distSq > 1 ? Math.sqrt(distSq) : 1;
           // Return at half the base throw speed
-          const base = (b as any)._lashBaseSpeed ?? (Math.hypot(b.vx, b.vy) || 8);
+          const vx = b.vx, vy = b.vy;
+          const speedSq = vx*vx + vy*vy;
+          const base = (b as any)._lashBaseSpeed ?? (speedSq > 64 ? Math.sqrt(speedSq) : 8);
           const speed = base * 0.5;
-          b.vx = (dx / dist) * speed;
-          b.vy = (dy / dist) * speed;
+          const invDist = 1 / dist;
+          b.vx = dx * invDist * speed;
+          b.vy = dy * invDist * speed;
           if (dist < Math.max(22, (b.radius||12) * 1.1)) {
             // Kill on hero touch: despawn and do NOT relaunch
             // Reset per-throw scrap credit map so next throw starts fresh
@@ -1356,7 +1369,9 @@ export class BulletManager {
           if (diff > maxTurn) diff = maxTurn; else if (diff < -maxTurn) diff = -maxTurn;
           const newAng = curAng + diff;
           // Acceleration curve: exponential ramp for quick lock-on chase
-          const curSpeed = Math.hypot(b.vx, b.vy) || 0.0001;
+          const vx = b.vx, vy = b.vy;
+          const speedSq = vx*vx + vy*vy;
+          const curSpeed = speedSq > 1e-8 ? Math.sqrt(speedSq) : 0.0001;
           const spawnT = (b as any)._spawnTime || performance.now();
           const aliveMs = Math.max(0, performance.now() - spawnT);
           // Base speed remembered from initial spawn
@@ -1405,15 +1420,19 @@ export class BulletManager {
           (b as any)._seekNextAt = nowT + seekEvery;
           // Acquire a forward target within short range
           const searchRadius = 260;
-          const vx = b.vx, vy = b.vy; const sp = Math.hypot(vx, vy) || 0.0001;
-          const fx = vx / sp, fy = vy / sp;
+          const vx = b.vx, vy = b.vy; 
+          const spSq = vx*vx + vy*vy;
+          const sp = spSq > 1e-8 ? Math.sqrt(spSq) : 0.0001;
+          const invSp = 1 / sp;
+          const fx = vx * invSp, fy = vy * invSp;
           const cand = this.queryEnemies(b.x, b.y, searchRadius);
           let best: any = null; let bestScore = -Infinity;
           for (let ci = 0; ci < cand.length; ci++) {
             const e = cand[ci]; if (!e.active || e.hp <= 0) continue; if (!isVisibleLS(e.x, e.y)) continue;
-            const dx = e.x - b.x; const dy = e.y - b.y; const d2 = dx*dx + dy*dy; if (d2 < 12*12) continue; // skip self-collocated
+            const dx = e.x - b.x; const dy = e.y - b.y; const d2 = dx*dx + dy*dy; if (d2 < 144) continue; // skip self-collocated (12*12=144)
             const dist = Math.sqrt(d2);
-            const dot = (dx*fx + dy*fy) / (dist || 1);
+            const invDist = 1 / dist;
+            const dot = (dx*fx + dy*fy) * invDist;
             if (dot <= 0.2) continue; // only consider mostly forward
             // Score: forwardness weighted, closer is better
             const score = dot * 1.2 + (1 / Math.max(24, dist));

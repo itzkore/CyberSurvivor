@@ -133,14 +133,14 @@ window.onload = async () => {
     console.warn('[main] GL bullets init failed, using 2D bullets', e);
   }
 
-  // Initialize GL enemies renderer by default; allow disabling via ?glenemies=0 or ?gle=0
+  // Initialize GL enemies renderer as opt-in only until performance is stable; use ?glenemies=1 or ?gle=1 to enable
   try {
-    const disableGLE = /[?&](glenemies|gle)=0/.test(location.search);
-    if (disableGLE) {
-      (window as any).__glEnemiesRenderer = null;
-    } else {
+    const enableGLE = /[?&](glenemies|gle)=1/.test(location.search);
+    if (enableGLE) {
       const glER = createGLEnemyRendererLike(canvas);
       (window as any).__glEnemiesRenderer = glER || null;
+    } else {
+      (window as any).__glEnemiesRenderer = null; // force 2D enemies by default for stability
     }
   } catch (e) {
     (window as any).__glEnemiesRenderer = null;

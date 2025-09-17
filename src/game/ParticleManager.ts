@@ -23,20 +23,30 @@ export class ParticleManager {
    * Spawn particles near a point with adaptive density and pool budgeting.
    * - Respects a dynamic pool cap that tightens under low FPS to avoid unbounded growth.
    * - Downscales spawn counts as frame time rises.
+   * - Implements LOD system for distance-based particle reduction.
    */
   public spawn(
     x: number,
     y: number,
     count = 8,
     color = '#ff0',
-    opts?: { sizeMin?: number; sizeMax?: number; lifeMs?: number; speedMin?: number; speedMax?: number }
+    opts?: { sizeMin?: number; sizeMax?: number; lifeMs?: number; speedMin?: number; speedMax?: number; distance?: number }
   ) {
     // Adaptive density: if a global perf monitor is present on window with avgFrameMs, scale particle count
     const perfAvg = (window as any).__avgFrameMs as number | undefined;
     let effectiveCount = count;
+    
+    // LOD system: reduce particles based on distance from player
+    const distance = opts?.distance;
+    if (distance !== undefined) {
+      if (distance > 600) effectiveCount = Math.ceil(count * 0.3); // Far: 30% particles
+      else if (distance > 300) effectiveCount = Math.ceil(count * 0.6); // Medium: 60% particles
+      // Near: 100% particles (no reduction)
+    }
+    
     if (perfAvg !== undefined) {
-      if (perfAvg > 40) effectiveCount = Math.ceil(count * 0.5);
-      if (perfAvg > 55) effectiveCount = Math.ceil(count * 0.25);
+      if (perfAvg > 40) effectiveCount = Math.ceil(effectiveCount * 0.5);
+      if (perfAvg > 55) effectiveCount = Math.ceil(effectiveCount * 0.25);
       // Tighten max pool as perf drops
       this.maxPool = perfAvg > 55 ? 450 : perfAvg > 32 ? 700 : 900;
     } else {
@@ -58,20 +68,25 @@ export class ParticleManager {
     }
   }
 
-  private activate(p: Particle, x: number, y: number, color: string, opts?: { sizeMin?: number; sizeMax?: number; lifeMs?: number; speedMin?: number; speedMax?: number }) {
+  private activate(p: Particle, x: number, y: number, color: string, opts?: { sizeMin?: number; sizeMax?: number; lifeMs?: number; speedMin?: number; speedMax?: number; distance?: number }) {
     const sizeMin = opts?.sizeMin ?? 1;
     const sizeMax = opts?.sizeMax ?? 4;
     const speedMin = opts?.speedMin ?? 2;
     const speedMax = opts?.speedMax ?? 4;
+    
+    // LOD size reduction for distant particles
+    const distance = opts?.distance ?? 0;
+    const lodSizeScale = distance > 600 ? 0.6 : distance > 300 ? 0.8 : 1.0;
+    
     p.x = x + (Math.random() - 0.5) * 8;
     p.y = y + (Math.random() - 0.5) * 8;
     const speed = speedMin + Math.random() * (speedMax - speedMin);
     const ang = Math.random() * Math.PI * 2;
     p.vx = Math.cos(ang) * speed;
     p.vy = Math.sin(ang) * speed;
-  // Default 500ms particle life if not specified
-  p.life = opts?.lifeMs ?? 500;
-    p.size = sizeMin + Math.random() * (sizeMax - sizeMin);
+  // Default 500ms particle life if not specified, reduced for distant particles
+  p.life = (opts?.lifeMs ?? 500) * (distance > 600 ? 0.7 : 1.0);
+    p.size = (sizeMin + Math.random() * (sizeMax - sizeMin)) * lodSizeScale;
     p.color = color;
     p.active = true;
   }

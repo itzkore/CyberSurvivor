@@ -29,7 +29,9 @@ export class DebugOverlay {
         const atlas = (window as any).__glEnemiesAtlasInfo || {};
         const ent = atlas.entries != null ? ` entries=${atlas.entries}` : '';
         const ready = (window as any).__glEnemiesIsReady ? 'ready' : 'warming';
-        if (cap != null) extra = ` cap=${cap} ${texReady} ${ready}${ent}`; else extra = ` ${texReady} ${ready}${ent}`;
+        const atlasReady = (window as any).__glEnemiesAtlasReady ? 'atlas' : 'no-atlas';
+        const validTex = (window as any).__glEnemiesHasValidTexture ? 'valid-tex' : 'invalid-tex';
+        if (cap != null) extra = ` cap=${cap} ${texReady} ${ready} ${atlasReady} ${validTex}${ent}`; else extra = ` ${texReady} ${ready} ${atlasReady} ${validTex}${ent}`;
       }
       lines.push(`GL-Enemies ${on ? 'ON' : 'off'}  inst=${inst}${extra}`);
     } catch {}

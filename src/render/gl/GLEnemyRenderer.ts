@@ -28,6 +28,7 @@ export class GLEnemyRenderer {
   private atlasReady = false;
   private atlasMap: Record<string, { u0: number; v0: number; u1: number; v1: number; sizePx: number }> = {};
   private atlasDirty = true;
+  private lastAtlasAttemptMs = 0;
   // Prevent log spam for repeatedly missing keys
   private warnedMissing: Record<string, number> = {};
   // Track EnemyManager's sprite version to know when to rebuild atlas
@@ -254,6 +255,17 @@ export class GLEnemyRenderer {
   private tryBuildAtlasFromManager(enemyManager: any): void {
     try {
       if (!enemyManager) return;
+      // Avoid busy-looping atlas builds; throttle attempts
+      const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      if (nowMs - this.lastAtlasAttemptMs < 200) return;
+      this.lastAtlasAttemptMs = nowMs;
+      // Wait briefly for sprite readiness to avoid building empty atlases on dev startup
+      try {
+        if (typeof enemyManager.areSpritesReady === 'function' && enemyManager.areSpritesReady() !== true) {
+          // Not ready yet; keep fallback texture path and try again later
+          return;
+        }
+      } catch { /* ignore wait errors */ }
       const baseMap: Array<{ key: string; img: HTMLCanvasElement | HTMLImageElement; size: number }> = [];
       // Base enemy types
       const es: any = enemyManager.enemySprites || {};
@@ -282,7 +294,8 @@ export class GLEnemyRenderer {
             (this as any).__lastEmptyWarnMs = now;
           }
         }
-        this.atlasReady = false; try { (window as any).__glEnemiesAtlasReady = false; } catch {}
+        this.atlasReady = false; this.textureReady = !!this.texture; this.atlasMap = {};
+        try { (window as any).__glEnemiesAtlasReady = false; } catch {}
         return;
       }
       // Simple shelf packer with padding to prevent texture bleeding
@@ -303,12 +316,12 @@ export class GLEnemyRenderer {
         placements.push({ key: e.key, x, y, size: e.size, img: e.img });
         x += tile; rowH = Math.max(rowH, tile);
       }
-      const atlasH = pow2(y + rowH);
+  const atlasH = pow2(y + rowH);
       // Draw
       const cv = document.createElement('canvas');
       cv.width = atlasW; cv.height = atlasH;
       const c2d = cv.getContext('2d');
-      if (!c2d) { this.atlasReady = false; return; }
+  if (!c2d) { this.atlasReady = false; this.atlasMap = {}; return; }
       c2d.clearRect(0, 0, atlasW, atlasH);
       const map: Record<string, { u0: number; v0: number; u1: number; v1: number; sizePx: number }> = {};
       for (let i = 0; i < placements.length; i++) {
@@ -335,13 +348,16 @@ export class GLEnemyRenderer {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
       this.texture = tex;
       this.atlasMap = map;
-      this.atlasReady = true;
-      this.textureReady = true;
+      // Validate atlas: require at least one entry and dimensions > 1x1
+      const valid = (Object.keys(map).length > 0) && (atlasW > 1) && (atlasH > 1);
+      this.atlasReady = valid;
+      this.textureReady = valid || this.textureReady;
       this.atlasDirty = false;
       (window as any).__glEnemiesAtlasInfo = { width: atlasW, height: atlasH, entries: Object.keys(map).length, builtAt: Date.now() };
-      try { (window as any).__glEnemiesAtlasReady = true; } catch {}
+      try { (window as any).__glEnemiesAtlasReady = valid; } catch {}
     } catch {
-      this.atlasReady = false; try { (window as any).__glEnemiesAtlasReady = false; } catch {}
+      this.atlasReady = false; this.atlasMap = {};
+      try { (window as any).__glEnemiesAtlasReady = false; } catch {}
     }
   }
 
@@ -364,7 +380,7 @@ export class GLEnemyRenderer {
   }
 
   /**
-   * Render enemies into the internal WebGL canvas.
+   * Render enemies into the internal WebGL canvas with Level-of-Detail optimization.
    * Enemies are expected to be objects with: x, y, radius, active, hp.
    */
   public render(
@@ -382,23 +398,56 @@ export class GLEnemyRenderer {
     this.setSize(pixelW, pixelH);
     const gl = this.gl;
     this.ensureCapacity(enemies.length);
+    // If atlas is not ready yet, only try to build it with proper throttling to avoid lag
+    if (this.atlasDirty || !this.atlasReady) {
+      // Only attempt atlas build if throttling allows it (200ms intervals in tryBuildAtlasFromManager)
+      const nowMs = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+      if (nowMs - this.lastAtlasAttemptMs >= 200) {
+        this.tryBuildAtlasFromManager(enemyManager);
+      }
+      // Publish minimal readiness state for overlay and gating
+      try {
+        (window as any).__glEnemiesIsReady = !!this.textureReady || !!this.atlasReady;
+        (window as any).__glEnemiesAtlasReady = !!this.atlasReady;
+        (window as any).__glEnemiesHasValidTexture = !!(this.texture && (this.textureReady || this.atlasReady));
+        (window as any).__glEnemiesLastCount = 0;
+      } catch {}
+      return;
+    }
     // Observe EnemyManager sprite version; if changed, mark atlas dirty
     try {
       const v = typeof enemyManager?.getEnemySpriteVersion === 'function' ? enemyManager.getEnemySpriteVersion() : this.lastSpriteVersion;
       if (v !== this.lastSpriteVersion) { this.atlasDirty = true; this.lastSpriteVersion = v; }
     } catch { /* ignore */ }
-    // Build atlas first if possible; fallback to shared single texture
-    if (this.atlasDirty || !this.atlasReady) this.tryBuildAtlasFromManager(enemyManager);
-    if (!this.atlasReady) this.ensureEnemyTexture();
+    // Atlas is ready here; ensure base texture bound (already uploaded in atlas builder),
+    // but keep fallback path as a no-op since we require atlas for rendering.
     const inst = this.instanceData as Float32Array;
     const scaleX = pixelW / Math.max(1, designW);
     const scaleY = pixelH / Math.max(1, designH);
     let count = 0;
     const pad = 64;
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    // LOD system: calculate distance from player for each enemy
+    const playerCenterX = playerX;
+    const playerCenterY = (window as any).__camY + designH / 2; // Estimate player Y from camera
+    
     for (let i = 0; i < enemies.length; i++) {
       const e: any = enemies[i];
       if (!e || !e.active || e.hp <= 0) continue;
+      
+      // Early viewport culling
+      const sx = e.x - camX; let sy = e.y - camY;
+      if (sx < -pad || sy < -pad || sx > designW + pad || sy > designH + pad) continue;
+      
+      // LOD distance calculation
+      const distanceToPlayer = Math.hypot(e.x - playerCenterX, e.y - playerCenterY);
+      const lodLevel = distanceToPlayer > 800 ? 2 : distanceToPlayer > 400 ? 1 : 0;
+      
+      // Skip distant enemies under high load
+      const avgFrameMs = (window as any).__avgFrameMs || 16;
+      if (avgFrameMs > 35 && lodLevel === 2 && Math.random() > 0.3) continue; // Skip 70% of far enemies
+      if (avgFrameMs > 50 && lodLevel >= 1 && Math.random() > 0.5) continue; // Skip 50% of medium+ distance enemies
+      
       // Elite detection and key
       const eliteKind: string | undefined = (e._elite && e._elite.kind) ? String(e._elite.kind) : undefined;
       const key = eliteKind ? `ELITE:${eliteKind}` : String(e.type || '');
@@ -414,11 +463,10 @@ export class GLEnemyRenderer {
         }
         this.atlasDirty = true;
       }
-      const sx = e.x - camX; let sy = e.y - camY;
-      if (sx < -pad || sy < -pad || sx > designW + pad || sy > designH + pad) continue;
-      // Walking bob and shake offset (design-space)
+      
+      // Walking bob and shake offset (design-space) - reduced detail for distant enemies
       let shakeX = 0, shakeY = 0;
-      if (e._shakeUntil && now < e._shakeUntil) {
+      if (lodLevel < 2 && e._shakeUntil && now < e._shakeUntil) {
         const amp = e._shakeAmp || 0.8;
         const phase = e._shakePhase || 0;
         const t = now * 0.03 + phase;
@@ -427,25 +475,29 @@ export class GLEnemyRenderer {
       }
       const eAny: any = e;
       const faceLeft = (eAny._facingX != null) ? (eAny._facingX < 0) : (playerX < e.x);
-      const walkFlip = !!eAny._walkFlip;
+      const walkFlip = lodLevel < 2 ? !!eAny._walkFlip : false; // Disable walk animation for far enemies
       const isElite = !!eliteKind;
       const baseR = isElite
         ? Math.max(8, ((rect?.sizePx ?? ((e.radius || 20) * 2)) as number) / 2)
         : Math.max(2, e.radius || 20);
-      const stepAmp = isElite ? Math.min(0.8, baseR * 0.03) : Math.min(1.5, baseR * 0.06);
+      
+      // Reduce animation detail based on LOD level
+      const stepAmp = lodLevel >= 1 ? 0 : (isElite ? Math.min(0.8, baseR * 0.03) : Math.min(1.5, baseR * 0.06));
       const stepOffsetX = (walkFlip ? -1 : 1) * stepAmp;
-      const stepOffsetY = (walkFlip ? -0.3 : 0.3);
+      const stepOffsetY = (walkFlip ? -0.3 : 0.3) * (lodLevel >= 1 ? 0 : 1);
       const cx = sx + shakeX + stepOffsetX;
       sy = sy + shakeY + stepOffsetY;
       const xNdc = cx / designW * 2 - 1;
       const yNdc = (sy / designH * 2 - 1) * -1.0;
       // Average pixel scale
       const avgScale = (0.5 * (scaleX + scaleY));
-      // Visual size from atlas entry if available else from radius*2
+      // Visual size from atlas entry if available else from radius*2 - scaled by LOD
       const baseSizeDesign = rect?.sizePx ?? ((e.radius || 20) * 2);
-      // Mind-controlled enlargement
-      const mcScale = (eAny._mindControlledUntil && now < eAny._mindControlledUntil) ? 1.5 : 1.0;
-      const sizePx = Math.max(2, baseSizeDesign * avgScale * mcScale);
+      // Mind-controlled enlargement - reduced for distant enemies
+      const mcScale = (lodLevel < 2 && eAny._mindControlledUntil && now < eAny._mindControlledUntil) ? 1.5 : 1.0;
+      // LOD size reduction for distant enemies
+      const lodSizeScale = lodLevel === 2 ? 0.7 : lodLevel === 1 ? 0.85 : 1.0;
+      const sizePx = Math.max(2, baseSizeDesign * avgScale * mcScale * lodSizeScale);
       const flipSign = ((faceLeft ? -1 : 1) * (walkFlip ? -1 : 1)) < 0 ? -1 : 1;
       const idx = count * this.instanceStrideFloats;
       inst[idx + 0] = xNdc;
@@ -461,10 +513,10 @@ export class GLEnemyRenderer {
       }
       // Flip sign
       inst[idx + 8] = flipSign;
-      // Per-instance tint: default white; if in poison flash window, boost green channel
+      // Per-instance tint: default white; reduce visual effects for distant enemies
       let tr = 1.0, tg = 1.0, tb = 1.0, ta = 1.0;
       const pUntil = (eAny._poisonFlashUntil || 0) as number;
-      if (pUntil && now < pUntil) {
+      if (lodLevel < 2 && pUntil && now < pUntil) {
         const left = Math.max(0, Math.min(1, (pUntil - now) / 140));
         // Subtle green flash: ramp up green channel; keep premult consistent via alpha
         tr = 0.9 + 0.1 * (1.0 - left);
@@ -482,9 +534,10 @@ export class GLEnemyRenderer {
   gl.clear(gl.COLOR_BUFFER_BIT);
   // Publish readiness for outer pipeline decisions (only skip 2D when ready)
   try {
+    const hasRealTex = !!(this.texture && (this.textureReady || this.atlasReady));
     (window as any).__glEnemiesIsReady = !!(this.atlasReady || this.textureReady);
     (window as any).__glEnemiesAtlasReady = !!this.atlasReady;
-    (window as any).__glEnemiesHasValidTexture = !!(this.texture && (this.textureReady || this.atlasReady));
+    (window as any).__glEnemiesHasValidTexture = hasRealTex;
   } catch {}
   if (!count) { (window as any).__glEnemiesLastCount = 0; return; }
     gl.useProgram(this.program);
